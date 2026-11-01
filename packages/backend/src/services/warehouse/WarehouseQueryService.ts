@@ -1,6 +1,6 @@
 import * as ClickHouseHttp from "@maple-dev/effect-clickhouse-http"
 import { FetchHttpClient, HttpClient, HttpClientRequest, type HttpClientError } from "effect/http"
-import { Context, Effect, Layer, Option, Redacted, Schema, Stream } from "effect"
+import { Config, Context, Effect, Layer, Option, Redacted, Schema, Stream } from "effect"
 import { WarehouseConfigError, WarehouseUpstreamError, type WarehouseQueryRequest } from "@maple/domain/http"
 import {
 	BackendDialect,
@@ -110,7 +110,7 @@ const clickHouseSessionSettings = (kind: ClickHouseProtocolBackendConfig["kind"]
 const createClickHouseSqlClient = (
 	config: ClickHouseProtocolBackendConfig,
 ): Effect.Effect<WarehouseSqlClient, WarehouseDriverError, HttpClient.HttpClient> =>
-	ClickHouseHttp.make({
+	Effect.flatMap(HttpClient.HttpClient, (insertHttp: HttpClient.HttpClient) => ClickHouseHttp.make({
 		url: config.url,
 		username: config.username,
 		password: Redacted.make(config.password),
@@ -139,20 +139,65 @@ const createClickHouseSqlClient = (
 						Effect.map(({ data }) => ({ data })),
 						Effect.mapError(clickHouseDriverError),
 					),
-			insert: () =>
-				// ClickHouse is READ-ONLY for Maple: the managed CLICKHOUSE_URL endpoint is
-				// a query gateway that rejects inserts ("Only SELECT or DESCRIBE queries are
-				// supported. Got: InsertQuery"), and a BYO org override is a read concern.
-				// All ingest goes to Tinybird's Events API (see resolveIngestConfig), so this
-				// must never be reached — fail loudly instead of silently 500'ing.
-				Effect.fail(
-					new WarehouseDriverError({
-						reason: "config",
-						message: "ClickHouse is read-only for Maple — ingest must use Tinybird",
-					}),
-				),
+			insert: (datasource, rows) =>
+				// NevrLabs selfhost patch (apps/selfhost/PATCHES.md #1): the only ClickHouse config
+				// that reaches `insert` is the self-hosted write credential (`resolveRoute` "ingest"
+				// with CLICKHOUSE_WRITE_USER set). Upstream never routes writes here.
+				config.kind === "clickhouse"
+					? insertJsonEachRow(insertHttp, config, datasource, rows as ReadonlyArray<Record<string, unknown>>)
+					: // ClickHouse is READ-ONLY for Maple: the managed CLICKHOUSE_URL endpoint is
+						// a query gateway that rejects inserts ("Only SELECT or DESCRIBE queries are
+						// supported. Got: InsertQuery"), and a BYO org override is a read concern.
+						// All ingest goes to Tinybird's Events API (see resolveIngestConfig), so this
+						// must never be reached — fail loudly instead of silently 500'ing.
+						Effect.fail(
+							new WarehouseDriverError({
+								reason: "config",
+								message: "ClickHouse is read-only for Maple — ingest must use Tinybird",
+							}),
+						),
 		})),
-	)
+	))
+
+/** NevrLabs selfhost patch: `INSERT INTO <db>.<table> FORMAT JSONEachRow` over the HTTP interface. */
+const insertJsonEachRow = (
+	http: HttpClient.HttpClient,
+	config: ClickHouseProtocolBackendConfig,
+	datasource: string,
+	rows: ReadonlyArray<Record<string, unknown>>,
+): Effect.Effect<void, WarehouseDriverError> =>
+	Effect.gen(function* () {
+		if (!/^[A-Za-z0-9_]+$/.test(datasource)) {
+			return yield* new WarehouseDriverError({ reason: "config", message: `invalid datasource ${datasource}` })
+		}
+		if (rows.length === 0) return
+		const url = new URL(config.url)
+		url.searchParams.set("query", `INSERT INTO \`${config.database}\`.\`${datasource}\` FORMAT JSONEachRow`)
+		url.searchParams.set("date_time_input_format", "best_effort")
+		url.searchParams.set("input_format_skip_unknown_fields", "1")
+		const body = rows.map((row) => JSON.stringify(row)).join("\n")
+		const response = yield* http
+			.execute(
+				HttpClientRequest.post(url.toString()).pipe(
+					HttpClientRequest.setHeader("X-ClickHouse-User", config.username),
+					HttpClientRequest.setHeader("X-ClickHouse-Key", config.password),
+					HttpClientRequest.bodyText(body, "application/x-ndjson"),
+				),
+			)
+			.pipe(
+				Effect.mapError(
+					(cause) => new WarehouseDriverError({ reason: "transport", message: cause.message, cause }),
+				),
+			)
+		if (response.status >= 300) {
+			const text = yield* response.text.pipe(Effect.orElseSucceed(() => ""))
+			return yield* new WarehouseDriverError({
+				reason: "server",
+				status: response.status,
+				message: `ClickHouse insert into ${datasource} failed (${response.status}): ${text.slice(0, 300)}`,
+			})
+		}
+	})
 
 // Tinybird's `/v0/sql` speaks plain HTTP: POST the SQL as text with a bearer
 // token, get `{ data: [...] }` back (this backend's dialect is `wireFormat:
@@ -349,6 +394,22 @@ export class WarehouseQueryService extends Context.Service<WarehouseQueryService
 			const env = yield* Env
 			const orgClickHouseSettings = yield* OrgClickHouseSettingsService
 			const orgTokens = yield* TinybirdOrgTokenService
+			// NevrLabs selfhost patch (apps/selfhost/PATCHES.md #1): optional ClickHouse write credential.
+			const writeUser = yield* Config.option(Config.String("CLICKHOUSE_WRITE_USER")).pipe(
+				Effect.orElseSucceed(() => Option.none<string>()),
+			)
+			const writePassword = yield* Config.option(Config.Redacted("CLICKHOUSE_WRITE_PASSWORD")).pipe(
+				Effect.orElseSucceed(() => Option.none<Redacted.Redacted<string>>()),
+			)
+			const selfhostWrite =
+				env.CLICKHOUSE_PROVIDER === "clickhouse" && Option.isSome(env.CLICKHOUSE_URL) && Option.isSome(writeUser)
+					? {
+							url: env.CLICKHOUSE_URL.value.replace(/\/$/, ""),
+							username: writeUser.value,
+							password: Option.match(writePassword, { onNone: () => "", onSome: Redacted.value }),
+							database: env.CLICKHOUSE_DATABASE,
+						}
+					: undefined
 
 			// The managed (env-level) READ upstream: the Tinybird CH-gateway or vanilla
 			// ClickHouse when CLICKHOUSE_URL is set, otherwise the managed Tinybird SDK.
@@ -444,6 +505,18 @@ export class WarehouseQueryService extends Context.Service<WarehouseQueryService
 					// Legacy attrs, dual-emitted until dashboards move to `warehouse.*`.
 					yield* Effect.annotateCurrentSpan("clientSource", "managed")
 					yield* Effect.annotateCurrentSpan("query.routing", "ingest")
+					// NevrLabs selfhost patch (apps/selfhost/PATCHES.md #1): with a vanilla env-level
+					// ClickHouse and an explicit write credential, internal writes (alert_checks,
+					// service-map rollups, audit log) go to that ClickHouse instead of Tinybird.
+					// Unset → upstream behaviour unchanged.
+					if (selfhostWrite !== undefined) {
+						yield* Effect.annotateCurrentSpan("db.client", "clickhouse")
+						return {
+							source: "managed" as const,
+							config: { kind: "clickhouse" as const, ...selfhostWrite },
+							clientCacheKey: "write:selfhost-clickhouse",
+						}
+					}
 					yield* Effect.annotateCurrentSpan("db.client", "tinybird-sdk")
 					return {
 						source: "managed" as const,
