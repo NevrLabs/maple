@@ -1,0 +1,22 @@
+{
+	"name": "@maple/selfhost",
+	"private": true,
+	"type": "module",
+	"description": "NevrLabs fork: runs the api route graph and alerting ticks under Bun (no Cloudflare runtime).",
+	"scripts": {
+		"api": "bun run src/api.ts",
+		"alerting": "bun run src/alerting.ts",
+		"migrate": "bun run --cwd ../../packages/db db:migrate"
+	},
+	"dependencies": {
+		"@alchemy.run/cloudflare": "catalog:alchemy",
+		"@maple/alerting": "workspace:*",
+		"@maple/api": "workspace:*",
+		"@maple/backend": "workspace:*",
+		"@maple/db": "workspace:*",
+		"@maple/domain": "workspace:*",
+		"@maple/infra": "workspace:*",
+		"alchemy": "catalog:alchemy",
+		"effect": "catalog:effect"
+	}
+}
