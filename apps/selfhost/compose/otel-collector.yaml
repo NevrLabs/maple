@@ -1,12 +1,49 @@
 receivers:
   otlp:
     protocols:
-      grpc: {endpoint: 0.0.0.0:4317}
-      http: {endpoint: 0.0.0.0:4318}
+      grpc: {endpoint: "0.0.0.0:4317"}
+      http: {endpoint: "0.0.0.0:4318"}
 processors:
   memory_limiter: {check_interval: 1s, limit_mib: 400, spike_limit_mib: 100}
   # 10s: each insert fans out to ~20 MVs; fewer, bigger inserts = much less CH CPU.
   batch: {timeout: 10s, send_batch_size: 20000, send_batch_max_size: 40000}
+  # Setup Health RES-01 / LOG-04 (BRIEF-integrations D): fixed once here for every sender.
+  # service.name fallback for senders that set none (k8s pod logs from maple-k8s-infra, docker filelog,
+  # k8s events, unnamed journald units). An explicit service.name always wins.
+  transform/service-name:
+    error_mode: ignore
+    log_statements:
+      - context: resource
+        statements:
+          - set(attributes["service.name"], attributes["k8s.deployment.name"]) where (attributes["service.name"] == nil or attributes["service.name"] == "") and attributes["k8s.deployment.name"] != nil
+          - set(attributes["service.name"], attributes["k8s.statefulset.name"]) where (attributes["service.name"] == nil or attributes["service.name"] == "") and attributes["k8s.statefulset.name"] != nil
+          - set(attributes["service.name"], attributes["k8s.daemonset.name"]) where (attributes["service.name"] == nil or attributes["service.name"] == "") and attributes["k8s.daemonset.name"] != nil
+          - set(attributes["service.name"], attributes["k8s.cronjob.name"]) where (attributes["service.name"] == nil or attributes["service.name"] == "") and attributes["k8s.cronjob.name"] != nil
+          - set(attributes["service.name"], attributes["k8s.container.name"]) where (attributes["service.name"] == nil or attributes["service.name"] == "") and attributes["k8s.container.name"] != nil
+          - set(attributes["service.name"], "k8s-events") where (attributes["service.name"] == nil or attributes["service.name"] == "") and attributes["k8s.namespace.name"] != nil
+          - set(attributes["service.name"], attributes["container.name"]) where (attributes["service.name"] == nil or attributes["service.name"] == "") and attributes["container.name"] != nil
+          - set(attributes["service.name"], "docker") where (attributes["service.name"] == nil or attributes["service.name"] == "") and attributes["container.id"] != nil
+          - set(attributes["service.name"], "journald") where (attributes["service.name"] == nil or attributes["service.name"] == "") and attributes["telemetry.agent"] != nil
+          - set(attributes["service.name"], "unnamed-sender") where attributes["service.name"] == nil or attributes["service.name"] == ""
+  # Severity: the exporter writes the number as text when the text is empty ("0"), and some parsers put
+  # non-levels in the text (nginx status "200", pino "40", wazuh "3"). Infer a number when there is none,
+  # then derive standard text whenever the text is empty or purely numeric. Real level text is kept.
+  transform/severity:
+    error_mode: ignore
+    log_statements:
+      - context: log
+        statements:
+          - set(severity_number, SEVERITY_NUMBER_FATAL) where severity_number == SEVERITY_NUMBER_UNSPECIFIED and IsString(body) and IsMatch(body, "(?i)\\b(fatal|panic|critical|crit|emerg)\\b")
+          - set(severity_number, SEVERITY_NUMBER_ERROR) where severity_number == SEVERITY_NUMBER_UNSPECIFIED and IsString(body) and IsMatch(body, "(?i)(\\berror\\b|level=error|\"level\":\"error\"|\\bexception\\b|^E[0-9]{4} )")
+          - set(severity_number, SEVERITY_NUMBER_WARN) where severity_number == SEVERITY_NUMBER_UNSPECIFIED and IsString(body) and IsMatch(body, "(?i)(\\bwarn(ing)?\\b|level=warn|\"level\":\"warn|^W[0-9]{4} )")
+          - set(severity_number, SEVERITY_NUMBER_DEBUG) where severity_number == SEVERITY_NUMBER_UNSPECIFIED and IsString(body) and IsMatch(body, "(?i)(level=debug|\"level\":\"debug\")")
+          - set(severity_number, SEVERITY_NUMBER_INFO) where severity_number == SEVERITY_NUMBER_UNSPECIFIED
+          - set(severity_text, "TRACE") where severity_number >= 1 and severity_number <= 4 and (severity_text == "" or IsMatch(severity_text, "^[0-9]+$"))
+          - set(severity_text, "DEBUG") where severity_number >= 5 and severity_number <= 8 and (severity_text == "" or IsMatch(severity_text, "^[0-9]+$"))
+          - set(severity_text, "INFO") where severity_number >= 9 and severity_number <= 12 and (severity_text == "" or IsMatch(severity_text, "^[0-9]+$"))
+          - set(severity_text, "WARN") where severity_number >= 13 and severity_number <= 16 and (severity_text == "" or IsMatch(severity_text, "^[0-9]+$"))
+          - set(severity_text, "ERROR") where severity_number >= 17 and severity_number <= 20 and (severity_text == "" or IsMatch(severity_text, "^[0-9]+$"))
+          - set(severity_text, "FATAL") where severity_number >= 21 and (severity_text == "" or IsMatch(severity_text, "^[0-9]+$"))
 exporters:
   maple:
     endpoint: http://clickhouse:8123
@@ -19,12 +56,12 @@ exporters:
     retry_on_failure: {enabled: true, initial_interval: 1s, max_interval: 30s, max_elapsed_time: 300s}
     sending_queue: {enabled: true, num_consumers: 2, queue_size: 2000}
 extensions:
-  health_check: {endpoint: 0.0.0.0:13133}
+  health_check: {endpoint: "0.0.0.0:13133"}
 service:
   extensions: [health_check]
   telemetry:
     logs: {level: info}
   pipelines:
     traces:  {receivers: [otlp], processors: [memory_limiter, batch], exporters: [maple]}
-    logs:    {receivers: [otlp], processors: [memory_limiter, batch], exporters: [maple]}
+    logs:    {receivers: [otlp], processors: [memory_limiter, transform/service-name, transform/severity, batch], exporters: [maple]}
     metrics: {receivers: [otlp], processors: [memory_limiter, batch], exporters: [maple]}
