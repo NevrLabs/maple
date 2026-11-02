@@ -75,16 +75,16 @@ export const formatAge = (ms: number): string => {
 	return `${Math.floor(hours / 24)}d`
 }
 
-/** Compact byte rate for the dense guest table: `777K`, `1.0M` (per second; the head says so via the title). */
+/** Compact byte rate for the dense guest table, unit included: `782 B/s`, `650 KB/s`, `1.6 MB/s` (decimal). */
 const compactRate = (bytesPerSecond: number): string => {
-	const units = ["", "K", "M", "G"]
+	const units = ["B/s", "KB/s", "MB/s", "GB/s"]
 	let value = bytesPerSecond
 	let unit = 0
 	while (value >= 1000 && unit < units.length - 1) {
 		value /= 1000
 		unit++
 	}
-	return `${value >= 100 || unit === 0 ? Math.round(value) : value.toFixed(1)}${units[unit]}`
+	return `${value >= 100 || unit === 0 ? Math.round(value) : value.toFixed(1)} ${units[unit]}`
 }
 
 /**
@@ -226,11 +226,11 @@ const clusterRail = <M>(h: HtmlBuilder<M>, data: ProxmoxSnapshot): Html => {
 // ── Guest table ───────────────────────────────────────────────────────────────
 
 const GUEST_COLS = {
-	name: "w-0 flex-1 min-w-64",
-	node: "w-28",
-	bar: "w-20",
-	io: "w-36 hidden xl:flex",
-	uptime: "w-20",
+	name: "w-0 flex-1 min-w-48",
+	node: "w-28 shrink-0",
+	bar: "w-16 shrink-0",
+	io: "w-40 shrink-0 hidden xl:flex",
+	uptime: "w-24 shrink-0",
 } as const
 
 /** One bar per column, label-less (the column head names it): every row is one line, like Pulse. */
@@ -479,24 +479,29 @@ const BACKUP_TEXT: Record<"ok" | "warn" | "crit", string> = {
 
 const isSized = (backup: ProxmoxBackup) => backup.sizeKnown !== false
 
+/** A byte sum over archives; `≥` when any of them has an unknown size (the sum is then a floor). */
+const sumLabel = (bytes: number, hasUnknown: boolean): string =>
+	hasUnknown && bytes === 0 ? "—" : `${hasUnknown ? "≥ " : ""}${formatBytes(bytes)}`
+
 const backupsSection = <M>(h: HtmlBuilder<M>, data: ProxmoxSnapshot): Html => {
 	const now = nowOf(data)
 	const guestIds = new Set(data.guests.map((guest) => guest.vmid))
 	const latest = new Map<string, ProxmoxBackup>()
-	const kept = new Map<string, { count: number; bytes: number }>()
+	const kept = new Map<string, { count: number; bytes: number; unknown: boolean }>()
 	for (const backup of data.backups) {
-		const k = kept.get(backup.vmid) ?? { count: 0, bytes: 0 }
-		kept.set(backup.vmid, { count: k.count + 1, bytes: k.bytes + backup.size })
+		const k = kept.get(backup.vmid) ?? { count: 0, bytes: 0, unknown: false }
+		kept.set(backup.vmid, { count: k.count + 1, bytes: k.bytes + backup.size, unknown: k.unknown || !isSized(backup) })
 		const seen = latest.get(backup.vmid)
 		if (seen === undefined || backup.ctime > seen.ctime) latest.set(backup.vmid, backup)
 	}
 	const rows = data.guests
-		.map((guest) => ({ guest, last: latest.get(guest.vmid), kept: kept.get(guest.vmid) ?? { count: 0, bytes: 0 } }))
+		.map((guest) => ({ guest, last: latest.get(guest.vmid), kept: kept.get(guest.vmid) ?? { count: 0, bytes: 0, unknown: false } }))
 		.toSorted((a, b) => (a.last?.ctime ?? 0) - (b.last?.ctime ?? 0) || Number(a.guest.vmid) - Number(b.guest.vmid))
 	// Archives of guests that no longer exist: listed as one row so the column totals add up to the header.
 	const orphans = data.backups.filter((backup) => !guestIds.has(backup.vmid))
 	const orphanIds = new Set(orphans.map((backup) => backup.vmid))
 	const orphanBytes = orphans.reduce((sum, backup) => sum + backup.size, 0)
+	const orphanUnknown = orphans.some((backup) => !isSized(backup))
 	const fresh = rows.filter((row) => row.last !== undefined && now - row.last.ctime < 1.5 * DAY_MS).length
 	const stale = rows.filter((row) => row.last !== undefined && now - row.last.ctime >= 1.5 * DAY_MS).length
 	const none = rows.filter((row) => row.last === undefined).length
@@ -514,7 +519,7 @@ const backupsSection = <M>(h: HtmlBuilder<M>, data: ProxmoxSnapshot): Html => {
 		[
 			sectionHeading(h, {
 				title: "Backups",
-				count: `${data.backups.length} archives · ${formatBytes(totalBytes)}`,
+				count: `${data.backups.length} archives · ${sumLabel(totalBytes, unsized > 0)}`,
 				hint: `vzdump archives on ${storages.length === 0 ? "backup storage" : storages.join(", ")}, oldest last-backup first · ${asOf}`,
 			}),
 			statRail(h, { columns: 4 }, [
@@ -558,7 +563,7 @@ const backupsSection = <M>(h: HtmlBuilder<M>, data: ProxmoxSnapshot): Html => {
 								),
 								cell(cn("w-24", CAPTION), last === undefined || !isSized(last) ? "—" : formatBytes(last.size)),
 								cell(cn("w-28", CAPTION), String(k.count)),
-								cell(cn("w-24", CAPTION), k.count === 0 ? "—" : formatBytes(k.bytes)),
+								cell(cn("w-24", CAPTION), k.count === 0 ? "—" : sumLabel(k.bytes, k.unknown)),
 							],
 						)
 					}),
@@ -574,7 +579,7 @@ const backupsSection = <M>(h: HtmlBuilder<M>, data: ProxmoxSnapshot): Html => {
 										cell(cn("w-28", CAPTION), ""),
 										cell(cn("w-24", CAPTION), "—"),
 										cell(cn("w-28", CAPTION), String(orphans.length)),
-										cell(cn("w-24", CAPTION), formatBytes(orphanBytes)),
+										cell(cn("w-24", CAPTION), sumLabel(orphanBytes, orphanUnknown)),
 									],
 								),
 							]
@@ -583,18 +588,24 @@ const backupsSection = <M>(h: HtmlBuilder<M>, data: ProxmoxSnapshot): Html => {
 					h.div(
 						[h.Key("totals"), h.DataAttribute("proxmox-backup-totals", `${data.backups.length}|${totalBytes}`), h.Class("flex items-center gap-4 border-t px-4 py-2 font-medium")],
 						[
-							h.span([h.Class("w-0 min-w-56 flex-1 text-2xs text-foreground")], [
-								"Total",
-								...(unsized > 0
-									? [h.span([h.Class(cn("ml-2 font-normal", CAPTION)), h.DataAttribute("proxmox-backup-unsized", String(unsized))], [`${unsized} archives predate PVE's task history: size unknown, counted as 0`])]
-									: []),
-							]),
+							h.span([h.Class("w-0 min-w-56 flex-1 text-2xs text-foreground")], ["Total"]),
 							cell("w-28", ""),
 							cell("w-24", ""),
 							cell("w-28 text-foreground", String(data.backups.length)),
-							cell("w-24 text-foreground", formatBytes(totalBytes)),
+							cell("w-24 text-foreground", sumLabel(totalBytes, unsized > 0)),
 						],
 					),
+					// The caveat on its own line under the totals, so it never reads as part of a figure.
+					...(unsized > 0
+						? [
+								h.p(
+									[h.Key("unsized"), h.DataAttribute("proxmox-backup-unsized", String(unsized)), h.Class(cn("px-4 pb-2.5 text-2xs", CAPTION))],
+									[
+										`≥ ${unsized} ${unsized === 1 ? "archive is" : "archives are"} older than PVE's task history, so ${unsized === 1 ? "its size is" : "their sizes are"} unknown: shown as —, left out of the sums.`,
+									],
+								),
+							]
+						: []),
 				],
 			),
 		],
@@ -612,13 +623,13 @@ export const proxmoxLoadingBody = <M>(h: HtmlBuilder<M>): ReadonlyArray<Html> =>
 		{ ariaLabel: "Guests", isWaiting: true },
 		guestHead(h),
 		skeletonRows(h, 8, () => [
-			skeleton(h, "h-4 w-0 min-w-64 flex-1"),
+			skeleton(h, "h-4 w-0 min-w-48 flex-1"),
 			skeleton(h, "h-3 w-28"),
-			skeleton(h, "h-2 w-20"),
-			skeleton(h, "h-2 w-20"),
-			skeleton(h, "h-2 w-20"),
-			skeleton(h, "hidden h-3 w-36 xl:block"),
-			skeleton(h, "h-3 w-20"),
+			skeleton(h, "h-2 w-16"),
+			skeleton(h, "h-2 w-16"),
+			skeleton(h, "h-2 w-16"),
+			skeleton(h, "hidden h-3 w-40 xl:block"),
+			skeleton(h, "h-3 w-24"),
 		]),
 	),
 ]
@@ -675,7 +686,7 @@ export const proxmoxBody = <M>(
 					],
 				),
 				h.div(
-					[h.Class("grid gap-6 xl:grid-cols-[minmax(0,1fr)_22rem]")],
+					[h.Class("grid gap-6 2xl:grid-cols-[minmax(0,1fr)_22rem]")],
 					[guestsSection(ctx, state, data), h.div([h.Class("min-w-0")], [storageSection(ctx, data, true)])],
 				),
 			]

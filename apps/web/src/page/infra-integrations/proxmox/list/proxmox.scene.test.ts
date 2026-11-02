@@ -149,8 +149,27 @@ describe("proxmox route", () => {
 			{ update: pageUpdate, view },
 			given(loaded(snapshot(), { tab: "backups" })),
 			expectView(text("Deleted guests (999)")).toExist(),
-			expectView(text("1 archives predate PVE's task history: size unknown, counted as 0")).toExist(),
+			expectView(text("≥ 1 archive is older than PVE's task history, so its size is unknown: shown as —, left out of the sums.")).toExist(),
 			expectView(text(/backup data as of 1m ago/)).toExist(),
+		)
+	})
+
+	test("sums with an unknown size are floors; an all-unknown sum and latest size read as a dash, never 0 B", () => {
+		scene(
+			{ update: pageUpdate, view },
+			given(loaded(snapshot(), { tab: "backups" })),
+			// header: 1.8e9 B (formatBytes: 1.7 GB) known + one unknown archive
+			expectView(text("102 archives")).not.toExist(),
+			expectView(text("2 archives · ≥ 1.7 GB")).toExist(),
+			expectView(text("0 B")).not.toExist(),
+		)
+	})
+
+	test("guest network rates carry their unit", () => {
+		scene(
+			{ update: pageUpdate, view },
+			given(loaded(snapshot())),
+			expectView(text("1.2 KB/s / 900 B/s")).toExist(),
 		)
 	})
 
