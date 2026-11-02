@@ -218,10 +218,10 @@ const clusterRail = (h: H, data: ProxmoxFixture): Html => {
 // ── Guest table ───────────────────────────────────────────────────────────────
 
 const GUEST_COLS = {
-	name: "w-0 flex-1 min-w-56",
+	name: "w-0 flex-1 min-w-64",
 	node: "w-28",
-	bar: "w-24",
-	io: "w-44 hidden xl:flex",
+	bar: "w-20",
+	io: "w-36 hidden xl:flex",
 	uptime: "w-20",
 } as const
 
@@ -273,14 +273,13 @@ const guestRow = (h: H, guest: ProxmoxGuest, state: GuestState): Html => {
 							h.Title(state === "unknown" ? `Unknown — ${guest.node} is not reporting; last values are stale` : state),
 						],
 					}),
-					h.span([h.Class(cn("w-12 shrink-0 font-mono text-2xs tabular-nums", CAPTION))], [guest.vmid]),
+					h.span(
+						[h.Class(cn("w-16 shrink-0 font-mono text-2xs tabular-nums", CAPTION)), h.Title(guest.type === "qemu" ? "virtual machine" : "container")],
+						[`${guest.vmid} `, h.span([h.Class("text-3xs uppercase opacity-70")], [guest.type === "qemu" ? "vm" : "ct"])],
+					),
 					h.span(
 						[h.Class(cn("min-w-0 truncate text-xs font-medium", running ? "text-foreground" : "text-muted-foreground")), h.Title(guest.name)],
 						[guest.name],
-					),
-					h.span(
-						[h.Class(cn("shrink-0 rounded-xs border px-1 font-mono text-3xs uppercase", CAPTION))],
-						[guest.type === "qemu" ? "VM" : "CT"],
 					),
 				],
 			),
@@ -589,11 +588,11 @@ const loadingBody = (h: H): ReadonlyArray<Html> => [
 	h.div([h.Class("grid gap-3 md:grid-cols-3")], [0, 1, 2].map((key) => nodeCardSkeleton(h, key))),
 	fleetBandLoading(h, 2, FLEET_BAND_BOXED),
 	dataTable(h, { ariaLabel: "Guests", isWaiting: true }, guestHead(h), skeletonRows(h, 8, () => [
-		skeleton(h, "h-4 w-0 min-w-56 flex-1"),
+		skeleton(h, "h-4 w-0 min-w-64 flex-1"),
 		skeleton(h, "h-3 w-28"),
-		skeleton(h, "h-2 w-24"),
-		skeleton(h, "h-2 w-24"),
-		skeleton(h, "h-2 w-24"),
+		skeleton(h, "h-2 w-20"),
+		skeleton(h, "h-2 w-20"),
+		skeleton(h, "h-2 w-20"),
 		skeleton(h, "hidden h-3 w-36 xl:block"),
 		skeleton(h, "h-3 w-20"),
 	])),
