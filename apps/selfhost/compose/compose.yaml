@@ -10,6 +10,9 @@ x-app-env: &app-env
   MAPLE_INTERNAL_ORG_ID: default
   MAPLE_ENVIRONMENT: selfhost
   MAPLE_ALERTING_ALLOW_NONPROD: "1"
+  # RES-05: image tags are fork short SHAs -> vcs.ref.head.revision on Maple's own telemetry.
+  COMMIT_SHA: ${MAPLE_SELFHOST_TAG}
+  VCS_REPOSITORY_URL: https://github.com/NevrLabs/maple
   CLICKHOUSE_URL: http://clickhouse:8123
   CLICKHOUSE_PROVIDER: clickhouse
   CLICKHOUSE_USER: maple_runtime
@@ -41,6 +44,15 @@ x-app-env: &app-env
   MAPLE_OIDC_SCOPES: ${MAPLE_OIDC_SCOPES:-}
   MAPLE_OIDC_LABEL: ${MAPLE_OIDC_LABEL:-}
   MAPLE_OIDC_HOSTS: ${MAPLE_OIDC_HOSTS:-}
+  # Integrations (BRIEF-integrations A/B). Empty = integration disabled.
+  CLOUDFLARE_OAUTH_CLIENT_ID: ${CLOUDFLARE_OAUTH_CLIENT_ID:-}
+  CLOUDFLARE_OAUTH_CLIENT_SECRET: ${CLOUDFLARE_OAUTH_CLIENT_SECRET:-}
+  GITHUB_APP_ID: ${GITHUB_APP_ID:-}
+  GITHUB_APP_SLUG: ${GITHUB_APP_SLUG:-}
+  GITHUB_APP_CLIENT_ID: ${GITHUB_APP_CLIENT_ID:-}
+  GITHUB_APP_CLIENT_SECRET: ${GITHUB_APP_CLIENT_SECRET:-}
+  GITHUB_APP_PRIVATE_KEY: ${GITHUB_APP_PRIVATE_KEY:-}
+  GITHUB_APP_WEBHOOK_SECRET: ${GITHUB_APP_WEBHOOK_SECRET:-}
 
 x-logging: &logging
   driver: json-file
@@ -235,6 +247,8 @@ services:
       MAPLE_INTERNAL_ORG_ID: default
       MAPLE_ENVIRONMENT: selfhost
       INGEST_SELF_TRACE_SAMPLE_RATIO: "0.05"
+      COMMIT_SHA: ${MAPLE_INGEST_TAG}
+      VCS_REPOSITORY_URL: https://github.com/NevrLabs/maple
       TINYBIRD_HOST: ""
       TINYBIRD_TOKEN: ""
       MAPLE_PG_URL: postgres://maple:${POSTGRES_PASSWORD}@postgres:5432/maple
