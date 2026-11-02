@@ -49,20 +49,27 @@ def main():
     for node in nodes:
         for task in get(f"/nodes/{node}/tasks?typefilter=vzdump&limit=10000&source=all"):
             upid = task["upid"]
-            if upid in seen or task.get("status") is None:
+            # Only a finished task's log is final: one read mid-run has "creating archive" but no size yet.
+            if upid in seen or not task.get("endtime") or not task.get("status"):
                 continue
             log = get(f"/nodes/{node}/tasks/{urllib.parse.quote(upid)}/log?limit=100000")
-            current = None
+            current, unsized = None, 0
             for line in log:
                 t = line.get("t", "")
                 m = re.search(r"creating (?:vzdump )?archive '([^']+)'", t)
                 if m:
+                    if current:
+                        unsized += 1
                     current = os.path.basename(m.group(1))
                 m = re.search(r"archive file size: (.+)$", t)
                 if m and current:
                     sizes[current] = size_of(m.group(1))
                     current = None
-            seen.add(upid)
+            if current:
+                unsized += 1
+            # A failed guest in a multi-guest job leaves an archive unsized for good; anything else retries next run.
+            if unsized == 0 or task.get("status") != "OK":
+                seen.add(upid)
 
     # Archives: shared stores once, local ones per node.
     rows, done = [], set()
