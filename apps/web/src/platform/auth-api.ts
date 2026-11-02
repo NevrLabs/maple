@@ -33,6 +33,20 @@ export const clearSessionToken: Effect.Effect<void> = Effect.gen(function* () {
 	yield* store.remove(SELF_HOSTED_TOKEN_STORAGE_KEY)
 }).pipe(withSessionStorage, Effect.ignore)
 
+/**
+ * NevrLabs selfhost: the OIDC callback lands on `/#maple_session=<token>`. The token is moved into the
+ * per-tab session store and the fragment wiped from the address bar and history before the app boots,
+ * so the normal stored-session check takes over. A fragment never reaches a server or its logs.
+ */
+const OIDC_FRAGMENT = "maple_session="
+export const adoptOidcSessionFromUrl: Effect.Effect<void> = Effect.gen(function* () {
+	const hash = window.location.hash.replace(/^#/, "")
+	if (!hash.startsWith(OIDC_FRAGMENT)) return
+	const token = decodeURIComponent(hash.slice(OIDC_FRAGMENT.length))
+	window.history.replaceState(window.history.state, "", window.location.pathname + window.location.search)
+	if (/^[\w-]+\.[\w-]+\.[\w-]+$/.test(token)) yield* saveSessionToken(token)
+}).pipe(Effect.ignore)
+
 export const announceSessionTokenChanged: Effect.Effect<void> = Effect.sync(() =>
 	window.dispatchEvent(new Event(SELF_HOSTED_AUTH_EVENT)),
 )

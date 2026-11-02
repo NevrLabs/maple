@@ -65,3 +65,35 @@ state toolbar is lab-only and never ships in the route.
 **Verify after rebase:** `bunx tsrs --noEmit`; `vitest run src/page/infra-integrations/proxmox src/shell src/lab`;
 browser E2E `verify/e2e-proxmox-route.ts` against https://monitoring.home (sidebar row, 3 nodes, guest count =
 `pvesh get /cluster/resources --type vm`, Storage + Backups tabs, 0 page errors).
+
+## #4 — "Sign in with Zitadel" (OIDC) beside the root password
+
+**Why:** the operator signs in with the cluster's Zitadel (https://auth.entelechia.cloud) instead of sharing the root
+password; the root password stays as break-glass. Upstream auth is `clerk | self_hosted` only.
+
+**Shape:** not a third auth mode. The selfhost Bun server (`apps/selfhost/src/api.ts`, fork-only) answers
+`/api/auth/oidc/{config,start,callback}` before the unmodified route graph (`apps/selfhost/src/oidc.ts`, fork-only):
+code flow + PKCE S256 + state + nonce in a signed, HttpOnly, 10-min cookie; client_secret_basic code exchange; ID token
+verified (RS256 via JWKS, iss, aud/azp, exp, nonce); **fails closed** unless the token carries project role
+`MAPLE_OIDC_REQUIRED_ROLE` in `urn:zitadel:iam:org:project:roles`. Then it mints the SAME self-hosted session token the
+root login issues (same signer, lifetimes, `root` role), subject `oidc:<zitadel sub>`, and hands it to the web in the
+URL fragment (`/sign-in#maple_session=…`: never sent to a server or logged). Sign-ins are logged `[oidc] sign-in ok
+sub=… email=…`. Off unless `MAPLE_OIDC_ISSUER` + `MAPLE_OIDC_CLIENT_ID` + `MAPLE_OIDC_CLIENT_SECRET` are set.
+
+**Upstream files touched:**
+- `packages/auth/src/index.ts` — new export `makeMintSelfHostedSessionForSubject` (reuses `mintSelfHostedSessionToken`;
+  nothing existing changes).
+- `apps/web/src/platform/auth-api.ts` — `adoptOidcSessionFromUrl` (fragment -> session storage, fragment wiped).
+- `apps/web/src/main.ts` — runs it before the stored-session flag is read; sign-in init gets the callback's refusal.
+- `apps/web/src/update.ts` — same for entering `/sign-in`.
+- `apps/web/src/route/search.ts` — `SignInSearch.oidc_error`.
+- `apps/web/src/lib/services/common/auth-mode.ts` — `oidcProvider` from build flag `VITE_MAPLE_OIDC=zitadel`.
+- `apps/web/src/page/sign-in/{sign-in,index,view}.ts` — `oidcError` in the model; button + divider above the form.
+- `apps/web/src/page/sign-in/sign-in-oidc.scene.test.ts` (new).
+
+**Zitadel side:** project `Maple` (roles asserted + checked on authentication), role `maple-admin`, WEB app (code,
+basic), redirects `https://monitoring.{home,entelechia.cloud}/_api/api/auth/oidc/callback`. Client id/secret only in
+the CT `.env`.
+
+**Verify after rebase:** `bun test apps/selfhost/src/oidc.test.ts`; `vitest run src/page/sign-in`; `tsrs --noEmit`
+(web, packages/auth); E2E `verify/e2e-zitadel-login.ts` (full code flow with a disposable user; role-less user refused).

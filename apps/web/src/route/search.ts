@@ -314,6 +314,8 @@ export const SettingsSearch = Schema.Struct({
 
 export const SignInSearch = Schema.Struct({
 	redirect_url: Schema.optional(Schema.String),
+	/** NevrLabs selfhost: why the Zitadel sign-in was refused (set by /api/auth/oidc/callback). */
+	oidc_error: Schema.optional(Schema.String),
 })
 
 export const SignUpSearch = Schema.Struct({

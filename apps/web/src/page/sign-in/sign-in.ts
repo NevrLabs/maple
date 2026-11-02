@@ -1,9 +1,10 @@
-import { Effect, Schema } from "effect"
+import { Effect, Option, Schema } from "effect"
 import { Command, type Update } from "foldkit"
 import { defineMessageUnion } from "foldkit/message"
 import { defineTaggedUnion } from "foldkit/schema"
 import { modifyFields } from "foldkit/struct"
 import { MapleAuthApi } from "../../platform/auth-api"
+import type { AppRoute } from "../../route"
 
 // MODEL
 
@@ -28,15 +29,22 @@ export const Model = Schema.Struct({
 	isPasswordFocused: Schema.Boolean,
 	isPasswordTouched: Schema.Boolean,
 	submission: Submission,
+	/** NevrLabs selfhost: the Zitadel sign-in refusal the callback sent back, shown above the form. */
+	oidcError: Schema.optionalKey(Schema.String),
 })
 export type Model = typeof Model.Type
 
-export const init = (): Model => ({
+export const init = (oidcError?: string): Model => ({
 	password: "",
 	isPasswordFocused: false,
 	isPasswordTouched: false,
 	submission: Submission.NotSubmitted(),
+	...(oidcError === undefined ? {} : { oidcError }),
 })
+
+/** The refusal on a `/sign-in?oidc_error=...` URL. */
+export const oidcErrorOf = (route: AppRoute): string | undefined =>
+	route._tag === "SignIn" ? Option.getOrUndefined(Option.fromNullishOr(route.search.oidc_error)) : undefined
 
 // MESSAGE
 

@@ -465,6 +465,38 @@ export const makeLoginSelfHosted = (
 	})
 
 /**
+ * NevrLabs selfhost (PATCHES #4): a session for an operator who signed in through the deployment's
+ * OIDC provider instead of typing the root password. Same token, same signer, same lifetimes and
+ * root role as {@link makeLoginSelfHosted}; only the subject names the person. The caller has
+ * already verified the ID token and the provider role; this only mints.
+ */
+export const makeMintSelfHostedSessionForSubject = (
+	env: Pick<AuthEnv, "MAPLE_AUTH_MODE" | "MAPLE_DEFAULT_ORG_ID" | "MAPLE_ROOT_PASSWORD">,
+) =>
+	Effect.fn("AuthService.mintSelfHostedSessionForSubject")(function* (
+		subject: string,
+	): Effect.fn.Return<SelfHostedLoginResponse, SelfHostedAuthDisabledError> {
+		if (getAuthMode(env.MAPLE_AUTH_MODE) !== "self_hosted") {
+			return yield* Effect.fail(new SelfHostedAuthDisabledError({ message: "Self-hosted login is disabled" }))
+		}
+		const rootPassword = yield* requireSecret(env.MAPLE_ROOT_PASSWORD, "MAPLE_ROOT_PASSWORD")
+		const tenant: TenantContext = {
+			...makeSelfHostedTenant(env.MAPLE_DEFAULT_ORG_ID),
+			userId: decodeUserIdSync(subject),
+		}
+		const now = Math.floor((yield* Clock.currentTimeMillis) / 1000)
+		const sessionExpiresAt = now + SELF_HOSTED_SESSION_MAX_LIFETIME_SECONDS
+		const { token, expiresAt } = mintSelfHostedSessionToken(tenant, now, sessionExpiresAt, rootPassword)
+		return new SelfHostedLoginResponse({
+			token,
+			orgId: tenant.orgId,
+			userId: tenant.userId,
+			expiresAt: expiresAt * 1000,
+			sessionExpiresAt: sessionExpiresAt * 1000,
+		})
+	})
+
+/**
  * Renewal: trade a still-valid self-hosted token for a fresh one, so a bounded
  * token lifetime does not mean the operator is logged out mid-session.
  *

@@ -39,7 +39,7 @@ build_web() {
   echo "== web (vite build)"
   cd $SRC
   ( cd packages/effect-sdk && $BUN run build >/dev/null 2>&1 )
-  VITE_MAPLE_LAB=${VITE_MAPLE_LAB:-on} VITE_API_BASE_URL=${VITE_API_BASE_URL:-/_api} VITE_MAPLE_AUTH_MODE=self_hosted \
+  VITE_MAPLE_LAB=${VITE_MAPLE_LAB:-on} VITE_API_BASE_URL=${VITE_API_BASE_URL:-/_api} VITE_MAPLE_AUTH_MODE=self_hosted VITE_MAPLE_OIDC=${VITE_MAPLE_OIDC:-zitadel} \
   VITE_ELECTRIC_SYNC_URL=${VITE_ELECTRIC_SYNC_URL:-/_sync} VITE_INGEST_URL=${VITE_INGEST_URL:-http://192.168.100.30:3474} VITE_MAPLE_REPLAY=off VITE_MAPLE_CAPTURE=${VITE_MAPLE_CAPTURE:-off} VITE_COMMIT_SHA=$TAG \
     $BUN run --cwd apps/web build 2>&1 | tail -3
   C=$OUT/ctx/web; rm -rf $C; mkdir -p $C

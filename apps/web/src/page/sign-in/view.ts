@@ -2,7 +2,9 @@ import { Option } from "effect"
 import { Submodel } from "foldkit"
 import type { Html, HtmlBuilder } from "foldkit/html"
 import { accountLayout } from "../../layout/account-layout"
-import { button } from "../../ui/button"
+import { oidcProvider } from "../../lib/services/common/auth-mode"
+import { apiBaseUrl } from "../../lib/services/common/api-base-url"
+import { button, linkButton } from "../../ui/button"
 import { field, fieldError, fieldLabel, input, type FieldIds, type FieldState } from "../../ui/field"
 import { Message, type Model, SignInFailure, Submission } from "./sign-in"
 
@@ -68,6 +70,38 @@ const passwordField = (model: Model, h: HtmlBuilder<Message>): Html => {
 	])
 }
 
+/**
+ * NevrLabs selfhost: the provider sign-in above the root password, which stays as the break-glass path. A plain
+ * link (full navigation): the API answers with a 302 to Zitadel and the flow cookie.
+ */
+const oidcSection = (model: Model, h: HtmlBuilder<Message>, provider: "zitadel"): ReadonlyArray<Html> => [
+	...(model.oidcError === undefined
+		? []
+		: [
+				h.p(
+					[
+						h.Role("alert"),
+						h.DataAttribute("oidc-error", ""),
+						h.Class("rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"),
+					],
+					[model.oidcError],
+				),
+			]),
+	linkButton(
+		h,
+		{ className: "w-full", href: `${apiBaseUrl}/api/auth/oidc/start`, attributes: [h.DataAttribute("oidc-start", provider)] },
+		["Sign in with Zitadel"],
+	),
+	h.div(
+		[h.Class("flex items-center gap-3 font-mono text-xs text-muted-foreground")],
+		[
+			h.span([h.Class("h-px flex-1 bg-border")], []),
+			"or use the root password",
+			h.span([h.Class("h-px flex-1 bg-border")], []),
+		],
+	),
+]
+
 /** `SelfHostedSignInPage`. */
 export const view = Submodel.defineView<Model, Message>((model, h) =>
 	accountLayout(h, [
@@ -83,10 +117,15 @@ export const view = Submodel.defineView<Model, Message>((model, h) =>
 						),
 						h.p(
 							[h.Class("font-display text-muted-foreground text-sm leading-relaxed")],
-							["This deployment is self-hosted. Enter the root password to continue."],
+							[
+								oidcProvider === null
+									? "This deployment is self-hosted. Enter the root password to continue."
+									: "Sign in with your Zitadel account, or use the root password.",
+							],
 						),
 					],
 				),
+				...(oidcProvider === null ? [] : oidcSection(model, h, oidcProvider)),
 				h.form(
 					[h.Class("space-y-6"), h.OnSubmit(Message.SubmittedSignIn())],
 					[

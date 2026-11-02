@@ -9,7 +9,7 @@ import { initCustomer, readKnownToRenderApp } from "./page/onboarding/plan-gate"
 import * as Preload from "./page/preload"
 import * as SignIn from "./page/sign-in"
 import type { Resources } from "./platform/resources"
-import { readSessionToken } from "./platform/auth-api"
+import { adoptOidcSessionFromUrl, readSessionToken } from "./platform/auth-api"
 import { readEffectiveTimeZone } from "./platform/time-zone"
 import * as Toast from "./ui/toast"
 import { urlToAppRoute } from "./route"
@@ -43,7 +43,7 @@ export const Flags = Schema.Struct({
 export type Flags = typeof Flags.Type
 
 export const flags: Effect.Effect<Flags> = Effect.all({
-	hasStoredSession: Effect.map(readSessionToken, Option.isSome),
+	hasStoredSession: Effect.andThen(adoptOidcSessionFromUrl, Effect.map(readSessionToken, Option.isSome)),
 	timeZone: readEffectiveTimeZone,
 	knownToRenderApp: readKnownToRenderApp,
 	shell: Shell.readShellFlags,
@@ -55,7 +55,7 @@ export const init: Runtime.RoutingApplicationInit<Model, Message, Flags, Resourc
 	const route = urlToAppRoute(url)
 	const base = {
 		route,
-		signIn: SignIn.init(),
+		signIn: SignIn.init(SignIn.oidcErrorOf(route)),
 		shell: Shell.init(flags.shell),
 		toasts: Toast.init("toasts"),
 		toastActions: {},

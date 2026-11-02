@@ -965,7 +965,7 @@ const changedUrlStep = (model: Model, changedUrl: Url): UpdateReturn => {
 	const isEnteringSignIn = Transition.isEntering(Transition.make(model.route, nextRoute), "SignIn")
 	const routed = modifyFields(model, {
 		route: () => nextRoute,
-		signIn: (signIn) => (isEnteringSignIn ? SignIn.init() : signIn),
+		signIn: (signIn) => (isEnteringSignIn ? SignIn.init(SignIn.oidcErrorOf(nextRoute)) : signIn),
 	})
 	const hasTopBar = rendersShell(nextRoute) && !isRedirectOnlyRoute(model.route)
 	return Update.combine([
