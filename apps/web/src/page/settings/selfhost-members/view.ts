@@ -98,7 +98,7 @@ const userRow = (h: H, model: Model, user: UserRow, you: string, nowMs: number):
 						avatarFallback(
 							h,
 							{ className: "size-6 shrink-0", fallbackClassName: `font-medium ${warmAvatarTone(labelOf(user))}` },
-							initialsFrom(labelOf(user)),
+							user.isBreakGlass ? "RT" : initialsFrom(labelOf(user)),
 						),
 						h.div(
 							[h.Class("min-w-0")],
@@ -152,7 +152,7 @@ export const view = Submodel.defineView<Model, Message, Inputs>((model, inputs, 
 						tableHead(h, ["Role"], COLUMN.role),
 						tableHead(h, ["Last seen"], COLUMN.seen),
 						tableHead(h, ["Identity provider"], COLUMN.idp),
-						tableHead(h, [], COLUMN.actions),
+						tableHead(h, [h.span([h.Class("sr-only")], ["Actions"])], COLUMN.actions),
 					]),
 				]),
 				tableBody(h, [
