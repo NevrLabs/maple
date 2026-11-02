@@ -37,6 +37,14 @@ export const LAB_ENTRIES: ReadonlyArray<LabEntry> = [
 		session: "none",
 	},
 	{
+		path: "/lab/proxmox",
+		title: "Proxmox",
+		description:
+			"Pulse-style Proxmox page (node cards, guests, storage, backups) over a real FxCluster snapshot. ?tab= ?state=",
+		kind: "lab",
+		session: "none",
+	},
+	{
 		path: "/lab/cloudflare",
 		title: "Cloudflare",
 		description:
