@@ -53,6 +53,7 @@ them to `maple.proxmox_backups` / `proxmox_backup_jobs` / `proxmox_storage` (DDL
   `shell/update.ts` sends it with the other integration statuses. So the nav row appears only where PVE reports.
 - `apps/web/src/route/search.ts` (`InfraProxmoxSearch`), `route/app-route.ts`, `route/routers.ts` (route + match
   order before the catch-alls), `page/registry.ts` (page).
+- `apps/web/src/view.lazy.test.ts` — sample path `/infra/proxmox` (every registered page needs one).
 - `apps/web/src/shell/shell.scene.test.ts` — the expected integration-status command lists include
   `LoadProxmoxStatus`.
 - `apps/web/src/page/infra/overview/state.ts` — `NOT_CONNECTED` gains `proxmox: false` (type completeness only;
