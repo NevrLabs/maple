@@ -229,8 +229,8 @@ const GUEST_COLS = {
 	name: "w-0 flex-1 min-w-48",
 	node: "w-28 shrink-0",
 	bar: "w-20 shrink-0",
-	io: "w-40 shrink-0 hidden xl:flex",
-	uptime: "w-24 shrink-0",
+	io: "w-36 shrink-0 hidden xl:flex",
+	uptime: "w-20 shrink-0",
 } as const
 
 /**
@@ -631,8 +631,8 @@ export const proxmoxLoadingBody = <M>(h: HtmlBuilder<M>): ReadonlyArray<Html> =>
 			skeleton(h, "h-2 w-20"),
 			skeleton(h, "h-2 w-20"),
 			skeleton(h, "h-2 w-20"),
-			skeleton(h, "hidden h-3 w-40 xl:block"),
-			skeleton(h, "h-3 w-24"),
+			skeleton(h, "hidden h-3 w-36 xl:block"),
+			skeleton(h, "h-3 w-20"),
 		]),
 	),
 ]
