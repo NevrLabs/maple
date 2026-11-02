@@ -2,9 +2,17 @@ import { Option } from "effect"
 
 const configuredApiBaseUrl = import.meta.env.VITE_API_BASE_URL?.trim()
 
+/**
+ * selfhost (PATCHES.md #2): a path-only value (`/_api`) resolves against the page's origin at
+ * runtime, so one web image serves every hostname behind a same-origin proxy.
+ */
+const sameOrigin = (url: string): string =>
+	url.startsWith("/") && typeof globalThis.location !== "undefined" ? `${globalThis.location.origin}${url}` : url
+
+
 export const apiBaseUrl =
 	configuredApiBaseUrl && configuredApiBaseUrl.length > 0
-		? configuredApiBaseUrl.replace(/\/$/, "")
+		? sameOrigin(configuredApiBaseUrl).replace(/\/$/, "")
 		: "http://127.0.0.1:3472"
 
 const configuredApiPublicUrl = import.meta.env.VITE_API_PUBLIC_URL?.trim()

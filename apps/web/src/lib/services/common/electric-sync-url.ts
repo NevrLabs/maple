@@ -1,11 +1,19 @@
 const configuredElectricSyncUrl = import.meta.env.VITE_ELECTRIC_SYNC_URL?.trim()
 
 /**
+ * selfhost (PATCHES.md #2): a path-only value (`/_api`) resolves against the page's origin at
+ * runtime, so one web image serves every hostname behind a same-origin proxy.
+ */
+const sameOrigin = (url: string): string =>
+	url.startsWith("/") && typeof globalThis.location !== "undefined" ? `${globalThis.location.origin}${url}` : url
+
+
+/**
  * Origin of the standalone ElectricSQL shape-proxy worker (`apps/electric-sync`).
  * Set at build time via `VITE_ELECTRIC_SYNC_URL`; defaults to the local worker's
  * dev port (see `apps/electric-sync/package.json` `dev:app`).
  */
 export const electricSyncBaseUrl =
 	configuredElectricSyncUrl && configuredElectricSyncUrl.length > 0
-		? configuredElectricSyncUrl.replace(/\/$/, "")
+		? sameOrigin(configuredElectricSyncUrl).replace(/\/$/, "")
 		: "http://127.0.0.1:3476"

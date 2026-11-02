@@ -22,7 +22,7 @@ export const STATE_LABEL = {
 	empty: "No data",
 } as const
 
-export const GuestScope = Schema.Literals(["running", "stopped"])
+export const GuestScope = Schema.Literals(["running", "stopped", "unknown"])
 export type GuestScope = typeof GuestScope.Type
 
 export const Flags = Schema.Struct({ nowMs: Schema.Number, timeZone: Schema.String })

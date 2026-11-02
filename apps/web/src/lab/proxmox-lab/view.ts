@@ -1,4 +1,5 @@
-import { formatBytes, formatBytesPerSecond, formatLoad, formatPercent, formatUptime } from "@maple/ui/lib/format"
+import { formatBytes, formatLoad, formatPercent, formatUptime } from "@maple/ui/lib/format"
+import { TONE_TEXT } from "@maple/ui/lib/tone"
 import type { Tone } from "@maple/ui/lib/tone"
 import { cn } from "@maple/ui/lib/utils"
 import type { Html, HtmlBuilder } from "foldkit/html"
@@ -11,7 +12,6 @@ import { metaLine } from "../../page/infra/kit/meta-line"
 import { searchToolbar } from "../../page/infra/kit/page-parts"
 import { severityDot } from "../../page/infra/kit/status"
 import { dashboardPage } from "../../page/kit/dashboard-page"
-import { relativeTime } from "../../page/kit/relative-time"
 import { sectionHeading } from "../../page/kit/section-heading"
 import { statRail, statRailItem, statRailLoading } from "../../page/kit/stat-rail"
 import type * as Shell from "../../shell"
@@ -55,10 +55,43 @@ const toneOf = (fraction: number): Tone => {
 	return level === "ok" ? "ok" : level
 }
 
+/** A guest's shown state: its last sample is stale when its node stopped reporting, so it is unknown, not running. */
+type GuestState = "running" | "stopped" | "unknown"
+const silentNodes = (data: ProxmoxFixture): ReadonlySet<string> =>
+	new Set(data.nodes.filter((node) => isSilent(node, nowOf(data))).map((node) => node.name))
+const guestState = (guest: ProxmoxGuest, silent: ReadonlySet<string>): GuestState =>
+	silent.has(guest.node) ? "unknown" : guest.status
+
+/** Ages: minutes, then hours up to 48h (so they read against the 36h backup threshold), then days. */
+const formatAge = (ms: number): string => {
+	const minutes = Math.floor(ms / 60_000)
+	if (minutes < 60) return `${Math.max(minutes, 1)}m`
+	const hours = Math.floor(minutes / 60)
+	if (hours < 48) return `${hours}h`
+	return `${Math.floor(hours / 24)}d`
+}
+
+/** Compact byte rate for the dense guest table: `777K`, `1.0M` (per second; the head says so via the title). */
+const compactRate = (bytesPerSecond: number): string => {
+	const units = ["", "K", "M", "G"]
+	let value = bytesPerSecond
+	let unit = 0
+	while (value >= 1000 && unit < units.length - 1) {
+		value /= 1000
+		unit++
+	}
+	return `${value >= 100 || unit === 0 ? Math.round(value) : value.toFixed(1)}${units[unit]}`
+}
+
+/** One step up from `text-muted-foreground` for small captions, VMIDs and heads on dark (review item 8). */
+const CAPTION = "text-foreground-soft"
+const OFFLINE_BADGE = "inline-flex items-center gap-1 whitespace-nowrap rounded-xs border border-severity-error/50 bg-severity-error/10 px-1.5 py-0.5 font-mono text-3xs font-semibold text-severity-error"
+
 // ── Node cards ────────────────────────────────────────────────────────────────
 
 const nodeCard = (h: H, node: ProxmoxNode, model: Model, data: ProxmoxFixture): Html => {
-	const silent = isSilent(node, nowOf(data))
+	const now = nowOf(data)
+	const silent = isSilent(node, now)
 	const guests = data.guests.filter((guest) => guest.node === node.name)
 	const running = guests.filter((guest) => guest.status === "running").length
 	const isSelected = model.nodeFilter === node.name
@@ -68,12 +101,13 @@ const nodeCard = (h: H, node: ProxmoxNode, model: Model, data: ProxmoxFixture): 
 			h.Type("button"),
 			h.OnClick(Message.ClickedNode({ node: node.name })),
 			h.DataAttribute("proxmox-node", node.name),
+			h.DataAttribute("proxmox-node-state", silent ? "offline" : "online"),
 			h.Class(
 				cn(
 					"flex min-w-0 flex-col gap-3 rounded-md border bg-card p-4 text-left transition-colors",
 					"hover:bg-surface-sunken active:bg-surface-sunken",
 					isSelected && "border-primary ring-1 ring-primary",
-					silent && "opacity-70",
+					silent && "border-severity-error/40",
 				),
 			),
 		],
@@ -84,55 +118,53 @@ const nodeCard = (h: H, node: ProxmoxNode, model: Model, data: ProxmoxFixture): 
 					h.div(
 						[h.Class("flex min-w-0 items-center gap-2")],
 						[
-							severityDot(h, { status: silent ? "ended" : "active", size: "md" }),
-							h.span([h.Class("truncate font-mono text-sm font-medium text-foreground")], [node.name]),
+							silent
+								? statusDot(h, { tone: "crit", size: "lg", attributes: [h.AriaHidden(false), h.AriaLabel("offline")] })
+								: severityDot(h, { status: "active", size: "md" }),
+							h.span([h.Class(cn("truncate font-mono text-sm font-medium", silent ? "text-muted-foreground" : "text-foreground"))], [node.name]),
 						],
 					),
 					silent
-						? h.span([h.Class("text-2xs font-medium text-severity-crit")], ["Not reporting"])
-						: h.span(
-								[h.Class("font-mono text-2xs text-muted-foreground")],
-								[`up ${formatUptime(node.uptime)}`],
-							),
+						? h.span([h.Class(OFFLINE_BADGE), h.DataAttribute("proxmox-offline-badge", "")], [`OFFLINE · ${formatAge(now - node.lastSeenMs)} ago`])
+						: h.span([h.Class(cn("font-mono text-2xs", CAPTION))], [`up ${formatUptime(node.uptime)}`]),
 				],
 			),
-			meterRows(h, [
-				{ label: "CPU", fraction: node.cpu },
-				{ label: "MEM", fraction: memFraction(node) },
-				{ label: "DSK", fraction: ratio(node.rootUsed, node.rootTotal) },
-				{ label: "SWP", fraction: ratio(node.swapUsed, node.swapTotal) },
-			]),
+			// Offline: the last values are frozen, not current. Grey them so nothing reads as healthy.
 			h.div(
-				[h.Class("flex items-end justify-between gap-3")],
+				[h.Class(cn(silent && "opacity-50 grayscale")), ...(silent ? [h.Title("Last values before the node stopped reporting")] : [])],
 				[
-					metaLine(h, [
-						`${node.cpus} vCPU`,
-						`load ${formatLoad(node.load1)}`,
-						`${formatBytes(node.memTotal)} RAM`,
-						`${running}/${guests.length} guests`,
+					meterRows(h, [
+						{ label: "CPU", fraction: node.cpu },
+						{ label: "MEM", fraction: memFraction(node) },
+						{ label: "DSK", fraction: ratio(node.rootUsed, node.rootTotal) },
+						{ label: "SWP", fraction: ratio(node.swapUsed, node.swapTotal) },
 					]),
+				],
+			),
+			h.div(
+				[h.Class(cn("flex items-center justify-between gap-3", silent && "opacity-50 grayscale"))],
+				[
+					h.span([h.Class(cn("font-mono text-3xs uppercase tracking-wider", CAPTION))], ["CPU · 1h"]),
 					miniBars(h, {
 						values: node.cpuSpark,
-						color: SPARK_COLOR[toneOf(node.cpu)],
-						className: "h-6 w-24 shrink-0",
+						color: silent ? "var(--muted-foreground)" : SPARK_COLOR[toneOf(node.cpu)],
+						className: "h-5 w-40 shrink-0",
 						label: `${node.name} CPU, last hour`,
 					}),
 				],
 			),
-			silent
-				? h.span(
-						[h.Class("text-2xs text-muted-foreground")],
-						[
-							"Last metrics ",
-							relativeTime(h, {
-								value: new Date(node.lastSeenMs).toISOString(),
-								nowMs: nowOf(data),
-								timeZone: model.timeZone,
-							}),
-						],
-					)
-				: null,
-		].filter((child): child is Html => child !== null),
+			// Footer on its own row: specs left, guest count right — never truncated (review item 7).
+			h.div(
+				[h.Class(cn("flex items-center justify-between gap-3 border-t border-border-subtle pt-2 text-2xs", CAPTION))],
+				[
+					h.span([h.Class("min-w-0 truncate font-mono")], [`${node.cpus} vCPU · load ${formatLoad(node.load1)} · ${formatBytes(node.memTotal)}`]),
+					h.span(
+						[h.Class("shrink-0 whitespace-nowrap font-mono"), h.DataAttribute("proxmox-node-guests", "")],
+						[silent ? `${guests.length} guests · unknown` : `${running}/${guests.length} guests running`],
+					),
+				],
+			),
+		],
 	)
 }
 
@@ -147,6 +179,7 @@ const nodeCardSkeleton = (h: H, key: number): Html =>
 const clusterRail = (h: H, data: ProxmoxFixture): Html => {
 	const now = nowOf(data)
 	const live = data.nodes.filter((node) => !isSilent(node, now))
+	const down = data.nodes.filter((node) => isSilent(node, now)).map((node) => node.name)
 	const cpus = live.reduce((sum, node) => sum + node.cpus, 0)
 	const cpuUsed = live.reduce((sum, node) => sum + node.cpu * node.cpus, 0)
 	const memUsed = live.reduce((sum, node) => sum + node.memUsed - node.arc, 0)
@@ -157,7 +190,8 @@ const clusterRail = (h: H, data: ProxmoxFixture): Html => {
 		statRailItem(h, {
 			eyebrow: "Nodes",
 			value: `${live.length}/${data.nodes.length}`,
-			subline: live.length === data.nodes.length ? "all reporting" : `${data.nodes.length - live.length} not reporting`,
+			valueClassName: down.length === 0 ? undefined : TONE_TEXT.crit,
+			subline: down.length === 0 ? "all reporting" : `${down.join(", ")} not reporting`,
 			tone: live.length === data.nodes.length ? "ok" : "crit",
 		}),
 		statRailItem(h, {
@@ -187,7 +221,7 @@ const GUEST_COLS = {
 	name: "w-0 flex-1 min-w-56",
 	node: "w-28",
 	bar: "w-28",
-	io: "w-36 hidden xl:flex",
+	io: "w-44 hidden xl:flex",
 	uptime: "w-20",
 } as const
 
@@ -206,16 +240,19 @@ const guestHead = (h: H): ReadonlyArray<Html> => [
 	columnHead(h, { label: "CPU", width: GUEST_COLS.bar }),
 	columnHead(h, { label: "Memory", width: GUEST_COLS.bar }),
 	columnHead(h, { label: "Disk", width: GUEST_COLS.bar }),
-	columnHead(h, { label: "Net in / out", width: GUEST_COLS.io, align: "right" }),
+	columnHead(h, { label: "Net in/out", width: GUEST_COLS.io, align: "right" }),
 	columnHead(h, { label: "Uptime", width: GUEST_COLS.uptime, align: "right" }),
 ]
 
-const guestRow = (h: H, guest: ProxmoxGuest): Html => {
-	const running = guest.status === "running"
+const STATE_TONE = { running: "ok", stopped: "neutral", unknown: "warn" } as const
+
+const guestRow = (h: H, guest: ProxmoxGuest, state: GuestState): Html => {
+	const running = state === "running"
 	return h.div(
 		[
 			h.Key(guest.vmid),
 			h.DataAttribute("proxmox-guest", guest.vmid),
+			h.DataAttribute("proxmox-guest-state", state),
 			h.Class(
 				cn(
 					"flex items-center gap-4 border-b border-border-subtle px-4 py-2 last:border-0",
@@ -228,29 +265,33 @@ const guestRow = (h: H, guest: ProxmoxGuest): Html => {
 				[h.Class(cn("flex items-center gap-2.5", GUEST_COLS.name))],
 				[
 					statusDot(h, {
-						tone: running ? "ok" : "neutral",
+						tone: STATE_TONE[state],
 						size: "lg",
-						attributes: [h.AriaHidden(false), h.AriaLabel(guest.status)],
+						attributes: [
+							h.AriaHidden(false),
+							h.AriaLabel(state === "unknown" ? "unknown: node not reporting, last values stale" : state),
+							h.Title(state === "unknown" ? `Unknown — ${guest.node} is not reporting; last values are stale` : state),
+						],
 					}),
-					h.span([h.Class("w-12 shrink-0 font-mono text-2xs tabular-nums text-muted-foreground")], [guest.vmid]),
+					h.span([h.Class(cn("w-12 shrink-0 font-mono text-2xs tabular-nums", CAPTION))], [guest.vmid]),
 					h.span(
 						[h.Class(cn("truncate text-xs font-medium", running ? "text-foreground" : "text-muted-foreground"))],
 						[guest.name],
 					),
 					h.span(
-						[h.Class("shrink-0 rounded-xs border px-1 font-mono text-3xs uppercase text-muted-foreground")],
+						[h.Class(cn("shrink-0 rounded-xs border px-1 font-mono text-3xs uppercase", CAPTION))],
 						[guest.type === "qemu" ? "VM" : "CT"],
 					),
 				],
 			),
-			h.span([h.Class(cn("truncate font-mono text-2xs text-foreground-soft", GUEST_COLS.node))], [guest.node]),
+			h.span([h.Class(cn("truncate font-mono text-2xs", CAPTION, GUEST_COLS.node))], [guest.node]),
 			barCell(h, running ? guest.cpu : null, `${guest.cpus} vCPU`),
 			barCell(h, running ? ratio(guest.mem, guest.maxmem) : null, `${formatBytes(guest.mem)} / ${formatBytes(guest.maxmem)}`),
 			// PVE reports VM disk usage as 0 without the guest agent; only containers carry a real figure.
 			barCell(h, running && guest.type === "lxc" ? ratio(guest.disk, guest.maxdisk) : null, `${formatBytes(guest.disk)} / ${formatBytes(guest.maxdisk)}`),
 			h.span(
-				[h.Class(cn("justify-end truncate whitespace-nowrap text-right font-mono text-2xs tabular-nums text-foreground-soft", GUEST_COLS.io))],
-				[running ? `${formatBytesPerSecond(guest.netIn)} / ${formatBytesPerSecond(guest.netOut)}` : "—"],
+				[h.Class(cn("shrink-0 justify-end whitespace-nowrap pl-2 text-right font-mono text-2xs tabular-nums text-foreground-soft", GUEST_COLS.io))],
+				[running ? `${compactRate(guest.netIn)} / ${compactRate(guest.netOut)}` : "—"],
 			),
 			h.span(
 				[h.Class(cn("whitespace-nowrap text-right font-mono text-2xs tabular-nums", GUEST_COLS.uptime))],
@@ -260,17 +301,26 @@ const guestRow = (h: H, guest: ProxmoxGuest): Html => {
 	)
 }
 
+const STATE_ORDER = { running: 0, unknown: 1, stopped: 2 } as const
+
 const guestsSection = (h: H, model: Model, data: ProxmoxFixture): Html => {
+	const silent = silentNodes(data)
 	const q = model.query.trim().toLowerCase()
 	const inNode = data.guests.filter((guest) => model.nodeFilter === undefined || guest.node === model.nodeFilter)
 	const shown = inNode
-		.filter((guest) => model.guestScope === undefined || guest.status === model.guestScope)
-		.filter((guest) => q === "" || guest.name.toLowerCase().includes(q) || guest.vmid.includes(q))
-		// Running first (busiest first), stopped after by vmid: Pulse's default reading order.
+		.map((guest) => ({ guest, state: guestState(guest, silent) }))
+		.filter(({ state }) => model.guestScope === undefined || state === model.guestScope)
+		.filter(({ guest }) => q === "" || guest.name.toLowerCase().includes(q) || guest.vmid.includes(q))
+		// Running first (busiest first), then stale, then stopped by vmid: Pulse's default reading order.
 		.toSorted((a, b) =>
-			a.status !== b.status ? (a.status === "running" ? -1 : 1) : a.status === "running" ? b.cpu - a.cpu : Number(a.vmid) - Number(b.vmid),
+			a.state !== b.state
+				? STATE_ORDER[a.state] - STATE_ORDER[b.state]
+				: (a.state === "running" ? b.guest.cpu - a.guest.cpu : 0) || Number(a.guest.vmid) - Number(b.guest.vmid),
 		)
-	const running = inNode.filter((guest) => guest.status === "running").length
+	const count = (state: GuestState) => inNode.filter((guest) => guestState(guest, silent) === state).length
+	const running = count("running")
+	const stopped = count("stopped")
+	const unknown = count("unknown")
 	return h.section(
 		[h.Class("space-y-3"), h.DataAttribute("proxmox-section", "guests")],
 		[
@@ -282,14 +332,18 @@ const guestsSection = (h: H, model: Model, data: ProxmoxFixture): Html => {
 			fleetBand(h, {
 				total: inNode.length,
 				noun: "guest",
-				caption: `${running} running · ${inNode.length - running} stopped`,
+				caption: [`${running} running`, ...(unknown > 0 ? [`${unknown} unknown`] : []), `${stopped} stopped`].join(" · "),
 				segments: [
 					{ key: "running", count: running, className: BAR_FILL.ok },
-					{ key: "stopped", count: inNode.length - running, className: "bg-foreground-faint" },
+					{ key: "unknown", count: unknown, className: BAR_FILL.warn },
+					{ key: "stopped", count: stopped, className: "bg-foreground-faint" },
 				],
 				cells: [
 					{ scope: "running", label: "Running", hint: "uptime > 0", value: running, tone: "ok" },
-					{ scope: "stopped", label: "Stopped", hint: "powered off", value: inNode.length - running, tone: "neutral" },
+					...(unknown > 0
+						? [{ scope: "unknown" as const, label: "Unknown", hint: "node not reporting", value: unknown, tone: "warn" as const }]
+						: []),
+					{ scope: "stopped", label: "Stopped", hint: "powered off", value: stopped, tone: "neutral" },
 				],
 				activeScope: model.guestScope,
 				onScopeChange: (scope) => Message.ChangedGuestScope({ scope }),
@@ -307,7 +361,9 @@ const guestsSection = (h: H, model: Model, data: ProxmoxFixture): Html => {
 				h,
 				{ ariaLabel: "Guests" },
 				guestHead(h),
-				shown.length === 0 ? [dataTableEmpty(h, ["No guests match."])] : shown.map((guest) => guestRow(h, guest)),
+				shown.length === 0
+					? [dataTableEmpty(h, ["No guests match."])]
+					: shown.map(({ guest, state }) => guestRow(h, guest, state)),
 			),
 		],
 	)
@@ -315,132 +371,212 @@ const guestsSection = (h: H, model: Model, data: ProxmoxFixture): Html => {
 
 // ── Storage ───────────────────────────────────────────────────────────────────
 
-const storageRow = (h: H, store: ProxmoxStorage): Html => {
+const storageRow = (h: H, store: ProxmoxStorage, compact: boolean): Html => {
 	const fraction = ratio(store.used, store.total)
 	const level = severityLevel(fraction)
+	const pct = h.span(
+		[h.Class(cn("w-11 shrink-0 text-right font-mono text-xs tabular-nums", level === "ok" ? "text-foreground-soft" : TONE_TEXT[level]))],
+		[formatPercent(fraction)],
+	)
+	const bar = meter(h, {
+		value: Number.isFinite(fraction) ? fraction : 0,
+		className: "h-1.5 min-w-0 flex-1 rounded-full",
+		fillClassName: BAR_FILL[level],
+		label: `${store.name} used`,
+	})
+	const free = `${formatBytes(Math.max(store.total - store.used, 0))} free of ${formatBytes(store.total)}`
+	const title = h.div(
+		[h.Class("flex min-w-0 items-center gap-2")],
+		[
+			icon(h, "DatabaseIcon", { size: 14, className: "shrink-0 text-muted-foreground" }),
+			h.span([h.Class("truncate font-mono text-xs font-medium text-foreground")], [store.name]),
+		],
+	)
+	// Narrow side panel: two lines per store (name + % / bar + free), so nothing runs to the edge.
+	if (compact)
+		return h.div(
+			[h.Key(store.name), h.DataAttribute("proxmox-storage", store.name), h.Class("flex flex-col gap-1.5 border-b border-border-subtle px-4 py-2.5 last:border-0")],
+			[
+				h.div([h.Class("flex items-center justify-between gap-3")], [title, pct]),
+				h.div(
+					[h.Class("flex items-center gap-3")],
+					[bar, h.span([h.Class(cn("shrink-0 whitespace-nowrap font-mono text-3xs tabular-nums", CAPTION))], [free])],
+				),
+			],
+		)
 	return h.div(
 		[h.Key(store.name), h.DataAttribute("proxmox-storage", store.name), h.Class("flex items-center gap-4 border-b border-border-subtle px-4 py-3 last:border-0")],
 		[
-			h.div(
-				[h.Class("w-0 min-w-48 flex-1")],
-				[
-					h.div(
-						[h.Class("flex items-center gap-2")],
-						[
-							icon(h, "DatabaseIcon", { size: 14, className: "text-muted-foreground" }),
-							h.span([h.Class("font-mono text-xs font-medium text-foreground")], [store.name]),
-						],
-					),
-					metaLine(h, [store.type, store.shared ? "shared" : store.nodes.join(", ")]),
-				],
-			),
-			h.div(
-				[h.Class("flex w-80 items-center gap-3")],
-				[
-					meter(h, { value: Number.isFinite(fraction) ? fraction : 0, className: "h-1.5 flex-1 rounded-full", fillClassName: BAR_FILL[level], label: `${store.name} used` }),
-					h.span([h.Class(cn("w-12 text-right font-mono text-xs tabular-nums", level === "ok" ? "text-foreground-soft" : `text-severity-${level}`))], [formatPercent(fraction)]),
-				],
-			),
-			h.span(
-				[h.Class("w-44 text-right font-mono text-2xs tabular-nums text-muted-foreground")],
-				[`${formatBytes(store.used)} / ${formatBytes(store.total)}`],
-			),
+			h.div([h.Class("w-0 min-w-48 flex-1")], [title, metaLine(h, [store.type, store.shared ? "shared" : store.nodes.join(", ")])]),
+			h.div([h.Class("flex w-80 items-center gap-3")], [bar, pct]),
+			h.span([h.Class(cn("w-56 whitespace-nowrap pr-1 text-right font-mono text-2xs tabular-nums", CAPTION))], [free]),
 		],
 	)
 }
 
-const storageSection = (h: H, data: ProxmoxFixture, compact: boolean): Html =>
-	h.section(
+const COMPACT_STORAGE = 4
+
+const storageSection = (h: H, data: ProxmoxFixture, compact: boolean): Html => {
+	const shown = compact ? data.storage.slice(0, COMPACT_STORAGE) : data.storage
+	const hidden = data.storage.length - shown.length
+	return h.section(
 		[h.Class("space-y-3"), h.DataAttribute("proxmox-section", "storage")],
 		[
 			sectionHeading(h, {
 				title: "Storage",
-				count: String(data.storage.length),
+				count: compact && hidden > 0 ? `${shown.length} of ${data.storage.length}` : String(data.storage.length),
 				hint: compact ? "fullest first" : "every PVE storage, fullest first; shared stores count once",
 			}),
 			dataTable(
 				h,
 				{ ariaLabel: "Storage" },
+				compact
+					? [columnHead(h, { label: "Storage · used · free", width: "w-full" })]
+					: [
+							columnHead(h, { label: "Storage", width: "w-0 flex-1 min-w-48" }),
+							columnHead(h, { label: "Used", width: "w-80" }),
+							columnHead(h, { label: "Free / capacity", width: "w-56", align: "right" }),
+						],
 				[
-					columnHead(h, { label: "Storage", width: "w-0 flex-1 min-w-48" }),
-					columnHead(h, { label: "Used", width: "w-80" }),
-					columnHead(h, { label: "Capacity", width: "w-44", align: "right" }),
+					...shown.map((store) => storageRow(h, store, compact)),
+					...(hidden > 0
+						? [
+								h.button(
+									[
+										h.Type("button"),
+										h.OnClick(Message.ClickedTab({ tab: "storage" })),
+										h.DataAttribute("proxmox-storage-more", String(hidden)),
+										h.Class("flex w-full items-center justify-between px-4 py-2 text-2xs font-medium text-primary hover:bg-surface-sunken"),
+									],
+									[`+${hidden} more storage`, h.span([h.Class("font-mono")], ["Storage tab →"])],
+								),
+							]
+						: []),
 				],
-				(compact ? data.storage.slice(0, 4) : data.storage).map((store) => storageRow(h, store)),
 			),
 		],
 	)
+}
 
 // ── Backups ───────────────────────────────────────────────────────────────────
 
 const DAY_MS = 86_400_000
 
-const backupsSection = (h: H, model: Model, data: ProxmoxFixture): Html => {
+const BACKUP_TEXT: Record<"ok" | "warn" | "crit", string> = {
+	ok: "text-foreground-soft",
+	warn: TONE_TEXT.warn,
+	crit: TONE_TEXT.crit,
+}
+
+const backupsSection = (h: H, data: ProxmoxFixture): Html => {
 	const now = nowOf(data)
+	const guestIds = new Set(data.guests.map((guest) => guest.vmid))
 	const latest = new Map<string, ProxmoxBackup>()
-	const counts = new Map<string, number>()
+	const kept = new Map<string, { count: number; bytes: number }>()
 	for (const backup of data.backups) {
-		counts.set(backup.vmid, (counts.get(backup.vmid) ?? 0) + 1)
+		const k = kept.get(backup.vmid) ?? { count: 0, bytes: 0 }
+		kept.set(backup.vmid, { count: k.count + 1, bytes: k.bytes + backup.size })
 		const seen = latest.get(backup.vmid)
 		if (seen === undefined || backup.ctime > seen.ctime) latest.set(backup.vmid, backup)
 	}
 	const rows = data.guests
-		.map((guest) => ({ guest, last: latest.get(guest.vmid), count: counts.get(guest.vmid) ?? 0 }))
-		.toSorted((a, b) => (a.last?.ctime ?? 0) - (b.last?.ctime ?? 0))
+		.map((guest) => ({ guest, last: latest.get(guest.vmid), kept: kept.get(guest.vmid) ?? { count: 0, bytes: 0 } }))
+		.toSorted((a, b) => (a.last?.ctime ?? 0) - (b.last?.ctime ?? 0) || Number(a.guest.vmid) - Number(b.guest.vmid))
+	// Archives of guests that no longer exist: listed as one row so the column totals add up to the header.
+	const orphans = data.backups.filter((backup) => !guestIds.has(backup.vmid))
+	const orphanIds = new Set(orphans.map((backup) => backup.vmid))
+	const orphanBytes = orphans.reduce((sum, backup) => sum + backup.size, 0)
 	const fresh = rows.filter((row) => row.last !== undefined && now - row.last.ctime < 1.5 * DAY_MS).length
 	const stale = rows.filter((row) => row.last !== undefined && now - row.last.ctime >= 1.5 * DAY_MS).length
 	const none = rows.filter((row) => row.last === undefined).length
 	const totalBytes = data.backups.reduce((sum, backup) => sum + backup.size, 0)
+	const enabledJobs = data.backupJobs.filter((job) => job.enabled).length
+	const cell = (className: string, text: string) => h.span([h.Class(cn("text-right font-mono text-2xs tabular-nums", className))], [text])
 	return h.section(
 		[h.Class("space-y-3"), h.DataAttribute("proxmox-section", "backups")],
 		[
 			sectionHeading(h, {
 				title: "Backups",
-				count: String(data.backups.length),
-				hint: `vzdump archives on DeepVault · ${formatBytes(totalBytes)} · oldest last-backup first`,
+				count: `${data.backups.length} archives · ${formatBytes(totalBytes)}`,
+				hint: "vzdump archives on DeepVault, oldest last-backup first",
 			}),
 			statRail(h, { columns: 4 }, [
-				statRailItem(h, { eyebrow: "Backed up < 36h", value: String(fresh), tone: "ok", subline: "guests with a fresh archive" }),
+				statRailItem(h, { eyebrow: "Backed up < 36h", value: String(fresh), tone: "ok", valueClassName: "text-success-foreground", subline: `of ${data.guests.length} guests` }),
 				statRailItem(h, { eyebrow: "Stale", value: String(stale), tone: stale > 0 ? "warn" : "ok", subline: "last archive older than 36h" }),
 				statRailItem(h, { eyebrow: "Never", value: String(none), tone: none > 0 ? "crit" : "ok", subline: "no archive on DeepVault" }),
-				statRailItem(h, { eyebrow: "Jobs", value: String(data.backupJobs.filter((job) => job.enabled).length), subline: `${data.backupJobs.length} defined in jobs.cfg` }),
+				statRailItem(h, {
+					eyebrow: "Jobs enabled",
+					value: `${enabledJobs}/${data.backupJobs.length}`,
+					subline: `${data.backupJobs.length - enabledJobs} disabled in jobs.cfg`,
+				}),
 			]),
 			dataTable(
 				h,
 				{ ariaLabel: "Backups by guest" },
 				[
 					columnHead(h, { label: "Guest", width: "w-0 flex-1 min-w-56" }),
-					columnHead(h, { label: "Last backup", width: "w-36" }),
-					columnHead(h, { label: "Size", width: "w-24", align: "right" }),
-					columnHead(h, { label: "Kept", width: "w-16", align: "right" }),
+					columnHead(h, { label: "Last backup", width: "w-28" }),
+					columnHead(h, { label: "Latest size", width: "w-24", align: "right" }),
+					columnHead(h, { label: "Archives kept", width: "w-28", align: "right" }),
+					columnHead(h, { label: "Total size", width: "w-24", align: "right" }),
 				],
-				rows.map(({ guest, last, count }) => {
-					const age = last === undefined ? Number.POSITIVE_INFINITY : now - last.ctime
-					const tone: Tone = last === undefined ? "crit" : age >= 1.5 * DAY_MS ? "warn" : "ok"
-					return h.div(
-						[h.Key(guest.vmid), h.DataAttribute("proxmox-backup", guest.vmid), h.Class("flex items-center gap-4 border-b border-border-subtle px-4 py-2 last:border-0")],
+				[
+					...rows.map(({ guest, last, kept: k }) => {
+						const age = last === undefined ? Number.POSITIVE_INFINITY : now - last.ctime
+						const tone = last === undefined ? "crit" : age >= 1.5 * DAY_MS ? "warn" : "ok"
+						return h.div(
+							[h.Key(guest.vmid), h.DataAttribute("proxmox-backup", guest.vmid), h.DataAttribute("proxmox-backup-tone", tone), h.Class("flex items-center gap-4 border-b border-border-subtle px-4 py-2 last:border-0")],
+							[
+								h.div(
+									[h.Class("flex w-0 min-w-56 flex-1 items-center gap-2.5")],
+									[
+										statusDot(h, { tone, size: "lg", attributes: [h.AriaHidden(false), h.AriaLabel(tone)] }),
+										h.span([h.Class(cn("w-12 shrink-0 font-mono text-2xs tabular-nums", CAPTION))], [guest.vmid]),
+										h.span([h.Class("truncate text-xs font-medium text-foreground")], [guest.name]),
+									],
+								),
+								h.span(
+									[h.Class(cn("w-28 font-mono text-2xs", BACKUP_TEXT[tone])), ...(last === undefined ? [] : [h.Title(new Date(last.ctime).toISOString())])],
+									[last === undefined ? "never" : `${formatAge(age)} ago`],
+								),
+								cell(cn("w-24", CAPTION), last === undefined ? "—" : formatBytes(last.size)),
+								cell(cn("w-28", CAPTION), String(k.count)),
+								cell(cn("w-24", CAPTION), k.count === 0 ? "—" : formatBytes(k.bytes)),
+							],
+						)
+					}),
+					...(orphans.length > 0
+						? [
+								h.div(
+									[h.Key("orphans"), h.DataAttribute("proxmox-backup", "orphans"), h.Class("flex items-center gap-4 border-b border-border-subtle bg-surface-sunken/50 px-4 py-2 last:border-0")],
+									[
+										h.div(
+											[h.Class("flex w-0 min-w-56 flex-1 items-center gap-2.5 text-xs text-muted-foreground")],
+											[
+												statusDot(h, { tone: "neutral", size: "lg" }),
+												`Deleted guests (${[...orphanIds].sort((a, b) => Number(a) - Number(b)).join(", ")})`,
+											],
+										),
+										cell("w-28 text-muted-foreground", ""),
+										cell("w-24 text-muted-foreground", "—"),
+										cell(cn("w-28", CAPTION), String(orphans.length)),
+										cell(cn("w-24", CAPTION), formatBytes(orphanBytes)),
+									],
+								),
+							]
+						: []),
+					// Totals: equal the header by construction.
+					h.div(
+						[h.Key("totals"), h.DataAttribute("proxmox-backup-totals", `${data.backups.length}|${totalBytes}`), h.Class("flex items-center gap-4 border-t px-4 py-2 font-medium")],
 						[
-							h.div(
-								[h.Class("flex w-0 min-w-56 flex-1 items-center gap-2.5")],
-								[
-									statusDot(h, { tone, size: "lg", attributes: [h.AriaHidden(false), h.AriaLabel(tone)] }),
-									h.span([h.Class("w-12 shrink-0 font-mono text-2xs tabular-nums text-muted-foreground")], [guest.vmid]),
-									h.span([h.Class("truncate text-xs font-medium text-foreground")], [guest.name]),
-								],
-							),
-							h.span(
-								[h.Class(cn("w-36 text-2xs", tone === "ok" ? "text-foreground-soft" : `text-severity-${tone}`))],
-								[
-									last === undefined
-										? "never"
-										: relativeTime(h, { value: new Date(last.ctime).toISOString(), nowMs: now, timeZone: model.timeZone, mono: true }),
-								],
-							),
-							h.span([h.Class("w-24 text-right font-mono text-2xs tabular-nums text-foreground-soft")], [last === undefined ? "—" : formatBytes(last.size)]),
-							h.span([h.Class("w-16 text-right font-mono text-2xs tabular-nums text-muted-foreground")], [String(count)]),
+							h.span([h.Class("w-0 min-w-56 flex-1 text-2xs text-foreground")], ["Total"]),
+							cell("w-28", ""),
+							cell("w-24", ""),
+							cell("w-28 text-foreground", String(data.backups.length)),
+							cell("w-24 text-foreground", formatBytes(totalBytes)),
 						],
-					)
-				}),
+					),
+				],
 			),
 		],
 	)
@@ -497,7 +633,7 @@ const liveBody = (h: H, model: Model, data: ProxmoxFixture): ReadonlyArray<Html>
 		case "storage":
 			return [clusterRail(h, data), storageSection(h, data, false)]
 		case "backups":
-			return [backupsSection(h, model, data)]
+			return [backupsSection(h, data)]
 		default:
 			return [
 				clusterRail(h, data),
@@ -529,7 +665,8 @@ export const view = (model: Model, h: H): Html => {
 					? "Proxmox VE clusters reporting through the native OpenTelemetry metric server."
 					: `${data.cluster} · PVE ${data.pveVersion} · ${data.nodes.length} nodes, ${data.guests.length} guests`,
 			actions: model.state === "empty" ? undefined : tabsBar(h, model),
-			scrollClassName: "gap-8",
+			// The floating lab toolbar (~48px + 16px inset) sits over the page bottom: keep the last row clear of it.
+			scrollClassName: "gap-8 pb-28 [&_.text-muted-foreground]:text-foreground-soft",
 		},
 		[h.div([h.Class("flex flex-col gap-8"), h.DataAttribute("proxmox-state", model.state)], body)],
 	)
