@@ -118,5 +118,28 @@ describe("handleOidc", () => {
 		expect(decodeURIComponent(res.headers.get("location")!)).toContain("state mismatch")
 		expect(minted).toBe(false)
 	})
+	test("a verified callback mints for oidc:<sub> and lands on the app root with the token in the fragment", async () => {
+		const flowState = { state: "st", nonce: NONCE, verifier: "ver", redirectUri: "https://monitoring.home/_api/api/auth/oidc/callback", exp: Math.floor(Date.now() / 1000) + 600 }
+		const cookie = `maple_oidc_flow=${sealFlow(flowState, "k")}`
+		const nowS = Math.floor(Date.now() / 1000)
+		const idToken = sign(good({ iat: nowS - 5, exp: nowS + 300 }))
+		const tokenFetcher = async (url: string, init?: RequestInit) => {
+			if (url.endsWith("/oauth/v2/token")) {
+				const body = new URLSearchParams(String(init?.body))
+				expect(body.get("code_verifier")).toBe("ver")
+				expect(String((init?.headers as Record<string, string>).authorization)).toStartWith("Basic ")
+				return Response.json({ id_token: idToken })
+			}
+			if (url.endsWith("/oauth/v2/keys")) return Response.json({ keys: [jwk] })
+			return fetcher(url)
+		}
+		let subject = ""
+		const logs: string[] = []
+		const res = (await handleOidc(req("/api/auth/oidc/callback?code=c&state=st", { cookie }), cfg, async (s) => ((subject = s), "a.b.c"), tokenFetcher, (l) => logs.push(l)))!
+		expect(res.headers.get("location")).toBe("https://monitoring.home/#maple_session=a.b.c")
+		expect(subject).toBe("oidc:383437416599388195")
+		expect(logs[0]).toContain("sign-in ok sub=383437416599388195 email=op@example.com")
+	})
+
 	test("disabled: start is 404", async () => expect((await handleOidc(req("/api/auth/oidc/start"), null, async () => "t", fetcher))!.status).toBe(404))
 })

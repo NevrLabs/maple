@@ -246,7 +246,7 @@ export const handleOidc = async (
 			const claims = await verify(false).catch((e) => (e instanceof OidcRejection && e.reason === "unknown signing key" ? verify(true) : Promise.reject(e)))
 			const token = await mint(`oidc:${claims.sub}`)
 			log(`[oidc] sign-in ok sub=${claims.sub} email=${claims.email ?? "-"} host=${new URL(origin).host}`)
-			return redirect(`${origin}/sign-in#maple_session=${encodeURIComponent(token)}`, { "set-cookie": clearCookie })
+			return redirect(`${origin}/#maple_session=${encodeURIComponent(token)}`, { "set-cookie": clearCookie })
 		} catch (e) {
 			const reason = e instanceof OidcRejection ? e.reason : "provider error"
 			log(`[oidc] sign-in refused: ${reason}${e instanceof OidcRejection ? "" : ` (${String(e).slice(0, 160)})`}`)

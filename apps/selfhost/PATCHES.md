@@ -77,7 +77,7 @@ code flow + PKCE S256 + state + nonce in a signed, HttpOnly, 10-min cookie; clie
 verified (RS256 via JWKS, iss, aud/azp, exp, nonce); **fails closed** unless the token carries project role
 `MAPLE_OIDC_REQUIRED_ROLE` in `urn:zitadel:iam:org:project:roles`. Then it mints the SAME self-hosted session token the
 root login issues (same signer, lifetimes, `root` role), subject `oidc:<zitadel sub>`, and hands it to the web in the
-URL fragment (`/sign-in#maple_session=…`: never sent to a server or logged). Sign-ins are logged `[oidc] sign-in ok
+URL fragment (`/#maple_session=…`: never sent to a server or logged; boot moves it to session storage and wipes it). Sign-ins are logged `[oidc] sign-in ok
 sub=… email=…`. Off unless `MAPLE_OIDC_ISSUER` + `MAPLE_OIDC_CLIENT_ID` + `MAPLE_OIDC_CLIENT_SECRET` are set.
 
 **Upstream files touched:**
