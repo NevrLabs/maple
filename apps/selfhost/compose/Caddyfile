@@ -1,0 +1,37 @@
+# Single-origin router for Maple (BRIEF-v4). TLS terminates upstream (CT101 nginx for monitoring.home,
+# cloudflared for monitoring.entelechia.cloud); this listens plain HTTP on :8080 inside the CT.
+{
+	admin off
+	auto_https off
+	servers {
+		trusted_proxies static private_ranges
+	}
+}
+
+:8080 {
+	encode zstd gzip
+
+	# API: the web is built with VITE_API_BASE_URL=/_api (upstream's same-origin proxy prefix).
+	handle_path /_api/* {
+		reverse_proxy api:3472
+	}
+
+	# Electric shape proxy: VITE_ELECTRIC_SYNC_URL=/_sync -> /_sync/api/sync/shape. Long-polls: never buffer.
+	handle_path /_sync/* {
+		reverse_proxy electric-sync:3476 {
+			flush_interval -1
+			transport http {
+				read_timeout 5m
+			}
+		}
+	}
+
+	# OTLP/HTTP ingest (ingest-key auth). The public hostname blocks this path at the edge (cloudflared).
+	handle /v1/* {
+		reverse_proxy ingest:3474
+	}
+
+	handle {
+		reverse_proxy web:80
+	}
+}

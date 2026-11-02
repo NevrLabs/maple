@@ -1,0 +1,5 @@
+<clickhouse>
+  <!-- The config.d bind-mount hides the image's docker_related_config.xml; restore its listen_host. -->
+  <listen_host>0.0.0.0</listen_host>
+  <listen_try>1</listen_try>
+</clickhouse>

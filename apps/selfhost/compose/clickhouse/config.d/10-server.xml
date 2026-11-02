@@ -1,0 +1,22 @@
+<clickhouse>
+  <!-- listen_host: see 00-listen.xml -->
+  <logger><level>warning</level><console>1</console></logger>
+  <!-- CT sizing (compose mem_limit 2500m). Memory ratio is of the cgroup limit. -->
+  <max_server_memory_usage_to_ram_ratio>0.8</max_server_memory_usage_to_ram_ratio>
+  <mark_cache_size>268435456</mark_cache_size>
+  <uncompressed_cache_size>134217728</uncompressed_cache_size>
+  <index_mark_cache_size>67108864</index_mark_cache_size>
+  <max_concurrent_queries>50</max_concurrent_queries>
+  <!-- keep system log tables from eating the 60G Ceph mount -->
+  <query_log replace="1"><database>system</database><table>query_log</table>
+    <engine>ENGINE = MergeTree PARTITION BY event_date ORDER BY event_time TTL event_date + INTERVAL 7 DAY</engine>
+    <flush_interval_milliseconds>7500</flush_interval_milliseconds></query_log>
+  <trace_log remove="1"/>
+  <text_log remove="1"/>
+  <metric_log remove="1"/>
+  <asynchronous_metric_log remove="1"/>
+  <part_log remove="1"/>
+  <processors_profile_log remove="1"/>
+  <query_views_log remove="1"/>
+  <opentelemetry_span_log remove="1"/>
+</clickhouse>

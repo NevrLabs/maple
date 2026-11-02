@@ -18,3 +18,17 @@ upstream. Reads still use the SELECT-only runtime user.
 
 **Verify after rebase:** `bun run --cwd packages/backend typecheck`; alert rule `/v2/alerts/rules/:id/checks`
 returns 200 with rows; `SELECT count() FROM maple.alert_checks` grows each minute.
+
+## #2 — same-origin API / sync URLs (web)
+
+**Files:** `apps/web/src/lib/services/common/api-base-url.ts`, `apps/web/src/lib/services/common/electric-sync-url.ts`
+
+**Why:** the single-host deployment (`apps/selfhost/compose/`, BRIEF-v4) serves web, API and Electric sync from
+one origin behind Caddy (`/_api/*`, `/_sync/*`) and is reached on two hostnames (`monitoring.home`,
+`monitoring.entelechia.cloud`). Upstream bakes absolute URLs at build time, so one image could serve only one host.
+
+**Change:** a `sameOrigin()` helper: when `VITE_API_BASE_URL` / `VITE_ELECTRIC_SYNC_URL` start with `/`, resolve them
+against `location.origin` at runtime. Absolute values behave exactly as upstream. Opt-in by build env only.
+
+**Verify after rebase:** both files still export the same names; build with `/_api` + `/_sync` and grep the bundle for
+`sameOrigin`; browser E2E `verify/e2e-monitoring.ts` on both hostnames.

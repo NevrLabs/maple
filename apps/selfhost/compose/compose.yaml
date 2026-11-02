@@ -1,0 +1,263 @@
+# Maple self-hosted stack for a single host (Proxmox LXC "maple", BRIEF-v4).
+# Same images as the k3s deployment. Secrets: ./.env (never in git; see .env.example).
+# Single origin on :8080 (Caddy): /  web · /_api/* api · /_sync/* electric-sync · /v1/* ingest (OTLP/HTTP).
+# LAN OTLP senders (Proxmox metric server, k8s-infra agents) use :3474 directly (ingest-key auth, plain HTTP).
+name: maple
+
+x-app-env: &app-env
+  MAPLE_AUTH_MODE: self_hosted
+  MAPLE_DEFAULT_ORG_ID: default
+  MAPLE_INTERNAL_ORG_ID: default
+  MAPLE_ENVIRONMENT: selfhost
+  MAPLE_ALERTING_ALLOW_NONPROD: "1"
+  CLICKHOUSE_URL: http://clickhouse:8123
+  CLICKHOUSE_PROVIDER: clickhouse
+  CLICKHOUSE_USER: maple_runtime
+  CLICKHOUSE_PASSWORD: ${CH_RUNTIME_PASSWORD}
+  CLICKHOUSE_DATABASE: maple
+  CLICKHOUSE_WRITE_USER: maple_ingest
+  CLICKHOUSE_WRITE_PASSWORD: ${CH_INGEST_PASSWORD}
+  TINYBIRD_HOST: http://tinybird.invalid
+  TINYBIRD_TOKEN: unused
+  MAPLE_APP_BASE_URL: ${MAPLE_PUBLIC_ORIGIN}
+  MAPLE_API_BASE_URL: ${MAPLE_PUBLIC_ORIGIN}/_api
+  MAPLE_INGEST_PUBLIC_URL: ${MAPLE_INGEST_URL}
+  MAPLE_PG_URL: postgres://maple:${POSTGRES_PASSWORD}@postgres:5432/maple
+  MAPLE_ROOT_PASSWORD: ${MAPLE_ROOT_PASSWORD}
+  INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN}
+  SD_INTERNAL_TOKEN: ${SD_INTERNAL_TOKEN}
+  MAPLE_INGEST_KEY_ENCRYPTION_KEY: ${MAPLE_INGEST_KEY_ENCRYPTION_KEY}
+  MAPLE_INGEST_KEY_LOOKUP_HMAC_KEY: ${MAPLE_INGEST_KEY_LOOKUP_HMAC_KEY}
+  MAPLE_SHARE_TOKEN_HMAC_KEY: ${MAPLE_SHARE_TOKEN_HMAC_KEY}
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "3"
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      POSTGRES_USER: maple
+      POSTGRES_DB: maple
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    # Electric needs logical replication.
+    command:
+      - postgres
+      - -c
+      - wal_level=logical
+      - -c
+      - max_replication_slots=10
+      - -c
+      - max_wal_senders=10
+      - -c
+      - shared_buffers=128MB
+    volumes:
+      - /srv/maple/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U maple -d maple"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    mem_limit: 512m
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:26.2
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      CH_ADMIN_PASSWORD: ${CH_ADMIN_PASSWORD}
+      CH_RUNTIME_PASSWORD: ${CH_RUNTIME_PASSWORD}
+      CH_INGEST_PASSWORD: ${CH_INGEST_PASSWORD}
+    volumes:
+      - /srv/clickhouse/data:/var/lib/clickhouse
+      - ./clickhouse/config.d:/etc/clickhouse-server/config.d:ro
+      - ./clickhouse/users.d:/etc/clickhouse-server/users.d:ro
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8123/ping | grep -q Ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    mem_limit: 2500m
+
+  migrate:
+    image: maple-selfhost:${MAPLE_SELFHOST_TAG}
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    environment:
+      MAPLE_PG_URL: postgres://maple:${POSTGRES_PASSWORD}@postgres:5432/maple
+      MAPLE_CH_URL: http://clickhouse:8123
+      MAPLE_CH_USER: maple_admin
+      MAPLE_CH_PASSWORD: ${CH_ADMIN_PASSWORD}
+      MAPLE_CH_DATABASE: maple
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        echo "== postgres"; cd /app/db/scripts && DATABASE_URL="$$MAPLE_PG_URL" bun migrate.js
+        echo "== clickhouse"
+        bun -e 'const r = await fetch(process.env.MAPLE_CH_URL + "/", {method: "POST", headers: {"X-ClickHouse-User": process.env.MAPLE_CH_USER, "X-ClickHouse-Key": process.env.MAPLE_CH_PASSWORD}, body: "CREATE DATABASE IF NOT EXISTS " + process.env.MAPLE_CH_DATABASE}); if (!r.ok) { console.error(await r.text()); process.exit(1) } console.log("database ok")'
+        bun /app/ch/cli.js apply
+        bun /app/ch/cli.js status | tail -3
+
+  ch-retention:
+    image: clickhouse/clickhouse-server:26.2
+    restart: "no"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      CH_ADMIN_PASSWORD: ${CH_ADMIN_PASSWORD}
+    volumes:
+      - ./clickhouse/retention.sql:/retention.sql:ro
+    entrypoint: ["sh", "-c", "clickhouse-client --host clickhouse --user maple_admin --password \"$$CH_ADMIN_PASSWORD\" --multiquery < /retention.sql && echo retention-applied"]
+
+  api:
+    image: maple-selfhost:${MAPLE_SELFHOST_TAG}
+    restart: unless-stopped
+    logging: *logging
+    command: ["bun", "/app/api.js"]
+    environment:
+      <<: *app-env
+      PORT: "3472"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    mem_limit: 512m
+
+  alerting:
+    image: maple-selfhost:${MAPLE_SELFHOST_TAG}
+    restart: unless-stopped
+    logging: *logging
+    command: ["bun", "/app/alerting.js"]
+    environment:
+      <<: *app-env
+      PORT: "3480"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    mem_limit: 384m
+
+  electric:
+    image: maple-electric:1.7.12
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      DATABASE_URL: postgres://maple:${POSTGRES_PASSWORD}@postgres:5432/maple
+      ELECTRIC_INSECURE: "true"                # reachable only on the compose network, via electric-sync
+      ELECTRIC_MANUAL_TABLE_PUBLISHING: "true" # publication electric_publication_default (PG migration)
+      ELECTRIC_STORAGE_DIR: /var/lib/electric
+      ELECTRIC_DB_POOL_SIZE: "5"
+      ELECTRIC_USAGE_REPORTING: "false"
+    tmpfs:
+      - /var/lib/electric:size=256m
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    mem_limit: 512m
+
+  electric-sync:
+    image: maple-selfhost:${MAPLE_SELFHOST_TAG}
+    restart: unless-stopped
+    logging: *logging
+    command: ["bun", "/app/electric-sync.js"]
+    environment:
+      PORT: "3476"
+      ELECTRIC_URL: http://electric:3000
+      MAPLE_AUTH_MODE: self_hosted
+      MAPLE_DEFAULT_ORG_ID: default
+      MAPLE_ENVIRONMENT: selfhost
+      MAPLE_ROOT_PASSWORD: ${MAPLE_ROOT_PASSWORD}
+    depends_on:
+      - electric
+    mem_limit: 256m
+
+  web:
+    image: maple-web:${MAPLE_WEB_TAG}
+    restart: unless-stopped
+    logging: *logging
+    mem_limit: 64m
+
+  otel-collector:
+    image: maple-otel-collector:${MAPLE_COLLECTOR_TAG}
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      CH_INGEST_PASSWORD: ${CH_INGEST_PASSWORD}
+    volumes:
+      - ./otel-collector.yaml:/etc/otelcol/config.yaml:ro
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    mem_limit: 512m
+
+  ingest:
+    image: maple-ingest:${MAPLE_INGEST_TAG}
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      INGEST_PORT: "3474"
+      INGEST_WRITE_MODE: forward
+      INGEST_FORWARD_OTLP_ENDPOINT: http://otel-collector:4318
+      INGEST_FORWARD_TIMEOUT_MS: "10000"
+      INGEST_MAX_REQUEST_BODY_BYTES: "20971520"
+      INGEST_REQUIRE_TLS: "false"
+      INGEST_KEY_STORE_BACKEND: postgres
+      INGEST_QUEUE_DIR: /var/lib/maple-ingest
+      MAPLE_INTERNAL_ORG_ID: default
+      MAPLE_ENVIRONMENT: selfhost
+      INGEST_SELF_TRACE_SAMPLE_RATIO: "0.05"
+      TINYBIRD_HOST: ""
+      TINYBIRD_TOKEN: ""
+      MAPLE_PG_URL: postgres://maple:${POSTGRES_PASSWORD}@postgres:5432/maple
+      MAPLE_INGEST_KEY_ENCRYPTION_KEY: ${MAPLE_INGEST_KEY_ENCRYPTION_KEY}
+      MAPLE_INGEST_KEY_LOOKUP_HMAC_KEY: ${MAPLE_INGEST_KEY_LOOKUP_HMAC_KEY}
+    volumes:
+      - /srv/maple/ingest-queue:/var/lib/maple-ingest
+    ports:
+      - "3474:3474"
+    depends_on:
+      - otel-collector
+    mem_limit: 384m
+
+  proxy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    logging: *logging
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    ports:
+      - "8080:8080"
+    depends_on:
+      - web
+      - api
+      - electric-sync
+      - ingest
+    mem_limit: 128m
+
+  # Public https://monitoring.entelechia.cloud: remote-managed tunnel "maple" (ingress in the CF API:
+  # ^/v1/ -> 404, rest -> localhost:8080). Host network so "localhost:8080" is the proxy's published port.
+  cloudflared:
+    image: cloudflare/cloudflared:2026.3.0
+    restart: unless-stopped
+    logging: *logging
+    network_mode: host
+    command: ["tunnel", "--no-autoupdate", "--metrics", "127.0.0.1:20241", "run"]
+    environment:
+      TUNNEL_TOKEN: ${MAPLE_TUNNEL_TOKEN}
+    depends_on:
+      - proxy
+    mem_limit: 128m
