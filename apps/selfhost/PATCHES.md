@@ -97,3 +97,39 @@ the CT `.env`.
 
 **Verify after rebase:** `bun test apps/selfhost/src/oidc.test.ts`; `vitest run src/page/sign-in`; `tsrs --noEmit`
 (web, packages/auth); E2E `verify/e2e-zitadel-login.ts` (full code flow with a disposable user; role-less user refused).
+
+## #5 — IdP-agnostic OIDC, users table, viewer role, instant revoke (BRIEF-users)
+
+**Why:** Clerk replacement for self-host: the homelab signs in with Zitadel, Noovoleum will use Authentik; people need
+a read-only role and an admin needs to cut someone off without waiting for the 12 h / 7 d session cap.
+
+**Server (fork-only, apps/selfhost/src):**
+- `oidc.ts` — any OIDC provider via discovery. Env: `MAPLE_OIDC_ISSUER/CLIENT_ID/CLIENT_SECRET` (on), plus
+  `MAPLE_OIDC_ROLES_CLAIM` (dotted path; default Zitadel project roles), `MAPLE_OIDC_SCOPES`, `MAPLE_OIDC_ADMIN_ROLE`
+  (`maple-admin`; legacy `MAPLE_OIDC_REQUIRED_ROLE`), `MAPLE_OIDC_VIEWER_ROLE` (`maple-viewer`), `MAPLE_OIDC_LABEL`,
+  `MAPLE_OIDC_HOSTS`. Claim may be an object keyed by role, an array (Authentik `groups`) or a string; admin wins;
+  neither = refused. RS256 + ES256.
+  Authentik example: `ROLES_CLAIM=groups SCOPES="openid profile email groups" ADMIN_ROLE="Maple Admins"
+  VIEWER_ROLE="Maple Viewers" LABEL="Noovoleum SSO"` (+ the build flag `VITE_MAPLE_OIDC="Noovoleum SSO"`).
+- `session.ts` — mints/reads the SAME HS256 self-hosted session the API verifies. admin -> role `root`, viewer ->
+  `org:member` (non-admin to every upstream `isAdmin` check); display claims `name/email/idp` the API ignores.
+- `users.ts` — Postgres `selfhost_users` (created on api start; not in upstream migrations): sub PK, email, name, idp,
+  role, first_seen, last_seen, disabled, sessions_valid_after. Upsert per sign-in; 5 s read cache, invalidated by writes.
+- `gate.ts` — in front of the graph (api AND electric-sync): `oidc:*` token disabled or `iat <= sessions_valid_after`
+  -> 401 `session_revoked`; viewer non-GET -> 403 `read_only_role` unless the ROUTE is an allowlisted read
+  (`route-policy.ts`, matched against `route-table.generated.ts` = every endpoint reflected from MapleApi /
+  MapleInternalApi / MapleApiV2 / MapleAiApi; regenerate with `bun src/gen-route-table.ts` after a rebase —
+  `gate.test.ts` fails if an allowlisted id disappears). OIDC session renewal is answered by the gate so the renewed
+  token keeps role + identity. Members API: `GET /api/selfhost/me`, `GET /api/selfhost/users`,
+  `POST /api/selfhost/users/:sub/{disable,enable,sign-out}` (admin; root row fixed; no self-disable).
+- `packages/auth` is back to upstream (the #4 mint export was removed; minting lives in session.ts).
+
+**Web (upstream files touched):** `page/settings/{model,message,update,view,nav}.ts` (Members tab = `selfhost-members/`
+when not Clerk; viewer = non-admin), `page/settings/selfhost-members/*` (new), `platform/selfhost-session.ts` (new:
+identity from the token), `platform/auth-api.ts` (`readSessionTokenSync`), `platform/api-clients.ts` (a 401 drops the
+tab session -> /sign-in), `shell/view-sidebar.ts` + `shell/view-menus.ts` (chip/menu show the OIDC name + role),
+`page/dashboards/list/view.ts` + `page/alerts/hub/view.ts` (viewer: Create/Import/New rule hidden),
+`lib/services/common/auth-mode.ts` + `page/sign-in/view.ts` (button label = `VITE_MAPLE_OIDC`).
+
+**Verify after rebase:** `bun test apps/selfhost/src/{oidc,gate}.test.ts`; `vitest run src/page/settings src/page/sign-in`;
+E2E `verify/e2e-users.ts` (Zitadel disposable admin + viewer).
