@@ -7,9 +7,10 @@ import * as Cloudflare from "@alchemy.run/cloudflare"
 import { IsolateAge } from "@maple/infra/isolate-age"
 import { workerEnvLayer } from "@maple/infra/worker-runtime"
 import { buildApp, makeAppGraphs, makeFetch } from "../../api/src/worker/http"
-import { makeMintSelfHostedSessionForSubject } from "@maple/auth"
-import { Option, Redacted } from "effect"
-import { handleOidc, oidcConfigFromEnv } from "./oidc"
+import { gate } from "./gate"
+import { handleOidc, OidcRejection, oidcConfigFromEnv } from "./oidc"
+import { mintSession } from "./session"
+import { makeUsersStore, pgSql } from "./users"
 import { selfhostEnv, selfhostPorts, setSchemaApplyRunner } from "./ports"
 import { runSchemaApplyInline } from "./schema-apply"
 
@@ -28,15 +29,24 @@ const fetchEffect = await Effect.runPromise(
 const serve = Cloudflare.Workers.makeRequestHandler(fetchEffect)
 const requestLayer = Layer.mergeAll(ports, workerEnvLayer(env))
 
-// NevrLabs selfhost: "Sign in with Zitadel" (PATCHES #4). Minting reuses the root-password login's signer.
+// NevrLabs selfhost (PATCHES #4, #5): OIDC sign-in for any provider, the users table, and the gate that
+// enforces instant revoke + the read-only viewer role in front of the unmodified route graph.
 const oidc = oidcConfigFromEnv(process.env)
-const mintForSubject = makeMintSelfHostedSessionForSubject({
-	MAPLE_AUTH_MODE: process.env.MAPLE_AUTH_MODE ?? "self_hosted",
-	MAPLE_DEFAULT_ORG_ID: process.env.MAPLE_DEFAULT_ORG_ID ?? "default",
-	MAPLE_ROOT_PASSWORD: Option.map(Option.fromNullishOr(process.env.MAPLE_ROOT_PASSWORD), Redacted.make),
-})
-const mint = (subject: string) => Effect.runPromise(Effect.map(mintForSubject(subject), (session) => session.token))
-console.log(`maple-api (selfhost) oidc ${oidc ? `on issuer=${oidc.issuer} role=${oidc.requiredRole}` : "off"}`)
+const rootPassword = process.env.MAPLE_ROOT_PASSWORD ?? ""
+const orgId = process.env.MAPLE_DEFAULT_ORG_ID ?? "default"
+const users = oidc !== null && process.env.MAPLE_PG_URL ? makeUsersStore(pgSql(process.env.MAPLE_PG_URL)) : null
+if (users !== null) await pgSql(process.env.MAPLE_PG_URL!).ensureSchema()
+const signIn = async (identity: Parameters<typeof mintSession>[0]) => {
+	if (users !== null) {
+		const state = await users.revokeState(identity.sub)
+		if (state?.disabled) throw new OidcRejection("user disabled", 403)
+		await users.signIn(identity)
+	}
+	return mintSession(identity, orgId, rootPassword, Math.floor(Date.now() / 1000)).token
+}
+console.log(
+	`maple-api (selfhost) oidc ${oidc ? `on issuer=${oidc.issuer} label=${oidc.label} admin=${oidc.adminRole} viewer=${oidc.viewerRole} claim=${oidc.rolesClaim} users=${users ? "pg" : "off"}` : "off"}`,
+)
 
 // Warm the full graph so the first user request isn't the cold build (and a broken graph
 // fails the readiness probe instead of the first sign-in).
@@ -47,8 +57,10 @@ const server = Bun.serve({
 	hostname: "0.0.0.0",
 	idleTimeout: 120,
 	async fetch(request, srv) {
-		const oidcResponse = await handleOidc(request, oidc, mint)
+		const oidcResponse = await handleOidc(request, oidc, signIn)
 		if (oidcResponse) return oidcResponse
+		const gated = await gate(request, { secret: rootPassword, users, log: (line) => console.log(line) })
+		if (gated) return gated
 		// Workers set cf-connecting-ip; the auth layer reads it for rate-limit keys.
 		const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? srv.requestIP(request)?.address
 		const headers = new Headers(request.headers)

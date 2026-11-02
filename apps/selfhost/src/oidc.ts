@@ -1,25 +1,39 @@
 /**
- * NevrLabs selfhost: "Sign in with Zitadel" (OIDC authorization code + PKCE) alongside the root password.
+ * NevrLabs selfhost: OIDC sign-in (authorization code + PKCE) beside the root password, for any OIDC provider
+ * (Zitadel, Authentik, Keycloak, ...). Everything comes from the issuer's discovery document; nothing below is
+ * provider-specific except the defaults, which match the homelab's Zitadel.
  *
- * Served by the selfhost Bun server in front of the unmodified api route graph:
- *   GET /api/auth/oidc/config    -> { enabled }                        (the sign-in page asks before drawing the button)
+ *   GET /api/auth/oidc/config    -> { enabled, label }        (the sign-in page draws the button from this)
  *   GET /api/auth/oidc/start     -> 302 to the provider; PKCE verifier + state + nonce in a short-lived signed cookie
- *   GET /api/auth/oidc/callback  -> code exchange (client_secret_basic) -> verify the ID token -> mint the SAME
- *                                   self-hosted session token the root-password login issues -> 302 to the web,
- *                                   token in the URL fragment (never sent to a server, never logged)
- * Authorization fails closed: the ID token must carry the project role (MAPLE_OIDC_REQUIRED_ROLE) in
- * `urn:zitadel:iam:org:project:roles`. Off unless MAPLE_OIDC_ISSUER + CLIENT_ID + CLIENT_SECRET are set.
+ *   GET /api/auth/oidc/callback  -> code exchange (client_secret_basic) -> verify the ID token -> map the role
+ *                                   -> signIn(identity) (users table: upsert, refuse disabled; mints the session)
+ *                                   -> 302 to the web, token in the URL fragment.
+ *
+ * Roles (fail closed): the claim at MAPLE_OIDC_ROLES_CLAIM (a dotted path; default Zitadel's project-roles claim)
+ * may be an object keyed by role (Zitadel) or an array of strings (Authentik `groups`, generic `roles`), or a single
+ * string. MAPLE_OIDC_ADMIN_ROLE -> admin, MAPLE_OIDC_VIEWER_ROLE -> viewer, admin wins; neither -> refused.
  */
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto"
+import type { Identity, MapleRole } from "./session"
 
 export type OidcConfig = Readonly<{
 	issuer: string
 	clientId: string
 	clientSecret: string
-	requiredRole: string
+	scopes: string
+	rolesClaim: string
+	adminRole: string
+	viewerRole: string
+	/** The button: "Sign in with <label>". */
+	label: string
+	/** Public hosts allowed to start a flow (the callback is built from the request's host). */
+	hosts: ReadonlySet<string>
 	/** HMAC key for the flow cookie; the root password, as the session tokens use. */
 	cookieKey: string
 }>
+
+export const ZITADEL_ROLES_CLAIM = "urn:zitadel:iam:org:project:roles"
+export const ZITADEL_SCOPES = `openid profile email ${ZITADEL_ROLES_CLAIM}`
 
 export const oidcConfigFromEnv = (env: Record<string, string | undefined>): OidcConfig | null => {
 	const issuer = env.MAPLE_OIDC_ISSUER?.trim().replace(/\/$/, "")
@@ -27,10 +41,27 @@ export const oidcConfigFromEnv = (env: Record<string, string | undefined>): Oidc
 	const clientSecret = env.MAPLE_OIDC_CLIENT_SECRET?.trim()
 	const cookieKey = env.MAPLE_ROOT_PASSWORD
 	if (!issuer || !clientId || !clientSecret || !cookieKey) return null
-	return { issuer, clientId, clientSecret, cookieKey, requiredRole: env.MAPLE_OIDC_REQUIRED_ROLE?.trim() || "maple-admin" }
+	const opt = (key: string, fallback: string) => env[key]?.trim() || fallback
+	return {
+		issuer,
+		clientId,
+		clientSecret,
+		cookieKey,
+		scopes: opt("MAPLE_OIDC_SCOPES", ZITADEL_SCOPES),
+		rolesClaim: opt("MAPLE_OIDC_ROLES_CLAIM", ZITADEL_ROLES_CLAIM),
+		// Back-compat: the first release called the admin role MAPLE_OIDC_REQUIRED_ROLE.
+		adminRole: opt("MAPLE_OIDC_ADMIN_ROLE", opt("MAPLE_OIDC_REQUIRED_ROLE", "maple-admin")),
+		viewerRole: opt("MAPLE_OIDC_VIEWER_ROLE", "maple-viewer"),
+		label: opt("MAPLE_OIDC_LABEL", "Zitadel"),
+		hosts: new Set(
+			opt("MAPLE_OIDC_HOSTS", "monitoring.home,monitoring.entelechia.cloud")
+				.split(",")
+				.map((host) => host.trim().toLowerCase())
+				.filter(Boolean),
+		),
+	}
 }
 
-export const ROLES_CLAIM = "urn:zitadel:iam:org:project:roles"
 const FLOW_COOKIE = "maple_oidc_flow"
 const FLOW_TTL_SECONDS = 600
 const CLOCK_SKEW_SECONDS = 60
@@ -71,37 +102,39 @@ const readCookie = (header: string | null, name: string): string | undefined =>
 		.find((part) => part.startsWith(`${name}=`))
 		?.slice(name.length + 1)
 
-// ── Discovery + JWKS (cached) ─────────────────────────────────────────────────
+// ── Discovery + JWKS (cached per issuer / per key set) ────────────────────────
 
 type Discovery = Readonly<{ authorization_endpoint: string; token_endpoint: string; jwks_uri: string; issuer: string }>
-type Jwk = JsonWebKey & { kid?: string; alg?: string }
+type Jwk = JsonWebKey & { kid?: string; alg?: string; use?: string }
 
-const cache: { discovery?: { at: number; value: Discovery }; jwks?: { at: number; keys: Jwk[] } } = {}
+const cache = new Map<string, { at: number; discovery?: Discovery; keys?: Jwk[] }>()
 const CACHE_MS = 60 * 60 * 1000
 
 export type Fetcher = (input: string, init?: RequestInit) => Promise<Response>
 
 const discovery = async (cfg: OidcConfig, fetcher: Fetcher, nowMs: number): Promise<Discovery> => {
-	if (cache.discovery && nowMs - cache.discovery.at < CACHE_MS) return cache.discovery.value
+	const hit = cache.get(`d:${cfg.issuer}`)
+	if (hit?.discovery && nowMs - hit.at < CACHE_MS) return hit.discovery
 	const res = await fetcher(`${cfg.issuer}/.well-known/openid-configuration`)
 	if (!res.ok) throw new Error(`discovery ${res.status}`)
 	const value = (await res.json()) as Discovery
-	cache.discovery = { at: nowMs, value }
+	cache.set(`d:${cfg.issuer}`, { at: nowMs, discovery: value })
 	return value
 }
 
 const jwks = async (uri: string, fetcher: Fetcher, nowMs: number, force: boolean): Promise<Jwk[]> => {
-	if (!force && cache.jwks && nowMs - cache.jwks.at < CACHE_MS) return cache.jwks.keys
+	const hit = cache.get(`k:${uri}`)
+	if (!force && hit?.keys && nowMs - hit.at < CACHE_MS) return hit.keys
 	const res = await fetcher(uri)
 	if (!res.ok) throw new Error(`jwks ${res.status}`)
 	const keys = ((await res.json()) as { keys: Jwk[] }).keys
-	cache.jwks = { at: nowMs, keys }
+	cache.set(`k:${uri}`, { at: nowMs, keys })
 	return keys
 }
 
-// ── ID token verification ─────────────────────────────────────────────────────
+// ── ID token verification + role mapping ──────────────────────────────────────
 
-export type IdTokenClaims = Readonly<Record<string, unknown> & { sub: string; email?: string }>
+export type IdTokenClaims = Readonly<Record<string, unknown> & { sub: string; email?: string; name?: string }>
 
 export class OidcRejection extends Error {
 	constructor(
@@ -112,10 +145,47 @@ export class OidcRejection extends Error {
 	}
 }
 
-/** Header + claims checks, signature included; `keys` is the provider's JWKS. Pure apart from WebCrypto. */
+/** The value at a claim path: the whole name first (URN-style names contain dots), then `a.b.c`. */
+export const claimAt = (claims: Readonly<Record<string, unknown>>, path: string): unknown => {
+	if (path in claims) return claims[path]
+	return path
+		.split(".")
+		.reduce<unknown>((node, key) => (node !== null && typeof node === "object" ? (node as Record<string, unknown>)[key] : undefined), claims)
+}
+
+/** Role names in a claim value: object keys (Zitadel), array items (Authentik groups), or one string. */
+export const roleNamesIn = (value: unknown): ReadonlySet<string> => {
+	if (typeof value === "string") return new Set(value.split(/[\s,]+/).filter(Boolean))
+	if (Array.isArray(value)) return new Set(value.filter((item): item is string => typeof item === "string"))
+	if (value !== null && typeof value === "object") return new Set(Object.keys(value))
+	return new Set()
+}
+
+/** Admin wins over viewer; neither is a refusal (fail closed). */
+export const mapRole = (
+	claims: Readonly<Record<string, unknown>>,
+	cfg: Pick<OidcConfig, "rolesClaim" | "adminRole" | "viewerRole">,
+): MapleRole => {
+	const names = roleNamesIn(claimAt(claims, cfg.rolesClaim))
+	if (names.has(cfg.adminRole)) return "admin"
+	if (names.has(cfg.viewerRole)) return "viewer"
+	throw new OidcRejection(`missing role ${cfg.adminRole} or ${cfg.viewerRole}`, 403)
+}
+
+type AlgSpec = Readonly<{
+	kty: string
+	importAlg: RsaHashedImportParams | EcKeyImportParams
+	verifyAlg: AlgorithmIdentifier | EcdsaParams
+}>
+const ALGS: Readonly<Record<string, AlgSpec>> = {
+	RS256: { kty: "RSA", importAlg: { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, verifyAlg: "RSASSA-PKCS1-v1_5" },
+	ES256: { kty: "EC", importAlg: { name: "ECDSA", namedCurve: "P-256" }, verifyAlg: { name: "ECDSA", hash: "SHA-256" } },
+}
+
+/** Header + claims checks, signature included; `keys` is the provider's JWKS. RS256 and ES256. */
 export const verifyIdToken = async (
 	token: string,
-	opts: Readonly<{ issuer: string; clientId: string; nonce: string; requiredRole: string; nowSeconds: number; keys: Jwk[] }>,
+	opts: Readonly<{ issuer: string; clientId: string; nonce: string; nowSeconds: number; keys: Jwk[] }>,
 ): Promise<IdTokenClaims> => {
 	const parts = token.split(".")
 	if (parts.length !== 3) throw new OidcRejection("malformed id_token")
@@ -128,11 +198,21 @@ export const verifyIdToken = async (
 	} catch {
 		throw new OidcRejection("malformed id_token")
 	}
-	if (header.alg !== "RS256") throw new OidcRejection(`unexpected alg ${String(header.alg)}`)
-	const jwk = opts.keys.find((k) => k.kid === header.kid && (k.kty === "RSA"))
-	if (!jwk) throw new OidcRejection("unknown signing key")
-	const key = await crypto.subtle.importKey("jwk", { kty: jwk.kty, n: jwk.n, e: jwk.e }, { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, false, ["verify"])
-	const ok = await crypto.subtle.verify("RSASSA-PKCS1-v1_5", key, Buffer.from(sig, "base64url"), new TextEncoder().encode(`${h}.${p}`))
+	const alg = header.alg === undefined ? undefined : ALGS[header.alg]
+	if (!alg) throw new OidcRejection(`unexpected alg ${String(header.alg)}`)
+	const candidates = opts.keys.filter((k) => k.kty === alg.kty && (header.kid === undefined || k.kid === header.kid))
+	if (candidates.length === 0) throw new OidcRejection("unknown signing key")
+	const data = new TextEncoder().encode(`${h}.${p}`)
+	const signature = Buffer.from(sig, "base64url")
+	let ok = false
+	for (const jwk of candidates) {
+		const { kid: _kid, alg: _alg, use: _use, key_ops: _ops, ...material } = jwk
+		const key = await crypto.subtle.importKey("jwk", material, alg.importAlg, false, ["verify"])
+		if (await crypto.subtle.verify(alg.verifyAlg, key, signature, data)) {
+			ok = true
+			break
+		}
+	}
 	if (!ok) throw new OidcRejection("bad signature")
 
 	if (claims.iss !== opts.issuer) throw new OidcRejection("wrong issuer")
@@ -143,11 +223,6 @@ export const verifyIdToken = async (
 	if (typeof claims.iat === "number" && claims.iat - CLOCK_SKEW_SECONDS > opts.nowSeconds) throw new OidcRejection("issued in the future")
 	if (typeof claims.nonce !== "string" || !safeEqual(claims.nonce, opts.nonce)) throw new OidcRejection("nonce mismatch")
 	if (typeof claims.sub !== "string" || claims.sub === "") throw new OidcRejection("missing sub")
-
-	// Fail closed: no roles claim, or no required role in it, is a refusal.
-	const roles = claims[ROLES_CLAIM]
-	if (roles === null || typeof roles !== "object" || !(opts.requiredRole in (roles as object)))
-		throw new OidcRejection(`missing role ${opts.requiredRole}`, 403)
 	return claims as IdTokenClaims
 }
 
@@ -163,7 +238,6 @@ const publicOrigin = (req: Request): string => {
 
 /** The web is served at the origin root; the API under /_api (Caddy strips it before the api sees the path). */
 const API_PREFIX = "/_api"
-const ALLOWED_HOSTS = new Set(["monitoring.home", "monitoring.entelechia.cloud"])
 
 const redirect = (location: string, headers: Record<string, string> = {}) =>
 	new Response(null, { status: 302, headers: { location, "cache-control": "no-store", ...headers } })
@@ -173,23 +247,25 @@ const clearCookie = `${FLOW_COOKIE}=; Path=${API_PREFIX}/api/auth/oidc; Max-Age=
 const failTo = (origin: string, reason: string) =>
 	redirect(`${origin}/sign-in?oidc_error=${encodeURIComponent(reason)}`, { "set-cookie": clearCookie })
 
-export type MintSession = (subject: string) => Promise<string>
+/** Records the sign-in (users table) and mints the session; throws OidcRejection to refuse (e.g. disabled user). */
+export type SignIn = (identity: Identity) => Promise<string>
 
 export const handleOidc = async (
 	req: Request,
 	cfg: OidcConfig | null,
-	mint: MintSession,
+	signIn: SignIn,
 	fetcher: Fetcher = fetch,
 	log: (line: string) => void = (line) => console.log(line),
 ): Promise<Response | null> => {
 	const url = new URL(req.url)
 	if (!url.pathname.startsWith("/api/auth/oidc/")) return null
 	const route = url.pathname.slice("/api/auth/oidc/".length)
-	if (route === "config") return Response.json({ enabled: cfg !== null }, { headers: { "cache-control": "no-store" } })
+	if (route === "config")
+		return Response.json({ enabled: cfg !== null, label: cfg?.label ?? null }, { headers: { "cache-control": "no-store" } })
 	if (cfg === null) return Response.json({ error: "oidc disabled" }, { status: 404 })
 
 	const origin = publicOrigin(req)
-	if (!ALLOWED_HOSTS.has(new URL(origin).host)) return Response.json({ error: "unknown host" }, { status: 400 })
+	if (!cfg.hosts.has(new URL(origin).host.toLowerCase())) return Response.json({ error: "unknown host" }, { status: 400 })
 	const redirectUri = `${origin}${API_PREFIX}/api/auth/oidc/callback`
 	const nowMs = Date.now()
 	const now = Math.floor(nowMs / 1000)
@@ -203,7 +279,7 @@ export const handleOidc = async (
 			client_id: cfg.clientId,
 			redirect_uri: redirectUri,
 			response_type: "code",
-			scope: "openid profile email urn:zitadel:iam:org:project:roles",
+			scope: cfg.scopes,
 			state: flow.state,
 			nonce: flow.nonce,
 			code_challenge: b64url(createHash("sha256").update(verifier).digest()),
@@ -238,19 +314,37 @@ export const handleOidc = async (
 					issuer: d.issuer,
 					clientId: cfg.clientId,
 					nonce: flow.nonce,
-					requiredRole: cfg.requiredRole,
 					nowSeconds: now,
 					keys: await jwks(d.jwks_uri, fetcher, nowMs, force),
 				})
 			// A rotated provider key: refetch the JWKS once before refusing.
-			const claims = await verify(false).catch((e) => (e instanceof OidcRejection && e.reason === "unknown signing key" ? verify(true) : Promise.reject(e)))
-			const token = await mint(`oidc:${claims.sub}`)
-			log(`[oidc] sign-in ok sub=${claims.sub} email=${claims.email ?? "-"} host=${new URL(origin).host}`)
+			const claims = await verify(false).catch((e) =>
+				e instanceof OidcRejection && e.reason === "unknown signing key" ? verify(true) : Promise.reject(e),
+			)
+			const role = mapRole(claims, cfg)
+			const text = (key: string) => {
+				const value = claims[key]
+				return typeof value === "string" && value.length > 0 ? value : undefined
+			}
+			const identity: Identity = {
+				sub: `oidc:${claims.sub}`,
+				role,
+				email: text("email"),
+				name: text("name") ?? text("preferred_username"),
+				idp: cfg.issuer,
+			}
+			const token = await signIn(identity)
+			log(`[oidc] sign-in ok sub=${claims.sub} email=${identity.email ?? "-"} role=${role} host=${new URL(origin).host}`)
 			return redirect(`${origin}/#maple_session=${encodeURIComponent(token)}`, { "set-cookie": clearCookie })
 		} catch (e) {
 			const reason = e instanceof OidcRejection ? e.reason : "provider error"
 			log(`[oidc] sign-in refused: ${reason}${e instanceof OidcRejection ? "" : ` (${String(e).slice(0, 160)})`}`)
-			return failTo(origin, reason.startsWith("missing role") ? "Your Zitadel account has no access to Maple (role maple-admin)." : "Zitadel sign-in failed. Try again.")
+			const shown = reason.startsWith("missing role")
+				? `Your ${cfg.label} account has no access to Maple (role ${cfg.adminRole} or ${cfg.viewerRole}).`
+				: reason === "user disabled"
+					? "Your Maple access has been disabled by an administrator."
+					: `${cfg.label} sign-in failed. Try again.`
+			return failTo(origin, shown)
 		}
 	}
 	return Response.json({ error: "not found" }, { status: 404 })

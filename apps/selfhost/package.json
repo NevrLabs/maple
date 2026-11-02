@@ -12,7 +12,6 @@
 		"@alchemy.run/cloudflare": "catalog:alchemy",
 		"@maple/alerting": "workspace:*",
 		"@maple/api": "workspace:*",
-		"@maple/auth": "workspace:*",
 		"@maple/backend": "workspace:*",
 		"@maple/db": "workspace:*",
 		"@maple/domain": "workspace:*",
