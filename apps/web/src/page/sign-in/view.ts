@@ -73,7 +73,7 @@ const passwordField = (model: Model, h: HtmlBuilder<Message>): Html => {
 /**
  * NevrLabs selfhost: the provider sign-in above the root password, which stays as the break-glass path.
  */
-const oidcSection = (model: Model, h: HtmlBuilder<Message>, provider: "zitadel"): ReadonlyArray<Html> => [
+const oidcSection = (model: Model, h: HtmlBuilder<Message>, provider: string): ReadonlyArray<Html> => [
 	...(model.oidcError === undefined
 		? []
 		: [
@@ -87,12 +87,12 @@ const oidcSection = (model: Model, h: HtmlBuilder<Message>, provider: "zitadel")
 				),
 			]),
 	// A GET form, not a link: the router takes every same-origin <a> click as an in-app navigation, and
-	// /_api/... must be a real page load (the API answers with the 302 to Zitadel and sets the flow cookie).
+	// /_api/... must be a real page load (the API answers with the 302 to the identity provider and sets the flow cookie).
 	h.form(
 		[h.Method("get"), h.Action(`${apiBaseUrl}/api/auth/oidc/start`), h.DataAttribute("oidc-form", provider)],
 		[
 			button(h, { type: "submit", className: "w-full", attributes: [h.DataAttribute("oidc-start", provider)] }, [
-				"Sign in with Zitadel",
+				`Sign in with ${provider}`,
 			]),
 		],
 	),
@@ -124,7 +124,7 @@ export const view = Submodel.defineView<Model, Message>((model, h) =>
 							[
 								oidcProvider === null
 									? "This deployment is self-hosted. Enter the root password to continue."
-									: "Sign in with your Zitadel account, or use the root password.",
+									: `Sign in with your ${oidcProvider} account, or use the root password.`,
 							],
 						),
 					],

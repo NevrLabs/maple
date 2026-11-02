@@ -1,6 +1,8 @@
 import { withoutCheckoutReturn } from "../../lib/billing/checkout-return"
 import { hasBringYourOwnCloudAddOn } from "../../lib/billing/plan-gating"
 import { isClerkAuthEnabled } from "../../lib/services/common/auth-mode"
+import { isViewerSession } from "../../platform/selfhost-session"
+import * as SelfhostMembers from "./selfhost-members/update"
 import { rowToV2ApiKey } from "@maple/web-data/collections/api-keys"
 import { Array, Option } from "effect"
 import { AsyncData, Command } from "foldkit"
@@ -51,7 +53,8 @@ export const visibilityOf = (model: Model): Visibility => {
 				AsyncData.map(model.session, (session) => session.isAdmin),
 				() => false,
 			)
-		: true
+		: // NevrLabs selfhost: a viewer session is not an admin.
+			!isViewerSession()
 	const hasByoc = AsyncData.getOrElse(AsyncData.map(model.customer, hasBringYourOwnCloudAddOn), () => false)
 	return {
 		isClerk: isClerkAuthEnabled,
@@ -92,7 +95,7 @@ const TAB_TAGS = new Map<SettingsTab, TabModel["_tag"]>([
 	["audit-log", "AuditLog"],
 	["data-platform", "DataPlatform"],
 	["general", "General"],
-	["members", "Members"],
+	["members", isClerkAuthEnabled ? "Members" : "SelfhostMembers"],
 	["billing", "Billing"],
 ])
 const tabTag = (tab: SettingsTab): TabModel["_tag"] => TAB_TAGS.get(tab) ?? "Unported"
@@ -236,6 +239,15 @@ const initTab = (model: Model, tab: SettingsTab, context: PageContext): Return =
 				),
 			}
 		}
+		case "SelfhostMembers": {
+			const step = SelfhostMembers.init(visibilityOf(model).isAdmin)
+			return {
+				model: { ...model, tab: { _tag: "SelfhostMembers", model: step.model } },
+				commands: Command.mapMessages(step.commands ?? [], (message) =>
+					Message.GotSelfhostMembersMessage({ message }),
+				),
+			}
+		}
 		case "Members": {
 			const step = Members.init(visibilityOf(model).isAdmin)
 			return {
@@ -351,6 +363,15 @@ const revisitTab = (model: Model, kept: TabModel, context: PageContext): Return 
 				model: { ...model, tab: { _tag: "General", model: step.model } },
 				commands: Command.mapMessages(step.commands ?? [], (message) =>
 					Message.GotGeneralMessage({ message }),
+				),
+			}
+		}
+		case "SelfhostMembers": {
+			const step = SelfhostMembers.revisit(kept.model)
+			return {
+				model: { ...model, tab: { _tag: "SelfhostMembers", model: step.model } },
+				commands: Command.mapMessages(step.commands ?? [], (message) =>
+					Message.GotSelfhostMembersMessage({ message }),
 				),
 			}
 		}
@@ -691,6 +712,17 @@ const updateMessage = (model: Model, message: Message, context: PageContext): Re
 					Message.GotGeneralMessage({ message: child }),
 				),
 				outMessage: step.outMessage,
+			}
+		},
+		GotSelfhostMembersMessage: ({ message: inner }) => {
+			const tab = tabNamed(model, "SelfhostMembers")
+			if (tab === undefined) return { model }
+			const step = SelfhostMembers.update(tab.model, inner)
+			return {
+				model: putTab(model, { _tag: "SelfhostMembers", model: step.model }),
+				commands: Command.mapMessages(step.commands ?? [], (child) =>
+					Message.GotSelfhostMembersMessage({ message: child }),
+				),
 			}
 		},
 		GotMembersMessage: ({ message: inner }) => {

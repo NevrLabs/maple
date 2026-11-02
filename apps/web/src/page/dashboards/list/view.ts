@@ -1,4 +1,5 @@
 import { TONE_TEXT } from "@maple/ui/lib/tone"
+import { isViewerSession } from "../../../platform/selfhost-session"
 import { Submodel } from "foldkit"
 import type { Html, HtmlBuilder } from "foldkit/html"
 import { alert, alertDescription } from "../../../ui/alert"
@@ -182,7 +183,8 @@ export const view = Submodel.defineView<Model, Message, PageViewInputs>((model, 
 		h,
 		{
 			titleContent: title,
-			actions: actions(h, reason),
+			// NevrLabs selfhost: a viewer cannot create or import (the API gate answers 403).
+			actions: isViewerSession() ? h.empty : actions(h, reason),
 			sticky: persistenceBanner(h, model.persistenceError, isLoadFailed(model)),
 		},
 		isLoadFailed(model)

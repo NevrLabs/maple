@@ -7,6 +7,7 @@ import { SettingsSearch, settingsTabValues } from "../../route/search"
 import * as Ai from "./ai/model"
 import * as Billing from "./billing/model"
 import * as Members from "./members/model"
+import * as SelfhostMembers from "./selfhost-members/model"
 import * as General from "./general/model"
 import * as DataPlatform from "./data-platform/model"
 import * as AuditLog from "./audit-log/model"
@@ -41,6 +42,8 @@ export const TabModel = Schema.Union([
 	Schema.TaggedStruct("DataPlatform", { model: DataPlatform.Model }),
 	Schema.TaggedStruct("General", { model: General.Model }),
 	Schema.TaggedStruct("Members", { model: Members.Model }),
+	/** NevrLabs selfhost: Members on a self-hosted deployment (the OIDC users table). */
+	Schema.TaggedStruct("SelfhostMembers", { model: SelfhostMembers.Model }),
 	Schema.TaggedStruct("Billing", { model: Billing.Model }),
 	/** A tab whose section is not ported yet. */
 	Schema.TaggedStruct("Unported", { tab: Schema.String }),

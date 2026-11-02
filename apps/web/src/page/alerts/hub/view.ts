@@ -1,4 +1,5 @@
 import type { AlertsOverviewReady } from "@maple/web-data/alerts/overview"
+import { isViewerSession } from "../../../platform/selfhost-session"
 import { makeClientErrorBody } from "@maple/web-data/lib/error-messages"
 import { Option } from "effect"
 import { AsyncData, Submodel } from "foldkit"
@@ -178,7 +179,8 @@ const headerActions = (h: H, model: Model, tab: AlertsTab): Html =>
 						),
 					]
 				: []),
-			newRuleButton(h, model),
+			// NevrLabs selfhost: a viewer cannot create rules (the API gate answers 403).
+			...(isViewerSession() ? [] : [newRuleButton(h, model)]),
 		],
 	)
 

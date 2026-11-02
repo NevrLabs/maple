@@ -34,6 +34,13 @@ x-app-env: &app-env
   MAPLE_OIDC_CLIENT_ID: ${MAPLE_OIDC_CLIENT_ID:-}
   MAPLE_OIDC_CLIENT_SECRET: ${MAPLE_OIDC_CLIENT_SECRET:-}
   MAPLE_OIDC_REQUIRED_ROLE: ${MAPLE_OIDC_REQUIRED_ROLE:-maple-admin}
+  # Any OIDC IdP (PATCHES #5). Defaults = Zitadel; Authentik e.g. ROLES_CLAIM=groups SCOPES="openid profile email groups".
+  MAPLE_OIDC_ADMIN_ROLE: ${MAPLE_OIDC_ADMIN_ROLE:-}
+  MAPLE_OIDC_VIEWER_ROLE: ${MAPLE_OIDC_VIEWER_ROLE:-}
+  MAPLE_OIDC_ROLES_CLAIM: ${MAPLE_OIDC_ROLES_CLAIM:-}
+  MAPLE_OIDC_SCOPES: ${MAPLE_OIDC_SCOPES:-}
+  MAPLE_OIDC_LABEL: ${MAPLE_OIDC_LABEL:-}
+  MAPLE_OIDC_HOSTS: ${MAPLE_OIDC_HOSTS:-}
 
 x-logging: &logging
   driver: json-file
@@ -187,6 +194,8 @@ services:
       MAPLE_DEFAULT_ORG_ID: default
       MAPLE_ENVIRONMENT: selfhost
       MAPLE_ROOT_PASSWORD: ${MAPLE_ROOT_PASSWORD}
+      # NevrLabs selfhost: revoke checks against selfhost_users (PATCHES #5).
+      MAPLE_PG_URL: postgres://maple:${POSTGRES_PASSWORD}@postgres:5432/maple
     depends_on:
       - electric
     mem_limit: 256m

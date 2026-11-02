@@ -7,6 +7,7 @@ import { ApiKeyRowSchema } from "@maple/web-data/collections/api-keys"
 import { Message as AiMessage } from "./ai/model"
 import { Message as BillingMessage } from "./billing/model"
 import { Message as MembersMessage } from "./members/model"
+import { Message as SelfhostMembersMessage } from "./selfhost-members/model"
 import { Message as GeneralMessage } from "./general/model"
 import { Message as DataPlatformMessage } from "./data-platform/model"
 import { Message as AuditLogMessage } from "./audit-log/model"
@@ -29,6 +30,7 @@ export const Message = defineMessageUnion({
 	GotAiMessage: { message: AiMessage },
 	GotBillingMessage: { message: BillingMessage },
 	GotMembersMessage: { message: MembersMessage },
+	GotSelfhostMembersMessage: { message: SelfhostMembersMessage },
 	GotGeneralMessage: { message: GeneralMessage },
 	GotDataPlatformMessage: { message: DataPlatformMessage },
 	GotAuditLogMessage: { message: AuditLogMessage },

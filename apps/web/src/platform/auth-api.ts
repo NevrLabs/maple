@@ -15,6 +15,16 @@ export const SELF_HOSTED_AUTH_EVENT = "maple:self-hosted-auth-changed"
 // oxlint-disable-next-line effecttsgo/strict-effect-provide
 const withSessionStorage = Effect.provide(BrowserKeyValueStore.layerSessionStorage)
 
+/** NevrLabs selfhost: the stored session, read synchronously for display (labels, viewer-hidden controls). */
+export const readSessionTokenSync = (): string | null => {
+	try {
+		const token = window.sessionStorage.getItem(SELF_HOSTED_TOKEN_STORAGE_KEY)
+		return token === null || token.length === 0 ? null : token
+	} catch {
+		return null
+	}
+}
+
 export const readSessionToken: Effect.Effect<Option.Option<string>> = Effect.gen(function* () {
 	const store = yield* KeyValueStore.KeyValueStore
 	const token = yield* store.get(SELF_HOSTED_TOKEN_STORAGE_KEY)

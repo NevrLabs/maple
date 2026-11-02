@@ -1,4 +1,5 @@
 import { Array, Option } from "effect"
+import { oidcProvider } from "../../lib/services/common/auth-mode"
 import type { NavShellRow, NavShellSection } from "./kit/nav-shell"
 import { legacySettingsTabValues, settingsTabValues } from "../../route/search"
 
@@ -100,7 +101,9 @@ export type Visibility = Readonly<{
 }>
 
 const isVisible = (id: string, visibility: Visibility): boolean => {
-	if (id === "general" || id === "members" || id === "billing") return visibility.isClerk
+	// NevrLabs selfhost: Members is the OIDC users table on a self-hosted deployment.
+	if (id === "members") return visibility.isClerk || oidcProvider !== null
+	if (id === "general" || id === "billing") return visibility.isClerk
 	if (!visibility.isClerk) return true
 	if (id === "data-platform")
 		return visibility.canAccessDataPlatform || visibility.isDataPlatformLocked === true

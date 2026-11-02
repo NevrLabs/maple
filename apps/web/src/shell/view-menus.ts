@@ -1,3 +1,4 @@
+import { selfhostIdentity } from "../platform/selfhost-session"
 import { cn } from "@maple/ui/lib/utils"
 import { spinnerStyles } from "@maple/ui/styles/ui/spinner"
 import { initialsFrom } from "@maple/ui/lib/initials"
@@ -91,6 +92,22 @@ const themeToggle = (h: HtmlBuilder<Message>, model: Model): Html =>
 	)
 
 const guestMenu = (h: HtmlBuilder<Message>, model: Model, menu: Menu): ReadonlyArray<Html> => [
+	// NevrLabs selfhost: who this session is (OIDC name/email and role; "Root" for the break-glass password).
+	(() => {
+		const me = selfhostIdentity()
+		return menuGroup(h, undefined, [
+			h.div(
+				[h.DataAttribute("session-identity", me.role), h.Class("grid px-2 py-1.5 text-left text-sm leading-tight")],
+				[
+					h.span([h.Class("truncate font-medium")], [me.name]),
+					h.span([h.Class("truncate text-xs text-muted-foreground")], [
+						me.isBreakGlass ? "Break-glass root password" : `${me.email ?? me.sub} · ${me.role}`,
+					]),
+				],
+			),
+		])
+	})(),
+	menuSeparator(h),
 	menuGroup(h, undefined, [themeToggle(h, model)]),
 	menuSeparator(h),
 	menuGroup(

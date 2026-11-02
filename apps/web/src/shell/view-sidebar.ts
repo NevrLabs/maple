@@ -1,4 +1,5 @@
 import { cn } from "@maple/ui/lib/utils"
+import { selfhostIdentity } from "../platform/selfhost-session"
 import { ROW_LANE } from "@maple/ui/styles/ui/list-row"
 import { MAPLE_REGION_LABELS } from "@maple/domain/organization-regions"
 import { initialsFrom } from "@maple/ui/lib/initials"
@@ -269,17 +270,18 @@ export const userAvatar = (
 	)
 
 /** `GuestMenu`'s trigger and `SupportMenu`'s, side by side in the account cluster. */
-/** `UserMenu`'s name: Clerk's full name, else the email, else "User"; self-hosted is "Root". */
+/** `UserMenu`'s name: Clerk's full name, else the email, else "User"; self-hosted is the session's own name
+ * (NevrLabs selfhost: the OIDC user's name or email; "Root" for the break-glass password). */
 export const userNameOf = (clerk: ShellClerk | null): string =>
 	clerk === null
-		? "Root"
+		? selfhostIdentity().name
 		: Option.match(clerk.maybeUser, {
 				onNone: () => "User",
 				onSome: (user) => user.fullName ?? user.email ?? "User",
 			})
 
 const initialsOf = (clerk: ShellClerk | null): string =>
-	clerk === null ? "RT" : initialsFrom(userNameOf(clerk))
+	clerk === null ? (selfhostIdentity().isBreakGlass ? "RT" : initialsFrom(userNameOf(clerk))) : initialsFrom(userNameOf(clerk))
 
 /** `user.imageUrl`, empty without a Clerk user. */
 export const userImageOf = (clerk: ShellClerk | null): string =>

@@ -15,7 +15,7 @@ describe("self-hosted sign-in with Zitadel", () => {
 			{ update, view },
 			given(init()),
 			expect(role("button", { name: "Sign in with Zitadel" })).toHaveAttr("type", "submit"),
-			expect(role("button", { name: "Sign in with Zitadel" })).toHaveAttr("data-oidc-start", "zitadel"),
+			expect(role("button", { name: "Sign in with Zitadel" })).toHaveAttr("data-oidc-start", "Zitadel"),
 			expect(text("or use the root password")).toExist(),
 			expect(label("Root password")).toExist(),
 			expect(role("button", { name: "Sign in" })).toExist(),

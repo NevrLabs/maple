@@ -7,7 +7,8 @@ import { withUnauthorizedResign } from "../lib/services/common/retry-policy"
 import { Context, Effect, Layer, Option } from "effect"
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http"
 import { HttpApiClient } from "effect/http-api"
-import { MapleAuthApi } from "./auth-api"
+import { announceSessionTokenChanged, clearSessionToken, MapleAuthApi } from "./auth-api"
+import { isClerkAuthEnabled } from "../lib/services/common/auth-mode"
 import { SessionBearer } from "./session-bearer"
 
 /**
@@ -32,10 +33,17 @@ const MapleHttpClientLive = Layer.effect(
 		// The base URL is prepended here, not by HttpApiClient: its `baseUrl` is applied after this
 		// client's request mapping, so `authorize` would only ever see relative URLs.
 		const absolute = HttpClient.mapRequest(client, HttpClientRequest.prependUrl(apiBaseUrl))
-		return withUnauthorizedResign(withRequestTimeout(HttpClient.mapRequestEffect(absolute, authorize)), {
+		const resigning = withUnauthorizedResign(withRequestTimeout(HttpClient.mapRequestEffect(absolute, authorize)), {
 			shouldRetry: (request) => request.url.startsWith(apiBaseUrl) && isBillingRequest(request),
 			freshToken: bearer.freshToken,
 		})
+		// NevrLabs selfhost (PATCHES #5): an admin disabled this user or signed them out everywhere. The gate answers
+		// 401 before the API; the tab drops its session and the root sends it to /sign-in, without a reload.
+		return HttpClient.tap(resigning, (response) =>
+			response.status === 401 && !isClerkAuthEnabled && response.request.url.startsWith(apiBaseUrl)
+				? Effect.andThen(clearSessionToken, announceSessionTokenChanged)
+				: Effect.void,
+		)
 	}),
 ).pipe(Layer.provide([FetchHttpClient.layer, SessionBearer.layer]))
 
