@@ -228,18 +228,21 @@ const clusterRail = <M>(h: HtmlBuilder<M>, data: ProxmoxSnapshot): Html => {
 const GUEST_COLS = {
 	name: "w-0 flex-1 min-w-48",
 	node: "w-28 shrink-0",
-	bar: "w-16 shrink-0",
+	bar: "w-20 shrink-0",
 	io: "w-40 shrink-0 hidden xl:flex",
 	uptime: "w-24 shrink-0",
 } as const
 
-/** One bar per column, label-less (the column head names it): every row is one line, like Pulse. */
+/**
+ * One bar per column, label-less (the column head names it): every row is one line, like Pulse. Floored at 1% so an
+ * idle guest reads `1%` instead of the kit's `<0.01%`, which overflows the meter's fixed value slot.
+ */
 const barCell = <M>(h: HtmlBuilder<M>, fraction: number | null, detail?: string): Html =>
 	h.div(
 		[h.Class(cn("flex h-4 items-center", GUEST_COLS.bar)), ...(detail === undefined ? [] : [h.Title(detail)])],
 		fraction === null
 			? [h.span([h.Class("font-mono text-2xs leading-none text-foreground-faint")], ["—"])]
-			: [meterRows(h, [{ label: "", fraction }], { hideLabels: true, className: "w-full" })],
+			: [meterRows(h, [{ label: "", fraction: Math.max(fraction, 0.01) }], { hideLabels: true, className: "w-full" })],
 	)
 
 const guestHead = <M>(h: HtmlBuilder<M>): ReadonlyArray<Html> => [
@@ -625,9 +628,9 @@ export const proxmoxLoadingBody = <M>(h: HtmlBuilder<M>): ReadonlyArray<Html> =>
 		skeletonRows(h, 8, () => [
 			skeleton(h, "h-4 w-0 min-w-48 flex-1"),
 			skeleton(h, "h-3 w-28"),
-			skeleton(h, "h-2 w-16"),
-			skeleton(h, "h-2 w-16"),
-			skeleton(h, "h-2 w-16"),
+			skeleton(h, "h-2 w-20"),
+			skeleton(h, "h-2 w-20"),
+			skeleton(h, "h-2 w-20"),
 			skeleton(h, "hidden h-3 w-40 xl:block"),
 			skeleton(h, "h-3 w-24"),
 		]),
