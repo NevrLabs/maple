@@ -4,7 +4,7 @@ import type { Html, HtmlBuilder } from "foldkit/html"
 import { accountLayout } from "../../layout/account-layout"
 import { oidcProvider } from "../../lib/services/common/auth-mode"
 import { apiBaseUrl } from "../../lib/services/common/api-base-url"
-import { button, linkButton } from "../../ui/button"
+import { button } from "../../ui/button"
 import { field, fieldError, fieldLabel, input, type FieldIds, type FieldState } from "../../ui/field"
 import { Message, type Model, SignInFailure, Submission } from "./sign-in"
 
@@ -71,8 +71,7 @@ const passwordField = (model: Model, h: HtmlBuilder<Message>): Html => {
 }
 
 /**
- * NevrLabs selfhost: the provider sign-in above the root password, which stays as the break-glass path. A plain
- * link (full navigation): the API answers with a 302 to Zitadel and the flow cookie.
+ * NevrLabs selfhost: the provider sign-in above the root password, which stays as the break-glass path.
  */
 const oidcSection = (model: Model, h: HtmlBuilder<Message>, provider: "zitadel"): ReadonlyArray<Html> => [
 	...(model.oidcError === undefined
@@ -87,10 +86,15 @@ const oidcSection = (model: Model, h: HtmlBuilder<Message>, provider: "zitadel")
 					[model.oidcError],
 				),
 			]),
-	linkButton(
-		h,
-		{ className: "w-full", href: `${apiBaseUrl}/api/auth/oidc/start`, attributes: [h.DataAttribute("oidc-start", provider)] },
-		["Sign in with Zitadel"],
+	// A GET form, not a link: the router takes every same-origin <a> click as an in-app navigation, and
+	// /_api/... must be a real page load (the API answers with the 302 to Zitadel and sets the flow cookie).
+	h.form(
+		[h.Method("get"), h.Action(`${apiBaseUrl}/api/auth/oidc/start`), h.DataAttribute("oidc-form", provider)],
+		[
+			button(h, { type: "submit", className: "w-full", attributes: [h.DataAttribute("oidc-start", provider)] }, [
+				"Sign in with Zitadel",
+			]),
+		],
 	),
 	h.div(
 		[h.Class("flex items-center gap-3 font-mono text-xs text-muted-foreground")],
