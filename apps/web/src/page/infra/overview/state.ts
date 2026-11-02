@@ -46,6 +46,7 @@ const NOT_CONNECTED: IntegrationFlags = {
 	gcp: false,
 	supabase: false,
 	aws: false,
+	proxmox: false,
 }
 
 /** `useInfraSurfaces(window)`: the page's probe (the last answer while a new window loads) and the shell's statuses. */

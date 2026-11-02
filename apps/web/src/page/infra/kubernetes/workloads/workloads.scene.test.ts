@@ -27,6 +27,7 @@ const NO_INTEGRATIONS = {
 	gcp: false,
 	supabase: false,
 	aws: false,
+	proxmox: false,
 }
 
 /** The StatefulSet kind with an empty answer for the window. */

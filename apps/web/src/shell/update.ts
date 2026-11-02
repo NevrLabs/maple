@@ -24,6 +24,7 @@ import {
 	LoadNamespaces,
 	LoadPlanetscaleStatus,
 	LoadRailwayStatus,
+	LoadProxmoxStatus,
 	LoadSources,
 	LoadSupabaseStatus,
 } from "./data"
@@ -120,6 +121,7 @@ const requestInfraSurfaces = (model: Model): UpdateReturn =>
 							LoadGcpStatus({ orgId }),
 							LoadSupabaseStatus({ orgId }),
 							LoadAwsStatus({ orgId }),
+							LoadProxmoxStatus({ orgId }),
 						],
 					},
 	})

@@ -101,6 +101,7 @@ export const AppRoute = defineRouteUnion({
 	InfraKubernetes: { search: Search.InfraKubernetesSearch },
 	InfraPlanetscale: { search: Search.InfraPlanetscaleSearch },
 	InfraRailway: { search: Search.InfraRailwaySearch },
+	InfraProxmox: { search: Search.InfraProxmoxSearch },
 	InfraSupabase: { search: Search.InfraSupabaseSearch },
 	DashboardWidget: {
 		dashboardId: DashboardId,

@@ -44,6 +44,8 @@ export const Integrations = Schema.Struct({
 	gcp: IntegrationFlag,
 	supabase: IntegrationFlag,
 	aws: IntegrationFlag,
+	/** NevrLabs selfhost: Proxmox VE metrics in the last hour (no connect flow; PVE pushes OTel). */
+	proxmox: IntegrationFlag,
 })
 
 export const Model = Schema.Struct({

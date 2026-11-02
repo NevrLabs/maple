@@ -30,6 +30,7 @@ const integrations = {
 	gcp: false,
 	supabase: false,
 	aws: false,
+	proxmox: false,
 }
 const context: PageContext = {
 	orgId,

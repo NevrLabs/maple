@@ -28,6 +28,7 @@ import {
 	LoadInfraPresence,
 	LoadNamespaces,
 	LoadPlanetscaleStatus,
+	LoadProxmoxStatus,
 	LoadRailwayStatus,
 	LoadSupabaseStatus,
 } from "./data"
@@ -191,6 +192,7 @@ describe("sidebar collapse", () => {
 				LoadGcpStatus,
 				LoadSupabaseStatus,
 				LoadAwsStatus,
+				LoadProxmoxStatus,
 			),
 			Command.resolveAll(
 				[
@@ -245,6 +247,14 @@ describe("sidebar collapse", () => {
 						isConnected: false,
 					}),
 				],
+				[
+					LoadProxmoxStatus,
+					Message.SucceededLoadIntegration({
+						orgId: "org_parity",
+						integration: "proxmox",
+						isConnected: false,
+					}),
+				],
 			),
 			Command.expectExact(SaveInfraSurfaces({ orgId: "org_parity", surfaces: [] })),
 			Command.resolve(SaveInfraSurfaces, Message.CompletedSaveInfraSurfaces()),
@@ -266,6 +276,7 @@ describe("sidebar collapse", () => {
 			"LoadGcpStatus",
 			"LoadSupabaseStatus",
 			"LoadAwsStatus",
+			"LoadProxmoxStatus",
 		])
 		expectVitest(asked.model.hasRequestedSidebarData).toBe(false)
 		expectVitest(update(asked.model, Message.RequestedInfraSurfaces()).commands ?? []).toEqual([])
@@ -416,6 +427,7 @@ describe("in-place org change", () => {
 				gcp: false,
 				supabase: false,
 				aws: false,
+				proxmox: false,
 			},
 		}
 		const onB = enter("org_b")(onA).model
@@ -427,6 +439,7 @@ describe("in-place org change", () => {
 			gcp: null,
 			supabase: null,
 			aws: null,
+			proxmox: null,
 		})
 		const lateNamespaces = update(
 			onB,
@@ -522,6 +535,7 @@ describe("infrastructure section", () => {
 						gcp: false,
 						supabase: false,
 						aws: false,
+						proxmox: false,
 					},
 				}),
 			),
@@ -536,7 +550,7 @@ describe("infrastructure section", () => {
 	const answered = (model: Model, cloudflare: boolean) =>
 		[
 			Message.SucceededLoadInfraPresence({ orgId: "org_parity", surfaces: ["hosts"] }),
-			...(["railway", "planetscale", "gcp", "supabase", "aws"] as const).map((integration) =>
+			...(["railway", "planetscale", "gcp", "supabase", "aws", "proxmox"] as const).map((integration) =>
 				Message.SucceededLoadIntegration({ orgId: "org_parity", integration, isConnected: false }),
 			),
 			Message.SucceededLoadIntegration({
@@ -600,6 +614,7 @@ describe("infrastructure section", () => {
 				gcp: false,
 				supabase: false,
 				aws: false,
+				proxmox: false,
 			},
 		}
 		const oneLeft = { ...answeredOnce, integrations: { ...answeredOnce.integrations, aws: null } }

@@ -3,6 +3,7 @@ import { Clock, Effect, Schema } from "effect"
 import { Command } from "foldkit"
 import { lastHourWindow, loadInfraPresence } from "../data/infra-surfaces"
 import { IntegrationStatuses } from "../data/integration-statuses"
+import { loadProxmoxPresence } from "../page/infra-integrations/proxmox/data"
 import { MapleApiV2Client } from "../platform/api-clients"
 import { loadServicesFacets } from "../data/services-facets-probe"
 import { loadSources, sourcesListKey } from "../page/sources/kit/data"
@@ -114,6 +115,17 @@ export const LoadSupabaseStatus = Command.define("LoadSupabaseStatus", {
 				isConnected: status.connected,
 			})
 		}).pipe(failed(Message.FailedLoadIntegration({ orgId, integration: "supabase" }))),
+})
+
+/** NevrLabs selfhost: Proxmox counts once a PVE node reported in the last hour (raw-SQL presence check). */
+export const LoadProxmoxStatus = Command.define("LoadProxmoxStatus", {
+	args: orgArgs,
+	messages: integrationMessages,
+	execute: ({ orgId }) =>
+		Effect.gen(function* () {
+			const isConnected = yield* loadProxmoxPresence(yield* Clock.currentTimeMillis)
+			return Message.SucceededLoadIntegration({ orgId, integration: "proxmox", isConnected })
+		}).pipe(failed(Message.FailedLoadIntegration({ orgId, integration: "proxmox" }))),
 })
 
 // DASHBOARDS AND NAMESPACES

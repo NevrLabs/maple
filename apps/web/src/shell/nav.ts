@@ -13,6 +13,7 @@ export const NavSurface = Schema.Literals([
 	"cloudflare",
 	"planetscale",
 	"railway",
+	"proxmox",
 	"supabase",
 	"gcp",
 	"aws",
@@ -84,6 +85,7 @@ const infrastructureItem: NavItem = {
 			surfaces: ["k8sPods", "k8sNodes", "k8sWorkloads"],
 			views: KUBERNETES_VIEWS,
 		},
+		{ title: "Proxmox", href: "/infra/proxmox", icon: "StackPerspectiveIcon", surfaces: ["proxmox"] },
 		{
 			title: "Cloudflare",
 			href: "/infra/cloudflare",

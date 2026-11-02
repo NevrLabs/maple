@@ -810,6 +810,14 @@ export const InfraRailwaySearch = Schema.Struct({
 	...TimeRangeSearchFields,
 })
 
+// NevrLabs selfhost: `/infra/proxmox` (tab, node, guest scope and search in the URL).
+export const InfraProxmoxSearch = Schema.Struct({
+	tab: Schema.optional(Schema.Literals(["overview", "storage", "backups"])),
+	node: Schema.optional(Schema.String),
+	scope: Schema.optional(Schema.Literals(["running", "stopped", "unknown"])),
+	q: Schema.optional(Schema.String),
+})
+
 // sessionTimeRangeSearchMiddleware()
 export const InfraSupabaseSearch = Schema.Struct({
 	...TimeRangeSearchFields,

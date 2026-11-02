@@ -342,6 +342,11 @@ const routers = {
 		search(Search.InfraRailwaySearch),
 		Route.mapTo(AppRoute.InfraRailway),
 	),
+	InfraProxmox: pipe(
+		path("infra", "proxmox"),
+		search(Search.InfraProxmoxSearch),
+		Route.mapTo(AppRoute.InfraProxmox),
+	),
 	InfraSupabase: pipe(
 		path("infra", "supabase"),
 		search(Search.InfraSupabaseSearch),
@@ -447,6 +452,7 @@ export const urlToAppRoute = Route.parseUrlWithFallback(
 		routers.InfraKubernetes,
 		routers.InfraPlanetscale,
 		routers.InfraRailway,
+		routers.InfraProxmox,
 		routers.InfraSupabase,
 		routers.AgentSessionTools,
 		routers.ErrorIssues,

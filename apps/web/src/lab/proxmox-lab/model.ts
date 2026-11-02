@@ -1,15 +1,14 @@
 import { Effect, Schema } from "effect"
 import type { Update } from "foldkit"
 import { defineMessageUnion } from "foldkit/message"
+import { GuestScope, Tab } from "../../page/infra-integrations/proxmox/model"
 import type { Resources } from "../../platform/resources"
 
 // `/lab/proxmox`: a Pulse-style Proxmox page (node cards, guest table, storage bars, backups) over
 // a real FxCluster snapshot. The floating lab toolbar switches the data state for review.
 
-export const TABS = ["overview", "storage", "backups"] as const
-export const Tab = Schema.Literals(TABS)
-export type Tab = typeof Tab.Type
-export const TAB_LABEL = { overview: "Overview", storage: "Storage", backups: "Backups" } as const
+export { TAB_LABEL, TABS } from "../../page/infra-integrations/proxmox/model"
+export { GuestScope, Tab }
 
 /** Review states: the live snapshot, the first paint, one node gone silent, nothing reporting yet. */
 export const LAB_STATES = ["live", "loading", "offline", "empty"] as const
@@ -22,8 +21,6 @@ export const STATE_LABEL = {
 	empty: "No data",
 } as const
 
-export const GuestScope = Schema.Literals(["running", "stopped", "unknown"])
-export type GuestScope = typeof GuestScope.Type
 
 export const Flags = Schema.Struct({ nowMs: Schema.Number, timeZone: Schema.String })
 export type Flags = typeof Flags.Type

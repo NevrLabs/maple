@@ -62,6 +62,7 @@ import * as InfraGcpWorkload from "./infra-integrations/gcp/workload"
 import * as InfraPlanetscaleDatabase from "./infra-integrations/planetscale/db"
 import * as InfraPlanetscale from "./infra-integrations/planetscale/list"
 import * as InfraRailway from "./infra-integrations/railway/list"
+import * as InfraProxmox from "./infra-integrations/proxmox/list"
 import * as InfraRailwayService from "./infra-integrations/railway/service"
 import * as InfraSupabase from "./infra-integrations/supabase/list"
 import * as InfraSupabaseProject from "./infra-integrations/supabase/project"
@@ -134,6 +135,7 @@ export const pages = [
 	InfraKubernetesService.page,
 	InfraOverview.page,
 	InfraRailway.page,
+	InfraProxmox.page,
 	InfraRailwayService.page,
 	InfraSupabase.page,
 	InfraSupabaseProject.page,
