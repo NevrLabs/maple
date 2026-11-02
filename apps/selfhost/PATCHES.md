@@ -133,3 +133,27 @@ tab session -> /sign-in), `shell/view-sidebar.ts` + `shell/view-menus.ts` (chip/
 
 **Verify after rebase:** `bun test apps/selfhost/src/{oidc,gate}.test.ts`; `vitest run src/page/settings src/page/sign-in`;
 E2E `verify/e2e-users.ts` (Zitadel disposable admin + viewer).
+
+## #6 — durable VCS-sync queue (BRIEF-integrations A2)
+
+Upstream runs GitHub webhook/backfill work on a Cloudflare Queue; selfhost `ports.ts` had `droppingQueue("vcs-sync")`,
+so every webhook delivery was acknowledged and then thrown away.
+
+- `vcs-queue.ts` (new) — Postgres table `selfhost_vcs_queue` (created on api start; not in upstream migrations).
+  Producer = INSERT; consumer = in-process loop in the api: `FOR UPDATE SKIP LOCKED`, 300 s lease, batch 10, feeds
+  the UNMODIFIED upstream `processBatch` (`apps/api/src/vcs-sync-runtime.ts`). ack -> DELETE; retry/throw -> backoff
+  10 s, 40 s, 90 s … capped 15 min (never dropped). Also fires upstream's 12 h scheduled sync.
+- `ports.ts` — `selfhostPorts(env, vcsSync?)`: the queue producer is injected; the dropping stub remains only as the
+  fallback when no PG URL is set.
+- `api.ts` — builds the store, `ensureSchema`, passes the producer to the ports, starts the consumer after listen
+  (logs `[vcs-queue] on` / `[vcs-queue] off`).
+
+**Verify after rebase:** `bun test apps/selfhost/src/vcs-queue.test.ts`; api log shows `[vcs-queue] on`;
+`\d selfhost_vcs_queue` exists in PG.
+
+## #7 — collector processors (BRIEF-integrations D: RES-01 / LOG-04)
+
+`otel/builder-config.yaml` adds `resourceprocessor` and `transformprocessor` (v0.151.0) so the central collector can
+normalise every sender: `transform/service-name` (fallback `service.name` from resource keys) and
+`transform/severity` (map numeric / empty / non-standard severities to the standard levels). Config lives in
+`apps/selfhost/compose/otel-collector.yaml`. **Verify after rebase:** collector image builds; `validate --config`.

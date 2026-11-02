@@ -13,9 +13,13 @@ import { mintSession } from "./session"
 import { makeUsersStore, pgSql } from "./users"
 import { selfhostEnv, selfhostPorts, setSchemaApplyRunner } from "./ports"
 import { runSchemaApplyInline } from "./schema-apply"
+import { pgQueueStore, startVcsQueue, storeProducer } from "./vcs-queue"
 
 const env = selfhostEnv()
-const ports = selfhostPorts(env)
+// NevrLabs selfhost (PATCHES #6): VCS sync jobs (GitHub backfill + webhooks) go to a Postgres queue consumed below.
+const vcsStore = process.env.MAPLE_PG_URL ? pgQueueStore(process.env.MAPLE_PG_URL) : null
+if (vcsStore !== null) await vcsStore.ensureSchema()
+const ports = selfhostPorts(env, vcsStore === null ? undefined : storeProducer(vcsStore))
 const port = Number(process.env.PORT ?? 3472)
 
 setSchemaApplyRunner((orgId) => runSchemaApplyInline(orgId, env))
@@ -75,3 +79,5 @@ const server = Bun.serve({
 	},
 })
 console.log(`maple-api (selfhost) listening on :${server.port}`)
+if (vcsStore !== null) startVcsQueue({ store: vcsStore, ports, env, workerEnv: workerEnvLayer(env) })
+else console.log("[vcs-queue] off (no MAPLE_PG_URL): VCS sync jobs are dropped")

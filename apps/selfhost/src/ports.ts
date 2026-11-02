@@ -88,9 +88,10 @@ const schemaApplyStarter: WorkflowStarter<{ readonly orgId: string }> = {
 				}),
 }
 
-export const selfhostPorts = (env: Record<string, unknown>) =>
+/** : the Postgres-backed queue (vcs-queue.ts, PATCHES #6); without it VCS jobs are dropped as before. */
+export const selfhostPorts = (env: Record<string, unknown>, vcsSync?: QueueProducer) =>
 	Layer.mergeAll(
-		Layer.succeed(VcsSyncQueueProducer, droppingQueue("vcs-sync")),
+		Layer.succeed(VcsSyncQueueProducer, vcsSync ?? droppingQueue("vcs-sync")),
 		Layer.succeed(PlanetScaleWebhookQueueProducer, droppingQueue("planetscale-webhooks")),
 		Layer.succeed(AuditEventsQueueProducer, droppingQueue("audit-events")),
 		Layer.succeed(ApiV2RateLimit, memoryLimiter(600, 60)),
