@@ -220,7 +220,7 @@ const clusterRail = (h: H, data: ProxmoxFixture): Html => {
 const GUEST_COLS = {
 	name: "w-0 flex-1 min-w-56",
 	node: "w-28",
-	bar: "w-28",
+	bar: "w-24",
 	io: "w-44 hidden xl:flex",
 	uptime: "w-20",
 } as const
@@ -275,7 +275,7 @@ const guestRow = (h: H, guest: ProxmoxGuest, state: GuestState): Html => {
 					}),
 					h.span([h.Class(cn("w-12 shrink-0 font-mono text-2xs tabular-nums", CAPTION))], [guest.vmid]),
 					h.span(
-						[h.Class(cn("truncate text-xs font-medium", running ? "text-foreground" : "text-muted-foreground"))],
+						[h.Class(cn("min-w-0 truncate text-xs font-medium", running ? "text-foreground" : "text-muted-foreground")), h.Title(guest.name)],
 						[guest.name],
 					),
 					h.span(
@@ -591,9 +591,9 @@ const loadingBody = (h: H): ReadonlyArray<Html> => [
 	dataTable(h, { ariaLabel: "Guests", isWaiting: true }, guestHead(h), skeletonRows(h, 8, () => [
 		skeleton(h, "h-4 w-0 min-w-56 flex-1"),
 		skeleton(h, "h-3 w-28"),
-		skeleton(h, "h-2 w-28"),
-		skeleton(h, "h-2 w-28"),
-		skeleton(h, "h-2 w-28"),
+		skeleton(h, "h-2 w-24"),
+		skeleton(h, "h-2 w-24"),
+		skeleton(h, "h-2 w-24"),
 		skeleton(h, "hidden h-3 w-36 xl:block"),
 		skeleton(h, "h-3 w-20"),
 	])),
