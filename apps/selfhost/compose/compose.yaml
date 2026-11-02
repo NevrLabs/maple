@@ -123,7 +123,8 @@ services:
       CH_ADMIN_PASSWORD: ${CH_ADMIN_PASSWORD}
     volumes:
       - ./clickhouse/retention.sql:/retention.sql:ro
-    entrypoint: ["sh", "-c", "clickhouse-client --host clickhouse --user maple_admin --password \"$$CH_ADMIN_PASSWORD\" --multiquery < /retention.sql && echo retention-applied"]
+      - ./clickhouse/proxmox.sql:/proxmox.sql:ro
+    entrypoint: ["sh", "-c", "clickhouse-client --host clickhouse --user maple_admin --password \"$$CH_ADMIN_PASSWORD\" --multiquery < /retention.sql && clickhouse-client --host clickhouse --user maple_admin --password \"$$CH_ADMIN_PASSWORD\" --multiquery < /proxmox.sql && echo retention-applied"]
 
   api:
     image: maple-selfhost:${MAPLE_SELFHOST_TAG}

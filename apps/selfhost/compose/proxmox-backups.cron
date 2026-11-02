@@ -1,0 +1,4 @@
+# /etc/cron.d/maple-proxmox-backups — Proxmox backup snapshot -> maple.proxmox_backups (read-only PVE token).
+SHELL=/bin/sh
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+*/15 * * * * root cd /opt/maple && set -a && . ./.env && set +a && python3 proxmox-backups.py >> /var/log/maple-proxmox-backups.log 2>&1

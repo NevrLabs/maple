@@ -55,6 +55,8 @@ them to `maple.proxmox_backups` / `proxmox_backup_jobs` / `proxmox_storage` (DDL
   order before the catch-alls), `page/registry.ts` (page).
 - `apps/web/src/shell/shell.scene.test.ts` — the expected integration-status command lists include
   `LoadProxmoxStatus`.
+- `apps/web/src/page/infra/overview/state.ts` — `NOT_CONNECTED` gains `proxmox: false` (type completeness only;
+  the overview tiles are unchanged). Test fixtures `overview.scene.test.ts`, `workloads.scene.test.ts` likewise.
 
 **Not upstream:** `apps/web/src/lab/proxmox-lab/*` (fork lab) now renders the shared `view-parts.ts`; its floating
 state toolbar is lab-only and never ships in the route.
