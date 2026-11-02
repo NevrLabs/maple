@@ -604,7 +604,7 @@ const backupsSection = <M>(h: HtmlBuilder<M>, data: ProxmoxSnapshot): Html => {
 								h.p(
 									[h.Key("unsized"), h.DataAttribute("proxmox-backup-unsized", String(unsized)), h.Class(cn("px-4 pb-2.5 text-2xs", CAPTION))],
 									[
-										`≥ ${unsized} ${unsized === 1 ? "archive is" : "archives are"} older than PVE's task history, so ${unsized === 1 ? "its size is" : "their sizes are"} unknown: shown as —, left out of the sums.`,
+										`≥ marks a sum that leaves out unknown sizes (—): ${unsized} ${unsized === 1 ? "archive is" : "archives are"} older than PVE's task history.`,
 									],
 								),
 							]

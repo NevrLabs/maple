@@ -149,7 +149,7 @@ describe("proxmox route", () => {
 			{ update: pageUpdate, view },
 			given(loaded(snapshot(), { tab: "backups" })),
 			expectView(text("Deleted guests (999)")).toExist(),
-			expectView(text("≥ 1 archive is older than PVE's task history, so its size is unknown: shown as —, left out of the sums.")).toExist(),
+			expectView(text("≥ marks a sum that leaves out unknown sizes (—): 1 archive is older than PVE's task history.")).toExist(),
 			expectView(text(/backup data as of 1m ago/)).toExist(),
 		)
 	})
