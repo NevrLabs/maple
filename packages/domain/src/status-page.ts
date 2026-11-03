@@ -795,16 +795,31 @@ export const incidentComponentStatus = (incident: {
 	incident.kind === "maintenance" ? "maintenance" : IMPACT_STATUS[incident.impact]
 
 /**
- * A component's status: the worst of its monitor (down is a major outage), a manual
- * override, and the active incidents or maintenance naming it.
+ * Selfhost fork (PATCHES #11): components in a group whose name starts with this are informational
+ * (dev servers, media, lab): a down monitor reads as degraded, never a major outage, and they do not
+ * drive the page banner. Upstream pages have no such group names, so behaviour there is unchanged.
+ */
+export const INFORMATIONAL_GROUP_PREFIX = "Informational"
+
+export const isInformationalGroup = (group: string | null | undefined): boolean =>
+	group != null && group.startsWith(INFORMATIONAL_GROUP_PREFIX)
+
+/**
+ * A component's status: the worst of its monitor (down is a major outage, or degraded for an
+ * informational component), a manual override, and the active incidents or maintenance naming it.
  */
 export const deriveComponentStatus = (input: {
 	readonly monitorStatus: UptimeMonitorStatus | null
 	readonly manualStatus: StatusPageComponentStatus | null
 	readonly incidentStatuses: ReadonlyArray<StatusPageComponentStatus>
+	readonly informational?: boolean
 }): StatusPageComponentStatus =>
 	worstStatus([
-		input.monitorStatus === "down" ? "major_outage" : "operational",
+		input.monitorStatus === "down"
+			? input.informational === true
+				? "degraded"
+				: "major_outage"
+			: "operational",
 		input.manualStatus ?? "operational",
 		...input.incidentStatuses,
 	])
@@ -826,21 +841,39 @@ const withIncidentImpact = (
 	}))
 }
 
-/** The banner status: the worst component, or `operational` for an empty page. */
+/** The banner status: the worst non-informational component, or `operational` for an empty page. */
 export const overallStatus = (snapshot: StatusPageSnapshot): StatusPageComponentStatus =>
-	worstStatus(snapshot.components.map((component) => component.status))
+	worstStatus(
+		snapshot.components
+			.filter((component) => !isInformationalGroup(component.group))
+			.map((component) => component.status),
+	)
 
 // --- Bars ---
 
 export const dayState = (bar: StatusPageDayBar): StatusPageDayState =>
 	bar.checks === 0 ? "none" : bar.downChecks > 0 ? "down" : bar.failures > 0 ? "degraded" : "ok"
 
-/** Share of checks not taken while down, as a percentage; null when nothing was checked. */
+/**
+ * Share of checks that passed, as a percentage; null when nothing was checked. (Selfhost fork,
+ * PATCHES #11: upstream counted only checks taken while the monitor was down, so a day of failing
+ * checks below the down threshold showed an orange bar next to "100% uptime".)
+ */
 export const uptimePercent = (days: ReadonlyArray<StatusPageDayBar>): number | null => {
 	const checks = days.reduce((sum, day) => sum + day.checks, 0)
 	if (checks === 0) return null
-	const down = days.reduce((sum, day) => sum + day.downChecks, 0)
-	return ((checks - down) / checks) * 100
+	const failed = days.reduce((sum, day) => sum + day.failures, 0)
+	return ((checks - failed) / checks) * 100
+}
+
+/**
+ * The icon a component row shows: its status, or degraded when today's bar has failed checks while
+ * the status is operational, so the icon never contradicts the bar beside it (PATCHES #11).
+ */
+export const rowStatus = (component: StatusPageSnapshotComponent): StatusPageComponentStatus => {
+	const today = component.days.at(-1)
+	const state = today === undefined || !component.showUptime ? "none" : dayState(today)
+	return state === "degraded" || state === "down" ? worstStatus([component.status, "degraded"]) : component.status
 }
 
 export const utcDay = (ms: number): string => new Date(ms).toISOString().slice(0, 10)

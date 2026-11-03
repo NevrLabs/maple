@@ -31,6 +31,7 @@ import {
 	fillDays,
 	incidentComponentStatus,
 	isActiveIncident,
+	isInformationalGroup,
 	isListedIncident,
 	lastDays,
 	STATUS_PAGE_HISTORY_DAYS,
@@ -196,6 +197,7 @@ export const toSnapshot = (input: SnapshotInput): StatusPageSnapshot => {
 		status: deriveComponentStatus({
 			monitorStatus: component.monitorStatus,
 			manualStatus: component.manualStatus,
+			informational: isInformationalGroup(component.groupName),
 			incidentStatuses: active
 				.filter((incident) => incident.componentIds.includes(component.id))
 				.map(incidentComponentStatus),
@@ -203,6 +205,7 @@ export const toSnapshot = (input: SnapshotInput): StatusPageSnapshot => {
 		baseStatus: deriveComponentStatus({
 			monitorStatus: component.monitorStatus,
 			manualStatus: component.manualStatus,
+			informational: isInformationalGroup(component.groupName),
 			incidentStatuses: [],
 		}),
 		showUptime: component.showUptime,

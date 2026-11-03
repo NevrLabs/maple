@@ -2,7 +2,9 @@ import type { StatusPageComponentStatus } from "@maple/domain/primitives"
 import {
 	dayState,
 	incidentComponentStatus,
+	isInformationalGroup,
 	overallStatus,
+	rowStatus,
 	STATUS_PAGE_STALE_AFTER_MS,
 	type StatusPageDayBar,
 	type StatusPageFreshness,
@@ -129,7 +131,7 @@ const renderComponent = (component: StatusPageSnapshotComponent, options: Render
 	const uptime = !showsBars
 		? ""
 		: `<span class="uptime">${percent === null ? "No data" : `${formatPercent(percent)} uptime`}</span>`
-	return `<div class="component" data-component="${escapeHtml(component.id)}"${previewIdAttr(options, "component", component.id)}><div class="row">${statusName(component.name, component.status)}${uptime}</div>${description}${showsBars ? renderBars(days) : ""}</div>`
+	return `<div class="component" data-component="${escapeHtml(component.id)}"${previewIdAttr(options, "component", component.id)}><div class="row">${statusName(component.name, rowStatus(component))}${uptime}</div>${description}${showsBars ? renderBars(days) : ""}</div>`
 }
 
 const renderSystemStatus = (snapshot: StatusPageSnapshot, options: RenderOptions): string => {
@@ -137,13 +139,21 @@ const renderSystemStatus = (snapshot: StatusPageSnapshot, options: RenderOptions
 	const shown = barComponents(snapshot.components)[0]
 	const label = shown === undefined ? "" : rangeLabel(windowDays(shown.days, 0))
 	const head = `<div class="panel-head"><h2 id="h-components">System status</h2>${shown === undefined ? "" : pager("window", label, "90 days")}</div>`
+	// Selfhost fork (PATCHES #11): one "Informational" divider before the first informational group.
+	const firstInformational = groupComponents(snapshot.components).findIndex((group) =>
+		isInformationalGroup(group.name),
+	)
 	const groups = groupComponents(snapshot.components)
-		.map((group) => {
+		.map((group, index) => {
 			const groupHead =
 				group.name === null
 					? ""
 					: `<div class="group-head">${statusName(group.name, group.status)}</div>`
-			return `<div class="group">${groupHead}${group.components.map((component) => renderComponent(component, options)).join("")}</div>`
+			const tierHead =
+				index === firstInformational
+					? `<div class="tier-head" id="informational">Informational <span>· does not affect the overall status</span></div>`
+					: ""
+			return `${tierHead}<div class="group">${groupHead}${group.components.map((component) => renderComponent(component, options)).join("")}</div>`
 		})
 		.join("")
 	return `<section class="panel" aria-labelledby="h-components">${head}${groups}</section>`
@@ -277,7 +287,9 @@ export const renderPage = (
 		renderHero(
 			overall,
 			active,
-			snapshot.components.filter((component) => component.status !== "operational"),
+			snapshot.components.filter(
+				(component) => component.status !== "operational" && !isInformationalGroup(component.group),
+			),
 		),
 		active.length === 0
 			? ""

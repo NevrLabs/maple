@@ -70,6 +70,9 @@ section.list{margin-top:32px}
 .pager svg path,.cal-panel svg path{fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
 button:focus-visible,a:focus-visible{outline:2px solid var(--link);outline-offset:2px}
 .group+.group{border-top:1px solid var(--line)}
+.tier-head{border-top:1px solid var(--line);padding:16px 16px 4px;font-size:13px;font-weight:600;color:var(--fg);text-transform:uppercase;letter-spacing:.04em}
+.tier-head span{font-weight:400;text-transform:none;letter-spacing:0;color:var(--muted)}
+.tier-head+.group .group-head{padding-top:8px}
 .group-head{padding:12px 16px 0;font-weight:500;font-size:13px;color:var(--muted)}
 .group-head .ico{width:14px;height:14px}
 .component{padding:14px 16px}

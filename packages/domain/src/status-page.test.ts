@@ -11,10 +11,12 @@ import {
 	themeContrastIssue,
 	isListedIncident,
 	dayState,
+	isInformationalGroup,
 	deriveComponentStatus,
 	fillDays,
 	lastDays,
 	overallStatus,
+	rowStatus,
 	overlayIncidentId,
 	pageFreshness,
 	sha256Base64Url,
@@ -94,8 +96,13 @@ describe("bars", () => {
 				{ day: "2026-10-27", checks: 100, failures: 0, downChecks: 0 },
 				{ day: "2026-10-28", checks: 100, failures: 2, downChecks: 1 },
 			]),
-		).toBe(99.5)
+		).toBe(99)
 		expect(uptimePercent([])).toBeNull()
+	})
+
+	// Selfhost fork (PATCHES #11): uptime counts failed checks, so a degraded day is below 100%.
+	it("counts failed checks below the down threshold against uptime", () => {
+		expect(uptimePercent([{ day: "2026-10-28", checks: 100, failures: 5, downChecks: 0 }])).toBe(95)
 	})
 
 	it("fills a window of days ending today, oldest first, with empty days where nothing ran", () => {
@@ -585,5 +592,42 @@ describe("isListedIncident", () => {
 				NOW,
 			),
 		).toBe(false)
+	})
+})
+
+// Selfhost fork (PATCHES #11): core vs informational tiers.
+describe("informational tier", () => {
+	const INFO = StatusPageComponentId.make("33333333-3333-4333-8333-333333333333")
+	const component = (fields: Partial<StatusPageSnapshot["components"][number]>) => ({
+		...snapshot().components[0]!,
+		...fields,
+	})
+
+	it("recognises informational groups by name prefix only", () => {
+		expect(isInformationalGroup("Informational · Media")).toBe(true)
+		expect(isInformationalGroup("Media")).toBe(false)
+		expect(isInformationalGroup(null)).toBe(false)
+	})
+
+	it("reads a down informational monitor as degraded, a down core monitor as a major outage", () => {
+		const down = { monitorStatus: "down", manualStatus: null, incidentStatuses: [] } as const
+		expect(deriveComponentStatus({ ...down, informational: true })).toBe("degraded")
+		expect(deriveComponentStatus({ ...down, informational: false })).toBe("major_outage")
+		expect(deriveComponentStatus(down)).toBe("major_outage")
+	})
+
+	it("keeps informational components out of the banner", () => {
+		const infoDown = component({ id: INFO, group: "Informational · Dev", status: "major_outage" })
+		expect(overallStatus(snapshot({ components: [component({}), infoDown] }))).toBe("operational")
+		const coreDown = component({ group: "Storage", status: "major_outage" })
+		expect(overallStatus(snapshot({ components: [coreDown, infoDown] }))).toBe("major_outage")
+	})
+
+	it("never shows a green row icon next to a day with failed checks", () => {
+		const degradedToday = component({ days: [{ day: "2026-10-28", checks: 10, failures: 2, downChecks: 0 }] })
+		expect(rowStatus(degradedToday)).toBe("degraded")
+		expect(rowStatus(component({}))).toBe("operational")
+		expect(rowStatus(component({ ...degradedToday, status: "major_outage" }))).toBe("major_outage")
+		expect(rowStatus(component({ ...degradedToday, showUptime: false }))).toBe("operational")
 	})
 })

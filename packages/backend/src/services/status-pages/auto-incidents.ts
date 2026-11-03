@@ -22,6 +22,7 @@ import {
 } from "@maple/domain/primitives"
 import * as Orm from "@maple-dev/effect-orm/database"
 import { msToSqlTimestamp } from "@maple/backend/platform/time"
+import { isInformationalGroup } from "@maple/domain/status-page"
 import { Effect, Schema } from "effect"
 import { bumpPage } from "./outbox"
 
@@ -45,6 +46,8 @@ interface PageComponents {
 	readonly pageId: StatusPageId
 	readonly publish: boolean
 	readonly components: ReadonlyArray<{ readonly id: StatusPageComponentId; readonly name: string }>
+	/** Every component on the page for this monitor is informational (PATCHES #11). */
+	readonly informational: boolean
 }
 
 const groupByPage = (
@@ -53,6 +56,7 @@ const groupByPage = (
 		readonly autoIncidents: StatusPageAutoIncidents
 		readonly componentId: StatusPageComponentId
 		readonly componentName: string
+		readonly groupName: string | null
 	}>,
 ): ReadonlyArray<PageComponents> =>
 	[...new Set(rows.map((row) => row.pageId))].map((pageId) => {
@@ -61,6 +65,7 @@ const groupByPage = (
 			pageId,
 			publish: forPage[0]?.autoIncidents === "publish",
 			components: forPage.map((row) => ({ id: row.componentId, name: row.componentName })),
+			informational: forPage.every((row) => isInformationalGroup(row.groupName)),
 		}
 	})
 
@@ -76,6 +81,7 @@ export const openForAlertIncident = (db: MapleDb, input: OpenForAlertIncidentInp
 					autoIncidents: $.p.autoIncidents,
 					componentId: $.id,
 					componentName: $.name,
+					groupName: $.groupName,
 					position: $.position,
 				}))
 				.where(($) => [
@@ -110,7 +116,8 @@ export const openForAlertIncident = (db: MapleDb, input: OpenForAlertIncidentInp
 							pageId: page.pageId,
 							kind: "incident",
 							title: `${name} is down`,
-							impact: "major",
+							// Selfhost fork (PATCHES #11): informational components open a minor incident.
+							impact: page.informational ? "minor" : "major",
 							status: "investigating",
 							published: page.publish,
 							alertIncidentId: input.alertIncidentId,

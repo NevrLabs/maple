@@ -291,6 +291,56 @@ describe("AlertsService uptime rules", () => {
 		}).pipe(Effect.provide(makeLayer(testDb, makeWarehouseStub({}))))
 	})
 
+	// Selfhost fork (PATCHES #11): informational components open minor incidents, core ones major.
+	it.effect("auto incidents are minor for informational components and major for core ones", () => {
+		const testDb = createTestDb(trackedDbs)
+		return Effect.gen(function* () {
+			yield* TestClock.setTime(DEFAULT_CLOCK_EPOCH_MS)
+			const alerts = yield* AlertsService
+			const orgId = asOrgId("org_uptime_tiers")
+			const core = yield* seedUptimeMonitor(testDb, {
+				orgId, name: "Postgres", serviceName: "postgresql", destinationIds: [],
+				config: httpMonitorConfig, status: "down",
+			})
+			const info = yield* seedUptimeMonitor(testDb, {
+				orgId, name: "Printer", serviceName: "printer", destinationIds: [],
+				config: httpMonitorConfig, status: "down",
+			})
+			const pageId = crypto.randomUUID()
+			yield* Effect.promise(() =>
+				executeSql(
+					testDb,
+					`INSERT INTO status_pages (id, org_id, name, slug, auto_incidents, created_by, created_at, updated_at)
+					 VALUES ($1, $2, $3, $4, $5, $6, now(), now())`,
+					[pageId, orgId, "Homelab", "tiers-page", "publish", "user_uptime"],
+				),
+			)
+			for (const [name, group, monitorId] of [
+				["Postgres", "Databases", core.monitorId],
+				["Printer", "Informational · Home", info.monitorId],
+			] as const) {
+				yield* Effect.promise(() =>
+					executeSql(
+						testDb,
+						`INSERT INTO status_page_components (id, org_id, page_id, name, group_name, monitor_id, created_at, updated_at)
+						 VALUES ($1, $2, $3, $4, $5, $6, now(), now())`,
+						[crypto.randomUUID(), orgId, pageId, name, group, monitorId],
+					),
+				)
+			}
+			yield* alerts.runSchedulerTick()
+			const rows = yield* Effect.promise(() =>
+				testDb.pglite.query<{ title: string; impact: string }>(
+					"SELECT title, impact FROM status_page_incidents ORDER BY title",
+				),
+			)
+			assert.deepStrictEqual(rows.rows, [
+				{ title: "Postgres is down", impact: "major" },
+				{ title: "Printer is down", impact: "minor" },
+			])
+		}).pipe(Effect.provide(makeLayer(testDb, makeWarehouseStub({}))))
+	})
+
 	it.effect("a monitor created before backing rules gets one, once, and then fires", () => {
 		const testDb = createTestDb(trackedDbs)
 		return Effect.gen(function* () {

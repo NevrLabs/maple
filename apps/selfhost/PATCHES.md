@@ -206,3 +206,39 @@ Worker; selfhost had `StatusPageStore.inMemory` in the api and no bindings in al
 - `apps/selfhost/compose/clickhouse/retention.sql` — raw logs TTL 14 d -> 7 d.
 
 **Verify after rebase:** `validate --config`; isolated collector fed the 15-case fixture keeps exactly the expected 8.
+
+## #11 — status page tiers: core vs informational (BRIEF-tiers 2/3)
+
+**Why:** the user wants a major outage (core services) told apart from informational noise (dev servers, media,
+lab). Upstream has no per-component impact: a down monitor is always `major_outage`, auto incidents are hard-coded
+`impact: "major"`, and every component drives the banner.
+
+**Design chosen** (brief options, in order): (a) per-component impact does not exist upstream; (c) two pages would
+duplicate config and split one view; so **(b) minimal patch keyed on the component GROUP NAME**: a component is
+informational when its group starts with `Informational` (`INFORMATIONAL_GROUP_PREFIX`). No schema change, no
+migration, no API change; set from `wiring/uptime-targets.yaml` (`tier: info` + an `Informational · …` group,
+enforced by `uptime-monitors.py`). Upstream pages never use that prefix, so their behaviour is unchanged. Discord
+silence for info is pure config (monitor `destination_ids: []`; the backing alert rule still opens/resolves its
+incident, so status-page auto incidents still work).
+
+**Upstream files touched:**
+- `packages/domain/src/status-page.ts` — `isInformationalGroup`; `deriveComponentStatus({informational})` (down ->
+  `degraded`); `overallStatus` (banner) ignores informational components; **fix** `uptimePercent` counts failed
+  checks (upstream counted only checks while the monitor was already down, so an orange "degraded" day showed
+  "100% uptime"); `rowStatus` = row/group icon is at least degraded when today's bar has failures.
+- `packages/backend/src/services/status-pages/auto-incidents.ts` — reads `group_name`; impact `minor` when every
+  component of that monitor on the page is informational, else `major`.
+- `packages/backend/src/services/status-pages/StatusPageSnapshotBuilder.ts`, `packages/status-page/src/preview.ts`,
+  `apps/web/src/page/status-pages/shared/derive.ts` — pass `informational` to `deriveComponentStatus`.
+- `packages/status-page/src/{page,select,script,styles}.ts` — row/group icons from `rowStatus`; hero "Affected" lists
+  core only; one `Informational · does not affect the overall status` divider before the first informational group;
+  the client script's window uptime uses failures (same as the server).
+- Tests: `packages/domain/src/status-page.test.ts` (upstream uptime expectation 99.5 -> 99 = the new semantics, + tier
+  cases), `packages/status-page/src/render.test.ts` (divider/hero/icon), `packages/backend/src/services/alerts/
+  AlertsService.uptime.test.ts` (minor vs major auto incident). Negative controls: each of the 5 behaviours sabotaged
+  -> a test went red.
+
+**Verify after rebase:** `vitest run` in packages/domain, packages/status-page, and
+`packages/backend src/services/alerts/AlertsService.uptime.test.ts src/services/status-pages`; `tsrs --noEmit` in
+domain/status-page/backend/web; live: an info monitor down shows "Degraded performance" under Informational, banner
+stays operational, no Discord message.

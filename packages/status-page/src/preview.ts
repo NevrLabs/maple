@@ -6,6 +6,7 @@ import type {
 } from "@maple/domain/primitives"
 import {
 	deriveComponentStatus,
+	isInformationalGroup,
 	incidentComponentStatus,
 	isActiveIncident,
 	lastDays,
@@ -61,7 +62,7 @@ export const previewSnapshot = (input: {
 			const baseStatus = deriveComponentStatus({
 				monitorStatus: component.monitorStatus,
 				manualStatus: component.manualStatus,
-				incidentStatuses: [],
+				informational: isInformationalGroup(component.group),				incidentStatuses: [],
 			})
 			return {
 				id: component.id,
@@ -72,7 +73,7 @@ export const previewSnapshot = (input: {
 				status: deriveComponentStatus({
 					monitorStatus: component.monitorStatus,
 					manualStatus: component.manualStatus,
-					incidentStatuses: active
+					informational: isInformationalGroup(component.group),					incidentStatuses: active
 						.filter((incident) => incident.componentIds.includes(component.id))
 						.map(incidentComponentStatus),
 				}),

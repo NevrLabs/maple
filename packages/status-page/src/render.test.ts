@@ -775,3 +775,33 @@ describe("previewSnapshot with history", () => {
 		expect(renderPage(snapshot, live, FIXTURE_NOW)).toContain("100% uptime")
 	})
 })
+
+// Selfhost fork (PATCHES #11): informational tier + row icon follows the bars.
+describe("informational tier", () => {
+	it("lists informational groups under one divider and keeps them out of the hero", () => {
+		const html = renderPage(
+			makeSnapshot({
+				components: [
+					makeComponent(0, { name: "Postgres", group: "Databases" }),
+					makeComponent(1, { name: "Jellyfin", group: "Informational · Media", status: "degraded" }),
+					makeComponent(2, { name: "Printer", group: "Informational · Home", status: "degraded" }),
+				],
+			}),
+			live,
+			FIXTURE_NOW,
+		)
+		expect(heroOf(html)).toContain("We're fully operational")
+		expect(heroOf(html)).not.toContain("Jellyfin")
+		expect(html.split(`class="tier-head"`)).toHaveLength(2)
+		expect(html.indexOf("Postgres")).toBeLessThan(html.indexOf(`class="tier-head"`))
+		expect(html.indexOf(`class="tier-head"`)).toBeLessThan(html.indexOf("Jellyfin"))
+	})
+
+	it("shows a degraded icon and below-100% uptime when today's checks failed", () => {
+		const days = makeDays(FIXTURE_NOW, { 89: "degraded" })
+		const html = renderPage(makeSnapshot({ components: [makeComponent(0, { days })] }), live, FIXTURE_NOW)
+		const row = rowOf(html, fixtureComponentId(0))
+		expect(row).toContain(`title="Degraded performance"`)
+		expect(row).not.toContain("100% uptime")
+	})
+})

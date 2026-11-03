@@ -1,5 +1,6 @@
 import {
 	isActiveIncident,
+	rowStatus,
 	type StatusPageSnapshot,
 	type StatusPageSnapshotComponent,
 	type StatusPageSnapshotIncident,
@@ -49,7 +50,7 @@ export const groupComponents = (
 					: [...groups, { name: component.group, components: [component] }],
 			[],
 		)
-		.map((group) => ({ ...group, status: worstStatus(group.components.map((c) => c.status)) }))
+		.map((group) => ({ ...group, status: worstStatus(group.components.map(rowStatus)) }))
 
 /** The newest moment anything on the page changed. */
 export const latestActivityAt = (snapshot: StatusPageSnapshot): number =>

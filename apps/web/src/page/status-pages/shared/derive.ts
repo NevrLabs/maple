@@ -14,6 +14,7 @@ import {
 	deriveComponentStatus,
 	incidentComponentStatus,
 	isActiveIncident,
+	isInformationalGroup,
 	worstStatus,
 } from "@maple/domain/status-page"
 import type { Tone } from "@maple/ui/lib/tone"
@@ -94,6 +95,7 @@ export const componentStatus = (
 	deriveComponentStatus({
 		monitorStatus: monitors.find((monitor) => monitor.id === component.monitor_id)?.state.status ?? null,
 		manualStatus: component.manual_status,
+		informational: isInformationalGroup(component.group),
 		incidentStatuses: incidents
 			.filter(
 				(incident) =>
