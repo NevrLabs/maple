@@ -346,6 +346,13 @@ describe("errorTickIssuesQuery", () => {
 
 		expect(sql).not.toContain("LIMIT")
 	})
+
+	// Selfhost fork (PATCHES #12).
+	it("skips the uptime prober, whose failed checks are alerted by their monitors", () => {
+		expect(compileUnsafe(errorTickIssuesQuery(), baseParams).sql).toContain("maple-uptime")
+		expect(compileUnsafe(errorTickFirstErrorMinuteQuery(), baseParams).sql).toContain("maple-uptime")
+		expect(compileUnsafe(errorTickBootstrapIssuesQuery(), baseParams).sql).toContain("maple-uptime")
+	})
 })
 
 describe("errorTickFirstErrorMinuteQuery", () => {

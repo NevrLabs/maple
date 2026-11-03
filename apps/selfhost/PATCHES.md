@@ -242,3 +242,23 @@ incident, so status-page auto incidents still work).
 `packages/backend src/services/alerts/AlertsService.uptime.test.ts src/services/status-pages`; `tsrs --noEmit` in
 domain/status-page/backend/web; live: an info monitor down shows "Degraded performance" under Informational, banner
 stays operational, no Discord message.
+
+## #12 — uptime failures are not error issues (BRIEF-tiers simulation finding)
+
+**Why:** every failing check produced spans with `StatusCode = Error` (the `maple-uptime` check span and, with
+PATCHES #8, the SERVER target span under the monitored service). Maple's error tracker turned them into error issues
+and the org error-notification policy posted "Error Rate · in <service>: Triggered" to Discord — so an
+**informational** monitor still pinged Discord, and core monitors pinged twice. Uptime alerting belongs to the
+monitor's own rule (which honours its destinations / tier).
+
+- `apps/scraper/src/UptimeSpans.ts` (fork-only target span, PATCHES #8) — target span status UNSET (`code: 0`); the
+  check span keeps Error so uptime history/queries are unchanged.
+- `packages/query-engine/src/ch/queries/errors.ts` — **upstream file**: the three error-tick scans
+  (`errorTickIssuesQuery`, `errorTickFirstErrorMinuteQuery`, `errorTickBootstrapIssuesQuery`) skip
+  `ServiceName = 'maple-uptime'` (upstream's prober is the same service; its failures are uptime incidents already).
+  Error *pages* still show them; only issue creation/notification skips them.
+- Tests: `apps/scraper/src/UptimeTargetSpans.test.ts`, `packages/query-engine/src/ch/queries/errors.test.ts`
+  (both red when the change is removed).
+
+**Verify after rebase:** `vitest run` in apps/scraper + packages/query-engine; a dead-port test monitor produces no
+"Error Rate" Discord message.

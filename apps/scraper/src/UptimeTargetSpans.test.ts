@@ -40,6 +40,14 @@ describe("selfhost target spans", () => {
 		assert.match(target.spanId, /^[0-9a-f]{16}$/u)
 	})
 
+	// PATCHES #12
+	it("leaves the target span status unset on a failed check, so it is no error in the target service", () => {
+		const failed = { ...check("postgresql"), outcome: { ...succeeded(120, 200), ok: false, error: "refused" } }
+		const [checkRs, targetRs] = encodeTraceExport([failed]).resourceSpans
+		assert.strictEqual(checkRs!.scopeSpans[0]!.spans[0]!.status.code, 2)
+		assert.deepStrictEqual(targetRs!.scopeSpans[0]!.spans[0]!.status, { code: 0 })
+	})
+
 	it("adds nothing for a monitor without a service", () => {
 		assert.strictEqual(encodeTraceExport([check(null)]).resourceSpans.length, 1)
 	})

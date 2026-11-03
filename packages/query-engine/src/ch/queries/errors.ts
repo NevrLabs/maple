@@ -43,6 +43,7 @@ import {
 	type FacetOutput,
 } from "./query-helpers"
 import { deploymentEnvExpr } from "@maple/domain/tinybird/semconv-renames"
+import { UPTIME_SERVICE_NAME } from "@maple/domain/uptime"
 import { httpDisplaySpanName } from "../../traces-shared"
 import { CHNumber } from "../schema"
 import { DateTimeUtcFromWarehouse } from "../../datetime"
@@ -1276,6 +1277,8 @@ export function errorTickIssuesQuery() {
 		}))
 		.where(($) => [
 			$.OrgId.eq(orgIdParam),
+			// Selfhost fork (PATCHES #12): failed uptime checks are alerted by their monitor, not as error issues.
+			$.ServiceName.neq(UPTIME_SERVICE_NAME),
 			$.Minute.gte(utcSecondsParam("startTime")),
 			$.Minute.lt(utcSecondsParam("endTime")),
 		])
@@ -1293,6 +1296,8 @@ export function errorTickFirstErrorMinuteQuery() {
 		.select(($) => ({ minute: $.Minute }))
 		.where(($) => [
 			$.OrgId.eq(orgIdParam),
+			// Selfhost fork (PATCHES #12): failed uptime checks are alerted by their monitor, not as error issues.
+			$.ServiceName.neq(UPTIME_SERVICE_NAME),
 			$.Minute.gte(utcSecondsParam("startTime")),
 			$.Minute.lt(utcSecondsParam("endTime")),
 		])
@@ -1324,6 +1329,8 @@ export function errorTickBootstrapIssuesQuery() {
 		}))
 		.where(($) => [
 			$.OrgId.eq(orgIdParam),
+			// Selfhost fork (PATCHES #12): failed uptime checks are alerted by their monitor, not as error issues.
+			$.ServiceName.neq(UPTIME_SERVICE_NAME),
 			$.Timestamp.gte(utcSecondsParam("startTime")),
 			$.Timestamp.lt(utcSecondsParam("endTime")),
 		])

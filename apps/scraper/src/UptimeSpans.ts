@@ -40,8 +40,8 @@ export interface OtlpSpan {
 	readonly startTimeUnixNano: string
 	readonly endTimeUnixNano: string
 	readonly attributes: ReadonlyArray<OtlpKeyValue>
-	/** 1 = STATUS_CODE_OK, 2 = STATUS_CODE_ERROR. */
-	readonly status: { readonly code: 1 | 2; readonly message?: string }
+	/** 0 = STATUS_CODE_UNSET (selfhost target span), 1 = STATUS_CODE_OK, 2 = STATUS_CODE_ERROR. */
+	readonly status: { readonly code: 0 | 1 | 2; readonly message?: string }
 }
 
 export interface OtlpTraceExportRequest {
@@ -191,6 +191,9 @@ const toTargetSpan = (check: UptimeCheckSpan): OtlpSpan => {
 		name: `uptime ${base.name}`,
 		kind: 2,
 		attributes: [...base.attributes, ...keyValues({ "maple.uptime.synthetic": true })],
+		// PATCHES #12: status UNSET, not Error. A failed probe is the monitor's alert, not an error in the
+		// target service (as Error it opened an error-tracking issue + a Discord message per failing monitor).
+		status: { code: 0 },
 	}
 }
 
