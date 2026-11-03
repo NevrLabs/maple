@@ -56,6 +56,10 @@ export interface OtlpTraceExportRequest {
 
 const SCOPE = { name: UPTIME_SERVICE_NAME, version: "1.0" } as const
 
+/** NevrLabs selfhost (PATCHES #8): opt-in target spans + environment on check spans. Off = upstream. */
+const TARGET_SPANS =
+	typeof process !== "undefined" && process.env?.MAPLE_SELFHOST_UPTIME_TARGET_SPANS === "1"
+
 const anyValue = (value: string | number | boolean): OtlpAnyValue => {
 	if (typeof value === "string") return { stringValue: value }
 	if (typeof value === "boolean") return { boolValue: value }
@@ -160,6 +164,8 @@ const resourceAttributes = (monitor: UptimeCheckSpan["monitor"]) =>
 		[UPTIME_MONITOR_ID_ATTRIBUTE]: monitor.id,
 		"maple.uptime.monitor_name": monitor.name,
 		...(monitor.serviceName === null ? undefined : { "maple.uptime.service_name": monitor.serviceName }),
+		// PATCHES #8: selfhost check spans carry the probe's environment (Setup Health RES-03).
+		...(TARGET_SPANS ? { "deployment.environment.name": "homelab" } : undefined),
 	})
 
 /**
@@ -168,8 +174,6 @@ const resourceAttributes = (monitor: UptimeCheckSpan["monitor"]) =>
  * target is listed on Services next to its metrics/logs. The check span itself is untouched, so the
  * uptime UI (which reads `maple-uptime` root spans) is unaffected. Off = upstream behaviour.
  */
-const TARGET_SPANS =
-	typeof process !== "undefined" && process.env?.MAPLE_SELFHOST_UPTIME_TARGET_SPANS === "1"
 
 /** Deterministic 16-hex child span id derived from the check span id (no extra randomness to carry). */
 const targetSpanId = (spanId: string): string =>

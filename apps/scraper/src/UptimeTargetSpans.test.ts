@@ -26,6 +26,8 @@ describe("selfhost target spans", () => {
 		const [checkRs, targetRs] = request.resourceSpans
 		assert.deepStrictEqual(resourceService(checkRs!), { stringValue: "maple-uptime" })
 		assert.deepStrictEqual(resourceService(targetRs!), { stringValue: "postgresql" })
+		const env = checkRs!.resource.attributes.find((kv) => kv.key === "deployment.environment.name")?.value
+		assert.deepStrictEqual(env, { stringValue: "homelab" })
 		const checkSpan = checkRs!.scopeSpans[0]!.spans[0]!
 		const target = targetRs!.scopeSpans[0]!.spans[0]!
 		assert.strictEqual(checkSpan.kind, 3)
