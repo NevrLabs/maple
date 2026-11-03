@@ -53,6 +53,14 @@ processors:
     log_statements:
       - context: log
         statements:
+          # An explicit level token near the start of the line (logback/log4j "HH:MM:SS.mmm [thread] INFO  logger",
+          # "LEVEL:" prefixes) wins over keyword guesses in the message text (BRIEF-traces: stirling-pdf INFO
+          # "...status changed from OK to CRITICAL" was classified FATAL).
+          # Node process warnings ("(node:PID) XxxWarning: ...", e.g. the OTel SDK / gcp-metadata cloud probe) are WARN, not ERROR.
+          - set(severity_number, SEVERITY_NUMBER_WARN) where severity_number == SEVERITY_NUMBER_UNSPECIFIED and IsString(body) and IsMatch(body, "^\\(node:[0-9]+\\) [A-Za-z]*Warning[:]")
+          - set(severity_number, SEVERITY_NUMBER_INFO) where severity_number == SEVERITY_NUMBER_UNSPECIFIED and IsString(body) and IsMatch(body, "^\\S*\\s*(\\[[^\\]]*\\]\\s+)?INFO\\s")
+          - set(severity_number, SEVERITY_NUMBER_DEBUG) where severity_number == SEVERITY_NUMBER_UNSPECIFIED and IsString(body) and IsMatch(body, "^\\S*\\s*(\\[[^\\]]*\\]\\s+)?(DEBUG|TRACE)\\s")
+          - set(severity_number, SEVERITY_NUMBER_WARN) where severity_number == SEVERITY_NUMBER_UNSPECIFIED and IsString(body) and IsMatch(body, "^\\S*\\s*(\\[[^\\]]*\\]\\s+)?WARN(ING)?\\s")
           - set(severity_number, SEVERITY_NUMBER_FATAL) where severity_number == SEVERITY_NUMBER_UNSPECIFIED and IsString(body) and IsMatch(body, "(?i)\\b(fatal|panic|critical|crit|emerg)\\b")
           - set(severity_number, SEVERITY_NUMBER_ERROR) where severity_number == SEVERITY_NUMBER_UNSPECIFIED and IsString(body) and IsMatch(body, "(?i)(\\berror\\b|level=error|\"level\":\"error\"|\\bexception\\b|^E[0-9]{4} )")
           - set(severity_number, SEVERITY_NUMBER_WARN) where severity_number == SEVERITY_NUMBER_UNSPECIFIED and IsString(body) and IsMatch(body, "(?i)(\\bwarn(ing)?\\b|level=warn|\"level\":\"warn|^W[0-9]{4} )")
@@ -64,6 +72,38 @@ processors:
           - set(severity_text, "WARN") where severity_number >= 13 and severity_number <= 16 and (severity_text == "" or IsMatch(severity_text, "^[0-9]+$"))
           - set(severity_text, "ERROR") where severity_number >= 17 and severity_number <= 20 and (severity_text == "" or IsMatch(severity_text, "^[0-9]+$"))
           - set(severity_text, "FATAL") where severity_number >= 21 and (severity_text == "" or IsMatch(severity_text, "^[0-9]+$"))
+  # BRIEF-traces: services whose stdout already prints their own trace/span id (zitadel "TraceID=...",
+  # JSON loggers "trace_id"/"traceId") get it lifted into the log record so Logs<->Traces correlate.
+  # Only fills an EMPTY trace_id and only from the line itself - never invents context.
+  transform/log-trace-context:
+    error_mode: ignore
+    log_statements:
+      - context: log
+        statements:
+          - set(cache["t"], ExtractPatterns(body, "(?:TraceID=|\"trace_?[iI][dD]\":\")(?P<tid>[0-9a-f]{32})")) where IsMatch(trace_id.string, "^0*$") and IsString(body) and IsMatch(body, "(?i)trace_?id")
+          - set(trace_id.string, cache["t"]["tid"]) where cache["t"]["tid"] != nil
+          - set(cache["s"], ExtractPatterns(body, "(?:SpanID=|\"span_?[iI][dD]\":\")(?P<sid>[0-9a-f]{16})")) where IsMatch(span_id.string, "^0*$") and cache["t"]["tid"] != nil
+          - set(span_id.string, cache["s"]["sid"]) where cache["s"]["sid"] != nil
+  # BRIEF-uptime 4: retain only important logs. Applied after transform/severity (numbers normalised).
+  # Keep: severity >= WARN (13) everywhere; below WARN only the audit trail that is the sole signal of an event:
+  # Zitadel auth/activity (who signed in), Wazuh alerts (already level >= 5 at the agent), ssh/sudo/su logins,
+  # Kubernetes Warning events. Everything else below WARN (AdGuard query log, access logs, INFO chatter) is dropped.
+  # Logs with unknown severity (0) and an error-looking body are kept.
+  filter/important-logs:
+    error_mode: ignore
+    logs:
+      log_record:
+        - >-
+          severity_number > 0 and severity_number < 13
+          and IsMatch(trace_id.string, "^0*$")
+          and resource.attributes["service.name"] != "wazuh-alerts"
+          and not (resource.attributes["service.name"] == "zitadel" and IsMatch(body, "msg=(activity|\"?auth)"))
+          and not (IsMatch(resource.attributes["service.name"], "^(sshd|sshd-session|sudo|su|login)$") and IsMatch(body, "^(Accepted|Failed|Invalid user|.*authentication failure|.*COMMAND=|pam_unix\\((sudo|su)[^)]*\\): session opened)"))
+          and not (resource.attributes["service.name"] == "k8s-events" and IsMatch(body, "\"type\":\"Warning\""))
+        - >-
+          severity_number == 0
+          and resource.attributes["service.name"] != "wazuh-alerts"
+          and not IsMatch(body, "(?i)(error|fatal|panic|fail|exception|denied|refused|timeout|traceback)")
 exporters:
   maple:
     endpoint: http://clickhouse:8123
@@ -83,5 +123,5 @@ service:
     logs: {level: info}
   pipelines:
     traces:  {receivers: [otlp], processors: [memory_limiter, transform/service-name, batch], exporters: [maple]}
-    logs:    {receivers: [otlp], processors: [memory_limiter, transform/service-name, transform/severity, batch], exporters: [maple]}
+    logs:    {receivers: [otlp], processors: [memory_limiter, transform/service-name, transform/severity, transform/log-trace-context, filter/important-logs, batch], exporters: [maple]}
     metrics: {receivers: [otlp], processors: [memory_limiter, transform/service-name, batch], exporters: [maple]}

@@ -194,3 +194,15 @@ Worker; selfhost had `StatusPageStore.inMemory` in the api and no bindings in al
   same-origin: `https://monitoring.home/s/<slug>` and `https://monitoring.entelechia.cloud/s/<slug>` (CF Access).
 
 **Verify after rebase:** `GET /s/<slug>` 200 with the page's components; `/s/<slug>/api/v1/status.json` JSON.
+
+## #10 — log retention: only important logs (BRIEF-uptime 4)
+
+- `otel/builder-config.yaml` — adds `filterprocessor` v0.151.0 to the collector build.
+- `apps/selfhost/compose/otel-collector.yaml` — `filter/important-logs` in the logs pipeline (after severity
+  normalisation and trace-context lift): keep severity >= WARN everywhere; below WARN keep only logs carrying a trace_id,
+  `wazuh-alerts`, Zitadel activity/auth lines, ssh/sudo/su auth lines and Kubernetes `Warning` events; severity-0 lines
+  only when they look like errors. (This mirror also carries the BRIEF-traces collector edits made live on CT130:
+  level-token severity inference and `transform/log-trace-context`.)
+- `apps/selfhost/compose/clickhouse/retention.sql` — raw logs TTL 14 d -> 7 d.
+
+**Verify after rebase:** `validate --config`; isolated collector fed the 15-case fixture keeps exactly the expected 8.

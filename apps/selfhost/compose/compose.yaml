@@ -179,7 +179,7 @@ services:
     mem_limit: 384m
 
   # Uptime prober (apps/scraper, PATCHES #8): polls api for monitors, probes from the LAN, reports results,
-  # exports one span per check to ingest. Resolves *.home via AdGuard; trusts the CT101 *.home certificate.
+  # exports one span per check to ingest. Resolves *.home via AdGuard; internal TLS is not verified (see env).
   scraper:
     image: maple-selfhost:${MAPLE_SELFHOST_TAG}
     restart: unless-stopped
@@ -191,11 +191,11 @@ services:
       SD_INTERNAL_TOKEN: ${SD_INTERNAL_TOKEN}
       MAPLE_SELFHOST_PRIVATE_NETWORKS: ${MAPLE_SELFHOST_PRIVATE_NETWORKS:-}
       MAPLE_SELFHOST_UPTIME_TARGET_SPANS: "1"
-      NODE_EXTRA_CA_CERTS: /certs/home-ca.pem
+      # Internal certs: CT101's *.home wildcard sits on a single-label TLD (Node refuses it, and it never covers
+      # x.k3s.home); PVE/TrueNAS/Wazuh are self-signed. BRIEF-uptime: "self-signed internal certs: allow".
+      NODE_TLS_REJECT_UNAUTHORIZED: "0"
       UPTIME_CONCURRENCY: "16"
       PORT: "3475"
-    volumes:
-      - ./certs:/certs:ro
     dns:
       - 192.168.1.4
       - 192.168.1.3
