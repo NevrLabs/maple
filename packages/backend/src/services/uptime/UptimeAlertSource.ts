@@ -81,6 +81,7 @@ interface MonitorWithoutRule {
 	readonly name: string
 	readonly serviceName: string | null
 	readonly enabled: boolean
+	readonly tier: string
 	readonly createdBy: UserId
 }
 
@@ -239,7 +240,11 @@ export class UptimeAlertSource extends Context.Service<UptimeAlertSource, Uptime
 								PG.insertInto(AlertRules).values({
 									id: ruleId,
 									orgId: monitor.orgId,
-									...uptimeRuleFields({ ...monitor, destinationIds: [] }),
+									...uptimeRuleFields({
+										...monitor,
+										tier: monitor.tier === "info" ? "info" : "core",
+										destinationIds: [],
+									}),
 									lastScheduledAt: null,
 									createdAt: now,
 									updatedAt: now,
@@ -263,7 +268,7 @@ export class UptimeAlertSource extends Context.Service<UptimeAlertSource, Uptime
 				const missing = yield* dbExecute((db) =>
 					db.run(
 						PG.from(UptimeMonitors)
-							.select("id", "orgId", "name", "serviceName", "enabled", "createdBy")
+							.select("id", "orgId", "name", "serviceName", "enabled", "tier", "createdBy")
 							.where(($) => [$.alertRuleId.isNull(), $.enabled.eq(true)])
 							.limit(MAX_RULE_BACKFILL),
 					),

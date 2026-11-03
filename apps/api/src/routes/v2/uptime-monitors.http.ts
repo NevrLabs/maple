@@ -36,6 +36,7 @@ const toV2UptimeMonitor = (monitor: UptimeMonitorRecord): V2UptimeMonitor => ({
 	service_name: monitor.serviceName,
 	enabled: monitor.enabled,
 	destination_ids: monitor.destinationIds,
+	tier: monitor.tier,
 	heartbeat_url: monitor.heartbeatUrl,
 	alert_rule_id: monitor.alertRuleId,
 	state: {
@@ -134,6 +135,7 @@ export const HttpV2UptimeMonitorsLive = HttpApiBuilder.group(MapleApiV2, "uptime
 						...(payload.destination_ids === undefined
 							? undefined
 							: { destinationIds: payload.destination_ids }),
+						...(payload.tier === undefined ? undefined : { tier: payload.tier }),
 						createdBy: tenant.userId,
 					})
 					yield* recordHttpAudit("uptime_monitor.created", {
@@ -184,6 +186,7 @@ export const HttpV2UptimeMonitorsLive = HttpApiBuilder.group(MapleApiV2, "uptime
 						...(payload.destination_ids === undefined
 							? undefined
 							: { destinationIds: payload.destination_ids }),
+						...(payload.tier === undefined ? undefined : { tier: payload.tier }),
 						updatedBy: tenant.userId,
 					})
 					yield* recordHttpAudit("uptime_monitor.updated", {

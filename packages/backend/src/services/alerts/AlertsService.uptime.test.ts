@@ -59,6 +59,7 @@ const seedUptimeMonitor = (
 		readonly error?: string
 		readonly lastPingAt?: number
 		readonly enabled?: boolean
+		readonly tier?: "core" | "info"
 	},
 ): Effect.Effect<SeededMonitor> =>
 	Effect.gen(function* () {
@@ -95,6 +96,7 @@ const seedUptimeMonitor = (
 							alertRuleId: ruleId,
 							heartbeatToken: input.config._tag === "heartbeat" ? crypto.randomUUID() : null,
 							enabled,
+							tier: input.tier ?? "core",
 							createdBy: asUserId("user_uptime"),
 							createdAt: now,
 							updatedAt: now,
@@ -338,6 +340,43 @@ describe("AlertsService uptime rules", () => {
 				{ title: "Postgres is down", impact: "major" },
 				{ title: "Printer is down", impact: "minor" },
 			])
+		}).pipe(Effect.provide(makeLayer(testDb, makeWarehouseStub({}))))
+	})
+
+	// Selfhost fork (PATCHES #13): an info monitor never reaches the Alerts page; demoting a
+	// firing core monitor resolves its open incident.
+	it.effect("an info monitor that is down opens no incident, and demoting a core one resolves it", () => {
+		const testDb = createTestDb(trackedDbs)
+		return Effect.gen(function* () {
+			yield* TestClock.setTime(DEFAULT_CLOCK_EPOCH_MS)
+			const alerts = yield* AlertsService
+			const orgId = asOrgId("org_uptime_tier_rules")
+			const seed = (name: string, tier: "core" | "info") =>
+				seedUptimeMonitor(testDb, {
+					orgId, name, serviceName: name.toLowerCase(), destinationIds: [],
+					config: httpMonitorConfig, status: "down", error: "Connection refused", tier,
+				})
+			const core = yield* seed("Postgres", "core")
+			yield* seed("Printer", "info")
+
+			yield* alerts.runSchedulerTick()
+			const open = (yield* alerts.listIncidents(orgId)).incidents.filter((i) => i.status === "open")
+			assert.deepStrictEqual(
+				open.map((incident) => [incident.ruleName, incident.severity]),
+				[["Postgres", "critical"]],
+			)
+
+			// What UptimeMonitorsService.update writes when the monitor becomes info.
+			yield* Effect.promise(() =>
+				executeSql(testDb, "update alert_rules set enabled = false where id = $1", [core.ruleId]),
+			)
+			yield* TestClock.adjust(Duration.minutes(1))
+			yield* alerts.runSchedulerTick()
+			const after = (yield* alerts.listIncidents(orgId)).incidents
+			assert.deepStrictEqual(
+				after.map((incident) => [incident.ruleName, incident.status]),
+				[["Postgres", "resolved"]],
+			)
 		}).pipe(Effect.provide(makeLayer(testDb, makeWarehouseStub({}))))
 	})
 

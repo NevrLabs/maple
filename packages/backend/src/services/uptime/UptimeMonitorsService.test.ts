@@ -1105,6 +1105,45 @@ describe("UptimeMonitorsService backing alert rule", () => {
 		},
 	)
 
+	// Selfhost fork (PATCHES #13): severity follows the tier; info monitors never alert.
+	it.effect("backs a core monitor with a critical rule and keeps an info monitor's rule disabled", () => {
+		const testDb = createTestDb(trackedDbs)
+		return Effect.gen(function* () {
+			const service = yield* UptimeMonitorsService
+			const core = yield* service.create(ORG, {
+				name: "Postgres",
+				kind: "http",
+				config: httpConfig(),
+				createdBy: USER,
+			})
+			assert.strictEqual(core.tier, "core")
+			const coreRule = yield* backingRule(testDb, core.alertRuleId)
+			assert.isTrue(coreRule?.enabled)
+			assert.strictEqual(coreRule?.severity, "critical")
+
+			const info = yield* service.create(ORG, {
+				name: "Printer",
+				kind: "http",
+				config: httpConfig(),
+				tier: "info",
+				createdBy: USER,
+			})
+			assert.strictEqual(info.tier, "info")
+			assert.isTrue(info.enabled, "the monitor itself keeps probing")
+			assert.isFalse((yield* backingRule(testDb, info.alertRuleId))?.enabled)
+
+			// Promote, demote: the rule follows; pausing never re-enables an info rule.
+			yield* service.update(ORG, info.id, { tier: "core", updatedBy: USER })
+			assert.isTrue((yield* backingRule(testDb, info.alertRuleId))?.enabled)
+			yield* service.update(ORG, info.id, { tier: "info", updatedBy: USER })
+			assert.isFalse((yield* backingRule(testDb, info.alertRuleId))?.enabled)
+			yield* service.update(ORG, info.id, { enabled: false, updatedBy: USER })
+			yield* service.update(ORG, info.id, { enabled: true, updatedBy: USER })
+			assert.isFalse((yield* backingRule(testDb, info.alertRuleId))?.enabled)
+			assert.strictEqual((yield* service.get(ORG, info.id)).tier, "info")
+		}).pipe(Effect.provide(makeLayer(testDb)))
+	})
+
 	it.effect("refuses another org's destination and a name another rule already has", () => {
 		const testDb = createTestDb(trackedDbs)
 		return Effect.gen(function* () {

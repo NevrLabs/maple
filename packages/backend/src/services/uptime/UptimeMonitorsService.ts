@@ -19,6 +19,7 @@ import {
 	UptimeMonitorPersistenceError,
 	UptimeMonitorValidationError,
 } from "@maple/domain/http"
+import type { UptimeMonitorTier } from "@maple/domain/http/v2"
 import {
 	AlertDestinationId,
 	AlertRuleId,
@@ -103,6 +104,8 @@ export interface UptimeMonitorRecord {
 	readonly destinationIds: ReadonlyArray<AlertDestinationId>
 	/** The hidden `uptime` alert rule that turns a down state into an incident. */
 	readonly alertRuleId: AlertRuleId | null
+	/** Selfhost fork (PATCHES #13): `info` monitors never alert (their backing rule stays disabled). */
+	readonly tier: UptimeMonitorTier
 	/** Heartbeats only: the full ping URL (`<api>/hb/<token>`). */
 	readonly heartbeatUrl: string | null
 	readonly state: UptimeMonitorStateView
@@ -119,6 +122,7 @@ export interface CreateUptimeMonitorInput {
 	readonly serviceName?: string | null
 	readonly enabled?: boolean
 	readonly destinationIds?: ReadonlyArray<AlertDestinationId>
+	readonly tier?: UptimeMonitorTier
 	readonly createdBy: UserId
 }
 
@@ -130,6 +134,7 @@ export interface UpdateUptimeMonitorInput {
 	readonly serviceName?: string | null
 	readonly enabled?: boolean
 	readonly destinationIds?: ReadonlyArray<AlertDestinationId>
+	readonly tier?: UptimeMonitorTier
 	/** Recorded on the backing alert rule. */
 	readonly updatedBy: UserId
 }
@@ -204,6 +209,9 @@ export interface UptimeMonitorsServiceApi {
 
 const DEFAULT_INTERVAL_SECONDS = UptimeIntervalSeconds.make(60)
 const DEFAULT_FAILURES_TO_DOWN = 2
+
+/** Selfhost fork (PATCHES #13): anything but `info` is core, so unknown values fail safe (alerting). */
+const asTier = (value: string): UptimeMonitorTier => (value === "info" ? "info" : "core")
 const MAX_FAILURES_TO_DOWN = 10
 /** Body read to evaluate a test's assertions; only `TEST_BODY_PREFIX_CHARS` of it is returned. */
 const TEST_BODY_READ_BYTES = 64 * 1024
@@ -339,6 +347,7 @@ type MonitorWithStateRow = Pick<
 	| "alertRuleId"
 	| "heartbeatToken"
 	| "enabled"
+	| "tier"
 	| "createdAt"
 	| "updatedAt"
 > & { readonly destinationIdsJson: ReadonlyArray<string> | null } & Pick<
@@ -370,6 +379,7 @@ const selectMonitors = () =>
 			destinationIdsJson: $.r.destinationIdsJson,
 			heartbeatToken: $.heartbeatToken,
 			enabled: $.enabled,
+			tier: $.tier,
 			createdAt: $.createdAt,
 			updatedAt: $.updatedAt,
 			status: $.s.status,
@@ -528,6 +538,7 @@ export class UptimeMonitorsService extends Context.Service<UptimeMonitorsService
 						enabled: row.enabled,
 						destinationIds,
 						alertRuleId: row.alertRuleId,
+						tier: asTier(row.tier),
 						heartbeatUrl:
 							row.heartbeatToken === null ? null : `${apiBaseUrl}/hb/${row.heartbeatToken}`,
 						state: {
@@ -683,6 +694,7 @@ export class UptimeMonitorsService extends Context.Service<UptimeMonitorsService
 				const enabled = input.enabled !== false
 				const serviceName = input.serviceName ?? null
 				const destinationIds = Arr.dedupe(input.destinationIds ?? [])
+				const tier = input.tier ?? "core"
 				const payer = yield* dbExecute((db) =>
 					db.transaction(
 						Effect.gen(function* () {
@@ -700,7 +712,7 @@ export class UptimeMonitorsService extends Context.Service<UptimeMonitorsService
 								PG.insertInto(AlertRules).values({
 									id: ruleId,
 									orgId,
-									...uptimeRuleFields({ name, serviceName, enabled, destinationIds }),
+									...uptimeRuleFields({ name, serviceName, enabled, destinationIds, tier }),
 									lastScheduledAt: null,
 									createdAt: now,
 									updatedAt: now,
@@ -721,6 +733,7 @@ export class UptimeMonitorsService extends Context.Service<UptimeMonitorsService
 									alertRuleId: ruleId,
 									heartbeatToken: config._tag === "heartbeat" ? newHeartbeatToken() : null,
 									enabled,
+									tier,
 									createdBy: input.createdBy,
 									createdAt: now,
 									updatedAt: now,
@@ -812,6 +825,7 @@ export class UptimeMonitorsService extends Context.Service<UptimeMonitorsService
 									input.destinationIds === undefined
 										? locked.destinationIds
 										: Arr.dedupe(input.destinationIds),
+								tier: input.tier ?? locked.tier,
 							}
 							// The backing rule is written only when it changes: alert_rules is Electric-synced.
 							const ruleChanged =
@@ -819,6 +833,7 @@ export class UptimeMonitorsService extends Context.Service<UptimeMonitorsService
 								rule.name !== locked.name ||
 								rule.serviceName !== locked.serviceName ||
 								rule.enabled !== locked.enabled ||
+								rule.tier !== locked.tier ||
 								rule.destinationIds.length !== locked.destinationIds.length ||
 								rule.destinationIds.some((id, index) => id !== locked.destinationIds[index])
 							const ruleId = locked.alertRuleId ?? AlertRuleId.make(randomUUID())
@@ -877,6 +892,7 @@ export class UptimeMonitorsService extends Context.Service<UptimeMonitorsService
 										...(input.enabled === undefined
 											? undefined
 											: { enabled: input.enabled }),
+										...(input.tier === undefined ? undefined : { tier: input.tier }),
 										updatedAt: now,
 									})
 									.where(($) => [$.orgId.eq(orgId), $.id.eq(monitorId)]),

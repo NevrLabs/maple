@@ -326,6 +326,17 @@ const intervalField = UptimeIntervalSeconds.annotate({
 	description: "How often Maple runs the check, in seconds (30 to 3600). Ignored for heartbeats.",
 })
 
+/**
+ * Selfhost fork (PATCHES #13): `core` monitors open a critical alert when down; `info` monitors only
+ * feed status pages and uptime history (their backing rule never fires).
+ */
+export const UptimeMonitorTier = Schema.Literals(["core", "info"]).annotate({
+	description:
+		"`core` (default): a down monitor opens a critical alert. `info`: shown on status pages and uptime history only, never alerts.",
+	examples: ["core"],
+})
+export type UptimeMonitorTier = Schema.Schema.Type<typeof UptimeMonitorTier>
+
 const failuresToDownField = Schema.Number.check(
 	Schema.isInt(),
 	Schema.isBetween({ minimum: 1, maximum: 10 }),
@@ -389,6 +400,7 @@ const uptimeMonitorExample = {
 	service_name: "api",
 	enabled: true,
 	destination_ids: ["dest_oybbpTBhtSFGShMjjLiCrh"],
+	tier: "core",
 	heartbeat_url: null,
 	alert_rule_id: "alrt_YofPTrK9782DWwcnXhpcCw",
 	state: {
@@ -435,6 +447,8 @@ export const V2UptimeMonitor = Schema.Struct({
 		examples: [true],
 	}),
 	destination_ids: destinationIdsField,
+	// Optional on the wire so clients/fixtures that predate the fork field still decode.
+	tier: Schema.optionalKey(UptimeMonitorTier),
 	heartbeat_url: Schema.NullOr(Schema.String).annotate({
 		description:
 			"Heartbeats only: the URL your job sends `GET` or `POST` to on success (append `/fail` to report a failure). `null` for other kinds.",
@@ -471,6 +485,7 @@ export const V2UptimeMonitorCreateParams = Schema.Struct({
 		Schema.Boolean.annotate({ description: "Whether the monitor starts running. Defaults to `true`." }),
 	),
 	destination_ids: Schema.optionalKey(destinationIdsField),
+	tier: Schema.optionalKey(UptimeMonitorTier),
 }).annotate({
 	identifier: "UptimeMonitorCreateParams",
 	title: "Uptime monitor create parameters",
@@ -503,6 +518,7 @@ export const V2UptimeMonitorUpdateParams = Schema.Struct({
 		}),
 	),
 	destination_ids: Schema.optionalKey(destinationIdsField),
+	tier: Schema.optionalKey(UptimeMonitorTier),
 }).annotate({
 	identifier: "UptimeMonitorUpdateParams",
 	title: "Uptime monitor update parameters",

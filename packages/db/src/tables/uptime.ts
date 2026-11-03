@@ -30,6 +30,11 @@ export const UptimeMonitors = PG.table("uptime_monitors", {
 		/** Heartbeats only: the secret path segment of `/hb/<token>`. Shown in the UI, so stored as-is. */
 		heartbeatToken: PG.column(PG.nullable(PG.text), { name: "heartbeat_token" }),
 		enabled: PG.column(PG.bool, { default: true }),
+		/**
+		 * Selfhost fork (PATCHES #13): `core` (default, upstream behaviour) backs the monitor with a
+		 * critical alert rule; `info` keeps it on status pages and uptime history only (rule disabled).
+		 */
+		tier: PG.column(PG.text, { default: "core" }),
 		createdBy: PG.column(PG.brand(PG.text, UserId), { name: "created_by" }),
 		createdAt: PG.column(PG.timestamptzMillis, { name: "created_at" }),
 		updatedAt: PG.column(PG.timestamptzMillis, { name: "updated_at" }),

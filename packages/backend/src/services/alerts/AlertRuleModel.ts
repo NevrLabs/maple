@@ -252,6 +252,8 @@ export const uptimeRuleFields = (monitor: {
 	readonly serviceName: string | null
 	readonly enabled: boolean
 	readonly destinationIds: ReadonlyArray<AlertDestinationId>
+	/** Selfhost fork (PATCHES #13): an `info` monitor's rule stays disabled, so it never alerts. */
+	readonly tier?: "core" | "info"
 }) => {
 	const thresholds: AlertThresholds = [
 		{
@@ -266,7 +268,7 @@ export const uptimeRuleFields = (monitor: {
 		name: monitor.name,
 		notes: null,
 		notificationTemplateJson: null,
-		enabled: monitor.enabled,
+		enabled: monitor.enabled && monitor.tier !== "info",
 		severity: "critical",
 		serviceNamesJson: monitor.serviceName === null ? null : [monitor.serviceName],
 		excludeServiceNamesJson: null,
