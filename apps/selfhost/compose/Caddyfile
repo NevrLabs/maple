@@ -31,6 +31,11 @@
 		reverse_proxy ingest:3474
 	}
 
+	# Status pages (PATCHES #9): /s/<slug> served by the status process, same origin as the app.
+	handle /s/* {
+		reverse_proxy status:3478
+	}
+
 	handle {
 		reverse_proxy web:80
 	}

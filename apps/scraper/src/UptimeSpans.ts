@@ -34,8 +34,9 @@ export interface OtlpSpan {
 	readonly traceId: string
 	readonly spanId: string
 	readonly name: string
-	/** 3 = SPAN_KIND_CLIENT. */
-	readonly kind: 3
+	/** 3 = SPAN_KIND_CLIENT (the check); 2 = SPAN_KIND_SERVER (selfhost target span, PATCHES #8). */
+	readonly kind: 2 | 3
+	readonly parentSpanId?: string
 	readonly startTimeUnixNano: string
 	readonly endTimeUnixNano: string
 	readonly attributes: ReadonlyArray<OtlpKeyValue>
@@ -161,14 +162,60 @@ const resourceAttributes = (monitor: UptimeCheckSpan["monitor"]) =>
 		...(monitor.serviceName === null ? undefined : { "maple.uptime.service_name": monitor.serviceName }),
 	})
 
+/**
+ * NevrLabs selfhost (PATCHES #8): with `MAPLE_SELFHOST_UPTIME_TARGET_SPANS=1`, a monitor that names a
+ * service also gets one SERVER span per check under that service (child of the check span), so the
+ * target is listed on Services next to its metrics/logs. The check span itself is untouched, so the
+ * uptime UI (which reads `maple-uptime` root spans) is unaffected. Off = upstream behaviour.
+ */
+const TARGET_SPANS =
+	typeof process !== "undefined" && process.env?.MAPLE_SELFHOST_UPTIME_TARGET_SPANS === "1"
+
+/** Deterministic 16-hex child span id derived from the check span id (no extra randomness to carry). */
+const targetSpanId = (spanId: string): string =>
+	spanId
+		.split("")
+		.map((c) => (Number.parseInt(c, 16) ^ 0xa).toString(16))
+		.join("")
+
+const toTargetSpan = (check: UptimeCheckSpan): OtlpSpan => {
+	const base = toOtlpSpan(check)
+	return {
+		...base,
+		spanId: targetSpanId(check.trace.spanId),
+		parentSpanId: check.trace.spanId,
+		name: `uptime ${base.name}`,
+		kind: 2,
+		attributes: [...base.attributes, ...keyValues({ "maple.uptime.synthetic": true })],
+	}
+}
+
 /** One export request; checks of the same monitor share a resource. */
 export const encodeTraceExport = (checks: ReadonlyArray<UptimeCheckSpan>): OtlpTraceExportRequest => {
 	const byMonitor = Arr.groupBy(checks, (check) => check.monitor.id)
-	return {
-		resourceSpans: Object.values(byMonitor).map((group) => ({
-			// The newest check names the resource, so a rename shows up at once.
-			resource: { attributes: resourceAttributes(Arr.lastNonEmpty(group).monitor) },
-			scopeSpans: [{ scope: SCOPE, spans: group.map(toOtlpSpan) }],
-		})),
-	}
+	const groups = Object.values(byMonitor)
+	const checkSpans = groups.map((group) => ({
+		// The newest check names the resource, so a rename shows up at once.
+		resource: { attributes: resourceAttributes(Arr.lastNonEmpty(group).monitor) },
+		scopeSpans: [{ scope: SCOPE, spans: group.map(toOtlpSpan) }],
+	}))
+	if (!TARGET_SPANS) return { resourceSpans: checkSpans }
+	const targetSpans = groups.flatMap((group) => {
+		const monitor = Arr.lastNonEmpty(group).monitor
+		if (monitor.serviceName === null || monitor.serviceName === "") return []
+		return [
+			{
+				resource: {
+					attributes: keyValues({
+						"service.name": monitor.serviceName,
+						"deployment.environment.name": "homelab",
+						[UPTIME_MONITOR_ID_ATTRIBUTE]: monitor.id,
+						"maple.uptime.monitor_name": monitor.name,
+					}),
+				},
+				scopeSpans: [{ scope: SCOPE, spans: group.map(toTargetSpan) }],
+			},
+		]
+	})
+	return { resourceSpans: [...checkSpans, ...targetSpans] }
 }

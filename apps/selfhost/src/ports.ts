@@ -25,6 +25,7 @@ import {
 	WorkflowStartError,
 } from "@maple/backend/platform/bindings"
 import { Effect, Layer, Option } from "effect"
+import { pgStatusBindings, statusDb } from "./status-store"
 
 /** Process env as the Worker env record; `MAPLE_DB` is synthesised from `MAPLE_PG_URL`. */
 export const selfhostEnv = (): Record<string, unknown> => {
@@ -88,6 +89,21 @@ const schemaApplyStarter: WorkflowStarter<{ readonly orgId: string }> = {
 				}),
 }
 
+/** Status-page storage shared by api, alerting and the status server (PATCHES #9). */
+export const selfhostStatusBindings = (() => {
+	let bindings: ReturnType<typeof pgStatusBindings> | null | undefined
+	return () => {
+		if (bindings === undefined)
+			bindings = process.env.MAPLE_PG_URL ? pgStatusBindings(statusDb(process.env.MAPLE_PG_URL)) : null
+		return bindings
+	}
+})()
+
+const statusPageStoreLayer = () => {
+	const bindings = selfhostStatusBindings()
+	return bindings === null ? StatusPageStore.inMemory : StatusPageStore.fromBindings(bindings.kv, bindings.bucket)
+}
+
 /** : the Postgres-backed queue (vcs-queue.ts, PATCHES #6); without it VCS jobs are dropped as before. */
 export const selfhostPorts = (env: Record<string, unknown>, vcsSync?: QueueProducer) =>
 	Layer.mergeAll(
@@ -98,7 +114,8 @@ export const selfhostPorts = (env: Record<string, unknown>, vcsSync?: QueueProdu
 		Layer.succeed(CliAuthRateLimit, memoryLimiter(30, 60)),
 		Layer.succeed(McpOAuthRateLimit, memoryLimiter(60, 60)),
 		Layer.succeed(ReplayBlobBucket, { getBytes: () => Effect.succeed(Option.none()) }),
-		StatusPageStore.inMemory,
+		// PATCHES #9: status-page KV/R2 in Postgres (status-store.ts), served by status.ts; in-memory without a DB.
+		statusPageStoreLayer(),
 		Layer.succeed(EmailSender, Option.none()),
 		Layer.succeed(SchemaApplyWorkflow, schemaApplyStarter),
 		Layer.succeed(

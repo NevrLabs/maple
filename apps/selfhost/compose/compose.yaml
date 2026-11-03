@@ -158,6 +158,8 @@ services:
     environment:
       <<: *app-env
       PORT: "3472"
+      # PATCHES #8: the homelab LAN is a declared private network (uptime monitors may target it).
+      MAPLE_SELFHOST_PRIVATE_NETWORKS: ${MAPLE_SELFHOST_PRIVATE_NETWORKS:-}
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -175,6 +177,46 @@ services:
       migrate:
         condition: service_completed_successfully
     mem_limit: 384m
+
+  # Uptime prober (apps/scraper, PATCHES #8): polls api for monitors, probes from the LAN, reports results,
+  # exports one span per check to ingest. Resolves *.home via AdGuard; trusts the CT101 *.home certificate.
+  scraper:
+    image: maple-selfhost:${MAPLE_SELFHOST_TAG}
+    restart: unless-stopped
+    logging: *logging
+    command: ["bun", "/app/scraper.js"]
+    environment:
+      MAPLE_API_URL: http://api:3472
+      MAPLE_INGEST_URL: http://ingest:3474
+      SD_INTERNAL_TOKEN: ${SD_INTERNAL_TOKEN}
+      MAPLE_SELFHOST_PRIVATE_NETWORKS: ${MAPLE_SELFHOST_PRIVATE_NETWORKS:-}
+      MAPLE_SELFHOST_UPTIME_TARGET_SPANS: "1"
+      NODE_EXTRA_CA_CERTS: /certs/home-ca.pem
+      UPTIME_CONCURRENCY: "16"
+      PORT: "3475"
+    volumes:
+      - ./certs:/certs:ro
+    dns:
+      - 192.168.1.4
+      - 192.168.1.3
+    depends_on:
+      - api
+      - ingest
+    mem_limit: 256m
+
+  # Status pages (PATCHES #9): apps/status handler over Postgres, same-origin at /s/<slug> (Caddy).
+  status:
+    image: maple-selfhost:${MAPLE_SELFHOST_TAG}
+    restart: unless-stopped
+    logging: *logging
+    command: ["bun", "/app/status.js"]
+    environment:
+      MAPLE_PG_URL: postgres://maple:${POSTGRES_PASSWORD}@postgres:5432/maple
+      PORT: "3478"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    mem_limit: 128m
 
   electric:
     image: maple-electric:1.7.12
@@ -275,6 +317,7 @@ services:
       - api
       - electric-sync
       - ingest
+      - status
     mem_limit: 128m
 
   # Public https://monitoring.entelechia.cloud: remote-managed tunnel "maple" (ingress in the CF API:

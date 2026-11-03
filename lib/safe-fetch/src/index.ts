@@ -148,8 +148,58 @@ const canonicalHostname = (hostname: string): string => {
 	return lower.endsWith(".") ? lower.slice(0, -1) : lower
 }
 
+/**
+ * NevrLabs selfhost (PATCHES #8): an operator-declared private network Maple may reach, from
+ * `MAPLE_SELFHOST_PRIVATE_NETWORKS` (comma list of IPv4 CIDRs such as `192.168.0.0/16` and DNS
+ * suffixes such as `home`). Unset (every upstream deployment, every Worker) = empty = upstream
+ * behaviour. Loopback, link-local/metadata and `0/8` stay refused even inside a listed CIDR.
+ */
+interface PrivateAllowlist {
+	readonly cidrs: ReadonlyArray<readonly [number, number]>
+	readonly suffixes: ReadonlyArray<string>
+}
+
+const ipv4ToInt = (address: string): number =>
+	address.split(".").reduce((acc, octet) => ((acc << 8) | Number(octet)) >>> 0, 0)
+
+export const parsePrivateAllowlist = (raw: string): PrivateAllowlist => {
+	const cidrs: Array<readonly [number, number]> = []
+	const suffixes: Array<string> = []
+	for (const entry of raw.split(",").map((part) => part.trim().toLowerCase()).filter(Boolean)) {
+		const cidr = /^(\d{1,3}(?:\.\d{1,3}){3})\/(\d{1,2})$/u.exec(entry)
+		if (cidr) {
+			const bits = Number(cidr[2])
+			if (bits < 8 || bits > 32) continue
+			const mask = bits === 0 ? 0 : (0xffffffff << (32 - bits)) >>> 0
+			cidrs.push([(ipv4ToInt(cidr[1]) & mask) >>> 0, mask])
+		} else if (/^\.?[a-z0-9-]+(?:\.[a-z0-9-]+)*$/u.test(entry)) {
+			suffixes.push(entry.replace(/^\./u, ""))
+		}
+	}
+	return { cidrs, suffixes }
+}
+
+const NEVER_ALLOWED_IPV4: ReadonlyArray<RegExp> = [/^0\./, /^127\./, /^169\.254\./]
+
+const privateAllowlist: PrivateAllowlist = parsePrivateAllowlist(
+	(typeof process !== "undefined" && process.env?.MAPLE_SELFHOST_PRIVATE_NETWORKS) || "",
+)
+
+/** True when the operator declared this private host/address reachable (and it is not loopback or metadata). */
+export const isAllowedPrivate = (host: string, allowlist: PrivateAllowlist = privateAllowlist): boolean => {
+	const lower = canonicalHostname(host)
+	if (IPV4_LITERAL_RE.test(lower)) {
+		if (NEVER_ALLOWED_IPV4.some((re) => re.test(lower))) return false
+		const value = ipv4ToInt(lower)
+		return allowlist.cidrs.some(([network, mask]) => ((value & mask) >>> 0) === network)
+	}
+	if (BLOCKED_HOSTNAMES.has(lower)) return false
+	return allowlist.suffixes.some((suffix) => lower === suffix || lower.endsWith(`.${suffix}`))
+}
+
 const isPrivateHost = (hostname: string): boolean => {
 	const lower = canonicalHostname(hostname)
+	if (isAllowedPrivate(lower)) return false
 	if (BLOCKED_HOSTNAMES.has(lower) || hasBlockedSuffix(lower)) return true
 	if (isPrivateIPv4(lower)) return true
 	if (isPrivateIPv6(lower)) return true
@@ -265,7 +315,9 @@ export type ResolveHost = (hostname: string) => Effect.Effect<ReadonlyArray<stri
 
 /** A resolved address, judged by the same rules as a literal host. Unparseable answers are refused. */
 export const isPrivateAddress = (address: string): boolean =>
-	address.includes(":") ? isPrivateIPv6(address) : !IPV4_LITERAL_RE.test(address) || isPrivateIPv4(address)
+	address.includes(":")
+		? isPrivateIPv6(address)
+		: !IPV4_LITERAL_RE.test(address) || (isPrivateIPv4(address) && !isAllowedPrivate(address))
 
 /**
  * The TLS name a guarded hop verifies when it dials a pinned address, null when the URL host is

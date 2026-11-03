@@ -12,12 +12,16 @@ echo "building tag=$TAG"
 EXT=(-e "cloudflare:*" -e vite -e "@vitejs/*" -e vitest -e "@cloudflare/vite-plugin" -e wrangler -e miniflare -e esbuild -e rolldown -e lightningcss -e "@rolldown/*")
 
 build_selfhost() {
-  echo "== selfhost bundles (api, alerting, electric-sync, pg-migrate, ch-migrate)"
+  echo "== selfhost bundles (api, alerting, electric-sync, scraper, status, pg-migrate, ch-migrate)"
   C=$OUT/ctx/selfhost; rm -rf $C; mkdir -p $C/app/db $C/app/ch
   cd $SRC
   $BUN build apps/selfhost/src/api.ts      --target=bun --outfile=$C/app/api.js      "${EXT[@]}" | tail -1
   $BUN build apps/selfhost/src/alerting.ts --target=bun --outfile=$C/app/alerting.js "${EXT[@]}" | tail -1
   $BUN build apps/selfhost/src/electric-sync.ts --target=bun --outfile=$C/app/electric-sync.js "${EXT[@]}" | tail -1
+  # PATCHES #8/#9: uptime prober (apps/scraper, unmodified entry) + status-page server.
+  ( cd packages/effect-sdk && $BUN run build >/dev/null 2>&1 )
+  $BUN build apps/scraper/src/main.ts      --target=bun --outfile=$C/app/scraper.js  "${EXT[@]}" | tail -1
+  $BUN build apps/selfhost/src/status.ts   --target=bun --outfile=$C/app/status.js   "${EXT[@]}" | tail -1
   # migrate.ts resolves ../drizzle from its own file -> place bundle at db/scripts/, assets at db/drizzle.
   mkdir -p $C/app/db/scripts
   $BUN build packages/db/scripts/migrate.ts --target=bun --outfile=$C/app/db/scripts/migrate.js "${EXT[@]}" | tail -1
@@ -29,7 +33,7 @@ WORKDIR /app
 COPY app /app
 USER bun
 ENV NODE_ENV=production
-EXPOSE 3472 3476 3480
+EXPOSE 3472 3475 3476 3478 3480
 CMD ["bun", "/app/api.js"]
 EOF
   docker build -q -t maple-selfhost:$TAG $C

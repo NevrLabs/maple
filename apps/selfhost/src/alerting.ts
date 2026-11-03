@@ -6,9 +6,14 @@
  */
 import { Cause, Duration, Effect, Option } from "effect"
 import { ALERTING_SCHEDULE, type AlertingCron } from "../../alerting/src/schedule"
-import { selfhostEnv } from "./ports"
+import { selfhostEnv, selfhostStatusBindings } from "./ports"
+import { ensureStatusSchema, statusDb } from "./status-store"
 
 const env = selfhostEnv()
+// PATCHES #9: publish status pages into the Postgres store the status server reads.
+const statusBindings = selfhostStatusBindings()
+if (statusBindings !== null && process.env.MAPLE_PG_URL) await ensureStatusSchema(statusDb(process.env.MAPLE_PG_URL))
+const statusPages = statusBindings === null ? Option.none() : Option.some(statusBindings)
 const running = new Set<string>()
 const lastFire: Record<string, { at: string; lanes: Record<string, string> }> = {}
 
@@ -47,7 +52,7 @@ const fire = async (cron: AlertingCron, at: Date) => {
 			const started = Date.now()
 			try {
 				await Effect.runPromise(
-					runScheduled(cron, lane, env, Option.none(), undefined as any, Option.none()).pipe(
+					runScheduled(cron, lane, env, Option.none(), undefined as any, statusPages).pipe(
 						Effect.timeout(Duration.fromInputUnsafe(schedule.deadline as Duration.Input)),
 						Effect.catchCause((cause) =>
 							Cause.hasInterruptsOnly(cause)

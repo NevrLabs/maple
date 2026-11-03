@@ -157,3 +157,40 @@ so every webhook delivery was acknowledged and then thrown away.
 normalise every sender: `transform/service-name` (fallback `service.name` from resource keys) and
 `transform/severity` (map numeric / empty / non-standard severities to the standard levels). Config lives in
 `apps/selfhost/compose/otel-collector.yaml`. **Verify after rebase:** collector image builds; `validate --config`.
+
+## #8 — uptime prober on the LAN (BRIEF-uptime 1)
+
+Upstream runs `apps/scraper` (uptime HTTP/TCP/DNS checks) on its own infra and refuses every private target
+(SSRF guard). Self-hosted, the whole point is probing the homelab.
+
+- `lib/safe-fetch/src/index.ts` — **upstream file**. `MAPLE_SELFHOST_PRIVATE_NETWORKS` (comma list of IPv4 CIDRs +
+  DNS suffixes, e.g. `192.168.0.0/16,home`): hosts/addresses inside it are not "private" for `parseExternalUrl`,
+  `isPrivateAddress` and the pinned guard. Loopback, `169.254/16` (metadata) and `0/8` stay refused even if listed.
+  Unset (every upstream deployment, every Worker: no `process.env`) = byte-for-byte upstream behaviour.
+  Applies to the api (monitor validation) and the scraper (probe + DNS pinning).
+- `apps/scraper/src/UptimeSpans.ts` — **upstream file**. `MAPLE_SELFHOST_UPTIME_TARGET_SPANS=1`: a monitor with a
+  `service_name` also exports one SERVER span per check under that service (child of the `maple-uptime` check span,
+  same trace, attribute `maple.uptime.synthetic=true`), so every monitored target is listed on Services next to its
+  metrics/logs. The check span is unchanged, so the uptime UI/queries are unaffected. Off = upstream.
+- `apps/selfhost/dev/build-images.sh` bundles `apps/scraper/src/main.ts` (unmodified entry) into `/app/scraper.js`;
+  compose service `scraper` (`dns: 192.168.1.4` AdGuard, `NODE_EXTRA_CA_CERTS` = the CT101 `*.home` cert, so TLS is
+  verified, not skipped).
+
+**Verify after rebase:** `bun test lib/safe-fetch apps/scraper`; scraper `/health` 200; `SELECT count() FROM
+maple.traces WHERE ServiceName='maple-uptime' AND Timestamp > now() - INTERVAL 10 MINUTE` > 0.
+
+## #9 — status pages without Cloudflare (BRIEF-uptime 1)
+
+Upstream publishes status pages into Workers KV + R2 (`StatusPageStore.fromBindings`) and serves them from the status
+Worker; selfhost had `StatusPageStore.inMemory` in the api and no bindings in alerting, so nothing was published.
+
+- `apps/selfhost/src/status-store.ts` (new) — Postgres table `selfhost_status_kv (ns kv|r2, key, value)`; KV/bucket
+  shims matching `StatusPageKvNamespace`/`StatusPageBucket` (keyset-paginated `list`).
+- `ports.ts` — `StatusPageStore.fromBindings(pg shims)` when `MAPLE_PG_URL` is set (in-memory otherwise).
+- `alerting.ts` — passes the same bindings to `runScheduled`, so the escalation lane's `statusPages` tick
+  (reconcile, auto incidents, publish sweep, heartbeat) runs.
+- `status.ts` (new) — Bun server running `apps/status/src/handler.ts` **unmodified** over Postgres storage
+  (colo cache = in-process map; break-glass limiter in memory). Caddy `/s/*` → `status:3478`, so pages are
+  same-origin: `https://monitoring.home/s/<slug>` and `https://monitoring.entelechia.cloud/s/<slug>` (CF Access).
+
+**Verify after rebase:** `GET /s/<slug>` 200 with the page's components; `/s/<slug>/api/v1/status.json` JSON.
