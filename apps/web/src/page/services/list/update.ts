@@ -129,7 +129,7 @@ const facetsStep = (model: Model, context: PageContext, window: TimeWindow, mode
 	)
 
 /** Liveness is re-read once a minute at most: the key carries the minute of the page clock. */
-const LIVENESS_BUCKET_MS = 60_000
+const LIVENESS_BUCKET_MS = 300_000
 
 const livenessStep = (model: Model, context: PageContext, mode: RequestMode): Step =>
 	keyed(

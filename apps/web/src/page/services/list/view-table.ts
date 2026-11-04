@@ -87,7 +87,7 @@ const livenessBadge = (h: HtmlBuilder<Message>, ctx: TableContext, service: Serv
 	const lastSeenMs = liveness?.[service.serviceName]
 	const seen =
 		lastSeenMs === undefined
-			? "no data in 30 days"
+			? "no recent data"
 			: `last seen ${formatRelativeTimeOrDate(lastSeenMs, ctx.model.nowMs, ctx.timeZone)}`
 	return badge(
 		h,
