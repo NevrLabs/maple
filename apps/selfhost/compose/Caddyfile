@@ -16,6 +16,13 @@
 		reverse_proxy api:3472
 	}
 
+	# OAuth provider callbacks (Cloudflare, GitHub, Linear, ...): the api builds redirect_uri as <browser origin>/api/integrations/<p>/callback
+	# (upstream serves the api on its own origin, so there is no /_api in it). Without this they fell through to the SPA ->
+	# "Page not found / The link may be out of date" after approving in Cloudflare (BRIEF-perf C). Prefix NOT stripped.
+	handle /api/integrations/* {
+		reverse_proxy api:3472
+	}
+
 	# Electric shape proxy: VITE_ELECTRIC_SYNC_URL=/_sync -> /_sync/api/sync/shape. Long-polls: never buffer.
 	handle_path /_sync/* {
 		reverse_proxy electric-sync:3476 {

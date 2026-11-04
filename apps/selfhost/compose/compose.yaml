@@ -13,7 +13,9 @@ x-app-env: &app-env
   # RES-05: image tags are fork short SHAs -> vcs.ref.head.revision on Maple's own telemetry.
   COMMIT_SHA: ${MAPLE_SELFHOST_TAG}
   VCS_REPOSITORY_URL: https://github.com/NevrLabs/maple
-  CLICKHOUSE_URL: http://clickhouse:8123
+  # BRIEF-perf B: shared ClickHouse clickhouse-01 (CT140). Rollback to the local container: MAPLE_CH_URL=http://clickhouse:8123
+  # + MAPLE_CH_HOST=clickhouse in .env, then `docker compose --profile local-clickhouse up -d`.
+  CLICKHOUSE_URL: ${MAPLE_CH_URL:-http://clickhouse:8123}
   CLICKHOUSE_PROVIDER: clickhouse
   CLICKHOUSE_USER: maple_runtime
   CLICKHOUSE_PASSWORD: ${CH_RUNTIME_PASSWORD}
@@ -90,6 +92,8 @@ services:
     mem_limit: 512m
 
   clickhouse:
+    # Retired 2026-11-04 (BRIEF-perf B): data lives on clickhouse-01. Kept for rollback only (volume /srv/clickhouse/data kept 7 d).
+    profiles: [local-clickhouse]
     image: clickhouse/clickhouse-server:26.2
     restart: unless-stopped
     logging: *logging
@@ -118,11 +122,9 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      clickhouse:
-        condition: service_healthy
     environment:
       MAPLE_PG_URL: postgres://maple:${POSTGRES_PASSWORD}@postgres:5432/maple
-      MAPLE_CH_URL: http://clickhouse:8123
+      MAPLE_CH_URL: ${MAPLE_CH_URL:-http://clickhouse:8123}
       MAPLE_CH_USER: maple_admin
       MAPLE_CH_PASSWORD: ${CH_ADMIN_PASSWORD}
       MAPLE_CH_DATABASE: maple
@@ -145,10 +147,14 @@ services:
         condition: service_completed_successfully
     environment:
       CH_ADMIN_PASSWORD: ${CH_ADMIN_PASSWORD}
+      MAPLE_CH_HOST: ${MAPLE_CH_HOST:-clickhouse}
     volumes:
       - ./clickhouse/retention.sql:/retention.sql:ro
       - ./clickhouse/proxmox.sql:/proxmox.sql:ro
-    entrypoint: ["sh", "-c", "clickhouse-client --host clickhouse --user maple_admin --password \"$$CH_ADMIN_PASSWORD\" --multiquery < /retention.sql && clickhouse-client --host clickhouse --user maple_admin --password \"$$CH_ADMIN_PASSWORD\" --multiquery < /proxmox.sql && echo retention-applied"]
+      - ./clickhouse/tiering.sql:/tiering.sql:ro
+    # Local container: retention.sql. clickhouse-01: tiering.sql (same delete horizons + hot->cold move after 2 d), never both,
+    # so the TTL is not rewritten back and forth on every `up`.
+    entrypoint: ["sh", "-c", "H=$${MAPLE_CH_HOST:-clickhouse}; T=/retention.sql; [ $$H = clickhouse ] || T=/tiering.sql; clickhouse-client --host $$H --user maple_admin --password \"$$CH_ADMIN_PASSWORD\" --multiquery < $$T && clickhouse-client --host $$H --user maple_admin --password \"$$CH_ADMIN_PASSWORD\" --multiquery < /proxmox.sql && echo retention-applied $$T"]
 
   api:
     image: maple-selfhost:${MAPLE_SELFHOST_TAG}
@@ -266,11 +272,9 @@ services:
     logging: *logging
     environment:
       CH_INGEST_PASSWORD: ${CH_INGEST_PASSWORD}
+      MAPLE_CH_URL: ${MAPLE_CH_URL:-http://clickhouse:8123}
     volumes:
       - ./otel-collector.yaml:/etc/otelcol/config.yaml:ro
-    depends_on:
-      clickhouse:
-        condition: service_healthy
     mem_limit: 512m
 
   ingest:

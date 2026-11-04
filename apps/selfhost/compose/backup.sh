@@ -7,7 +7,10 @@ cd /opt/maple
 DIR=/srv/maple/backups/$(date -u +%Y%m%dT%H%M%SZ)
 mkdir -p "$DIR"; chmod 700 /srv/maple/backups "$DIR"
 docker compose exec -T postgres pg_dump -U maple -d maple -Fc > "$DIR/maple.pgdump"
-ch() { docker compose exec -T clickhouse sh -c 'clickhouse-client --user maple_admin --password "$CH_ADMIN_PASSWORD" --query "$0"' "$1"; }
+# ClickHouse = shared clickhouse-01 (MAPLE_CH_URL in .env; BRIEF-perf B). Its data is backed up natively to DeepVault S3
+# by clickhouse-01:/usr/local/sbin/ch-backup.sh; this dump only keeps schema DDL + alert_checks next to the PG dump.
+set -a; . ./.env; set +a
+ch() { printf %s "$1" | curl -sS --fail-with-body -u "maple_admin:$CH_ADMIN_PASSWORD" --data-binary @- "${MAPLE_CH_URL:?}/"; }
 ch "SELECT create_table_query || ';' FROM system.tables WHERE database = 'maple' ORDER BY name FORMAT TSVRaw" | gzip > "$DIR/clickhouse-schema.sql.gz"
 ch "SELECT * FROM maple.alert_checks FORMAT TSVWithNames" | gzip > "$DIR/alert_checks.tsv.gz"
 # fail loud: an empty dump is worse than no dump

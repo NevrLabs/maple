@@ -116,11 +116,12 @@ def main():
 
     def insert(table, data):
         body = "\n".join(json.dumps(x) for x in data)
-        # maple_ingest has INSERT on maple.*; the password stays inside the clickhouse container env.
-        subprocess.run(
-            ["docker", "compose", "exec", "-T", "clickhouse", "sh", "-c",
-             f'clickhouse-client --user maple_ingest --password "$CH_INGEST_PASSWORD" --query "INSERT INTO maple.{table} FORMAT JSONEachRow"'],
-            input=body.encode(), check=True, cwd="/opt/maple")
+        # maple_ingest has INSERT on maple.*. ClickHouse = shared clickhouse-01 (MAPLE_CH_URL from .env, BRIEF-perf B).
+        q = urllib.parse.urlencode({"query": f"INSERT INTO maple.{table} FORMAT JSONEachRow"})
+        req = urllib.request.Request(f"{os.environ['MAPLE_CH_URL'].rstrip('/')}/?{q}", data=body.encode(), method="POST",
+                                     headers={"X-ClickHouse-User": "maple_ingest", "X-ClickHouse-Key": os.environ["CH_INGEST_PASSWORD"]})
+        with urllib.request.urlopen(req, timeout=60) as r:
+            r.read()
 
     insert("proxmox_backups", rows)
     insert("proxmox_backup_jobs", jobs)

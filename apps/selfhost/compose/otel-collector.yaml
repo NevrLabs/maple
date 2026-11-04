@@ -106,7 +106,7 @@ processors:
           and not IsMatch(body, "(?i)(error|fatal|panic|fail|exception|denied|refused|timeout|traceback)")
 exporters:
   maple:
-    endpoint: http://clickhouse:8123
+    endpoint: ${env:MAPLE_CH_URL}
     database: maple
     username: maple_ingest
     password: ${env:CH_INGEST_PASSWORD}
