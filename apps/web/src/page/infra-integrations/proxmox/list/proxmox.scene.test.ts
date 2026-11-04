@@ -129,6 +129,39 @@ describe("proxmox route", () => {
 		)
 	})
 
+	test("PATCHES #14: local storages stay per host, shared ones count once", () => {
+		const perNode = [
+			{ name: "DeepVault", node: "akasha", shared: 1, used: 8e11, total: 1e12 },
+			{ name: "DeepVault", node: "thinkcentre-01", shared: 1, used: 8e11, total: 1e12 },
+			{ name: "local", node: "akasha", shared: 0, used: 26e9, total: 316e9 },
+			{ name: "local", node: "thinkcentre-01", shared: 0, used: 22e9, total: 73e9 },
+			{ name: "local-lvm", node: "thinkcentre-01", shared: 0, used: 132e9, total: 169e9 },
+		]
+		const data = snapshot({
+			storage: perNode,
+			storageMeta: [
+				{ name: "DeepVault", type: "nfs", shared: 1, snapshotMs: NOW },
+				{ name: "local", type: "dir", shared: 0, snapshotMs: NOW },
+				{ name: "local-lvm", type: "lvmthin", shared: 0, snapshotMs: NOW },
+			],
+		})
+		expect(data.storage.map((s) => [s.name, s.nodes.join("+")])).toEqual([
+			["DeepVault", "akasha+thinkcentre-01"],
+			["local-lvm", "thinkcentre-01"],
+			["local", "thinkcentre-01"],
+			["local", "akasha"],
+		])
+		scene(
+			{ update: pageUpdate, view },
+			given(loaded(data, { tab: "storage" })),
+			expectView(text("Cluster storage")).toExist(),
+			expectView(text("1 shared · counted once")).toExist(),
+			expectView(text("2 local")).toExist(),
+			expectView(text("1 local")).toExist(),
+			expectView(text("shared · 2 nodes")).toExist(),
+		)
+	})
+
 	test("a node silent past the cut is offline and its guests unknown", () => {
 		const data = snapshot({ nodes: [nodeRow("akasha", NOW - 7 * 60_000), nodeRow("thinkcentre-01")] })
 		scene({ update: pageUpdate, view }, given(loaded(data)), expectView(text("OFFLINE · 7m ago")).toExist())

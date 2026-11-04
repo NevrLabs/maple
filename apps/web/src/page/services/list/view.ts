@@ -9,7 +9,7 @@ import type { PageViewInputs } from "../../contract"
 import { dashboardPage } from "../../kit/dashboard-page"
 import { timeControls } from "../../kit/time-controls"
 import * as TimeRangePicker from "../../kit/time-range-picker"
-import { DEFAULT_PRESET, summaryOf } from "./update"
+import { DEFAULT_PRESET, livenessOf, summaryOf } from "./update"
 import { Message } from "./message"
 import type { Model, ServiceRow } from "./model"
 import { displayedServices } from "./derive"
@@ -74,7 +74,7 @@ const tableArea = (h: HtmlBuilder<Message>, model: Model, inputs: PageViewInputs
 }
 
 const isPaintReady = (model: Model, overview: ReadonlyArray<ServiceRow>): boolean => {
-	const services = displayedServices(overview, summaryOf(model), model.search)
+	const services = displayedServices(overview, summaryOf(model), model.search, livenessOf(model))
 	return services.length === 0 || (model.themeColors !== null && model.chartRuntime._tag !== "Loading")
 }
 

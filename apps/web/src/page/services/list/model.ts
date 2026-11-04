@@ -14,6 +14,7 @@ import * as Tooltip from "../../../ui/tooltip"
 import { CommitDetailData } from "../../kit/commit-card"
 import { SignalPresenceData } from "../../kit/signal-presence"
 import * as TimeRangePicker from "../../kit/time-range-picker"
+import { Liveness } from "./liveness"
 
 // The `/services` list.
 
@@ -101,6 +102,8 @@ export const Model = Schema.Struct({
 	/** First lines of the deploy commits on screen, by sha (`commitsQueryAtom`). */
 	commitMessages: KeyedSchema(Schema.Record(Schema.String, Schema.String), LoadFailure),
 	presence: SignalPresenceData.schema,
+	/** NevrLabs selfhost (PATCHES #14): last seen per service (any signal), for alive / stale / dead. */
+	liveness: KeyedSchema(Liveness, LoadFailure),
 	/** The row tooltips: rollout split (left), sampling estimate and `UnnamedServiceHint` (below). */
 	rolloutTooltip: Tooltip.Model,
 	samplingTooltip: Tooltip.Model,

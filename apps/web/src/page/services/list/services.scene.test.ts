@@ -2,6 +2,7 @@ import { OrgId } from "@maple/domain"
 import { Result, Schema } from "effect"
 import { AsyncData } from "foldkit"
 import {
+	change,
 	click,
 	expect as expectView,
 	expectOutMessage,
@@ -193,6 +194,42 @@ describe("services list", () => {
 			expectView(role("table", { name: "Services" })).toExist(),
 			expectView(text("checkout")).toExist(),
 			expectView(text("Showing 2 services")).toExist(),
+		)
+	})
+
+	test("PATCHES #14: dead services are hidden behind the Show dead toggle, stale ones carry last seen", () => {
+		const base = loaded([row("zitadel"), row("odoo"), row("crucix")])
+		const key = base.liveness.key ?? ""
+		expect(key).not.toBe("")
+		const withLiveness = pageUpdate(
+			base,
+			Message.CompletedFetchLiveness({
+				key,
+				result: Result.succeed({ zitadel: NOW - 60_000, crucix: NOW - 2 * 3_600_000 }),
+			}),
+		).model
+		scene(
+			{ update: pageUpdate, view },
+			given(withLiveness),
+			themeResolved(),
+			Mount.resolve(MountTable, Message.PaintedTable()),
+			expectView(text("zitadel")).toExist(),
+			expectView(text("odoo")).not.toExist(),
+			expectView(text("Showing 2 services · 1 dead hidden")).toExist(),
+			change(role("checkbox", { name: "Show dead services" }), "on"),
+			expectOutMessage(
+				PageOutMessage.RequestedNavigation({ url: "/services?dead=true", isReplace: false }),
+			),
+		)
+		const shown = routeChanged(withLiveness, { search: { dead: true } }, context).model
+		scene(
+			{ update: pageUpdate, view },
+			given(shown),
+			themeResolved(),
+			Mount.resolve(MountTable, Message.PaintedTable()),
+			expectView(text("odoo")).toExist(),
+			expectView(text(/^dead · /)).toExist(),
+			expectView(text(/^stale · last seen/)).toExist(),
 		)
 	})
 

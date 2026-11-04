@@ -10,6 +10,7 @@ import {
 import { DateTime, Option } from "effect"
 import type { ServicesSearch } from "../../../route/search"
 import type { IncidentCause, ServiceRow } from "./model"
+import { type Liveness, withoutDead } from "./liveness"
 
 // Pure derivations of the services table and its health summary.
 
@@ -90,15 +91,24 @@ export const healthOf = (
 ): ServiceHealth | undefined =>
 	summary?.byRow.get(serviceHealthRowKey(service.serviceName, service.environment))
 
-/** The rows the table shows: the overview, narrowed by the `health` search param. */
+/**
+ * The rows the table shows: the overview, narrowed by the `health` search param, without dead services
+ * unless `dead` is set (PATCHES #14; nothing is hidden while liveness is unknown).
+ */
 export const displayedServices = (
 	overview: ReadonlyArray<ServiceRow>,
 	summary: HealthSummary | undefined,
 	search: Search,
-): ReadonlyArray<ServiceRow> =>
-	search.health === undefined
-		? overview
-		: overview.filter((service) => healthOf(summary, service) === search.health)
+	liveness?: Readonly<{ data: Liveness | undefined; nowMs: number }>,
+): ReadonlyArray<ServiceRow> => {
+	const byHealth =
+		search.health === undefined
+			? overview
+			: overview.filter((service) => healthOf(summary, service) === search.health)
+	return liveness === undefined
+		? byHealth
+		: withoutDead(byHealth, liveness.data, liveness.nowMs, search.dead === true)
+}
 
 const SERVICE_FILTER_KEYS = [
 	"environments",

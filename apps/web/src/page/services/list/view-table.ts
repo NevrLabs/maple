@@ -44,6 +44,7 @@ import { MountTable } from "./command"
 import { Message } from "./message"
 import type { Model, ServiceRow } from "./model"
 import { isUnnamedService, type Overlays, rowIdOf, unnamedServiceHint, withOverlays } from "./view-overlays"
+import { countDead, type Liveness, stateOf } from "./liveness"
 
 export const ERROR_RATE_COLOR = TONE_COLOR.crit
 /** The Throughput chart's colour, so every calls sparkline across the service pages matches. */
@@ -74,6 +75,31 @@ const healthDot = (h: HtmlBuilder<Message>, health: ServiceHealth | undefined): 
 				tone: HEALTH_TONE[health],
 				attributes: [h.AriaHidden(false), h.AriaLabel(health), h.Title(health)],
 			})
+
+/** PATCHES #14: stale / dead services carry their state and when data last arrived; alive ones carry nothing. */
+const livenessOfModel = (model: Model): Liveness | undefined =>
+	Option.getOrUndefined(FoldkitAsyncData.getData(model.liveness.data))
+
+const livenessBadge = (h: HtmlBuilder<Message>, ctx: TableContext, service: ServiceRow): Html | null => {
+	const liveness = livenessOfModel(ctx.model)
+	const state = stateOf(liveness, service, ctx.model.nowMs)
+	if (state === undefined || state === "alive") return null
+	const lastSeenMs = liveness?.[service.serviceName]
+	const seen =
+		lastSeenMs === undefined
+			? "no data in 30 days"
+			: `last seen ${formatRelativeTimeOrDate(lastSeenMs, ctx.model.nowMs, ctx.timeZone)}`
+	return badge(
+		h,
+		{
+			variant: "secondary",
+			size: "xs",
+			className: state === "dead" ? "text-muted-foreground" : "text-severity-warn",
+			attributes: [h.DataAttribute("liveness", state), h.Title(seen)],
+		},
+		[state === "dead" ? `dead · ${seen}` : `stale · ${seen}`],
+	)
+}
 
 const environmentBadge = (h: HtmlBuilder<Message>, environment: string): Html => {
 	const tint =
@@ -207,6 +233,8 @@ const serviceRow = (
 		environment: service.environment,
 	})
 	const throughputText = formatThroughput(service.throughput, "/s")
+	const liveBadge = livenessBadge(h, ctx, service)
+	const isDead = stateOf(livenessOfModel(ctx.model), service, ctx.model.nowMs) === "dead"
 	return h.tr(
 		[
 			h.Key(rowKey),
@@ -216,9 +244,11 @@ const serviceRow = (
 					tableRowStyles,
 					"cursor-pointer border-l-2 border-l-transparent hover:bg-surface-sunken active:bg-surface-sunken focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset",
 					health === "unhealthy" && "border-l-severity-error",
+					isDead && "opacity-60",
 				),
 			),
 			h.DataAttribute("slot", "table-row"),
+			h.DataAttribute("service-row", service.serviceName),
 			h.Tabindex(0),
 			h.OnClick(open),
 			h.OnKeyDownPreventDefault((key) =>
@@ -244,6 +274,7 @@ const serviceRow = (
 						healthDot(h, health),
 					],
 				),
+				...(liveBadge === null ? [] : [h.div([h.Class("mt-0.5")], [liveBadge])]),
 				...(subtitle !== ""
 					? [h.div([h.Class("truncate text-xs text-muted-foreground")], [subtitle])]
 					: []),
@@ -728,6 +759,27 @@ export const loadingState = (h: HtmlBuilder<Message>): Html =>
 		],
 	)
 
+/** PATCHES #14: dead services (no data for 24 h) are hidden unless this is on; it carries their count. */
+const deadToggle = (h: HtmlBuilder<Message>, ctx: TableContext, deadCount: number): Html => {
+	const isOn = ctx.model.search.dead === true
+	return h.label(
+		[
+			h.Class("flex shrink-0 cursor-pointer items-center gap-2 text-xs text-muted-foreground select-none"),
+			h.DataAttribute("services-show-dead", isOn ? "on" : "off"),
+		],
+		[
+			h.input([
+				h.Type("checkbox"),
+				h.Class("size-3.5 accent-primary"),
+				h.Checked(isOn),
+				h.AriaLabel("Show dead services"),
+				h.OnChange(() => Message.ClickedShowDead({ showDead: !isOn })),
+			]),
+			`Show dead (${deadCount})`,
+		],
+	)
+}
+
 /** The loaded table: grouping control, desktop table, mobile list and the footer tally. */
 export const servicesTable = (
 	h: HtmlBuilder<Message>,
@@ -735,7 +787,13 @@ export const servicesTable = (
 	overview: ReadonlyArray<ServiceRow>,
 	isWaiting: boolean,
 ): Html => {
-	const services = displayedServices(overview, ctx.summary, ctx.model.search)
+	const liveness = livenessOfModel(ctx.model)
+	const services = displayedServices(overview, ctx.summary, ctx.model.search, { data: liveness, nowMs: ctx.model.nowMs })
+	const deadCount = countDead(
+		displayedServices(overview, ctx.summary, { ...ctx.model.search, dead: true }),
+		liveness,
+		ctx.model.nowMs,
+	)
 	const hasNamespaces = services.some((service) => service.serviceNamespace !== "")
 	const mode = resolveGroupBy(ctx.model.search.groupBy, services, ctx.isNamespacePinned)
 	const unhealthy = services.filter((s) => healthOf(ctx.summary, s) === "unhealthy").length
@@ -757,6 +815,7 @@ export const servicesTable = (
 				unhealthy,
 				degraded,
 				healthFilter,
+				deadCount,
 			),
 		(children) =>
 			h.div(
@@ -779,12 +838,14 @@ const body = (
 	unhealthy: number,
 	degraded: number,
 	healthFilter: string | undefined,
+	deadCount: number,
 ): ReadonlyArray<Html> => [
-	...(hasNamespaces
+	...(hasNamespaces || deadCount > 0 || ctx.model.search.dead === true
 		? [
 				h.div(
-					[h.Class("flex items-center justify-end")],
+					[h.Class("flex items-center justify-end gap-3")],
 					[
+						deadToggle(h, ctx, deadCount),
 						segmentedSelect(h, {
 							options: [
 								{ value: "namespace", label: "Namespace" },
@@ -794,7 +855,7 @@ const body = (
 							onChange: (groupBy) => Message.ClickedGroupBy({ groupBy }),
 							size: "sm",
 							ariaLabel: "Group services by",
-							className: "shrink-0",
+							className: cn("shrink-0", !hasNamespaces && "hidden"),
 						}),
 					],
 				),
@@ -810,7 +871,9 @@ const body = (
 				[
 					overview.length >= SERVICE_OVERVIEW_ROW_CAP
 						? `Showing first ${SERVICE_OVERVIEW_ROW_CAP} services`
-						: `Showing ${[String(services.length), healthFilter, pluralize(services.length, "service")].filter(Boolean).join(" ")}`,
+						: `Showing ${[String(services.length), healthFilter, pluralize(services.length, "service")].filter(Boolean).join(" ")}${
+								deadCount > 0 && ctx.model.search.dead !== true ? ` · ${deadCount} dead hidden` : ""
+							}`,
 				],
 			),
 			...(unhealthy > 0 || degraded > 0

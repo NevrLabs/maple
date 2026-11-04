@@ -299,3 +299,35 @@ upstream-created monitor).
 **Verify after rebase:** in packages/backend `vitest run src/services/uptime/UptimeMonitorsService.test.ts
 src/services/alerts/AlertsService.uptime.test.ts`; `tsrs --noEmit` in backend/api/domain; live: an info dead-port
 monitor never appears under Alerts, a core one appears as Critical after `failures_to_down`.
+
+## #14 — dead vs alive services + Proxmox storage per host (BRIEF-model 1/3)
+
+**Why:** the homelab has retired apps, stopped guests and throwaway test containers, and the Services list
+showed them all the same as live ones. Proxmox node-local storages (`local`, `local-lvm`, `local-zfs-vms`)
+share a NAME across nodes; the page mashed every node's disk into one row (max used / max total of mixed disks).
+
+**Services list (alive / stale / dead):** one extra raw-SQL read through the query engine's `executeRawSql`
+(the `/infra/proxmox` path; no new backend): newest trace / log / metric row per service. Uptime target
+spans (PATCHES #8) count only when the check passed (`maple.uptime.ok`), and k8s workload-state gauges
+(`k8s.deployment.*` etc., emitted forever for scaled-to-zero apps) never count, so a probe against a dead
+target cannot keep it "alive". Older than the raw windows, the hourly rollups answer at hour grain.
+State: alive (<15 min) / stale (<24 h) / dead (older, or nothing in 30 days). Dead rows are hidden by
+default behind a `?dead=true` toggle ("Show dead (N)" checkbox next to the grouping switch, footer reads
+"· N dead hidden"); stale and dead rows carry a "stale|dead · last seen …" badge; a failed or in-flight
+liveness read hides nothing (unknown ≠ dead).
+
+**Proxmox storage:** `STORAGE_SQL` now groups by `(storage, node)`; `assembleStorage` collapses shared
+stores into one entry (nodes union, used/total max — same pool reported by every node) and keeps local
+stores one entry per node. The Storage tab groups them: "Cluster storage" header once, then one header per
+host; the compact panel and the "Fullest storage" rail label local stores `node · name`.
+
+**Upstream files touched:** `apps/web/src/route/search.ts` (`dead` param), `page/services/list/{model,
+message,command,update,derive,view,view-table}.ts`, new fork-only `page/services/list/liveness.ts`,
+`page/infra-integrations/proxmox/{data,view-parts}.ts` + the route's scene test. Config side (deploy repo):
+`wiring/service-groups.yaml` + `wiring/service-groups.py` render the CT130 collector's
+`transform/service-namespace`, which stamps `service.namespace` = the same groups (core, monitoring,
+services-critical, services-auxiliary, dev, infra-hosts) so the Services page groups/filters by them.
+
+**Verify after rebase:** `vitest run src/page/services/list src/page/infra-integrations/proxmox`;
+`tsrs --noEmit` (web); live: a dead service (e.g. a retired app inside a 7 d window) is hidden until the
+toggle; /infra/proxmox Storage tab shows `akasha/local` style rows.

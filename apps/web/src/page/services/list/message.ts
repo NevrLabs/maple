@@ -11,6 +11,7 @@ import * as Tooltip from "../../../ui/tooltip"
 import { CommitDetail, CommitFailure } from "../../kit/commit-card"
 import { SignalPresences } from "../../kit/signal-presence"
 import * as TimeRangePicker from "../../kit/time-range-picker"
+import { Liveness } from "./liveness"
 import { IncidentCause, LatencyBaseline, ServiceRow, ServicesFacets, Sparklines } from "./model"
 
 /** `Load` on entry or a search change; `Refresh` from Reload (no cache snap, revalidate every slot). */
@@ -49,6 +50,8 @@ export const Message = defineMessageUnion({
 	CompletedFetchBaseline: result(Schema.Array(LatencyBaseline)),
 	CompletedFetchAnomalies: result(Schema.Array(V2AnomalyServiceCount)),
 	CompletedFetchCommitMessages: result(Schema.Record(Schema.String, Schema.String)),
+	CompletedFetchLiveness: result(Liveness),
+	ClickedShowDead: { showDead: Schema.Boolean },
 	PaintedTable: {},
 	CompletedLoadSignalPresence: { result: Schema.Result(SignalPresences, LoadFailure) },
 	UpdatedIncidents: { orgId: Schema.String, incidents: Schema.Array(IncidentCause) },

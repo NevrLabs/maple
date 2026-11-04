@@ -32,6 +32,7 @@ import {
 	TAB_LABEL,
 	TABS,
 } from "./model"
+import { storageKey } from "./data"
 
 // Pulse (rcourtman/Pulse) anatomy in Maple's kit: dense node cards with CPU/MEM/DISK bars, one guest
 // table with status dots and inline bars, storage bars, and backups by guest. Shared by `/infra/proxmox`
@@ -217,7 +218,7 @@ const clusterRail = <M>(h: HtmlBuilder<M>, data: ProxmoxSnapshot): Html => {
 		statRailItem(h, {
 			eyebrow: "Fullest storage",
 			value: formatPercent(fullestFraction),
-			subline: fullest === undefined ? "no storage" : `${fullest.name} · ${formatBytes(fullest.total - fullest.used)} free`,
+			subline: fullest === undefined ? "no storage" : `${storageLabel(fullest)} · ${formatBytes(fullest.total - fullest.used)} free`,
 			tone: toneOf(fullestFraction),
 		}),
 	])
@@ -383,7 +384,12 @@ const guestsSection = <M>({ h, actions }: Ctx<M>, state: ProxmoxViewState, data:
 
 // ── Storage ───────────────────────────────────────────────────────────────────
 
-const storageRow = <M>(h: HtmlBuilder<M>, store: ProxmoxStorage, compact: boolean): Html => {
+/** PATCHES #14: a node-local store reads `node · name`; shared ones by name. */
+const storageLabel = (store: ProxmoxStorage): string =>
+	store.shared || store.nodes.length !== 1 ? store.name : `${store.nodes[0]} · ${store.name}`
+
+const storageRow = <M>(h: HtmlBuilder<M>, store: ProxmoxStorage, compact: boolean, inHostGroup = false): Html => {
+	const key = storageKey(store)
 	const fraction = ratio(store.used, store.total)
 	const level = severityLevel(fraction)
 	const pct = h.span(
@@ -394,20 +400,20 @@ const storageRow = <M>(h: HtmlBuilder<M>, store: ProxmoxStorage, compact: boolea
 		value: Number.isFinite(fraction) ? fraction : 0,
 		className: "h-1.5 min-w-0 flex-1 rounded-full",
 		fillClassName: BAR_FILL[level],
-		label: `${store.name} used`,
+		label: `${storageLabel(store)} used`,
 	})
 	const free = `${formatBytes(Math.max(store.total - store.used, 0))} free of ${formatBytes(store.total)}`
 	const title = h.div(
 		[h.Class("flex min-w-0 items-center gap-2")],
 		[
 			icon(h, "DatabaseIcon", { size: 14, className: "shrink-0 text-muted-foreground" }),
-			h.span([h.Class("truncate font-mono text-xs font-medium text-foreground")], [store.name]),
+			h.span([h.Class("truncate font-mono text-xs font-medium text-foreground")], [compact ? storageLabel(store) : store.name]),
 		],
 	)
 	// Narrow side panel: two lines per store (name + % / bar + free), so nothing runs to the edge.
 	if (compact)
 		return h.div(
-			[h.Key(store.name), h.DataAttribute("proxmox-storage", store.name), h.Class("flex flex-col gap-1.5 border-b border-border-subtle px-4 py-2.5 last:border-0")],
+			[h.Key(key), h.DataAttribute("proxmox-storage", key), h.Class("flex flex-col gap-1.5 border-b border-border-subtle px-4 py-2.5 last:border-0")],
 			[
 				h.div([h.Class("flex items-center justify-between gap-3")], [title, pct]),
 				h.div(
@@ -417,9 +423,9 @@ const storageRow = <M>(h: HtmlBuilder<M>, store: ProxmoxStorage, compact: boolea
 			],
 		)
 	return h.div(
-		[h.Key(store.name), h.DataAttribute("proxmox-storage", store.name), h.Class("flex items-center gap-4 border-b border-border-subtle px-4 py-3 last:border-0")],
+		[h.Key(key), h.DataAttribute("proxmox-storage", key), h.Class(cn("flex items-center gap-4 border-b border-border-subtle px-4 py-3 last:border-0", inHostGroup && "pl-8"))],
 		[
-			h.div([h.Class("w-0 min-w-48 flex-1")], [title, metaLine(h, [store.type === "" ? "storage" : store.type, store.shared ? "shared" : store.nodes.join(", ")])]),
+			h.div([h.Class("w-0 min-w-48 flex-1")], [title, metaLine(h, [store.type === "" ? "storage" : store.type, store.shared ? `shared · ${store.nodes.length} nodes` : store.nodes.join(", ")])]),
 			h.div([h.Class("flex w-80 items-center gap-3")], [bar, pct]),
 			h.span([h.Class(cn("w-56 whitespace-nowrap pr-1 text-right font-mono text-2xs tabular-nums", CAPTION))], [free]),
 		],
@@ -427,6 +433,43 @@ const storageRow = <M>(h: HtmlBuilder<M>, store: ProxmoxStorage, compact: boolea
 }
 
 const COMPACT_STORAGE = 4
+
+/** PATCHES #14: a group header inside the storage table ("Cluster storage", then one per host). */
+const storageGroupHeader = <M>(h: HtmlBuilder<M>, id: string, label: string, hint: string): Html =>
+	h.div(
+		[
+			h.Key(`group-${id}`),
+			h.DataAttribute("proxmox-storage-group", id),
+			h.Class("flex items-center gap-2 border-b border-border-subtle bg-surface-sunken px-4 py-1.5"),
+		],
+		[
+			icon(h, id === "cluster" ? "DatabaseIcon" : "ServerIcon", { size: 12, className: "shrink-0 text-muted-foreground" }),
+			h.span([h.Class("font-mono text-2xs font-medium text-foreground")], [label]),
+			h.span([h.Class(cn("text-2xs", CAPTION))], [hint]),
+		],
+	)
+
+/** Shared stores once under "Cluster storage"; node-local ones under their host (hosts by name). */
+const groupedStorageRows = <M>(h: HtmlBuilder<M>, storage: ReadonlyArray<ProxmoxStorage>): ReadonlyArray<Html> => {
+	const shared = storage.filter((store) => store.shared || store.nodes.length !== 1)
+	const local = storage.filter((store) => !(store.shared || store.nodes.length !== 1))
+	const hosts = [...new Set(local.map((store) => store.nodes[0] ?? ""))].sort()
+	return [
+		...(shared.length === 0
+			? []
+			: [
+					storageGroupHeader(h, "cluster", "Cluster storage", `${shared.length} shared · counted once`),
+					...shared.map((store) => storageRow(h, store, false)),
+				]),
+		...hosts.flatMap((host) => {
+			const rows = local.filter((store) => store.nodes[0] === host)
+			return [
+				storageGroupHeader(h, host, host, `${rows.length} local`),
+				...rows.map((store) => storageRow(h, store, false, true)),
+			]
+		}),
+	]
+}
 
 const storageSection = <M>({ h, actions }: Ctx<M>, data: ProxmoxSnapshot, compact: boolean): Html => {
 	const shown = compact ? data.storage.slice(0, COMPACT_STORAGE) : data.storage
@@ -437,7 +480,7 @@ const storageSection = <M>({ h, actions }: Ctx<M>, data: ProxmoxSnapshot, compac
 			sectionHeading(h, {
 				title: "Storage",
 				count: compact && hidden > 0 ? `${shown.length} of ${data.storage.length}` : String(data.storage.length),
-				hint: compact ? "fullest first" : "every PVE storage, fullest first; shared stores count once",
+				hint: compact ? "fullest first" : "shared stores once, local stores under their host; fullest first",
 			}),
 			dataTable(
 				h,
@@ -450,7 +493,11 @@ const storageSection = <M>({ h, actions }: Ctx<M>, data: ProxmoxSnapshot, compac
 							columnHead(h, { label: "Free / capacity", width: "w-56", align: "right" }),
 						],
 				[
-					...(shown.length === 0 ? [dataTableEmpty(h, ["No storage reported."])] : shown.map((store) => storageRow(h, store, compact))),
+					...(shown.length === 0
+						? [dataTableEmpty(h, ["No storage reported."])]
+						: compact
+							? shown.map((store) => storageRow(h, store, true))
+							: groupedStorageRows(h, shown)),
 					...(hidden > 0
 						? [
 								h.button(

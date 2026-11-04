@@ -69,14 +69,18 @@ FROM (
 ) r ON r.vmid = g.vmid
 ORDER BY toUInt32OrZero(vmid)`
 
-export const STORAGE_SQL = `SELECT Attributes['storage'] AS name, arraySort(groupUniqArray(Attributes['node'])) AS nodes,
+/**
+ * PATCHES #14: one row per (storage, node). Node-local storages (local, local-lvm, local-zfs-vms) share a NAME
+ * across nodes but are different disks; `assembleStorage` keeps them per node and collapses shared ones.
+ */
+export const STORAGE_SQL = `SELECT Attributes['storage'] AS name, Attributes['node'] AS node,
   maxIf(Value, MetricName = 'proxmox_storage_shared') > 0 AS shared,
   argMaxIf(Value, TimeUnix, MetricName = 'proxmox_storage_used') AS used,
   argMaxIf(Value, TimeUnix, MetricName = 'proxmox_storage_total') AS total
 FROM metrics_gauge m
 WHERE $__orgFilter(m) AND TimeUnix >= $__endTime - INTERVAL 10 MINUTE AND TimeUnix <= $__endTime AND ${PVE}
   AND MetricName IN ('proxmox_storage_used', 'proxmox_storage_total', 'proxmox_storage_shared')
-GROUP BY name HAVING total > 0 ORDER BY used / total DESC`
+GROUP BY name, node HAVING total > 0 ORDER BY used / total DESC`
 
 /** The collector's tables keep one row per item and snapshot; only the newest snapshot is current. */
 const latestSnapshot = (table: string, alias: string, columns: string, order: string) =>
@@ -155,15 +159,43 @@ export const toGuest = (row: Row): ProxmoxGuest => ({
 export const toStorage = (row: Row, meta: ReadonlyMap<string, Row>): ProxmoxStorage => {
 	const name = str(row.name)
 	const known = meta.get(name)
+	// Older rows (and the lab fixture) carry `nodes`; per-node rows carry `node`.
+	const nodes = row.node === undefined ? strs(row.nodes) : [str(row.node)].filter((node) => node !== "")
 	return {
 		name,
 		type: known === undefined ? "" : str(known.type),
 		shared: known === undefined ? bool(row.shared) : bool(known.shared),
-		nodes: strs(row.nodes),
+		nodes,
 		used: num(row.used),
 		total: num(row.total),
 	}
 }
+
+/**
+ * PATCHES #14: shared storages (Ceph, NFS) report the same pool from every node: one entry listing every node.
+ * Non-shared ones stay one entry per node (`nodes` = [that node]). Fullest first.
+ */
+export const assembleStorage = (rows: ReadonlyArray<Row>, meta: ReadonlyMap<string, Row>): ReadonlyArray<ProxmoxStorage> => {
+	const stores = rows.map((row) => toStorage(row, meta))
+	const shared = new Map<string, ProxmoxStorage>()
+	const local: Array<ProxmoxStorage> = []
+	stores.forEach((store) => {
+		if (!store.shared) return local.push(store)
+		const seen = shared.get(store.name)
+		shared.set(
+			store.name,
+			seen === undefined
+				? store
+				: { ...seen, nodes: [...new Set([...seen.nodes, ...store.nodes])].sort(), used: Math.max(seen.used, store.used), total: Math.max(seen.total, store.total) },
+		)
+	})
+	const fill = (store: ProxmoxStorage) => (store.total > 0 ? store.used / store.total : 0)
+	return [...shared.values(), ...local].toSorted((a, b) => fill(b) - fill(a))
+}
+
+/** Storage key: shared ones by name, node-local ones by node + name. */
+export const storageKey = (store: ProxmoxStorage): string =>
+	store.shared || store.nodes.length !== 1 ? store.name : `${store.nodes[0]}/${store.name}`
 
 export const toBackup = (row: Row): ProxmoxBackup => ({
 	vmid: str(row.vmid),
@@ -206,7 +238,7 @@ export const assembleSnapshot = (rows: SnapshotRows): ProxmoxSnapshot => {
 		pveVersion: first === undefined ? "" : str(first.version),
 		nodes: rows.nodes.map(toNode),
 		guests: rows.guests.map(toGuest),
-		storage: rows.storage.map((row) => toStorage(row, meta)),
+		storage: assembleStorage(rows.storage, meta),
 		backups: rows.backups.map(toBackup),
 		backupJobs: rows.jobs.map(toJob),
 		backupsAsOfMs: backupsAsOf === undefined ? null : num(backupsAsOf.snapshotMs),

@@ -18,6 +18,7 @@ import {
 	FetchBaseline,
 	FetchCommitMessages,
 	FetchFacets,
+	FetchLiveness,
 	FetchOverview,
 	FetchSparklines,
 	LoadSignalPresence,
@@ -27,6 +28,7 @@ import {
 import { commitsKey, displayedServices, healthSummary, isServiceHealth, type Search } from "./derive"
 import { type Facet, Message, type RequestMode } from "./message"
 import { IncidentsData, type Model } from "./model"
+import type { Liveness } from "./liveness"
 import {
 	clickedCopySha,
 	commitCardMessage,
@@ -126,6 +128,24 @@ const facetsStep = (model: Model, context: PageContext, window: TimeWindow, mode
 		(key) => FetchFacets({ key, window, refresh: mode === "Refresh" }),
 	)
 
+/** Liveness is re-read once a minute at most: the key carries the minute of the page clock. */
+const LIVENESS_BUCKET_MS = 60_000
+
+const livenessStep = (model: Model, context: PageContext, mode: RequestMode): Step =>
+	keyed(
+		model.liveness,
+		requestKey(context.orgId, "serviceLiveness", { minute: Math.floor(model.nowMs / LIVENESS_BUCKET_MS) }),
+		mode,
+		(liveness) => ({ liveness }),
+		(key) => FetchLiveness({ key, endMs: model.nowMs }),
+	)
+
+/** PATCHES #14: what `displayedServices` hides dead rows with (unknown until the read lands). */
+export const livenessOf = (model: Model): Readonly<{ data: Liveness | undefined; nowMs: number }> => ({
+	data: Option.getOrUndefined(AsyncData.getData(model.liveness.data)),
+	nowMs: model.nowMs,
+})
+
 /** Every query the page reads, keyed by its inputs, for the resolved window. */
 const requestAll = (model: Model, context: PageContext, window: TimeWindow, mode: RequestMode): Return => {
 	const org = context.orgId
@@ -150,6 +170,7 @@ const requestAll = (model: Model, context: PageContext, window: TimeWindow, mode
 			(key) => FetchSparklines({ key, input, refresh: mode === "Refresh" }),
 		),
 		facetsStep(model, context, window, mode),
+		livenessStep(model, context, mode),
 		// Reload refreshes the overview, sparklines and facets only (`useRefreshableAtomValue`).
 		keyed(
 			model.baseline,
@@ -176,7 +197,7 @@ const followData =
 		const overview = AsyncData.getData(model.overview.data)
 		if (Option.isNone(overview) || !model.hasPaintedTable) return result
 		const summary = summaryOf(model)
-		const services = displayedServices(overview.value, summary, model.search)
+		const services = displayedServices(overview.value, summary, model.search, livenessOf(model))
 		const shas = commitsKey(services)
 		const commits =
 			shas === ""
@@ -312,6 +333,7 @@ export const init = (route: { readonly search: Search }, context: PageContext): 
 		hasPaintedTable: false,
 		commitMessages: Keyed.idle(),
 		presence: SignalPresenceData.Loading(),
+		liveness: Keyed.idle(),
 		...initOverlays(),
 		filterSections: FilterSections.init(),
 		timePicker: TimeRangePicker.init("services-time-range"),
@@ -349,6 +371,7 @@ export const revive = (model: Model, route: { readonly search: Search }, context
 		baseline: Keyed.forgetFailure(model.baseline),
 		anomalies: Option.getOrElse(anomalies, () => model.anomalies),
 		commitMessages: Keyed.forgetFailure(model.commitMessages),
+		liveness: Keyed.forgetFailure(model.liveness),
 		// A runtime that failed before parking is asked for again, as entry does.
 		chartRuntime:
 			model.chartRuntime._tag === "Failed" ? { _tag: "Loading" as const } : model.chartRuntime,
@@ -443,6 +466,14 @@ export const update = (model: Model, message: Message, context: PageContext): Re
 		CompletedFetchCommitMessages: ({ key, result }) => ({
 			model: { ...model, commitMessages: Keyed.accept(model.commitMessages, key, result) },
 		}),
+		CompletedFetchLiveness: ({ key, result }) => {
+			const liveness = Keyed.accept(model.liveness, key, result)
+			return followData(context)({
+				model: { ...model, liveness, rowRevision: bumped(model, model.liveness, liveness) },
+			})
+		},
+		ClickedShowDead: ({ showDead }) =>
+			navigate(model, { ...model.search, dead: showDead ? true : undefined }),
 		PaintedTable: () =>
 			model.hasPaintedTable
 				? { model }
@@ -496,7 +527,7 @@ export const update = (model: Model, message: Message, context: PageContext): Re
 			}),
 		ClickedClearAllFilters: () => navigate(model, windowOnly(model.search)),
 		ClickedClearServiceFilters: () =>
-			navigate(model, { ...windowOnly(model.search), groupBy: model.search.groupBy }),
+			navigate(model, { ...windowOnly(model.search), groupBy: model.search.groupBy, dead: model.search.dead }),
 		ClickedGroupBy: ({ groupBy }) =>
 			groupBy === model.search.groupBy ? { model } : navigate(model, { ...model.search, groupBy }),
 		ClickedServiceRow: ({ serviceName, environment }) => ({

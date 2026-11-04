@@ -18,6 +18,7 @@ import { loadAnomalyServiceCounts } from "../../../data/anomaly-service-counts"
 import { loadServicesFacets } from "../../../data/services-facets-probe"
 import { Message, RequestMode } from "./message"
 import { ServiceRow, Sparklines } from "./model"
+import { loadLiveness } from "./liveness"
 
 /** The overview, sparklines and baseline input: the window plus the URL filters, pin applied. */
 export const OverviewInput = Schema.Struct({
@@ -106,6 +107,17 @@ export const FetchSparklines = Command.define("FetchServiceSparklines", {
 			Effect.mapError(toLoadFailure),
 			Effect.result,
 			Effect.map((result) => Message.CompletedFetchSparklines({ key, result })),
+		),
+})
+
+/** NevrLabs selfhost (PATCHES #14): last seen per service, at the window's end. */
+export const FetchLiveness = Command.define("FetchServiceLiveness", {
+	args: { key: Schema.String, endMs: Schema.Number },
+	messages: [Message.CompletedFetchLiveness],
+	execute: ({ key, endMs }) =>
+		loadLiveness(endMs).pipe(
+			Effect.result,
+			Effect.map((result) => Message.CompletedFetchLiveness({ key, result })),
 		),
 })
 

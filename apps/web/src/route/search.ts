@@ -626,6 +626,8 @@ export const ServicesSearch = Schema.Struct({
 	excludedCommitShas: OptionalStringArrayParam,
 	health: Schema.optional(Schema.Literals(["healthy", "degraded", "unhealthy"])),
 	groupBy: Schema.optional(Schema.Literals(["namespace", "environment"])),
+	/** NevrLabs selfhost (PATCHES #14): show services with no data for 24 h (hidden by default). */
+	dead: BooleanParam,
 	...TimeRangeSearchFields,
 })
 
