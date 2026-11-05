@@ -331,3 +331,12 @@ services-critical, services-auxiliary, dev, infra-hosts) so the Services page gr
 **Verify after rebase:** `vitest run src/page/services/list src/page/infra-integrations/proxmox`;
 `tsrs --noEmit` (web); live: a dead service (e.g. a retired app inside a 7 d window) is hidden until the
 toggle; /infra/proxmox Storage tab shows `akasha/local` style rows.
+
+## 15. Services sparklines sized at first mount (UI lag)
+
+**Why:** Services (~60 rows x 2 sparklines) drew every sparkline at the 320 px fallback, then rebuilt it
+at 32 px, doubling canvas and layout work. **Change:** `apps/web/src/charts/chart-mounts.ts` passes the
+measured height to measurable sparklines on first mount (fallback kept for other charts; ResizeObserver
+and spec lifecycle unchanged); `packages/ui/src/lib/format.ts` caches immutable rate Intl formatters.
+Bench entry `apps/web/src/lab/entries/bench/ui-lag.ts`. **Measured:** desktop readiness 17.8 s -> 14.8 s.
+**Verify after rebase:** web vitest + `format-rate-cache.test.ts`; Services sparklines render 32 px.

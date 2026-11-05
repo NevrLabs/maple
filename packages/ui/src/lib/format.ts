@@ -299,6 +299,12 @@ export function formatThroughput(value: number, suffix: string): string {
 	return `${formatRate(value)}${suffix}`
 }
 
+// Chart ticks call formatRate repeatedly. Reuse the immutable formatters rather
+// than constructing an Intl.NumberFormat for every locale-formatted value.
+const wholeRateFormatter = new Intl.NumberFormat()
+const decimalRateFormatter = new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 })
+const smallRateFormatter = new Intl.NumberFormat(undefined, { maximumSignificantDigits: 2 })
+
 /**
  * A per-second (or per-anything) rate at reading precision: compacted past 1K, whole above 100,
  * one decimal above 1, two significant digits below. `formatNumber` keeps three decimals, which
@@ -308,9 +314,9 @@ export function formatRate(value: number): string {
 	if (!Number.isFinite(value)) return EMPTY_VALUE
 	const abs = Math.abs(value)
 	if (abs >= 1_000) return formatNumber(value)
-	if (abs >= 100) return Math.round(value).toLocaleString()
-	if (abs >= 1) return value.toLocaleString(undefined, { maximumFractionDigits: 1 })
-	return value.toLocaleString(undefined, { maximumSignificantDigits: 2 })
+	if (abs >= 100) return wholeRateFormatter.format(Math.round(value))
+	if (abs >= 1) return decimalRateFormatter.format(value)
+	return smallRateFormatter.format(value)
 }
 
 /** Decimals a percentage may grow to before the number stops being readable. */

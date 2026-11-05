@@ -69,19 +69,22 @@ export const MountChart = Mount.defineStream("MountChart", {
 							// A chart without a time x scale (a pie) reports its rect with an empty domain.
 							const NO_AXIS = { domainStartMs: 0, domainEndMs: 0, rangeStart: 0, rangeEnd: 0 }
 							const reportPlotOnce = (bounds: ChartBounds, timeAxis: Option.Option<TimeAxis>) =>
-								Option.map(Option.orElseSome(timeAxis, () => NO_AXIS), (axis) => {
-									const plot = {
-										x: bounds.x,
-										y: bounds.y,
-										width: bounds.width,
-										height: bounds.height,
-										...axis,
-									}
-									const key = JSON.stringify(plot)
-									if (key === sent.key) return
-									sent.key = key
-									Queue.offerUnsafe(queue, Message.RenderedPlot({ plot }))
-								})
+								Option.map(
+									Option.orElseSome(timeAxis, () => NO_AXIS),
+									(axis) => {
+										const plot = {
+											x: bounds.x,
+											y: bounds.y,
+											width: bounds.width,
+											height: bounds.height,
+											...axis,
+										}
+										const key = JSON.stringify(plot)
+										if (key === sent.key) return
+										sent.key = key
+										Queue.offerUnsafe(queue, Message.RenderedPlot({ plot }))
+									},
+								)
 							const create = (spec: typeof initialSpec.value, height: number): ChartHost =>
 								createChartHost(surface, spec, height, {
 									ariaLabel: () => element.getAttribute(CHART_LABEL_ATTRIBUTE) ?? ariaLabel,
@@ -96,7 +99,10 @@ export const MountChart = Mount.defineStream("MountChart", {
 												Message.ChangedChartTooltip({ maybeTooltip }),
 											),
 										onLegendToggle: (key, keys) =>
-											Queue.offerUnsafe(queue, Message.ToggledLegendSeries({ key, keys })),
+											Queue.offerUnsafe(
+												queue,
+												Message.ToggledLegendSeries({ key, keys }),
+											),
 										onRender: (bounds, timeAxis) => {
 											if (reportPlot) reportPlotOnce(bounds, timeAxis)
 											if (!anchor) return
@@ -106,16 +112,23 @@ export const MountChart = Mount.defineStream("MountChart", {
 										},
 									},
 								})
-							// NOTE: mounted at the fallback height and then corrected (chart first, then the frame's
-							// measurement); the first scene shapes the canvas state.
-							host.style.height = `${FALLBACK_HEIGHT}px`
+							// Fixed-height sparklines already have their final size; drawing a
+							// 320px scene first forces a second full layout for every table cell.
+							const sparklineHeight =
+								initialSpec.value._tag === "Sparkline"
+									? Math.round(element.getBoundingClientRect().height)
+									: 0
+							const initialHeight = sparklineHeight > 0 ? sparklineHeight : FALLBACK_HEIGHT
+							// Measurable sparklines start at their fixed height. Other charts retain
+							// the fallback-first path so the initial scene shapes the canvas state.
+							host.style.height = `${initialHeight}px`
 							// The live handle and what it was last drawn from; local to this Mount's lifetime.
 							const state = {
-								height: FALLBACK_HEIGHT,
-								chart: create(initialSpec.value, FALLBACK_HEIGHT),
+								height: initialHeight,
+								chart: create(initialSpec.value, initialHeight),
 							}
-							// Measured with the fallback drawn: a flex item's
-							// automatic minimum then holds a fixed-height box at its height instead of shrinking.
+							// Recheck after the initial scene: a flex item's automatic minimum
+							// holds a fixed-height box at its height instead of shrinking.
 							const measured = Math.round(element.getBoundingClientRect().height)
 
 							const redraw = (spec: typeof initialSpec.value) => {
@@ -123,7 +136,7 @@ export const MountChart = Mount.defineStream("MountChart", {
 								state.chart.destroy()
 								state.chart = create(spec, state.height)
 							}
-							if (measured > 0 && measured !== FALLBACK_HEIGHT) {
+							if (measured > 0 && measured !== initialHeight) {
 								state.height = measured
 								host.style.height = `${measured}px`
 								redraw(initialSpec.value)
