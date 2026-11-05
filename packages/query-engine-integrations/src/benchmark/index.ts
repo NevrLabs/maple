@@ -1020,6 +1020,12 @@ export const integrationFixtures: ReadonlyArray<IntegrationFixture> = [
 	},
 	{
 		module: "setup-audit",
+		name: "auditNativeSpanProfileByServiceQuery",
+		label: "default",
+		compile: () => compileUnsafe(CH.auditNativeSpanProfileByServiceQuery(), window),
+	},
+	{
+		module: "setup-audit",
 		name: "auditSamplingByServiceQuery",
 		label: "default",
 		compile: () => compileUnsafe(CH.auditSamplingByServiceQuery({ limit: 25 }), window),

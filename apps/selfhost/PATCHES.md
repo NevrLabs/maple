@@ -340,3 +340,13 @@ measured height to measurable sparklines on first mount (fallback kept for other
 and spec lifecycle unchanged); `packages/ui/src/lib/format.ts` caches immutable rate Intl formatters.
 Bench entry `apps/web/src/lab/entries/bench/ui-lag.ts`. **Measured:** desktop readiness 17.8 s -> 14.8 s.
 **Verify after rebase:** web vitest + `format-rate-cache.test.ts`; Services sparklines render 32 px.
+
+## 16. Setup audit: all-kind parents, native-scope applicability, CI environment
+
+**Why:** TRC-01 joined parents through the service-map projection, which drops Internal spans, so real
+parents read as missing; LOG-01/02 and STAT-02/04 treated synthetic `maple-uptime` probe spans as native
+tracing; GitHub CI spans had no environment (RES-03). **Change:** orphan join reads deduplicated all-kind
+parent identities from raw `traces`; a narrow raw native-scope profile (ScopeName != maple-uptime) feeds
+those four checks only, unclassified services keep prior behaviour; CI OTLP resource sets
+`deployment.environment.name=ci`. **Verify after rebase:** domain setup-audit tests,
+query-engine-integrations SQL baseline, `setup-audit.clickhouse.e2e.test.ts`, CiTraceService tests.

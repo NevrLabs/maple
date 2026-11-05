@@ -6,8 +6,8 @@
 //     denominator — never a division. The builder's arithmetic follows SQL precedence rather than
 //     call order, and mixing Float64 quotients into otherwise-integer result sets is how UNION type
 //     unification breaks; returning counts sidesteps both, and `nan`/`ifNotFinite` handling with it.
-//  2. **Pre-aggregated MVs over raw scans.** Only `auditLogCorrelationQuery` and
-//     `auditRootlessTracesSQL` touch a raw table, each reading a few narrow columns over a
+//  2. **Pre-aggregated MVs over raw scans.** `auditLogCorrelationQuery`,
+//     `auditOrphanSpansSQL` and `auditRootlessTracesSQL` touch raw tables, reading narrow columns over a
 //     hard-clamped window. Attribute *values* are never scanned org-wide: a `Map` re-read at that
 //     scale is what previously exhausted query memory.
 //
@@ -25,7 +25,6 @@ import {
 	LogsAggregatesHourly,
 	ServiceMapChildren,
 	ServiceMapDbEdgesHourly,
-	ServiceMapSpans,
 	ServiceOverviewHourly,
 	TraceListMv,
 	Traces,
@@ -155,6 +154,34 @@ export function auditSpanProfileByServiceQuery(opts: { limit?: number } = {}) {
 		.groupBy("serviceName")
 		.orderBy(["weightedSpanCount", "desc"])
 		.limit(opts.limit ?? 500)
+		.format("JSON")
+}
+
+/**
+ * Narrow raw read: the hourly shape rollup discards ScopeName, so it cannot distinguish uptime
+ * probes from application SDK spans. Keep all-span counts elsewhere; these four requirements
+ * apply only to native tracing. Empty/unknown scopes remain native, never an allowlist.
+ */
+export function auditNativeSpanProfileByServiceQuery() {
+	return from(Traces)
+		.select(($) => {
+			const native = $.ScopeName.neq("maple-uptime")
+			return {
+				serviceName: $.ServiceName,
+				spanCount: CH.countIf(native),
+				errorCount: CH.countIf(native.and($.StatusCode.eq("Error"))),
+				serverCount: CH.countIf(native.and($.SpanKind.eq("Server"))),
+				consumerCount: CH.countIf(native.and($.SpanKind.eq("Consumer"))),
+			}
+		})
+		.where(($) => [
+			$.OrgId.eq(orgIdParam),
+			$.Timestamp.gte(param.dateTime("startTime")),
+			$.Timestamp.lte(param.dateTime("endTime")),
+		])
+		.groupBy("serviceName")
+		.orderBy(["spanCount", "desc"])
+		.limit(500)
 		.format("JSON")
 }
 
@@ -424,11 +451,9 @@ export function auditLogCorrelationQuery() {
 
 // B2 / B3 — trace completeness
 //
-// The orphan join mirrors the service-map edge join, which is the same join over the same two tables
-// and the same window size that `ServiceMapRollupService` already runs once per org per hour in
-// production. The rootless join reads raw `traces` over the same two hours, narrow columns only, so
-// trace sampling bounds its hash side but not its scan. Do not widen either window, and never put
-// them on a dashboard-polled path.
+// The orphan join uses the indexed service-map children and raw all-kind parent identities.
+// The rootless join also reads raw traces over two hours. Both reads are narrow and sampled
+// by whole trace to bound the hash side. Do not widen the windows or dashboard-poll them.
 //
 // What they can and cannot say: the warehouse only ever sees what arrived, so neither query can
 // detect ingest loss. They are *internal consistency* checks — spans that reference a parent nobody
@@ -484,19 +509,11 @@ export interface AuditTraceWindowParams {
 }
 
 /**
- * Entry-point spans (Server/Consumer) whose parent span never arrived.
- *
- * `service_map_children` holds Server/Consumer spans that declare a parent; `service_map_spans` holds
- * Client/Producer/Server/Consumer spans. A LEFT JOIN — not ANTI — so one pass yields both the
- * denominator and the numerator; with `join_use_nulls = 0` a miss surfaces as an empty `p.SpanId`.
- *
- * Two causes produce an orphan, and both are worth fixing: the caller's span genuinely never arrived
- * (dropped export or broken context propagation), or the caller modeled its outbound call as an
- * `Internal` span, which `service_map_spans` excludes — and which is separately why that call draws
- * no edge on the service map.
- *
- * `sampledOrphanCount` splits out orphans inside sampling-marked traces, where a dropped parent is
- * expected rather than a defect; the caller reports those as a sampling observation instead.
+ * Entry-point children come from the service-map index, but parent existence is an all-kind
+ * property: Internal parents are valid and deliberately absent from the service-map projection.
+ * Deduplicate parent identities so repeated exports cannot multiply the child denominator.
+ * Both sides keep the same tenant, lagged window and deterministic whole-trace sampling.
+ * `sampledOrphanCount` preserves sampling-marked gaps as observations rather than defects.
  */
 export function auditOrphanSpansSQL(
 	params: AuditTraceWindowParams,
@@ -518,7 +535,7 @@ export function auditOrphanSpansSQL(
 			modulusFilter($.TraceId, modulus),
 		])
 
-	const parents = from(ServiceMapSpans)
+	const parents = from(Traces)
 		.select(($) => ({ TraceId: $.TraceId, SpanId: $.SpanId }))
 		.where(($) => [
 			$.OrgId.eq(orgIdParam),
@@ -526,6 +543,7 @@ export function auditOrphanSpansSQL(
 			$.Timestamp.lt(utcSecondsParam("childEnd")),
 			modulusFilter($.TraceId, modulus),
 		])
+		.groupBy("TraceId", "SpanId")
 
 	const query = fromQuery(children, "c")
 		.leftJoinQuery(parents, "p", (c, p) => c.TraceId.eq(p.TraceId).and(c.ParentSpanId.eq(p.SpanId)))

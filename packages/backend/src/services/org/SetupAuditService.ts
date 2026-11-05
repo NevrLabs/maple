@@ -45,8 +45,8 @@ const LOOKBACK_HOURS = 24
 /**
  * The trace-completeness joins read one hour, trailing 15 minutes behind now so exporter batching
  * cannot masquerade as a missing parent, with an extra hour of parent lookback for long spans. The
- * orphan join has the hourly service-map rollup's shape and window, which is the cost precedent; the
- * rootless join reads raw `traces` over the same two hours. Do not widen either.
+ * orphan join checks all-kind parent identities in raw `traces`; both joins read narrow columns
+ * over the same two hours. Do not widen either.
  */
 const TRACE_WINDOW_MINUTES = 60
 const TRACE_WINDOW_LAG_MINUTES = 15
@@ -433,8 +433,8 @@ const make: Effect.Effect<SetupAuditServiceApi, never, SetupAuditServiceRequirem
 		})
 
 		/**
-		 * Eight reads, seven of them over pre-aggregated rollups. Run concurrently but capped: the
-		 * audit is a diagnostic endpoint and must never behave like a load generator against a
+		 * Nine initial reads: seven rollups and two narrow raw scans, followed by two completeness joins.
+		 * Run concurrently but capped: the audit must never behave like a load generator against a
 		 * warehouse that may already be struggling — which is often exactly why someone runs it.
 		 */
 		const fetchWarehouseInputs = Effect.fn("SetupAuditService.fetchWarehouseInputs")(function* (
@@ -472,6 +472,10 @@ const make: Effect.Effect<SetupAuditServiceApi, never, SetupAuditServiceRequirem
 					// `list`, not `discovery`: an org whose span names carry IDs — the very thing NAME-02
 					// detects — inflates traces_aggregates_hourly past a 5s budget.
 					spanShape: run(CH.compile(Integrations.auditSpanProfileByServiceQuery(), window), "list"),
+					nativeSpanShape: run(
+						CH.compile(Integrations.auditNativeSpanProfileByServiceQuery(), window),
+						"list",
+					),
 					logSeverity: run(
 						CH.compile(Integrations.auditLogSeverityByServiceQuery(), window),
 						"discovery",
@@ -541,6 +545,7 @@ const make: Effect.Effect<SetupAuditServiceApi, never, SetupAuditServiceRequirem
 					badStatusCodes: row.badStatusCodes,
 					badSpanKinds: row.badSpanKinds,
 				})),
+				nativeSpanShape: results.nativeSpanShape,
 				logSeverity: results.logSeverity,
 				metricLabels: results.metricLabels.map((row) => ({
 					attributeKey: row.attributeKey,

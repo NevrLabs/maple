@@ -4735,6 +4735,22 @@ SELECT
         LIMIT 25
         FORMAT JSON
 
+-- builder:setup-audit:auditNativeSpanProfileByServiceQuery:default
+SELECT
+          traces.ServiceName AS serviceName,
+          countIf(traces.ScopeName != 'maple-uptime') AS spanCount,
+          countIf((traces.ScopeName != 'maple-uptime' AND traces.StatusCode = 'Error')) AS errorCount,
+          countIf((traces.ScopeName != 'maple-uptime' AND traces.SpanKind = 'Server')) AS serverCount,
+          countIf((traces.ScopeName != 'maple-uptime' AND traces.SpanKind = 'Consumer')) AS consumerCount
+        FROM traces
+        WHERE traces.OrgId = 'org_sql_catalog'
+          AND traces.Timestamp >= '2026-01-01 10:30:00'
+          AND traces.Timestamp <= '2026-01-03 14:15:00'
+        GROUP BY serviceName
+        ORDER BY spanCount DESC
+        LIMIT 500
+        FORMAT JSON
+
 -- builder:setup-audit:auditOrphanSpansSQL:default
 SELECT
           c.ServiceName AS serviceName,
@@ -4753,12 +4769,13 @@ SELECT
           AND service_map_children.Timestamp < '2026-01-03 14:15:00'
           AND service_map_children.ParentSpanId != '') AS c
         LEFT JOIN (SELECT
-          service_map_spans.TraceId AS TraceId,
-          service_map_spans.SpanId AS SpanId
-        FROM service_map_spans
-        WHERE service_map_spans.OrgId = 'org_sql_catalog'
-          AND service_map_spans.Timestamp >= '2026-01-01 08:30:00'
-          AND service_map_spans.Timestamp < '2026-01-03 14:15:00') AS p ON (c.TraceId = p.TraceId AND c.ParentSpanId = p.SpanId)
+          traces.TraceId AS TraceId,
+          traces.SpanId AS SpanId
+        FROM traces
+        WHERE traces.OrgId = 'org_sql_catalog'
+          AND traces.Timestamp >= '2026-01-01 08:30:00'
+          AND traces.Timestamp < '2026-01-03 14:15:00'
+        GROUP BY TraceId, SpanId) AS p ON (c.TraceId = p.TraceId AND c.ParentSpanId = p.SpanId)
         GROUP BY serviceName
         ORDER BY orphanCount DESC
         LIMIT 200

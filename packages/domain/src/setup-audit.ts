@@ -274,6 +274,10 @@ export interface WarehouseAuditInputs {
 	/** Per-service signal volumes — the answer to "what is this service actually sending". */
 	readonly serviceUsage: ReadonlyArray<AuditServiceUsage>
 	readonly spanShape: ReadonlyArray<AuditSpanProfile>
+	/** All-span shape remains authoritative elsewhere; these counts exclude maple-uptime scopes. */
+	readonly nativeSpanShape?: ReadonlyArray<
+		Pick<AuditSpanProfile, "serviceName" | "spanCount" | "errorCount" | "serverCount" | "consumerCount">
+	>
 	readonly logSeverity: ReadonlyArray<{
 		readonly serviceName: string
 		readonly severityText: string
@@ -351,6 +355,21 @@ const RULE_NEVER_SCHEDULED_GRACE_MS = 2 * 60 * 60_000
 const ERROR_EXCERPT_LIMIT = 160
 
 const PASS: AuditEvaluation = { status: "pass" }
+
+const nativeSpanProfiles = (warehouse: WarehouseAuditInputs) => {
+	if (warehouse.nativeSpanShape === undefined) return warehouse.spanShape
+	const native = new Map(warehouse.nativeSpanShape.map((s) => [s.serviceName, s]))
+	return warehouse.spanShape.map((s) => native.get(s.serviceName) ?? s)
+}
+const hasNativeSpans = (warehouse: WarehouseAuditInputs, serviceName: string) =>
+	warehouse.nativeSpanShape?.find((s) => s.serviceName === serviceName)?.spanCount !== 0
+const nativeAuditPass = (warehouse: WarehouseAuditInputs): AuditEvaluation =>
+	warehouse.nativeSpanShape?.some((s) => s.spanCount === 0)
+		? {
+				status: "pass",
+				detail: "Synthetic uptime spans do not establish native application tracing; only native spans are checked.",
+			}
+		: PASS
 
 const fail = (detail: string, affected: ReadonlyArray<AuditAffectedEntity> = []): AuditEvaluation => ({
 	status: "fail",
@@ -1118,14 +1137,19 @@ const ingestCoverageChecks: ReadonlyArray<AuditCheck> = [
 			// inconsistent one is the finding.
 			if (!warehouse.serviceUsage.some((service) => service.logCount > 0)) return PASS
 			const silent = warehouse.serviceUsage
-				.filter((service) => service.traceCount > 0 && service.logCount === 0)
+				.filter(
+					(service) =>
+						service.traceCount > 0 &&
+						service.logCount === 0 &&
+						hasNativeSpans(warehouse, service.serviceName),
+				)
 				.map((service) => ({
 					kind: "service" as const,
 					name: service.serviceName,
 					note: "traces only",
 				}))
 			return silent.length === 0
-				? PASS
+				? nativeAuditPass(warehouse)
 				: fail(
 						`${plural(silent.length, "service")} ${conj(silent.length, "sends", "send")} traces but no logs, while the rest of the org logs normally. Jumping from a trace to its logs will dead-end there.`,
 						silent,
@@ -1143,7 +1167,9 @@ const ingestCoverageChecks: ReadonlyArray<AuditCheck> = [
 		evaluate: ({ warehouse }) => {
 			if (!warehouse) return PASS
 			const traced = new Set(
-				warehouse.serviceUsage.filter((s) => s.traceCount > 0).map((s) => s.serviceName),
+				warehouse.serviceUsage
+					.filter((s) => s.traceCount > 0 && hasNativeSpans(warehouse, s.serviceName))
+					.map((s) => s.serviceName),
 			)
 			const broken = warehouse.logCorrelation
 				.filter(
@@ -1162,7 +1188,7 @@ const ingestCoverageChecks: ReadonlyArray<AuditCheck> = [
 					}`,
 				}))
 			return broken.length === 0
-				? PASS
+				? nativeAuditPass(warehouse)
 				: fail(
 						`${plural(broken.length, "service")} ${conj(broken.length, "emits", "emit")} logs with no trace context despite being traced (last ${warehouse.logCorrelationHours}h). Trace↔log correlation is unavailable for them.`,
 						broken,
@@ -1435,7 +1461,7 @@ const serviceMapChecks: ReadonlyArray<AuditCheck> = [
 					(errorLogsByService.get(row.serviceName) ?? 0) + row.logCount,
 				)
 			}
-			const swallowed = warehouse.spanShape
+			const swallowed = nativeSpanProfiles(warehouse)
 				.filter(
 					(service) =>
 						service.spanCount > 0 &&
@@ -1448,7 +1474,7 @@ const serviceMapChecks: ReadonlyArray<AuditCheck> = [
 					note: `${errorLogsByService.get(service.serviceName)} error logs, no error spans`,
 				}))
 			return swallowed.length === 0
-				? PASS
+				? nativeAuditPass(warehouse)
 				: fail(
 						`${plural(swallowed.length, "service")} ${conj(swallowed.length, "logs", "log")} errors but never ${conj(swallowed.length, "marks", "mark")} a span as failed, so ${conj(swallowed.length, "its", "their")} error rate reads as zero and ${conj(swallowed.length, "its", "their")} failures never open an issue.`,
 						swallowed,
@@ -1465,7 +1491,7 @@ const serviceMapChecks: ReadonlyArray<AuditCheck> = [
 			"Expected for cron jobs and workers with no inbound traffic. For anything serving requests, register the HTTP-server or queue-consumer instrumentation.",
 		evaluate: ({ warehouse }) => {
 			if (!warehouse) return PASS
-			const noEntry = warehouse.spanShape
+			const noEntry = nativeSpanProfiles(warehouse)
 				.filter(
 					(service) =>
 						service.spanCount > 0 && service.serverCount === 0 && service.consumerCount === 0,
@@ -1476,7 +1502,7 @@ const serviceMapChecks: ReadonlyArray<AuditCheck> = [
 					note: "no Server or Consumer spans",
 				}))
 			return noEntry.length === 0
-				? PASS
+				? nativeAuditPass(warehouse)
 				: fail(
 						`${plural(noEntry.length, "service")} ${conj(noEntry.length, "emits", "emit")} no entry-point spans. If they serve requests or consume a queue, that instrumentation is not registered — and route views, throughput attribution and Apdex stay empty for them.`,
 						noEntry,
@@ -1575,7 +1601,7 @@ const traceCompletenessChecks: ReadonlyArray<AuditCheck> = [
 		severity: "warn",
 		needsWarehouse: true,
 		fixHint:
-			"Either the caller's span never arrived (check its exporter and that `traceparent` survives the hop), or the caller modeled the outbound call as an `Internal` span — which also hides that call from the service map.",
+			"Check the caller's exporter and that `traceparent` survives the hop. All span kinds, including Internal parents, count as present within the audit window.",
 		evaluate: ({ warehouse }) => {
 			const traces = warehouse?.traceCompleteness
 			if (!traces) return PASS

@@ -193,6 +193,7 @@ export const resourceOf = (repoFullName: string, url: string, sourceId?: string)
 	const slash = repoFullName.indexOf("/")
 	return attrs({
 		"service.name": CI_SERVICE_NAME,
+		"deployment.environment.name": "ci",
 		"vcs.provider.name": "github",
 		"vcs.owner.name": slash === -1 ? undefined : repoFullName.slice(0, slash),
 		"vcs.repository.name": slash === -1 ? repoFullName : repoFullName.slice(slash + 1),

@@ -1694,3 +1694,79 @@ describe("MAP-03 — consistent dependency spelling", () => {
 		expect(check(report, "MAP-03").status).toBe("pass")
 	})
 })
+
+describe("native instrumentation applicability", () => {
+	const snapshot = (nativeSpanCount: number) =>
+		warehouse({
+			serviceUsage: [
+				{ serviceName: "target", logCount: 500, traceCount: 900, metricCount: 0 },
+				{ serviceName: "silent", logCount: 0, traceCount: 900, metricCount: 0 },
+			],
+			spanShape: ["target", "silent", "maple-uptime"].map((serviceName) => ({
+				...healthyWarehouse.spanShape[0]!,
+				serviceName,
+				errorCount: 0,
+				serverCount: 0,
+			})),
+			nativeSpanShape: ["target", "silent", "maple-uptime"].map((serviceName) => ({
+				serviceName,
+				spanCount: nativeSpanCount,
+				errorCount: 0,
+				serverCount: 0,
+				consumerCount: 0,
+			})),
+			logSeverity: [{ serviceName: "target", severityText: "ERROR", logCount: 500 }],
+			logCorrelation: [
+				{
+					serviceName: "target",
+					logCount: 500,
+					uncorrelatedCount: 500,
+					errorLogCount: 500,
+					uncorrelatedErrorCount: 500,
+				},
+			],
+		})
+
+	it("does not treat synthetic availability spans as native application instrumentation", () => {
+		const report = runSetupAudit(inputsWith(snapshot(0)))
+		for (const id of ["LOG-01", "LOG-02", "STAT-02", "STAT-04"]) {
+			expect(check(report, id).status).toBe("pass")
+			expect(check(report, id).detail).toMatch(/synthetic/i)
+		}
+		// Errors remain visible to the non-correlation audit checks.
+		expect(check(report, "LOG-04").status).toBe("pass")
+	})
+
+	it("still flags real native tracers and does not let synthetic entry spans satisfy them", () => {
+		const data = snapshot(20)
+		const report = runSetupAudit(
+			inputsWith({
+				...data,
+				spanShape: data.spanShape.map((s) => ({ ...s, serverCount: 900, errorCount: 20 })),
+			}),
+		)
+		for (const id of ["LOG-01", "LOG-02", "STAT-02", "STAT-04"])
+			expect(check(report, id).status).toBe("fail")
+		expect(check(report, "LOG-02").affected.map((s) => s.name)).toEqual(["target"])
+		expect(check(report, "STAT-02").affected.map((s) => s.name)).toEqual(["target"])
+	})
+
+	it("does not hide malformed synthetic telemetry from unrelated checks", () => {
+		const data = snapshot(0)
+		const report = runSetupAudit(
+			inputsWith({
+				...data,
+				spanShape: data.spanShape.map((s) => ({ ...s, badStatusCodes: ["ERROR"] })),
+				logSeverity: [{ serviceName: "target", severityText: "BROKEN", logCount: 500 }],
+			}),
+		)
+		expect(check(report, "STAT-01").status).toBe("fail")
+		expect(check(report, "LOG-04").status).toBe("fail")
+	})
+	it("retains existing checks when the native result cap leaves a service unclassified", () => {
+		const data = snapshot(20)
+		const report = runSetupAudit(inputsWith({ ...data, nativeSpanShape: [] }))
+		for (const id of ["LOG-01", "LOG-02", "STAT-02", "STAT-04"])
+			expect(check(report, id).status).toBe("fail")
+	})
+})

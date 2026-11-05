@@ -6,6 +6,7 @@ export {
 	auditAttributeKeyInventoryQuery,
 	auditAttributeKeyInventoryRowSchema,
 	auditSpanProfileByServiceQuery,
+	auditNativeSpanProfileByServiceQuery,
 	auditSpanProfileRowSchema,
 	auditSamplingByServiceQuery,
 	auditSamplingRowSchema,
