@@ -350,3 +350,13 @@ parent identities from raw `traces`; a narrow raw native-scope profile (ScopeNam
 those four checks only, unclassified services keep prior behaviour; CI OTLP resource sets
 `deployment.environment.name=ci`. **Verify after rebase:** domain setup-audit tests,
 query-engine-integrations SQL baseline, `setup-audit.clickhouse.e2e.test.ts`, CiTraceService tests.
+
+## 17. Cloudflare datasets the plan does not include
+
+**Why:** zone discovery re-enabled datasets whose upstream settings deny collection (Free-plan
+`firewallEventsAdaptiveGroups`), they kept a stale connection error forever and CFG-INTEG-02 failed.
+**Change:** shared `packages/domain/src/cloudflare-analytics.ts` predicate (explicit `enabled=false` or
+`maxDuration=0` only); discovery and zone-watch resume respect it; daily settings refresh resumes the
+dataset when Cloudflare allows it; stale errors cleared on a valid connection; CFG-INTEG-02 lists
+unavailable datasets while available datasets with real errors still fail. No plan-name checks.
+**Verify after rebase:** CloudflareAnalyticsService + SetupAuditService tests, domain CFG-INTEG-02 tests.

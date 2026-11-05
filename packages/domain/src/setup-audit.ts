@@ -18,6 +18,7 @@
 // tested (delivery works fine without ever pressing Test), onboarding checklist incomplete (owned by
 // the onboarding surface). A check that fires on every healthy org is noise, not an audit.
 
+import { cloudflareDatasetUnavailable } from "./cloudflare-analytics"
 import { Schema } from "effect"
 import { HttpTaggedError } from "./http/error-policy"
 import type { IntegrationEntry, IntegrationInventory } from "./integration-inventory"
@@ -200,6 +201,7 @@ export interface ConfigAuditInputs {
 	} | null
 	readonly integrations: ReadonlyArray<{ readonly provider: string; readonly revokedAt: number | null }>
 	readonly cloudflareAnalytics: ReadonlyArray<{
+		readonly settingsJson?: string | null
 		readonly dataset: string
 		readonly zoneName: string | null
 		readonly lastSuccessAt: number | null
@@ -866,21 +868,37 @@ const integrationChecks: ReadonlyArray<AuditCheck> = [
 		fixHint:
 			"Check the Cloudflare integration's permissions — an expired token or a dataset the plan doesn't include is the usual cause.",
 		evaluate: ({ config }) => {
+			const unavailable = config.cloudflareAnalytics
+				.filter((state) => cloudflareDatasetUnavailable(state.settingsJson))
+				.map((state) => ({
+					kind: "integration" as const,
+					name: state.zoneName ? `${state.dataset} · ${state.zoneName}` : state.dataset,
+					note: "unavailable — Cloudflare dataset settings deny collection",
+				}))
 			const failing = config.cloudflareAnalytics
 				.filter(
-					(state) => state.lastErrorAt !== null && state.lastErrorAt > (state.lastSuccessAt ?? 0),
+					(state) =>
+						!cloudflareDatasetUnavailable(state.settingsJson) &&
+						state.lastErrorAt !== null &&
+						state.lastErrorAt > (state.lastSuccessAt ?? 0),
 				)
 				.map((state) => ({
 					kind: "integration" as const,
 					name: state.zoneName ? `${state.dataset} · ${state.zoneName}` : state.dataset,
 					note: briefError(state.lastError ?? "last poll failed"),
 				}))
-			return failing.length === 0
-				? PASS
-				: fail(
-						`${plural(failing.length, "Cloudflare dataset")} ${conj(failing.length, "has", "have")} failed since ${conj(failing.length, "its", "their")} last successful poll.`,
-						failing,
-					)
+			const capability =
+				unavailable.length === 0
+					? ""
+					: `${unavailable.length} unavailable (Cloudflare dataset settings deny collection).`
+			if (failing.length === 0)
+				return unavailable.length === 0
+					? PASS
+					: { status: "pass", detail: capability, affected: unavailable }
+			return fail(
+				`${plural(failing.length, "Cloudflare dataset")} ${conj(failing.length, "has", "have")} failed since ${conj(failing.length, "its", "their")} last successful poll.${capability ? ` ${capability}` : ""}`,
+				[...failing, ...unavailable],
+			)
 		},
 	},
 	{

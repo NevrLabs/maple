@@ -1,3 +1,4 @@
+import { cloudflareDatasetUnavailable } from "@maple/domain/cloudflare-analytics"
 import * as PG from "@maple-dev/effect-orm/postgres"
 import {
 	AlertDestinations,
@@ -210,6 +211,7 @@ const make: Effect.Effect<SetupAuditServiceApi, never, SetupAuditServiceRequirem
 								PG.from(CloudflareAnalyticsState)
 									.select(
 										"dataset",
+										"settingsJson",
 										"zoneName",
 										"enabled",
 										"lastSuccessAt",
@@ -328,11 +330,12 @@ const make: Effect.Effect<SetupAuditServiceApi, never, SetupAuditServiceRequirem
 					provider: connection.provider,
 					revokedAt: connection.revokedAt,
 				})),
-				// Disabled datasets are not collected at all, so a stale error on one is not a finding.
+				// Keep upstream-unavailable datasets visible even though the poller disabled them.
 				cloudflareAnalytics: rows.cloudflare
-					.filter((state) => state.enabled)
+					.filter((state) => state.enabled || cloudflareDatasetUnavailable(state.settingsJson))
 					.map((state) => ({
 						dataset: state.dataset,
+						settingsJson: state.settingsJson,
 						zoneName: state.zoneName,
 						lastSuccessAt: state.lastSuccessAt,
 						lastErrorAt: state.lastErrorAt,
