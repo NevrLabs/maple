@@ -52,7 +52,7 @@ export const PodsInput = Schema.Struct({
 	scope: Schema.optional(Schema.Literals(["saturated", "elevated", "unbounded"])),
 	lifecycle: Schema.optional(Schema.Literals(["live", "ended", "all"])),
 	sortBy: Schema.optional(
-		Schema.Literals(["saturation", "cpuUsage", "cpuLimitPct", "memoryLimitPct", "podName", "lastSeen"]),
+		Schema.Literals(["saturation", "cpuUsage", "cpuLimitPct", "memoryLimitPct", "memoryBytes", "podName", "lastSeen"]),
 	),
 	sortDir: Schema.optional(Schema.Literals(["asc", "desc"])),
 	limit: Schema.optional(Schema.Number),

@@ -146,9 +146,11 @@ const pod = (podName: string, deploymentName: string, cpu: number, mem: number):
 	memoryLimitPct: mem,
 	cpuRequestPct: cpu * 1.4,
 	memoryRequestPct: mem * 1.2,
+	memoryWorkingSet: mem * 2 ** 30,
 	cpuUsagePeak: cpu * 2.4,
 	cpuLimitPctPeak: Math.min(1.5, cpu * 1.2),
 	memoryLimitPctPeak: mem,
+	memoryWorkingSetPeak: mem * 1.1 * 2 ** 30,
 	saturation: Math.max(cpu, mem),
 })
 

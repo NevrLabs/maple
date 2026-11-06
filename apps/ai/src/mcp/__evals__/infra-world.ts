@@ -240,6 +240,8 @@ const podStats = (p: Pod) => {
 		cpuLimitPctPeak: ofLimit(cpuUsagePeak),
 		memoryLimitPct,
 		memoryLimitPctPeak,
+		memoryWorkingSet: avgOf(workingSet(p)),
+		memoryWorkingSetPeak: peakOf(workingSet(p)),
 		saturation: Math.max(ofLimit(cpuUsagePeak), memoryLimitPctPeak),
 	}
 }
@@ -273,6 +275,7 @@ const sortedPods = (sql: string) => {
 	if (key === "podName") return rows.sort((a, b) => a.podName.localeCompare(b.podName))
 	if (key === "cpuUsage") return rows.sort((a, b) => b.cpuUsage - a.cpuUsage)
 	if (key === "memoryLimitPct") return rows.sort((a, b) => b.memoryLimitPct - a.memoryLimitPct)
+	if (key === "memoryWorkingSet") return rows.sort((a, b) => b.memoryWorkingSet - a.memoryWorkingSet)
 	return rows.sort((a, b) => b.saturation - a.saturation)
 }
 

@@ -46,6 +46,45 @@ describe("pod detail", () => {
 		expect(represet.commands?.map(({ name, args }) => [name, args?.["mode"]])).toEqual([["ResolveInfraWindow", "Refresh"]])
 	})
 
+	test("the summary leads with working-set bytes, even with no limit set", () => {
+		const model = windowed().model
+		const withSummary = pageUpdate(
+			model,
+			Message.CompletedFetchSummary({
+				key: model.summary.key ?? "",
+				result: Result.succeed({
+					podName: "payment-1",
+					namespace: "shop",
+					nodeName: "n1",
+					deploymentName: "payment",
+					statefulsetName: "",
+					daemonsetName: "",
+					qosClass: "BestEffort",
+					podUid: "uid",
+					computeType: "",
+					podStartTime: "",
+					firstSeen: "2026-10-01 11:00:00",
+					lastSeen: "2026-10-01 12:00:00",
+					cpuUsage: 0.2,
+					cpuLimitPct: 0,
+					memoryLimitPct: 0,
+					cpuRequestPct: 0,
+					memoryRequestPct: 0,
+					memoryWorkingSet: 2.6 * 2 ** 30,
+					memoryWorkingSetPeak: 2.8 * 2 ** 30,
+				}),
+			}),
+		).model
+		scene(
+			{ update: pageUpdate, view },
+			given(withSummary),
+			Mount.resolve(ResolveThemeColors, ThemeMessage.ResolvedThemeColors({ colors: {} })),
+			expectView(text("Memory working set")).toExist(),
+			expectView(text("2.6 GB")).toExist(),
+			expectView(text("peak 2.8 GB")).toExist(),
+		)
+	})
+
 	test("restarted containers get their own table", () => {
 		const model = windowed().model
 		const withRestarts = pageUpdate(

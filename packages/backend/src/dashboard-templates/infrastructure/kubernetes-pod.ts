@@ -37,12 +37,14 @@ function widgets(namespace?: string): WidgetDef[] {
 			dataSource: metricsTimeseries({
 				id: "k8s-pod-memory",
 				name: "Pod Memory",
-				metricName: "k8s.pod.memory.usage",
+				// Working set is what the kubelet evicts/OOM-kills on and `kubectl top` shows;
+				// `.usage` also counts reclaimable page cache.
+				metricName: "k8s.pod.memory.working_set",
 				metricType: "gauge",
 				whereClause: where,
 				groupBy,
 			}),
-			display: { title: "Pod Memory Usage", ...CHART_DISPLAY_LINE, unit: "bytes" },
+			display: { title: "Pod Memory (working set)", ...CHART_DISPLAY_LINE, unit: "bytes" },
 			layout: { x: 6, y: 0, w: 6, h: 6 },
 		},
 		{

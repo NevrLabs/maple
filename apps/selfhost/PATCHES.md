@@ -360,3 +360,17 @@ query-engine-integrations SQL baseline, `setup-audit.clickhouse.e2e.test.ts`, Ci
 dataset when Cloudflare allows it; stale errors cleared on a valid connection; CFG-INTEG-02 lists
 unavailable datasets while available datasets with real errors still fail. No plan-name checks.
 **Verify after rebase:** CloudflareAnalyticsService + SetupAuditService tests, domain CFG-INTEG-02 tests.
+
+## 18. Pod memory in bytes (working set), not only % of limit
+
+**Why:** the Pods list showed memory only as `k8s.pod.memory_limit_utilization`, so a pod with no limit read
+0% and "warden-erp-backend uses 2.6 GiB" was visible nowhere; the Kubernetes Pod dashboard charted
+`k8s.pod.memory.usage`, which includes reclaimable page cache (~370 MiB over working set on warden-erp).
+**Change:** `listPodsQuery`/`listPodsSummaryQuery`/`podDetailSummaryQuery` also scan
+`k8s.pod.memory.working_set` (workload queries untouched) and return `memoryWorkingSet` + `memoryWorkingSetPeak`;
+new `memoryBytes` sort key (domain, web-data, route search, web). Pods list gets a sortable "Memory" column
+(avg → peak, binary units) beside "Mem of limit", which now shows "—" for pods with no memory limit; pod detail
+and peek lead with the working-set bytes. `kubernetes-pod` template charts working set ("Pod Memory (working
+set)"); AI MCP pods table + metric hint carry working-set bytes. **API image needed** (query-engine + API route).
+**Verify after rebase:** query-engine `infra.test.ts`; web `pods.scene.test.ts`, `pod-detail.scene.test.ts`;
+live: /infra/kubernetes/pods?sortBy=memoryBytes lists the biggest working sets first.

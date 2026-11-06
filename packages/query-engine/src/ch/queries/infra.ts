@@ -300,6 +300,9 @@ export function hostFilesystemsQuery(opts: HostFilesystemsOpts) {
 //   k8s.pod.cpu_request_utilization   gauge, 0..1
 //   k8s.pod.memory_limit_utilization  gauge, 0..1
 //   k8s.pod.memory_request_utilization gauge, 0..1
+//   k8s.pod.memory.working_set        gauge, bytes — what the kubelet evicts/OOM-kills on and what
+//                                     `kubectl top` shows; emitted with or without a limit
+//                                     (`.usage` also counts reclaimable page cache)
 
 const POD_METRIC_NAMES = [
 	"k8s.pod.cpu.usage",
@@ -308,6 +311,12 @@ const POD_METRIC_NAMES = [
 	"k8s.pod.memory_limit_utilization",
 	"k8s.pod.memory_request_utilization",
 ] as const
+
+const POD_MEMORY_BYTES_METRIC = "k8s.pod.memory.working_set" as const
+
+// The pod list, its count band and the pod summary also read working-set bytes. Workload
+// queries keep POD_METRIC_NAMES: they show no bytes, so they don't pay for the extra series.
+const POD_LIST_METRIC_NAMES = [...POD_METRIC_NAMES, POD_MEMORY_BYTES_METRIC] as const
 
 // Facets only need distinct resource-attribute values + uniq(pod.uid); every pod
 // emits cpu.usage, so one metric enumerates the same set at ~1/5 the rows scanned.
@@ -324,7 +333,17 @@ const POD_FACET_PROBE_METRIC = "k8s.pod.cpu.usage" as const
  * to compute) hides a pod that pinned at 100% for four minutes of a twelve-hour
  * window behind pods that idle slightly higher.
  */
-export type PodSortKey = "saturation" | "cpuUsage" | "cpuLimitPct" | "memoryLimitPct" | "podName" | "lastSeen"
+export type PodSortKey =
+	| "saturation"
+	| "cpuUsage"
+	| "cpuLimitPct"
+	| "memoryLimitPct"
+	| "memoryBytes"
+	| "podName"
+	| "lastSeen"
+
+/** Sort keys that aren't select-list aliases themselves. */
+const POD_SORT_COLUMN: Partial<Record<PodSortKey, string>> = { memoryBytes: "memoryWorkingSet" }
 
 export type SortDirection = "asc" | "desc"
 
@@ -415,12 +434,15 @@ export interface ListPodsOutput {
 	readonly memoryLimitPct: number
 	readonly cpuRequestPct: number
 	readonly memoryRequestPct: number
+	/** Bytes, `k8s.pod.memory.working_set`; real even when no limit is set. */
+	readonly memoryWorkingSet: number
 	// Window peaks. The list sorts and tones on these; the averages are shown
 	// beside them so a row reads "0.42 → 0.97 cores" rather than one number that
 	// could mean either.
 	readonly cpuUsagePeak: number
 	readonly cpuLimitPctPeak: number
 	readonly memoryLimitPctPeak: number
+	readonly memoryWorkingSetPeak: number
 	/** greatest(cpuLimitPctPeak, memoryLimitPctPeak) — 0 when no limits are set. */
 	readonly saturation: number
 }
@@ -436,7 +458,7 @@ const workloadAttrKey = (kind: WorkloadKind) => WORKLOAD_ATTR_KEY[kind]
 
 const podBaseConditions = (
 	$: ColumnAccessor<typeof MetricsGauge.columns>,
-	metricNames: ReadonlyArray<string> = POD_METRIC_NAMES,
+	metricNames: ReadonlyArray<string> = POD_LIST_METRIC_NAMES,
 ): Array<CH.Condition | undefined> => [
 	$.OrgId.eq(orgIdParam),
 	$.TimeUnix.gte(param.dateTime("startTime")),
@@ -531,7 +553,7 @@ export function listPodsQuery(opts: ListPodsOpts = {}) {
 	const sortBy = opts.sortBy ?? "saturation"
 	const sortDir = opts.sortDir ?? (sortBy === "podName" ? "asc" : "desc")
 	const orderBy: Array<[string, SortDirection]> = [
-		[sortBy, sortDir],
+		[POD_SORT_COLUMN[sortBy] ?? sortBy, sortDir],
 		...POD_SORT_TIEBREAK.filter(([key]) => key !== sortBy),
 	]
 
@@ -555,10 +577,12 @@ export function listPodsQuery(opts: ListPodsOpts = {}) {
 			memoryLimitPct: avgIfOrZero($.Value, $.MetricName.eq("k8s.pod.memory_limit_utilization")),
 			cpuRequestPct: avgIfOrZero($.Value, $.MetricName.eq("k8s.pod.cpu_request_utilization")),
 			memoryRequestPct: avgIfOrZero($.Value, $.MetricName.eq("k8s.pod.memory_request_utilization")),
+			memoryWorkingSet: avgIfOrZero($.Value, $.MetricName.eq(POD_MEMORY_BYTES_METRIC)),
 			// Peaks ride along on the same scan the averages already pay for.
 			cpuUsagePeak: maxIfOrZero($.Value, $.MetricName.eq("k8s.pod.cpu.usage")),
 			cpuLimitPctPeak: maxIfOrZero($.Value, $.MetricName.eq("k8s.pod.cpu_limit_utilization")),
 			memoryLimitPctPeak: maxIfOrZero($.Value, $.MetricName.eq("k8s.pod.memory_limit_utilization")),
+			memoryWorkingSetPeak: maxIfOrZero($.Value, $.MetricName.eq(POD_MEMORY_BYTES_METRIC)),
 			saturation: CH.greatest_(
 				maxIfOrZero($.Value, $.MetricName.eq("k8s.pod.cpu_limit_utilization")),
 				maxIfOrZero($.Value, $.MetricName.eq("k8s.pod.memory_limit_utilization")),
@@ -590,9 +614,11 @@ export function listPodsQuery(opts: ListPodsOpts = {}) {
 			memoryLimitPct: $.memoryLimitPct,
 			cpuRequestPct: $.cpuRequestPct,
 			memoryRequestPct: $.memoryRequestPct,
+			memoryWorkingSet: $.memoryWorkingSet,
 			cpuUsagePeak: $.cpuUsagePeak,
 			cpuLimitPctPeak: $.cpuLimitPctPeak,
 			memoryLimitPctPeak: $.memoryLimitPctPeak,
+			memoryWorkingSetPeak: $.memoryWorkingSetPeak,
 			saturation: $.saturation,
 		}))
 		.where(($) => [
@@ -719,6 +745,8 @@ export interface PodDetailSummaryOutput {
 	readonly memoryLimitPct: number
 	readonly cpuRequestPct: number
 	readonly memoryRequestPct: number
+	readonly memoryWorkingSet: number
+	readonly memoryWorkingSetPeak: number
 }
 
 export function podDetailSummaryQuery(opts: PodDetailSummaryOpts) {
@@ -742,6 +770,8 @@ export function podDetailSummaryQuery(opts: PodDetailSummaryOpts) {
 			memoryLimitPct: avgIfOrZero($.Value, $.MetricName.eq("k8s.pod.memory_limit_utilization")),
 			cpuRequestPct: avgIfOrZero($.Value, $.MetricName.eq("k8s.pod.cpu_request_utilization")),
 			memoryRequestPct: avgIfOrZero($.Value, $.MetricName.eq("k8s.pod.memory_request_utilization")),
+			memoryWorkingSet: avgIfOrZero($.Value, $.MetricName.eq(POD_MEMORY_BYTES_METRIC)),
+			memoryWorkingSetPeak: maxIfOrZero($.Value, $.MetricName.eq(POD_MEMORY_BYTES_METRIC)),
 		}))
 		.where(($) => [
 			$.OrgId.eq(orgIdParam),
@@ -749,7 +779,7 @@ export function podDetailSummaryQuery(opts: PodDetailSummaryOpts) {
 			$.TimeUnix.lte(param.dateTime("endTime")),
 			$.ResourceAttributes.get("k8s.pod.name").eq(opts.podName),
 			CH.when(opts.namespace, (v: string) => $.ResourceAttributes.get("k8s.namespace.name").eq(v)),
-			$.MetricName.in_(...POD_METRIC_NAMES),
+			$.MetricName.in_(...POD_LIST_METRIC_NAMES),
 		])
 		.groupBy("podName")
 		.format("JSON")

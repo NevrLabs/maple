@@ -1,4 +1,5 @@
 import { formatCores, formatWholePercent } from "../../../components/infra/format"
+import { EMPTY_VALUE, formatBytes } from "@maple/ui/lib/format"
 import {
 	formatRestarts,
 	podKey,
@@ -32,7 +33,14 @@ import type { PodRow } from "./pod-data"
 
 // `PodTable` / `PodTableLoading`.
 
-export type PodSortKey = "saturation" | "cpuUsage" | "cpuLimitPct" | "memoryLimitPct" | "podName" | "lastSeen"
+export type PodSortKey =
+	| "saturation"
+	| "cpuUsage"
+	| "cpuLimitPct"
+	| "memoryLimitPct"
+	| "memoryBytes"
+	| "podName"
+	| "lastSeen"
 type Sort = Readonly<{ key: string | null; dir: SortDir }> | null
 
 const workloadOf = (pod: PodRow): Readonly<{ kind: string; name: string }> | null => {
@@ -79,6 +87,13 @@ const columns = <M>(
 			hidden: "hidden lg:flex",
 		}),
 		columnHead(h, {
+			label: "Memory",
+			sort: head("memoryBytes"),
+			align: "right",
+			width: "w-32",
+			hidden: "hidden lg:flex",
+		}),
+		columnHead(h, {
 			label: "Mem of limit",
 			sort: head("memoryLimitPct"),
 			align: "right",
@@ -103,6 +118,7 @@ export const podTableLoading = <M>(h: HtmlBuilder<M>): Html =>
 				[h.Class("hidden w-44 space-y-1.5 md:block")],
 				[skeleton(h, "h-2.5 w-44"), skeleton(h, "h-2.5 w-44")],
 			),
+			skeleton(h, "hidden h-3 w-32 lg:block"),
 			skeleton(h, "hidden h-3 w-32 lg:block"),
 			skeleton(h, "hidden h-3 w-32 lg:block"),
 			skeleton(h, "h-3 w-24"),
@@ -143,6 +159,9 @@ export type PodTableInputs<M> = Readonly<{
 	timeZone: string
 	restarts: Option.Option<ReadonlyMap<string, PodRestartSummary>>
 }>
+
+/** Using memory but never measured against a limit: the kubelet emits no limit ratio without one. */
+export const hasNoMemoryLimit = (pod: PodRow): boolean => pod.memoryLimitPctPeak === 0 && pod.memoryWorkingSetPeak > 0
 
 const podRow = <M>(h: HtmlBuilder<M>, pod: PodRow, inputs: PodTableInputs<M>): Html => {
 	const workload = workloadOf(pod)
@@ -216,12 +235,21 @@ const podRow = <M>(h: HtmlBuilder<M>, pod: PodRow, inputs: PodTableInputs<M>): H
 			),
 			h.div(
 				[h.Class("hidden w-32 text-right lg:block")],
+				[avgPeak(h, { avg: pod.memoryWorkingSet, peak: pod.memoryWorkingSetPeak, format: formatBytes })],
+			),
+			h.div(
+				[h.Class("hidden w-32 text-right lg:block")],
 				[
-					avgPeak(h, {
-						avg: pod.memoryLimitPct,
-						peak: pod.memoryLimitPctPeak,
-						format: formatWholePercent,
-					}),
+					hasNoMemoryLimit(pod)
+						? h.span(
+								[h.Class("font-mono text-2xs text-foreground-faint"), h.Title("No memory limit set")],
+								[EMPTY_VALUE],
+							)
+						: avgPeak(h, {
+								avg: pod.memoryLimitPct,
+								peak: pod.memoryLimitPctPeak,
+								format: formatWholePercent,
+							}),
 				],
 			),
 			h.div(

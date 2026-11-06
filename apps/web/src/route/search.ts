@@ -892,7 +892,7 @@ export const InfraKubernetesPodsSearch = Schema.Struct({
 	q: Schema.optional(Schema.String),
 	scope: Schema.optional(Schema.Literals(["saturated", "elevated", "unbounded", "ended"])),
 	sortBy: Schema.optional(
-		Schema.Literals(["saturation", "cpuUsage", "cpuLimitPct", "memoryLimitPct", "podName", "lastSeen"]),
+		Schema.Literals(["saturation", "cpuUsage", "cpuLimitPct", "memoryLimitPct", "memoryBytes", "podName", "lastSeen"]),
 	),
 	sortDir: SortDirParam,
 	peek: Schema.optional(Schema.String),

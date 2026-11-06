@@ -168,6 +168,7 @@ export const kindTable = (section: InfraKindSection): DocBlock => {
 					"Node",
 					"CPU cores avg → peak",
 					"CPU of limit avg → peak",
+					"Memory working set (avg)",
 					"Memory of limit avg → peak",
 					"Status",
 				],
@@ -178,6 +179,7 @@ export const kindTable = (section: InfraKindSection): DocBlock => {
 					r.node ?? "",
 					cores(r.cpuCores, r.cpuCoresPeak),
 					limitPct(r, avgPeak(r.cpu, r.cpuPeak)),
+					formatBytes(r.memoryBytes),
 					limitPct(r, avgPeak(r.memory, r.memoryPeak)),
 					status(r),
 				]),
@@ -329,7 +331,7 @@ export const kindTable = (section: InfraKindSection): DocBlock => {
 /** The metrics behind each kind, and how to chart them: query_data or create_dashboard on source=metrics. */
 export const KIND_METRICS = {
 	hosts: "Metrics: system.cpu.utilization (by state; busy = 1 - idle), system.memory.utilization, system.filesystem.utilization, system.cpu.load_average.15m. Chart per host with group_by resource.host.name.",
-	pods: "Metrics: k8s.pod.cpu.usage (cores), k8s.pod.cpu_limit_utilization, k8s.pod.memory_limit_utilization. Chart per pod with group_by resource.k8s.pod.name.",
+	pods: "Metrics: k8s.pod.cpu.usage (cores), k8s.pod.memory.working_set (bytes; what the kubelet OOM-kills on, not .usage which counts page cache), k8s.pod.cpu_limit_utilization, k8s.pod.memory_limit_utilization. Chart per pod with group_by resource.k8s.pod.name.",
 	nodes: "Metrics: k8s.node.cpu.usage (cores). Chart per node with group_by resource.k8s.node.name.",
 	workloads:
 		"Metrics: the pod metrics (k8s.pod.*) of the workload's pods. Chart per workload with group_by resource.k8s.deployment.name (or statefulset/daemonset).",
@@ -348,7 +350,7 @@ export const KIND_METRICS = {
 /** What the CPU and memory percentages of a kind are measured against. */
 export const KIND_BASIS = {
 	hosts: "CPU and memory are the host's own utilization averaged over the window; disk is the fullest filesystem.",
-	pods: "CPU and memory are measured against each pod's configured limit; status uses the window peak.",
+	pods: "CPU and memory percentages are measured against each pod's configured limit; memory working set is bytes in use whether or not a limit is set; status uses the window peak.",
 	nodes: "CPU is cores in use; node capacity is not reported, so compare nodes with each other.",
 	workloads: "CPU and memory are averaged across the workload's pods, against their limits.",
 	containers:

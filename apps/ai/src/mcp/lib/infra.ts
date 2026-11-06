@@ -208,6 +208,7 @@ const podRow = (row: CH.ListPodsOutput): InfraEntityRow => ({
 	cpuPeak: row.cpuLimitPctPeak,
 	memory: row.memoryLimitPct,
 	memoryPeak: row.memoryLimitPctPeak,
+	memoryBytes: row.memoryWorkingSet,
 	saturation: row.saturation,
 	...(row.cpuLimitPct === 0 && row.memoryLimitPct === 0 ? { unbounded: true } : undefined),
 })

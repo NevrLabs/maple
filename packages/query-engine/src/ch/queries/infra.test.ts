@@ -149,6 +149,24 @@ describe("listPodsQuery", () => {
 		)
 	})
 
+	// A pod with no limit reads 0% of limit, so bytes are the only honest memory number.
+	it("reads working-set bytes avg and peak beside the limit ratios", () => {
+		const { sql } = compileUnsafe(listPodsQuery({}), baseParams)
+		expect(sql).toContain(
+			"ifNull(ifNotFinite(avgIf(metrics_gauge.Value, metrics_gauge.MetricName = 'k8s.pod.memory.working_set'), 0), 0) AS memoryWorkingSet",
+		)
+		expect(sql).toContain(
+			"ifNotFinite(maxIf(metrics_gauge.Value, metrics_gauge.MetricName = 'k8s.pod.memory.working_set'), 0) AS memoryWorkingSetPeak",
+		)
+		expect(sql).toMatch(/MetricName IN \([^)]*'k8s\.pod\.memory\.working_set'/)
+		expect(sql).not.toContain("k8s.pod.memory.usage")
+	})
+
+	it("sorts by memory bytes on the working-set average", () => {
+		const { sql } = compileUnsafe(listPodsQuery({ sortBy: "memoryBytes" }), baseParams)
+		expect(sql).toContain("ORDER BY memoryWorkingSet DESC, cpuUsagePeak DESC, podName ASC")
+	})
+
 	it("filters by pod, statefulset, daemonset, and job names when arrays present", () => {
 		const { sql } = compileUnsafe(
 			listPodsQuery({
@@ -269,6 +287,15 @@ describe("listPodsSummaryQuery", () => {
 	})
 })
 
+describe("podDetailSummaryQuery", () => {
+	it("carries working-set bytes avg and peak", () => {
+		const { sql } = compileUnsafe(podDetailSummaryQuery({ podName: "p1" }), baseParams)
+		expect(sql).toContain("AS memoryWorkingSet,")
+		expect(sql).toContain("AS memoryWorkingSetPeak")
+		expect(sql).toMatch(/MetricName IN \([^)]*'k8s\.pod\.memory\.working_set'/)
+	})
+})
+
 describe("podFacetsQuery", () => {
 	it("propagates active filters into facet counts", () => {
 		const { sql } = compileUnionUnsafe(podFacetsQuery({ namespaces: ["prod"] }), baseParams)
@@ -281,6 +308,7 @@ describe("podFacetsQuery", () => {
 		expect(sql).not.toContain("k8s.pod.cpu_request_utilization")
 		expect(sql).not.toContain("k8s.pod.memory_limit_utilization")
 		expect(sql).not.toContain("k8s.pod.memory_request_utilization")
+		expect(sql).not.toContain("k8s.pod.memory.working_set")
 	})
 })
 

@@ -1,6 +1,6 @@
 import { severityLevel } from "../../../../components/infra/format"
 import { podKey } from "../../../../components/infra/pod-restarts"
-import { formatPercent } from "@maple/ui/lib/format"
+import { formatBytes, formatPercent } from "@maple/ui/lib/format"
 import { refreshingClass } from "@maple/ui/lib/refreshing"
 import { AsyncData, Submodel } from "foldkit"
 import type { Html, HtmlBuilder } from "foldkit/html"
@@ -49,7 +49,7 @@ const compactItem = (h: H, eyebrow: string, value: number, isToned: boolean): Ht
 		valueClassName: "text-xl",
 	})
 
-/** `PeekSummary`: the four limit ratios the pod page leads with, over the list's window. */
+/** `PeekSummary`: working-set bytes and the four limit ratios the pod page leads with, over the list's window. */
 const peekSummary = (h: H, model: Model, pod: PodRow): Html => {
 	const data = model.summaries[podKey(pod)]?.data ?? AsyncData.Idle()
 	return AsyncData.matchData(data, {
@@ -59,7 +59,14 @@ const peekSummary = (h: H, model: Model, pod: PodRow): Html => {
 		onData: (summary) =>
 			summary === null || summary === undefined
 				? emptyMessage(h, { dashed: true }, ["No metrics arrived for this pod in this window."])
-				: statRail(h, { className: refreshingClass(AsyncData.isRefreshing(data)) }, [
+				: statRail(h, { columns: 5, className: refreshingClass(AsyncData.isRefreshing(data)) }, [
+						statRailItem(h, {
+							eyebrow: "Memory",
+							value: formatBytes(summary.memoryWorkingSet),
+							compact: true,
+							className: "px-4 py-3",
+							valueClassName: "text-xl",
+						}),
 						compactItem(h, "CPU vs limit", summary.cpuLimitPct, true),
 						compactItem(h, "CPU vs request", summary.cpuRequestPct, false),
 						compactItem(h, "Mem vs limit", summary.memoryLimitPct, true),

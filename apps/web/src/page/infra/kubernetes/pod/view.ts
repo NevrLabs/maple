@@ -1,5 +1,5 @@
 import { severityLevel } from "../../../../components/infra/format"
-import { formatPercent } from "@maple/ui/lib/format"
+import { formatBytes, formatPercent } from "@maple/ui/lib/format"
 import { AsyncData, Submodel } from "foldkit"
 import type { Html, HtmlBuilder } from "foldkit/html"
 import { ResolveThemeColors } from "../../../../charts/theme-colors"
@@ -60,7 +60,13 @@ const rightPanel = (h: H, model: Model): Html | undefined => {
 }
 
 const stats = (h: H, model: Model, summary: Summary): Html =>
-	statRail(h, { columns: 5 }, [
+	statRail(h, { columns: 6 }, [
+		statRailItem(h, {
+			eyebrow: "Memory working set",
+			value: formatBytes(summary.memoryWorkingSet),
+			subline: `peak ${formatBytes(summary.memoryWorkingSetPeak)}`,
+			compact: true,
+		}),
 		statRailItem(h, {
 			eyebrow: "CPU vs limit",
 			value: formatPercent(summary.cpuLimitPct),
@@ -88,7 +94,7 @@ const stats = (h: H, model: Model, summary: Summary): Html =>
 
 const summaryArea = (h: H, model: Model): Html =>
 	AsyncData.matchData(model.summary.data, {
-		onEmpty: () => statRailLoading(h, 5, 5),
+		onEmpty: () => statRailLoading(h, 6, 6),
 		onFailure: (failure) =>
 			errorState(h, {
 				failure,

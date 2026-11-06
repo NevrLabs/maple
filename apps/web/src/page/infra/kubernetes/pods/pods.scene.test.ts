@@ -1,5 +1,6 @@
 import { OrgId } from "@maple/domain"
 import { Result, Schema } from "effect"
+import { expect as expectView, given, Mount, scene, text, withViewInputs } from "foldkit/scene"
 import { describe, expect, test } from "vitest"
 import { PageOutMessage, type PageContext } from "../../../contract"
 import * as Dialog from "../../../../ui/dialog"
@@ -11,6 +12,10 @@ import type { PodRow } from "../pod-data"
 import { Message } from "./message"
 import type { Model } from "./model"
 import { init, podsInput, update } from "./update"
+import { view as pageView } from "./view"
+import { hasNoMemoryLimit } from "../pod-table"
+import { MountPodPeek, PeekRowMessage } from "../peek-rows"
+import { ResolveThemeColors, ThemeMessage } from "../../../../charts/theme-colors"
 
 const orgId = Schema.decodeSync(OrgId)("org_acme")
 const context: PageContext = { orgId, pinnedNamespace: null, timeZone: "UTC" }
@@ -18,6 +23,8 @@ const window = { startTime: "2026-10-01 00:00:00", endTime: "2026-10-01 12:00:00
 const NOW = Date.parse("2026-10-01T12:00:00Z")
 
 const pageUpdate = (model: Model, message: Message) => update(model, message, context)
+const view = withViewInputs(pageView, { context })()
+const GIB = 2 ** 30
 
 const pod = (podName: string): PodRow => ({
 	podName,
@@ -38,10 +45,26 @@ const pod = (podName: string): PodRow => ({
 	memoryLimitPct: 0.9,
 	cpuRequestPct: 0.6,
 	memoryRequestPct: 0.95,
+	memoryWorkingSet: 0.5 * GIB,
 	cpuUsagePeak: 0.5,
 	cpuLimitPctPeak: 0.55,
 	memoryLimitPctPeak: 0.98,
+	memoryWorkingSetPeak: 0.75 * GIB,
 	saturation: 0.98,
+})
+
+/** No limits set: the kubelet emits no limit ratios, only usage. */
+const unlimited = (podName: string): PodRow => ({
+	...pod(podName),
+	cpuLimitPct: 0,
+	memoryLimitPct: 0,
+	cpuRequestPct: 0,
+	memoryRequestPct: 0,
+	cpuLimitPctPeak: 0,
+	memoryLimitPctPeak: 0,
+	saturation: 0,
+	memoryWorkingSet: 2.6 * GIB,
+	memoryWorkingSetPeak: 2.8 * GIB,
 })
 
 const windowed = (search: Model["search"] = {}) =>
@@ -51,6 +74,44 @@ const windowed = (search: Model["search"] = {}) =>
 	)
 
 describe("pods list", () => {
+	test("the Memory column sorts by working-set bytes", () => {
+		const sorted = pageUpdate(windowed().model, Message.ClickedSort({ key: "memoryBytes" }))
+		expect(sorted.outMessage).toEqual(
+			PageOutMessage.RequestedNavigation({
+				url: "/infra/kubernetes/pods?sortBy=memoryBytes&sortDir=desc",
+				isReplace: false,
+			}),
+		)
+		expect(podsInput(windowed({ sortBy: "memoryBytes" }).model, window)).toMatchObject({
+			sortBy: "memoryBytes",
+			sortDir: "desc",
+		})
+	})
+
+	test("a pod with no limit shows its memory in bytes and a dash for % of limit", () => {
+		const model = windowed().model
+		const loaded = pageUpdate(
+			model,
+			Message.CompletedFetchPods({
+				key: model.pods.key ?? "",
+				result: Result.succeed({ data: [unlimited("warden-erp-backend-0"), pod("payment-1")], totalCount: 2 }),
+			}),
+		).model
+		expect(hasNoMemoryLimit(unlimited("x"))).toBe(true)
+		expect(hasNoMemoryLimit(pod("x"))).toBe(false)
+		scene(
+			{ update: pageUpdate, view },
+			given(loaded),
+			Mount.resolve(MountPodPeek, PeekRowMessage.ClickedPeekRow({ key: "" })),
+			Mount.resolve(ResolveThemeColors, ThemeMessage.ResolvedThemeColors({ colors: {} })),
+			expectView(text("Memory")).toExist(),
+			expectView(text("2.6 GB")).toExist(),
+			expectView(text("2.8 GB")).toExist(),
+			expectView(text("512 MB")).toExist(),
+			expectView(text("98%")).toExist(),
+		)
+	})
+
 	test("the Ended scope swaps the lifecycle; the other scopes narrow the live fleet", () => {
 		expect(podsInput(windowed({ scope: "ended" }).model, window)).toMatchObject({ scope: undefined, lifecycle: "ended" })
 		expect(podsInput(windowed({ scope: "saturated" }).model, window)).toMatchObject({

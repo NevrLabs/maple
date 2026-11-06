@@ -1991,6 +1991,7 @@ const PodSortKeyLiteral = Schema.Literals([
 	"cpuUsage",
 	"cpuLimitPct",
 	"memoryLimitPct",
+	"memoryBytes",
 	"podName",
 	"lastSeen",
 ])
@@ -2059,9 +2060,12 @@ const PodRow = Schema.Struct({
 	memoryLimitPct: Schema.Number,
 	cpuRequestPct: Schema.Number,
 	memoryRequestPct: Schema.Number,
+	/** Bytes, `k8s.pod.memory.working_set` avg; present whether or not a limit is set. */
+	memoryWorkingSet: Schema.Number,
 	cpuUsagePeak: Schema.Number,
 	cpuLimitPctPeak: Schema.Number,
 	memoryLimitPctPeak: Schema.Number,
+	memoryWorkingSetPeak: Schema.Number,
 	saturation: Schema.Number,
 })
 
@@ -2920,6 +2924,8 @@ export class PodDetailSummaryResponse extends Schema.Class<PodDetailSummaryRespo
 			memoryLimitPct: Schema.Number,
 			cpuRequestPct: Schema.Number,
 			memoryRequestPct: Schema.Number,
+			memoryWorkingSet: Schema.Number,
+			memoryWorkingSetPeak: Schema.Number,
 		}),
 	),
 }) {}

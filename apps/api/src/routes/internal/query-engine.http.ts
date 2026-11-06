@@ -1856,9 +1856,11 @@ export const HttpQueryEngineLive = HttpApiBuilder.group(MapleInternalApi, "query
 								memoryLimitPct: row.memoryLimitPct || 0,
 								cpuRequestPct: row.cpuRequestPct || 0,
 								memoryRequestPct: row.memoryRequestPct || 0,
+								memoryWorkingSet: row.memoryWorkingSet || 0,
 								cpuUsagePeak: row.cpuUsagePeak || 0,
 								cpuLimitPctPeak: row.cpuLimitPctPeak || 0,
 								memoryLimitPctPeak: row.memoryLimitPctPeak || 0,
+								memoryWorkingSetPeak: row.memoryWorkingSetPeak || 0,
 								saturation: row.saturation || 0,
 							})),
 							// The denominator has to match the predicate the list ran, or a scoped
@@ -1923,6 +1925,8 @@ export const HttpQueryEngineLive = HttpApiBuilder.group(MapleInternalApi, "query
 										memoryLimitPct: row.memoryLimitPct || 0,
 										cpuRequestPct: row.cpuRequestPct || 0,
 										memoryRequestPct: row.memoryRequestPct || 0,
+										memoryWorkingSet: row.memoryWorkingSet || 0,
+										memoryWorkingSetPeak: row.memoryWorkingSetPeak || 0,
 									}
 								: null,
 						})
