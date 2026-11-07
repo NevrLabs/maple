@@ -319,6 +319,41 @@ resource "maple_uptime_monitor" "site" {
 	})
 }
 
+func TestUptimeMonitorTierUpdatesInPlace(t *testing.T) {
+	api := newFakeAPI(t)
+	config := func(tier string) string {
+		return providerBlock(api) + `
+resource "maple_uptime_monitor" "site" {
+  name   = "Website"
+  config = jsonencode({ type = "tcp", host = "192.0.2.1", port = 443 })
+` + tier + `
+}
+`
+	}
+	resource.UnitTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: factories,
+		Steps: []resource.TestStep{
+			// Unset tier takes the API default without drift.
+			{Config: config(""), Check: resource.TestCheckResourceAttr("maple_uptime_monitor.site", "tier", "core")},
+			{
+				Config: config(`  tier = "info"`),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectResourceAction("maple_uptime_monitor.site", plancheck.ResourceActionUpdate)},
+				},
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr("maple_uptime_monitor.site", "tier", "info"),
+					func(*terraform.State) error {
+						if tier := api.lastBody("PATCH", "/v2/uptime_monitors/")["tier"]; tier != "info" {
+							return fmt.Errorf("update body tier = %v, want info", tier)
+						}
+						return nil
+					},
+				),
+			},
+		},
+	})
+}
+
 func TestScrapeTargetCredentialsAreWriteOnly(t *testing.T) {
 	api := newFakeAPI(t)
 	resource.UnitTest(t, resource.TestCase{

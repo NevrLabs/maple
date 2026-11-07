@@ -312,6 +312,11 @@ func uptimeMonitorDef() resourceDef {
 				"failures_to_down": schema.Int64Attribute{Optional: true, Computed: true, Description: "Failed checks in a row before the monitor is down, 1 to 10."},
 				"service_name":     schema.StringAttribute{Optional: true, Description: "Attach the monitor to this service."},
 				"enabled":          schema.BoolAttribute{Optional: true, Computed: true, Description: "Whether checks run. Defaults to `true`."},
+				"tier": schema.StringAttribute{
+					Optional: true, Computed: true,
+					Description: "`core` (default) alerts and drives the status page; `info` is shown as degraded only and never alerts.",
+					Validators:  oneOf("core", "info"),
+				},
 				"destination_ids":  stringList("`dest_…` IDs notified when the monitor goes down or recovers.", false),
 				"heartbeat_url":    readOnlyString("`heartbeat`: the URL your job pings."),
 				"alert_rule_id":    schema.StringAttribute{Computed: true, Description: "The alert rule that delivers this monitor's notifications."},

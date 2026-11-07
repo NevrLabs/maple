@@ -81,7 +81,7 @@ func newFakeAPI(t *testing.T) *fakeAPI {
 			}, writeOnly: []string{"auth_credentials"}},
 			"/v2/uptime_monitors": {prefix: "upm", defaults: map[string]any{
 				"interval_seconds": json.Number("60"), "failures_to_down": json.Number("2"), "service_name": nil,
-				"enabled": true, "destination_ids": []any{}, "heartbeat_url": nil, "alert_rule_id": nil,
+				"enabled": true, "destination_ids": []any{}, "heartbeat_url": nil, "alert_rule_id": nil, "tier": "core",
 			}, onCreate: func(obj map[string]any) {
 				config := obj["config"].(map[string]any)
 				if config["type"] == "http" {
