@@ -1,4 +1,4 @@
-// BOUNDARY: This module owns unparsed external values and narrows them before domain use.
+// BOUNDARY-FILE: This module owns unparsed external values and narrows them before domain use.
 // Shared flush core (platform-agnostic)
 //
 // The buffer-drain → OTLP-encode → POST machinery shared by every flushable
@@ -6,7 +6,7 @@
 // resolution (env-lazy on Workers, env-auto-detect on Node, programmatic in the
 // browser) and its transport (plain `fetch` vs `fetch(keepalive)`); everything
 // downstream of a resolved endpoint lives here.
-import { Effect, Redacted, Result } from "effect"
+import { Cause, Effect, Redacted, Result, Array as Arr, Record as Rec, String as Str } from "effect"
 import { isMapleIngestEndpoint } from "@maple/browser-session/region"
 import type { LogBuffer, LogRecord } from "./flushable-logger.js"
 import type { MetricBuffer } from "./flushable-metrics.js"
@@ -30,7 +30,7 @@ const FLUSH_LINK_TIMEOUT_MS = 15_000
  */
 export interface ResourceInput {
 	readonly endpoint: string | undefined
-	readonly ingestKey: Redacted.Redacted<string> | undefined
+	readonly ingestKey: Redacted.Redacted | undefined
 	readonly resource: {
 		readonly serviceName: string
 		readonly serviceVersion: string | undefined
@@ -89,7 +89,7 @@ export const buildResolved = (
 	// `r.endpoint` is always defined in practice (every resolver falls back to
 	// the region's public ingest); guard anyway.
 	const base = r.endpoint ?? "https://ingest.maple.dev"
-	const baseUrl = base.endsWith("/") ? base.slice(0, -1) : base
+	const baseUrl = Str.endsWith("/")(base) ? Str.slice(0, -1)(base) : base
 	const tracesUrl = `${baseUrl}${opts.tracesPath ?? "/v1/traces"}`
 	const logsUrl = `${baseUrl}${opts.logsPath ?? "/v1/logs"}`
 	const metricsUrl = `${baseUrl}${opts.metricsPath ?? "/v1/metrics"}`
@@ -122,7 +122,7 @@ const makeOtlpResource = (resource: {
 	readonly attributes: Record<string, unknown>
 }): OtlpResourceLike => {
 	const attrs: Array<{ readonly key: string; readonly value: unknown }> = []
-	for (const [key, value] of Object.entries(resource.attributes)) {
+	for (const [key, value] of Rec.toEntries(resource.attributes)) {
 		attrs.push({ key, value: anyValue(value) })
 	}
 	attrs.push({ key: "service.name", value: { stringValue: resource.serviceName } })
@@ -133,7 +133,7 @@ const makeOtlpResource = (resource: {
 }
 
 const anyValue = (value: unknown): unknown => {
-	if (Array.isArray(value)) return { arrayValue: { values: value.map(anyValue) } }
+	if (Arr.isArray(value)) return { arrayValue: { values: Arr.map(value, anyValue) } }
 	switch (typeof value) {
 		case "string":
 			return { stringValue: value }
@@ -169,7 +169,7 @@ const post = (url: string, headers: Record<string, string>, body: unknown): Prom
 	Effect.runPromise(
 		Effect.tryPromise({
 			try: (signal) => send(url, headers, body, signal),
-			catch: (cause) => cause,
+			catch: (cause) => new Cause.UnknownError(cause),
 		}).pipe(Effect.timeout(EXPORT_TIMEOUT_MS)),
 	)
 
@@ -189,7 +189,7 @@ const flushSignal = async <A>(args: {
 	readonly ignoreCooldown: boolean | undefined
 }): Promise<void> => {
 	const { url, headers, buffer, body, state, signal, transport, logPrefix, tailBytes } = args
-	if (!args.ignoreCooldown && state.disabledUntil && Date.now() < state.disabledUntil) {
+	if (!args.ignoreCooldown && state.disabledUntil > 0 && Date.now() < state.disabledUntil) {
 		console.warn(
 			`${logPrefix} ${signal} flush skipped (cooldown ${state.disabledUntil - Date.now()}ms remaining)`,
 		)
@@ -201,29 +201,31 @@ const flushSignal = async <A>(args: {
 	// Asked per signal, right before the split: the room depends on what the
 	// signals before this one have just reserved.
 	const tail = tailBytes?.()
-	const chunks = tail ? newestFirst(batch, body, tail) : [batch]
+	const chunks = tail !== undefined && tail !== 0 ? newestFirst(batch, body, tail) : [batch]
 	const posted = await Promise.all(
-		chunks.map(async (chunk) => ({
+		Arr.map(chunks, async (chunk) => ({
 			chunk,
 			result: await Effect.runPromise(
 				Effect.result(
 					Effect.tryPromise({
 						try: () => transport.post(url, headers, body(chunk)),
-						catch: (cause) => cause,
+						// The fetch transport already rejects with one; the log prints what it wraps.
+						catch: (cause) =>
+							Cause.isUnknownError(cause) ? cause : new Cause.UnknownError(cause),
 					}),
 				),
 			),
 		})),
 	)
-	const failed = posted.flatMap(({ chunk, result }) =>
+	const failed = Arr.flatMap(posted, ({ chunk, result }) =>
 		Result.isFailure(result) ? [{ chunk, cause: result.failure }] : [],
 	)
 	const [first] = failed
-	if (first) {
+	if (first !== undefined) {
 		// One restore, back in drain order.
-		buffer.restore(failed.reverse().flatMap(({ chunk }) => chunk))
+		buffer.restore(Arr.flatMap(failed.reverse(), ({ chunk }) => chunk))
 		state.disabledUntil = Date.now() + COOLDOWN_MS
-		console.error(`${logPrefix} ${signal} flush failed; cooldown 60s:`, first.cause)
+		console.error(`${logPrefix} ${signal} flush failed; cooldown 60s:`, first.cause.cause)
 	}
 }
 
@@ -267,9 +269,14 @@ export const guardFlush =
 	<Args extends ReadonlyArray<unknown>>(logPrefix: string, run: (...args: Args) => Promise<void>) =>
 	async (...args: Args): Promise<void> => {
 		const outcome = await Effect.runPromise(
-			Effect.result(Effect.tryPromise({ try: () => run(...args), catch: (cause) => cause })),
+			Effect.result(
+				Effect.tryPromise({
+					try: () => run(...args),
+					catch: (cause) => new Cause.UnknownError(cause),
+				}),
+			),
 		)
-		if (Result.isFailure(outcome)) console.error(`${logPrefix} flush failed:`, outcome.failure)
+		if (Result.isFailure(outcome)) console.error(`${logPrefix} flush failed:`, outcome.failure.cause)
 	}
 
 /**
@@ -277,16 +284,33 @@ export const guardFlush =
  * wait is bounded, so a flush that never settles delays later ones by at most
  * {@link FLUSH_LINK_TIMEOUT_MS} instead of blocking them for the process lifetime.
  */
+export interface SerializedFlush<Args extends ReadonlyArray<unknown>> {
+	(...args: Args): Promise<void>
+	/**
+	 * Start in this task, past a drain in flight: a page going away cannot wait
+	 * its turn. Calls queued after it still wait for it.
+	 */
+	readonly now: (...args: Args) => Promise<void>
+}
+
 export const makeSerializedFlush = <Args extends ReadonlyArray<unknown>>(
 	run: (...args: Args) => Promise<void>,
-): ((...args: Args) => Promise<void>) => {
+): SerializedFlush<Args> => {
 	let tail: Promise<void> = Promise.resolve()
-	return (...args) => {
+	const queued = (...args: Args): Promise<void> => {
 		const start = tail
 		const next = start.then(() => run(...args))
 		tail = settledWithin(start, next, FLUSH_LINK_TIMEOUT_MS)
 		return next
 	}
+	const now = (...args: Args): Promise<void> => {
+		const before = tail
+		const next = run(...args)
+		const own = settledWithin(Promise.resolve(), next, FLUSH_LINK_TIMEOUT_MS)
+		tail = Promise.all([before, own]).then(() => undefined)
+		return next
+	}
+	return Object.assign(queued, { now })
 }
 
 /**
@@ -415,7 +439,7 @@ const metricAttributes = (
 	attributes: Readonly<Record<string, string>> | undefined,
 	extra?: readonly [string, string],
 ) => [
-	...Object.entries(attributes ?? {}).map(([key, value]) => ({
+	...Arr.map(Rec.toEntries(attributes ?? {}), ([key, value]) => ({
 		key,
 		value: anyValue(value),
 	})),
@@ -468,7 +492,7 @@ const makeMetricsBody = (snapshots: ReadonlyArray<MetricSnapshot>, r: Resolved) 
 					sum: {
 						aggregationTemporality: 2,
 						isMonotonic: true,
-						dataPoints: [...snapshot.state.occurrences].map(([value, count]) => ({
+						dataPoints: Arr.map([...snapshot.state.occurrences], ([value, count]) => ({
 							attributes: metricAttributes(snapshot.attributes, ["value", value]),
 							timeUnixNano: timestamp,
 							asDouble: count,
@@ -478,8 +502,8 @@ const makeMetricsBody = (snapshots: ReadonlyArray<MetricSnapshot>, r: Resolved) 
 				break
 			case "Histogram": {
 				let previous = 0
-				const finiteBuckets = snapshot.state.buckets.filter(([bound]) => Number.isFinite(bound))
-				const bucketCounts = finiteBuckets.map(([, cumulative]) => {
+				const finiteBuckets = Arr.filter(snapshot.state.buckets, ([bound]) => Number.isFinite(bound))
+				const bucketCounts = Arr.map(finiteBuckets, ([, cumulative]) => {
 					const count = cumulative - previous
 					previous = cumulative
 					return String(count)
@@ -497,7 +521,7 @@ const makeMetricsBody = (snapshots: ReadonlyArray<MetricSnapshot>, r: Resolved) 
 								sum: snapshot.state.sum,
 								min: snapshot.state.min,
 								max: snapshot.state.max,
-								explicitBounds: finiteBuckets.map(([bound]) => bound),
+								explicitBounds: Arr.map(finiteBuckets, ([bound]) => bound),
 								bucketCounts,
 							},
 						],
@@ -515,7 +539,7 @@ const makeMetricsBody = (snapshots: ReadonlyArray<MetricSnapshot>, r: Resolved) 
 								timeUnixNano: timestamp,
 								count: String(snapshot.state.count),
 								sum: snapshot.state.sum,
-								quantileValues: snapshot.state.quantiles.flatMap(([quantile, value]) =>
+								quantileValues: Arr.flatMap(snapshot.state.quantiles, ([quantile, value]) =>
 									value === undefined ? [] : [{ quantile, value }],
 								),
 							},

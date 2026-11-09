@@ -1,3 +1,4 @@
+import { Array as Arr, Option } from "effect"
 /**
  * Fixtures for the line, area and stacked-bar arms of `/lab/charts`.
  *
@@ -99,7 +100,7 @@ export interface TimeseriesSpikeRow {
 
 function makeTimeseriesRows(lastStartMs: number): TimeseriesSpikeRow[] {
 	const count = 60
-	return bucketStarts(count, lastStartMs).map((startMs, index) => {
+	return Arr.map(bucketStarts(count, lastStartMs), (startMs, index) => {
 		const phase = (index / (count - 1)) * Math.PI * 6
 		const base = 0.55 + 0.35 * Math.sin(phase)
 		const date = new Date(startMs)
@@ -147,8 +148,9 @@ export function timeseriesAxisContext(rows: readonly TimeseriesSpikeRow[]): {
 export function splitAtFirstPartial<T extends { partial: boolean }>(
 	rows: readonly T[],
 ): { solid: readonly T[]; dashed: readonly T[] } {
-	const first = rows.findIndex((row) => row.partial)
-	if (first === -1) return { solid: rows, dashed: [] }
+	const found = Arr.findFirstIndex(rows, (row) => row.partial)
+	if (Option.isNone(found)) return { solid: rows, dashed: [] }
+	const first = found.value
 	// Nothing complete to bridge from: the whole series is in flight.
 	if (first === 0) return { solid: [], dashed: rows }
 	return { solid: rows.slice(0, first), dashed: rows.slice(first - 1) }
@@ -167,7 +169,7 @@ export function splitAtFirstPartial<T extends { partial: boolean }>(
  * non-`bucket` key as a series, so it would draw a fourth line pinned at zero.
  */
 export function toLatencyProductionRows(rows: readonly TimeseriesSpikeRow[]): Record<string, unknown>[] {
-	return rows.map((row) => ({
+	return Arr.map(rows, (row) => ({
 		bucket: row.bucket,
 		p50LatencyMs: row.p50LatencyMs,
 		p95LatencyMs: row.p95LatencyMs,
@@ -177,7 +179,7 @@ export function toLatencyProductionRows(rows: readonly TimeseriesSpikeRow[]): Re
 
 /** Throughput and error throughput, widened the same way for the area arm. */
 export function toThroughputProductionRows(rows: readonly TimeseriesSpikeRow[]): Record<string, unknown>[] {
-	return rows.map((row) => ({
+	return Arr.map(rows, (row) => ({
 		bucket: row.bucket,
 		throughput: row.throughput,
 		errors: errorThroughput(row),
@@ -243,7 +245,7 @@ export function stackedBarAxisContext(rows: readonly StackedBarSpikeRow[]): {
 	rangeMs: number
 	bucketSeconds: number
 } {
-	const buckets = new Set(rows.map((row) => row.bucket))
+	const buckets = new Set(Arr.map(rows, (row) => row.bucket))
 	return { rangeMs: (buckets.size - 1) * BUCKET_MS, bucketSeconds: BUCKET_MS / 1000 }
 }
 

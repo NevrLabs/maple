@@ -13,7 +13,7 @@ import {
 import { V2InvestigationCreateParams } from "@maple/domain/http/v2"
 import { Clock, Duration, Effect, Result, Schema } from "effect"
 import { Command, Mount } from "foldkit"
-import { type LoadFailure, toLoadFailure } from "../../../data/load-failure"
+import { type LoadFailure, toLoadFailure } from "@maple/views/data/load-failure"
 import { resolveWindow } from "../../../data/time-range"
 import { MapleApiV2Client, MapleInternalApiClient } from "../../../platform/api-clients"
 import { writeClipboard } from "../../kit/clipboard"
@@ -76,6 +76,23 @@ export const FetchEvents = Command.define("FetchErrorIssueEvents", {
 		}).pipe(
 			settle,
 			Effect.map((result) => Message.CompletedFetchEvents({ key, result })),
+		),
+})
+
+/** The end users the issue hit in the page's window, for the rail's Affected users group. */
+export const FetchAffectedUsers = Command.define("FetchErrorIssueAffectedUsers", {
+	args: { key: Schema.String, issueId: ErrorIssueId, startTime: Schema.String, endTime: Schema.String },
+	messages: [Message.CompletedFetchAffectedUsers],
+	execute: ({ key, issueId, startTime, endTime }) =>
+		Effect.gen(function* () {
+			const client = yield* MapleInternalApiClient
+			return yield* client.errors.listIssueAffectedUsers({
+				params: { issueId },
+				query: { startTime, endTime },
+			})
+		}).pipe(
+			settle,
+			Effect.map((result) => Message.CompletedFetchAffectedUsers({ key, result })),
 		),
 })
 
@@ -199,7 +216,10 @@ const runWrite = (issueId: ErrorIssueId, write: IssueWrite) =>
 			case "Transition":
 				return yield* client.errors.transitionIssue({
 					params,
-					payload: new ErrorIssueTransitionRequest({ toState: write.toState }),
+					payload: new ErrorIssueTransitionRequest({
+						toState: write.toState,
+						expectedState: write.fromState,
+					}),
 				})
 			case "Claim":
 				return yield* client.errors.claimIssue({ params, payload: new ErrorIssueClaimRequest({}) })
@@ -215,6 +235,8 @@ const runWrite = (issueId: ErrorIssueId, write: IssueWrite) =>
 					params,
 					payload: new ErrorIssueSetSeverityRequest({ severity: write.severity }),
 				})
+			case "Unmerge":
+				return yield* client.errors.unmergeIssue({ params })
 		}
 	})
 

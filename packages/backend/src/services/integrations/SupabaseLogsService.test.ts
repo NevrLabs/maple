@@ -1,8 +1,18 @@
 import { afterEach, assert, describe, it } from "@effect/vitest"
-import { ConfigProvider, Effect, Layer, Schema } from "effect"
+import {
+	ConfigProvider,
+	Effect,
+	Layer,
+	Schema,
+	Array as Arr,
+	Record as Rec,
+	String as Str,
+	DateTime,
+	Option,
+} from "effect"
 import { TestClock } from "effect/testing"
 import { FetchHttpClient } from "effect/http"
-import { OrgId, UserId } from "@maple/domain/http"
+import { OrgId, UserId, SupabaseProjectUpdateRequest } from "@maple/domain/http"
 import { SourceId, SupabaseProjectRef } from "@maple/domain/primitives"
 import { Env } from "@maple/backend/platform/Env"
 import { cleanupTestDbs, createTestDb, queryFirstRow, type TestDb } from "@maple/backend/platform/test-pglite"
@@ -168,18 +178,28 @@ const logsRow = (testDb: TestDb, ref = REF_A) =>
 	).pipe(Effect.map((row) => row!))
 
 const logsCalls = (world: World, ref = REF_A) =>
-	world.supabase.state.calls.filter((call) => call.path === `/v1/projects/${ref}/analytics/endpoints/logs`)
+	Arr.filter(
+		world.supabase.state.calls,
+		(call) => call.path === `/v1/projects/${ref}/analytics/endpoints/logs`,
+	)
 
 const sentRecords = (world: World) =>
-	world.ingest.bodies.flatMap((body) =>
-		body.resourceLogs.flatMap((resource) => resource.scopeLogs.flatMap((scope) => scope.logRecords)),
+	Arr.flatMap(world.ingest.bodies, (body) =>
+		Arr.flatMap(body.resourceLogs, (resource) =>
+			Arr.flatMap(resource.scopeLogs, (scope) => scope.logRecords),
+		),
 	)
 
 const uidOf = (record: { attributes: ReadonlyArray<{ key: string; value: { stringValue: string } }> }) =>
-	record.attributes.find((attribute) => attribute.key === "log.record.uid")?.value.stringValue
+	Option.getOrUndefined(
+		Option.map(
+			Arr.findFirst(record.attributes, (attribute) => attribute.key === "log.record.uid"),
+			(attribute) => attribute.value.stringValue,
+		),
+	)
 
 /** `2026-10-21T17:55:00.000000`-style column text for an epoch ms. */
-const columnTime = (ms: number) => new Date(ms).toISOString().replace("Z", "000")
+const columnTime = (ms: number) => Str.replace("Z", "000")(DateTime.formatIso(DateTime.makeUnsafe(ms)))
 
 const row = (id: string, ms: number, overrides: Partial<FakeLogRow> = {}): FakeLogRow => ({
 	id,
@@ -202,11 +222,14 @@ describe("SupabaseLogsService", () => {
 		() => {
 			const testDb = createTestDb(trackedDbs)
 			const world = makeWorld()
-			const fixture = sampleRows.find(
-				(item) =>
-					item.source === "postgres_logs" &&
-					item.log_attributes["parsed.error_severity"] === "ERROR",
-			)!
+			const fixture = Option.getOrThrow(
+				Arr.findFirst(
+					sampleRows,
+					(item) =>
+						item.source === "postgres_logs" &&
+						item.log_attributes["parsed.error_severity"] === "ERROR",
+				),
+			)
 			world.supabase.state.logs = [
 				row("too-old", ENABLED_FROM - 1),
 				{ ...fixture, timestamp: "2026-10-21T17:55:30.123456" },
@@ -217,7 +240,7 @@ describe("SupabaseLogsService", () => {
 				world,
 				Effect.gen(function* () {
 					yield* connectWithLogs(world)
-					const summary = yield* (yield* SupabaseLogsService).pollAllOrgs()
+					const summary = yield* (yield* SupabaseLogsService).pollAllOrgs
 					assert.deepStrictEqual(summary, { orgs: 1, rows: 1, failures: 0, skipped: 0 })
 
 					const [call] = logsCalls(world)
@@ -229,10 +252,10 @@ describe("SupabaseLogsService", () => {
 					assert.strictEqual(logsCalls(world, REF_B).length, 0)
 
 					const records = sentRecords(world)
-					assert.deepStrictEqual(records.map(uidOf), [fixture.id])
-					assert.strictEqual(records[0]!.severityText, "ERROR")
-					assert.strictEqual(records[0]!.timeUnixNano, `${(ENABLED_FROM + 30_000) / 1000}123456000`)
-					assert.strictEqual(records[0]!.body.stringValue, fixture.event_message)
+					assert.deepStrictEqual(Arr.map(records, uidOf), [fixture.id])
+					assert.strictEqual(records[0].severityText, "ERROR")
+					assert.strictEqual(records[0].timeUnixNano, `${(ENABLED_FROM + 30_000) / 1000}123456000`)
+					assert.strictEqual(records[0].body.stringValue, fixture.event_message)
 
 					const sourceId = yield* Effect.promise(() =>
 						queryFirstRow<{ source_id: string }>(
@@ -241,8 +264,8 @@ describe("SupabaseLogsService", () => {
 							[ORG],
 						),
 					)
-					const resource = Object.fromEntries(
-						world.ingest.bodies[0]!.resourceLogs[0]!.resource.attributes.map((attribute) => [
+					const resource = Rec.fromEntries(
+						Arr.map(world.ingest.bodies[0].resourceLogs[0].resource.attributes, (attribute) => [
 							attribute.key,
 							attribute.value.stringValue,
 						]),
@@ -253,9 +276,7 @@ describe("SupabaseLogsService", () => {
 						"supabase.project.name": "app",
 						"supabase.project.region": "us-east-1",
 						"supabase.organization.slug": "jylmnjimcybytpydxgbu",
-						maple_source_id: publicSourceId(
-							Schema.decodeUnknownSync(SourceId)(sourceId!.source_id),
-						),
+						maple_source_id: publicSourceId(Schema.decodeSync(SourceId)(sourceId!.source_id)),
 					})
 					assert.match(world.ingest.authorizations[0] ?? "", /^Bearer /)
 
@@ -265,9 +286,11 @@ describe("SupabaseLogsService", () => {
 					assert.strictEqual(after.polled, NOW)
 
 					const status = yield* (yield* SupabaseConnectionService).getStatus(ORG)
-					const project = status.projects.find((item) => item.ref === REF_A)
+					const project = Option.getOrThrow(
+						Arr.findFirst(status.projects, (item) => item.ref === REF_A),
+					)
 					assert.deepStrictEqual(
-						[project?.logsEnabled, project?.logsLastPolledAt, project?.logsError],
+						[project.logsEnabled, project.logsLastPolledAt, project.logsError],
 						[true, NOW, null],
 					)
 				}),
@@ -281,7 +304,7 @@ describe("SupabaseLogsService", () => {
 			const testDb = createTestDb(trackedDbs)
 			const world = makeWorld()
 			const distinct = Array.from({ length: 2997 }, (_, i) =>
-				row(`r-${String(i).padStart(4, "0")}`, ENABLED_FROM + i),
+				row(`r-${Str.padStart(4, "0")(String(i))}`, ENABLED_FROM + i),
 			)
 			// Auth logs carry whole seconds, so several rows share one timestamp across a page edge.
 			const shared = Array.from({ length: 5 }, (_, i) =>
@@ -295,7 +318,7 @@ describe("SupabaseLogsService", () => {
 					yield* connectWithLogs(world)
 					const logs = yield* SupabaseLogsService
 
-					yield* logs.pollAllOrgs()
+					yield* logs.pollAllOrgs
 					// Three full pages in one tick, the rate-limit budget for a lagging project.
 					assert.strictEqual(logsCalls(world).length, 3)
 					const first = yield* logsRow(testDb)
@@ -303,8 +326,8 @@ describe("SupabaseLogsService", () => {
 					assert.deepStrictEqual(first.boundary, ["s-0"])
 
 					yield* TestClock.adjust(minute)
-					yield* logs.pollAllOrgs()
-					const ids = sentRecords(world).map(uidOf)
+					yield* logs.pollAllOrgs
+					const ids = Arr.map(sentRecords(world), uidOf)
 					assert.strictEqual(ids.length, 3002)
 					assert.strictEqual(new Set(ids).size, 3002)
 					const caughtUp = yield* logsRow(testDb)
@@ -325,7 +348,7 @@ describe("SupabaseLogsService", () => {
 			world,
 			Effect.gen(function* () {
 				yield* connectWithLogs(world)
-				const summary = yield* (yield* SupabaseLogsService).pollAllOrgs()
+				const summary = yield* (yield* SupabaseLogsService).pollAllOrgs
 				assert.strictEqual(summary.failures, 0)
 				const after = yield* logsRow(testDb)
 				assert.deepStrictEqual(
@@ -346,13 +369,16 @@ describe("SupabaseLogsService", () => {
 			world,
 			Effect.gen(function* () {
 				yield* connectWithLogs(world)
-				const summary = yield* (yield* SupabaseLogsService).pollAllOrgs()
+				const summary = yield* (yield* SupabaseLogsService).pollAllOrgs
 				assert.strictEqual(summary.failures, 1)
 				const after = yield* logsRow(testDb)
 				assert.strictEqual(after.watermark, ENABLED_FROM)
 				assert.strictEqual(after.error, "Supabase refused the logs query: Unknown field: log_level")
 				const status = yield* (yield* SupabaseConnectionService).getStatus(ORG)
-				assert.strictEqual(status.projects.find((item) => item.ref === REF_A)?.logsError, after.error)
+				assert.strictEqual(
+					Option.getOrThrow(Arr.findFirst(status.projects, (item) => item.ref === REF_A)).logsError,
+					after.error,
+				)
 			}),
 		)
 	})
@@ -368,15 +394,15 @@ describe("SupabaseLogsService", () => {
 			Effect.gen(function* () {
 				yield* connectWithLogs(world)
 				const logs = yield* SupabaseLogsService
-				yield* logs.pollAllOrgs()
+				yield* logs.pollAllOrgs
 				const failed = yield* logsRow(testDb)
 				assert.strictEqual(failed.watermark, ENABLED_FROM)
 				assert.match(failed.error ?? "", /Supabase logs ingest returned 503/)
 
 				world.ingest.status = 200
 				yield* TestClock.adjust(minute)
-				yield* logs.pollAllOrgs()
-				assert.deepStrictEqual(sentRecords(world).map(uidOf), ["a"])
+				yield* logs.pollAllOrgs
+				assert.deepStrictEqual(Arr.map(sentRecords(world), uidOf), ["a"])
 				const recovered = yield* logsRow(testDb)
 				assert.deepStrictEqual([recovered.watermark, recovered.error], [HORIZON + minute, null])
 			}),
@@ -388,7 +414,7 @@ describe("SupabaseLogsService", () => {
 		const world = makeWorld()
 		// Three rows per millisecond, so the first chunk edge (row 250) splits a millisecond.
 		world.supabase.state.logs = Array.from({ length: 600 }, (_, i) =>
-			row(`r-${String(i).padStart(4, "0")}`, ENABLED_FROM + Math.floor(i / 3)),
+			row(`r-${Str.padStart(4, "0")(String(i))}`, ENABLED_FROM + Math.floor(i / 3)),
 		)
 		world.ingest.failRequest = 2
 		return run(
@@ -397,7 +423,7 @@ describe("SupabaseLogsService", () => {
 			Effect.gen(function* () {
 				yield* connectWithLogs(world)
 				const logs = yield* SupabaseLogsService
-				yield* logs.pollAllOrgs()
+				yield* logs.pollAllOrgs
 				assert.strictEqual(sentRecords(world).length, 250)
 				const failed = yield* logsRow(testDb)
 				assert.strictEqual(failed.watermark, ENABLED_FROM + 83)
@@ -405,8 +431,8 @@ describe("SupabaseLogsService", () => {
 				assert.match(failed.error ?? "", /Supabase logs ingest returned 503/)
 
 				yield* TestClock.adjust(minute)
-				yield* logs.pollAllOrgs()
-				const ids = sentRecords(world).map(uidOf)
+				yield* logs.pollAllOrgs
+				const ids = Arr.map(sentRecords(world), uidOf)
 				assert.strictEqual(ids.length, 600)
 				assert.strictEqual(new Set(ids).size, 600)
 				const recovered = yield* logsRow(testDb)
@@ -426,16 +452,16 @@ describe("SupabaseLogsService", () => {
 			Effect.gen(function* () {
 				yield* connectWithLogs(world)
 				const logs = yield* SupabaseLogsService
-				yield* logs.pollAllOrgs()
+				yield* logs.pollAllOrgs
 				assert.strictEqual(logsCalls(world).length, 1)
 
 				world.ingest.status = 200
 				yield* logs.setLogsEnabled(ORG, asRef(REF_A), false)
 				yield* logs.setLogsEnabled(ORG, asRef(REF_A), true)
 				yield* TestClock.adjust(minute)
-				yield* logs.pollAllOrgs()
+				yield* logs.pollAllOrgs
 				assert.strictEqual(logsCalls(world).length, 2)
-				assert.deepStrictEqual(sentRecords(world).map(uidOf), ["a"])
+				assert.deepStrictEqual(Arr.map(sentRecords(world), uidOf), ["a"])
 			}),
 		)
 	})
@@ -451,20 +477,20 @@ describe("SupabaseLogsService", () => {
 			Effect.gen(function* () {
 				yield* connectWithLogs(world)
 				const logs = yield* SupabaseLogsService
-				yield* logs.pollAllOrgs()
+				yield* logs.pollAllOrgs
 				assert.strictEqual(logsCalls(world).length, 1)
 
 				world.ingest.status = 200
 				yield* Effect.forEach([1, 2, 30, 59], (minutes) =>
-					TestClock.setTime(NOW + minutes * minute).pipe(Effect.andThen(logs.pollAllOrgs())),
+					TestClock.setTime(NOW + minutes * minute).pipe(Effect.andThen(logs.pollAllOrgs)),
 				)
 				assert.strictEqual(logsCalls(world).length, 1)
 				assert.strictEqual(world.ingest.bodies.length, 0)
 
 				yield* TestClock.setTime(NOW + 61 * minute)
-				yield* logs.pollAllOrgs()
+				yield* logs.pollAllOrgs
 				assert.isAbove(logsCalls(world).length, 1)
-				assert.deepStrictEqual(sentRecords(world).map(uidOf), ["a"])
+				assert.deepStrictEqual(Arr.map(sentRecords(world), uidOf), ["a"])
 			}),
 		)
 	})
@@ -482,10 +508,10 @@ describe("SupabaseLogsService", () => {
 					queryFirstRow(
 						testDb,
 						"UPDATE sources SET paused_at = $1 WHERE id = (SELECT source_id FROM supabase_connections WHERE org_id = $2) RETURNING id",
-						[new Date(NOW - minute), ORG],
+						[DateTime.formatIso(DateTime.makeUnsafe(NOW - minute)), ORG],
 					),
 				)
-				const summary = yield* (yield* SupabaseLogsService).pollAllOrgs()
+				const summary = yield* (yield* SupabaseLogsService).pollAllOrgs
 				assert.strictEqual(summary.skipped, 1)
 				assert.strictEqual(logsCalls(world).length, 0)
 				assert.strictEqual((yield* logsRow(testDb)).watermark, HORIZON)
@@ -505,14 +531,14 @@ describe("SupabaseLogsService", () => {
 					yield* connectWithLogs(world)
 					const logs = yield* SupabaseLogsService
 					assert.strictEqual((yield* logsRow(testDb)).watermark, ENABLED_FROM)
-					yield* logs.pollAllOrgs()
+					yield* logs.pollAllOrgs
 					yield* logs.setLogsEnabled(ORG, asRef(REF_A), true)
 					assert.strictEqual((yield* logsRow(testDb)).watermark, HORIZON)
 
 					yield* logs.setLogsEnabled(ORG, asRef(REF_A), false)
 					yield* TestClock.adjust(minute)
 					const calls = logsCalls(world).length
-					assert.deepStrictEqual(yield* logs.pollAllOrgs(), {
+					assert.deepStrictEqual(yield* logs.pollAllOrgs, {
 						orgs: 0,
 						rows: 0,
 						failures: 0,
@@ -577,10 +603,17 @@ describe("SupabaseLogsService", () => {
 				world.supabase.state.drains.set(REF_B, [])
 				const connection = yield* SupabaseConnectionService
 				// The route's order: the project PATCH (live listing) first, then the polling switch.
-				yield* connection.updateProject(ORG, asUserId("user_a"), asRef(REF_B), { logsEnabled: true })
+				yield* connection.updateProject(
+					ORG,
+					asUserId("user_a"),
+					asRef(REF_B),
+					new SupabaseProjectUpdateRequest({ logsEnabled: true }),
+				)
 				yield* (yield* SupabaseLogsService).setLogsEnabled(ORG, asRef(REF_B), true)
-				const project = (yield* connection.getStatus(ORG)).projects.find((item) => item.ref === REF_B)
-				assert.deepStrictEqual([project?.logsEnabled, project?.logDrains], [true, []])
+				const project = Option.getOrThrow(
+					Arr.findFirst((yield* connection.getStatus(ORG)).projects, (item) => item.ref === REF_B),
+				)
+				assert.deepStrictEqual([project.logsEnabled, project.logDrains], [true, []])
 			}),
 		)
 	})
@@ -596,24 +629,39 @@ describe("SupabaseLogsService", () => {
 				const connection = yield* SupabaseConnectionService
 				const logs = yield* SupabaseLogsService
 				const user = asUserId("user_a")
-				const drained = yield* connection.updateProject(ORG, user, asRef(REF_A), {
-					logDrainEnabled: true,
-				})
-				assert.isFalse(drained.projects.find((project) => project.ref === REF_A)?.logsEnabled ?? true)
+				const drained = yield* connection.updateProject(
+					ORG,
+					user,
+					asRef(REF_A),
+					new SupabaseProjectUpdateRequest({
+						logDrainEnabled: true,
+					}),
+				)
+				assert.isFalse(
+					Option.getOrThrow(Arr.findFirst(drained.projects, (project) => project.ref === REF_A))
+						.logsEnabled,
+				)
 
 				const refused = yield* Effect.flip(logs.setLogsEnabled(ORG, asRef(REF_A), true))
 				assert.strictEqual(refused._tag, "@maple/http/errors/IntegrationsValidationError")
 				yield* TestClock.adjust(minute)
 				const calls = logsCalls(world).length
-				yield* logs.pollAllOrgs()
+				yield* logs.pollAllOrgs
 				assert.strictEqual(logsCalls(world).length, calls)
 
 				// Drain off first, then polling on: the switch back works.
-				yield* connection.updateProject(ORG, user, asRef(REF_A), { logDrainEnabled: false })
+				yield* connection.updateProject(
+					ORG,
+					user,
+					asRef(REF_A),
+					new SupabaseProjectUpdateRequest({ logDrainEnabled: false }),
+				)
 				yield* logs.setLogsEnabled(ORG, asRef(REF_A), true)
 				const status = yield* connection.getStatus(ORG)
-				const project = status.projects.find((item) => item.ref === REF_A)
-				assert.deepStrictEqual([project?.logDrainEnabled, project?.logsEnabled], [false, true])
+				const project = Option.getOrThrow(
+					Arr.findFirst(status.projects, (item) => item.ref === REF_A),
+				)
+				assert.deepStrictEqual([project.logDrainEnabled, project.logsEnabled], [false, true])
 			}),
 		)
 	})

@@ -1,10 +1,11 @@
+import * as Policy from "@maple/domain/policy"
 import { AlertDestinationId } from "@maple/domain/http"
 import { V2UptimeMonitor, V2UptimeMonitorTestResult } from "@maple/domain/http/v2"
 import { AlertDestinationRowSchema } from "@maple/web-data/collections/alerts"
 import { Schema } from "effect"
 import { defineMessageUnion } from "foldkit/message"
-import { LoadFailure } from "../../../data/load-failure"
-import * as Menu from "../../../ui/menu"
+import { LoadFailure } from "@maple/views/data/load-failure"
+import * as Menu from "@maple/views/ui/menu"
 import {
 	AssertionType,
 	EveryUnit,
@@ -26,7 +27,7 @@ export const Message = defineMessageUnion({
 	UpdatedDestinations: { orgId: Schema.String, rows: Schema.Array(AlertDestinationRowSchema) },
 	CompletedFetchServices: { services: Schema.Array(Schema.String) },
 	CompletedReadTimeZones: { zones: Schema.Array(Schema.String) },
-	CompletedFetchSession: { orgId: Schema.String, isAdmin: Schema.Boolean },
+	CompletedFetchSession: { orgId: Schema.String, grants: Schema.Array(Policy.PermissionName) },
 	PickedKind: { kind: MonitorKind },
 	ChangedText: { field: TextField, value: Schema.String },
 	ChangedMethod: { method: HttpMethod },

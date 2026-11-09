@@ -1,10 +1,11 @@
 import { SourceId } from "@maple/domain/primitives"
-import { Clock, Effect, Schema } from "effect"
+import { Clock, DateTime, Effect, Schema } from "effect"
 import { Command } from "foldkit"
-import { baseKey } from "../../../data/keyed"
-import { toLoadFailure } from "../../../data/load-failure"
+import { baseKey } from "@maple/views/data/keyed"
+import { toLoadFailure } from "@maple/views/data/load-failure"
 import { MapleApiV2Client } from "../../../platform/api-clients"
 import { V2SourceUpdateParams } from "@maple/domain/http/v2"
+import { readGrants } from "../../../data/session-tenant"
 import { loadSources, loadSourceUsage } from "../kit/data"
 import { ExpiryChoice, expiresAtOf } from "../kit/rules"
 import { Message } from "./message"
@@ -14,6 +15,11 @@ const HOUR_MS = 3_600_000
 export const ReadSourceClock = Command.define("ReadSourceClock", {
 	messages: [Message.ReadClock],
 	execute: Effect.map(Clock.currentTimeMillis, (nowMs) => Message.ReadClock({ nowMs })),
+})
+
+export const ReadSourceGrants = Command.define("ReadSourceGrants", {
+	messages: [Message.CompletedReadGrants],
+	execute: Effect.map(readGrants, (grants) => Message.CompletedReadGrants({ grants })),
 })
 
 export const FetchSourceList = Command.define("FetchSourceDetailList", {
@@ -36,7 +42,8 @@ export const FetchSourceUsage = Command.define("FetchSourceUsage", {
 		),
 })
 
-const write = <A, E, R>(effect: Effect.Effect<A, E, R>) => effect.pipe(Effect.mapError(toLoadFailure), Effect.result)
+const write = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+	effect.pipe(Effect.mapError(toLoadFailure), Effect.result)
 
 /** `pause({ until })`: `hours` from now, or `null` for until resumed. */
 export const PauseSource = Command.define("PauseSource", {
@@ -45,10 +52,14 @@ export const PauseSource = Command.define("PauseSource", {
 	execute: ({ id, hours }) =>
 		Effect.gen(function* () {
 			const now = yield* Clock.currentTimeMillis
-			const until = hours === null ? null : new Date(now + hours * HOUR_MS).toISOString()
+			const until =
+				hours === null ? null : DateTime.formatIso(DateTime.makeUnsafe(now + hours * HOUR_MS))
 			const client = yield* MapleApiV2Client
 			return yield* client.sources.pause({ params: { id }, payload: { until } })
-		}).pipe(write, Effect.map((result) => Message.CompletedPause({ result }))),
+		}).pipe(
+			write,
+			Effect.map((result) => Message.CompletedPause({ result })),
+		),
 })
 
 export const ResumeSource = Command.define("ResumeSource", {
@@ -95,5 +106,8 @@ export const SaveSource = Command.define("SaveSource", {
 				params: { id },
 				payload: expiresAt === undefined ? payload : { ...payload, expires_at: expiresAt },
 			})
-		}).pipe(write, Effect.map((result) => Message.CompletedSave({ result }))),
+		}).pipe(
+			write,
+			Effect.map((result) => Message.CompletedSave({ result })),
+		),
 })

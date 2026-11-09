@@ -1,4 +1,4 @@
-import { Effect } from "effect"
+import { Effect, Option, Predicate, Array as Arr } from "effect"
 
 import {
 	planAlertLifecycle,
@@ -61,7 +61,7 @@ export const simulateFiringSpans = (
 			breachWindow,
 			consecutiveHealthyRequired: rule.consecutiveHealthyRequired,
 			renotifyIntervalMinutes: Number.MAX_SAFE_INTEGER,
-			severities: rule.thresholds.map((tier) => tier.severity),
+			severities: Arr.map(rule.thresholds, (tier) => tier.severity),
 		}
 		const initial: ReplayState = {
 			state: null,
@@ -73,7 +73,7 @@ export const simulateFiringSpans = (
 		}
 
 		const final = yield* Effect.reduce(
-			evaluations.filter((tick) => tick.provisional !== true),
+			Arr.filter(evaluations, (tick) => tick.provisional !== true),
 			() => initial,
 			(acc, { bucketMs, evaluation }) =>
 				planAlertLifecycle({
@@ -109,7 +109,10 @@ export const simulateFiringSpans = (
 							lastCompleteBucketMs: bucketMs,
 						}
 						if (plan.transition === "opened" && plan.severity !== null) {
-							const firstBreach = recentBreaches.find((ms) => ms !== null) ?? bucketMs
+							const firstBreach = Option.getOrElse(
+								Arr.findFirst(recentBreaches, Predicate.isNotNull),
+								() => bucketMs,
+							)
 							return { ...base, open: { startMs: firstBreach, severity: plan.severity } }
 						}
 						if (plan.transition === "resolved" && acc.open !== null) {

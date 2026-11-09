@@ -1,4 +1,5 @@
-import { Clock, Effect, Option, Schema } from "effect"
+import * as Policy from "@maple/domain/policy"
+import { Clock, Effect, Option, Schema, Array as Arr } from "effect"
 import { Command, type Update } from "foldkit"
 import { replaceUrl } from "foldkit/navigation"
 import * as AlertsHub from "../../page/alerts/hub/update"
@@ -7,8 +8,8 @@ import type { PageContext } from "../../page/contract"
 import { nextSort } from "../../page/kit/table-sort"
 import type { Resources } from "../../platform/resources"
 import { OrgId } from "@maple/domain"
-import * as AttributesPanel from "../../ui/attributes/attributes-panel"
-import * as LogsStream from "../../ui/logs/logs-stream"
+import * as AttributesPanel from "@maple/views/ui/attributes/attributes-panel"
+import * as LogsStream from "@maple/views/ui/logs/logs-stream"
 import { foldLabToasts, initLabToasts } from "../toasts"
 import { logRows, traceOf } from "./fixture"
 import { type Flags, Message, type Model, type WorstCaseMode } from "./model"
@@ -80,7 +81,7 @@ export const init = (flags: Flags): Return => {
 			...traceBoxes,
 			hostSort: { key: "cpuPct", dir: "desc" },
 			hiddenSeries: [],
-			hub: { ...hub, isAdmin: true, nowMs: flags.nowMs },
+			hub: { ...hub, grants: Policy.allPermissions, nowMs: flags.nowMs },
 			logs: LogsStream.init("wc-logs", logRows(flags.mode, flags.timeZone)),
 			attributes: AttributesPanel.init("wc-attributes"),
 			openTools: [],
@@ -103,7 +104,7 @@ const isRulesLocal = (message: Message & { _tag: "GotRulesMessage" }): boolean =
 }
 
 const toggled = (list: ReadonlyArray<string>, key: string): ReadonlyArray<string> =>
-	list.includes(key) ? list.filter((entry) => entry !== key) : [...list, key]
+	list.includes(key) ? Arr.filter(list, (entry) => entry !== key) : [...list, key]
 
 const liftBox = (
 	box: TraceBox.Model | null,

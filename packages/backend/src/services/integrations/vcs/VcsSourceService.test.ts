@@ -1,14 +1,14 @@
 import { assert, describe, it } from "@effect/vitest"
 import { type GitCommitSha, OrgId } from "@maple/domain/http"
-import { Duration, Effect, Exit, Layer, Option, Schema } from "effect"
+import { Duration, Effect, Exit, Layer, Option, Schema, Array as Arr, String as Str } from "effect"
 import { TestClock } from "effect/testing"
 import { VcsProviderRegistry } from "./VcsProviderRegistry"
 import { VcsRepository } from "./VcsRepository"
 import { CLONE_CREDENTIALS_REUSE, VcsSourceService } from "./VcsSourceService"
 import type { VcsProviderClient } from "./VcsProviderClient"
 
-const ORG = Schema.decodeUnknownSync(OrgId)("org_source_test")
-const OTHER_ORG = Schema.decodeUnknownSync(OrgId)("org_other")
+const ORG = Schema.decodeSync(OrgId)("org_source_test")
+const OTHER_ORG = Schema.decodeSync(OrgId)("org_other")
 
 const installation = {
 	id: "00000000-0000-4000-8000-000000000001",
@@ -39,6 +39,7 @@ const makeLayer = (providerCalls: string[], connected: { value: boolean } = { va
 	const provider = {
 		id: "github",
 		reviewerMention: "@maple-review-bot",
+		webhookSignatureHeader: "x-hub-signature-256",
 		searchCode: (_installation, repo, query) =>
 			Effect.sync(() => {
 				providerCalls.push(`search:${repo.owner}/${repo.name}:${query}`)
@@ -54,7 +55,7 @@ const makeLayer = (providerCalls: string[], connected: { value: boolean } = { va
 		resolveRef: (_installation, repo, ref) =>
 			Effect.sync(() => {
 				providerCalls.push(`resolve:${repo.owner}/${repo.name}:${ref}`)
-				return ref === "gone" ? Option.none() : Option.some("d".repeat(40) as GitCommitSha)
+				return ref === "gone" ? Option.none() : Option.some(Str.repeat(40)("d") as GitCommitSha)
 			}),
 		repositorySizeBytes: (_installation, repo) =>
 			Effect.sync(() => {
@@ -102,7 +103,7 @@ describe("VcsSourceService", () => {
 			const source = yield* VcsSourceService
 			const repositories = yield* source.listRepositories(ORG)
 			assert.deepStrictEqual(
-				repositories.map((repo) => repo.fullName),
+				Arr.map(repositories, (repo) => repo.fullName),
 				["octo/shop"],
 			)
 			assert.strictEqual(repositories[0]?.trackedBranch, "production")
@@ -137,14 +138,14 @@ describe("VcsSourceService", () => {
 			const source = yield* VcsSourceService
 			const tracked = yield* source.resolveCheckout(ORG, "octo/shop")
 			assert.strictEqual(tracked.ref, "production")
-			assert.strictEqual(tracked.sha, "d".repeat(40))
+			assert.strictEqual(tracked.sha, Str.repeat(40)("d"))
 			assert.strictEqual(tracked.remoteUrl, "https://github.test/octo/shop.git")
 			// The credential stays apart from the URL, so nothing downstream can put it
 			// in a command's arguments by accident.
 			assert.strictEqual(tracked.token, "ghs_scoped")
 			assert.notInclude(tracked.remoteUrl, "ghs_scoped")
-			const pinned = yield* source.resolveCheckout(ORG, "octo/shop", "e".repeat(40))
-			assert.strictEqual(pinned.sha, "e".repeat(40))
+			const pinned = yield* source.resolveCheckout(ORG, "octo/shop", Str.repeat(40)("e"))
+			assert.strictEqual(pinned.sha, Str.repeat(40)("e"))
 			const missing = yield* Effect.exit(source.resolveCheckout(ORG, "octo/shop", "gone"))
 			assert.isTrue(Exit.isFailure(missing))
 			assert.deepStrictEqual(calls, [
@@ -159,7 +160,7 @@ describe("VcsSourceService", () => {
 	it.effect("reuses a clone token while fresh but checks repository access on every checkout", () => {
 		const calls: string[] = []
 		const connected = { value: true }
-		const sha = "e".repeat(40)
+		const sha = Str.repeat(40)("e")
 		return Effect.gen(function* () {
 			const source = yield* VcsSourceService
 			yield* source.resolveCheckout(ORG, "octo/shop", sha)

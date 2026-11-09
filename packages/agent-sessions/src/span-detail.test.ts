@@ -8,6 +8,7 @@ import {
 	toolSpanIssuers,
 } from "./span-detail"
 import { llmSpan, makeSpan, toolSpan } from "./span-test-support"
+import { Array as Arr } from "effect"
 
 describe("spanMessages", () => {
 	it("reads the documented shape: system instructions, then input, then output", () => {
@@ -38,13 +39,13 @@ describe("spanMessages", () => {
 		})
 
 		const messages = spanMessages(span)
-		expect(messages.map((message) => [message.origin, message.role])).toEqual([
+		expect(Arr.map(messages, (message) => [message.origin, message.role])).toEqual([
 			["system", "system"],
 			["input", "user"],
 			["output", "assistant"],
 		])
-		expect(messages[1]!.parts).toEqual([{ kind: "text", text: "fix the retry backoff" }])
-		expect(messages[2]!.parts[1]).toEqual({
+		expect(Arr.getUnsafe(messages, 1).parts).toEqual([{ kind: "text", text: "fix the retry backoff" }])
+		expect(Arr.getUnsafe(Arr.getUnsafe(messages, 2).parts, 1)).toEqual({
 			kind: "tool_call",
 			id: "toolu_01",
 			name: "read_file",
@@ -67,9 +68,9 @@ describe("spanMessages", () => {
 		})
 
 		const messages = spanMessages(span)
-		expect(messages[0]!.parts).toEqual([{ kind: "text", text: "one line of instructions" }])
-		expect(messages[1]!.parts).toEqual([{ kind: "text", text: "a bare content string" }])
-		expect(messages[2]!.parts).toEqual([{ kind: "text", text: "a text key" }])
+		expect(Arr.getUnsafe(messages, 0).parts).toEqual([{ kind: "text", text: "one line of instructions" }])
+		expect(Arr.getUnsafe(messages, 1).parts).toEqual([{ kind: "text", text: "a bare content string" }])
+		expect(Arr.getUnsafe(messages, 2).parts).toEqual([{ kind: "text", text: "a text key" }])
 	})
 
 	// A payload the reader cannot see is worse than one that is ugly.
@@ -83,7 +84,9 @@ describe("spanMessages", () => {
 			},
 		})
 
-		expect(spanMessages(span)[0]!.parts).toEqual([{ kind: "text", text: '{"type":"image","media":"…"}' }])
+		expect(Arr.getUnsafe(spanMessages(span), 0).parts).toEqual([
+			{ kind: "text", text: '{"type":"image","media":"…"}' },
+		])
 	})
 
 	it("reads OpenAI-format tool calls and tool messages", () => {
@@ -121,7 +124,7 @@ describe("spanMessages", () => {
 			name: "get_weather",
 			argumentsText: '{"city":"Berlin"}',
 		}
-		expect(spanMessages(span).map((message) => [message.role, message.parts])).toEqual([
+		expect(Arr.map(spanMessages(span), (message) => [message.role, message.parts])).toEqual([
 			["user", [{ kind: "text", text: "What's the weather in Berlin?" }]],
 			["assistant", [toolCall]],
 			[
@@ -136,7 +139,7 @@ describe("spanMessages", () => {
 			],
 			["assistant", [toolCall]],
 		])
-		expect(spanToolCalls(span).map((c) => c.name)).toEqual(["get_weather"])
+		expect(Arr.map(spanToolCalls(span), (c) => c.name)).toEqual(["get_weather"])
 	})
 
 	it("reads a streamed Google ADK reply as its aggregate, not its chunks", () => {
@@ -153,7 +156,7 @@ describe("spanMessages", () => {
 			durationMs: 1000,
 			genAi: {
 				outputMessages: [
-					...["The", " capital", " of", " France", " is", " Paris", "."].map(chunk),
+					...Arr.map(["The", " capital", " of", " France", " is", " Paris", "."], chunk),
 					{
 						role: "assistant",
 						parts: [{ content: "The capital of France is Paris.", type: "text" }],
@@ -163,7 +166,7 @@ describe("spanMessages", () => {
 			},
 		})
 
-		expect(spanMessages(span).map((message) => message.parts)).toEqual([
+		expect(Arr.map(spanMessages(span), (message) => message.parts)).toEqual([
 			[{ kind: "text", text: "The capital of France is Paris." }],
 		])
 
@@ -219,7 +222,7 @@ describe("spanMessages", () => {
 			},
 		})
 
-		expect(spanMessages(span)[0]!.parts).toEqual([
+		expect(Arr.getUnsafe(spanMessages(span), 0).parts).toEqual([
 			{ kind: "reasoning", text: "semconv spelling", redacted: false },
 			{ kind: "reasoning", text: "anthropic spelling", redacted: false },
 			{ kind: "reasoning", text: "the text key", redacted: false },
@@ -238,7 +241,7 @@ describe("spanMessages", () => {
 			},
 		})
 
-		expect(spanMessages(span)[0]!.parts).toEqual([
+		expect(Arr.getUnsafe(spanMessages(span), 0).parts).toEqual([
 			{ kind: "reasoning", text: undefined, redacted: false },
 		])
 	})
@@ -281,7 +284,7 @@ describe("spanToolCalls", () => {
 			toolName: "run_tests",
 			genAi: { toolCallId: "toolu_02", toolCallArguments: { suite: "webhooks" } },
 		})
-		expect(spanToolCalls(executed).map((call) => call.own)).toEqual([true])
+		expect(Arr.map(spanToolCalls(executed), (call) => call.own)).toEqual([true])
 
 		const requested = llmSpan({
 			spanId: "l2",
@@ -296,7 +299,7 @@ describe("spanToolCalls", () => {
 				],
 			},
 		})
-		expect(spanToolCalls(requested).map((call) => call.own)).toEqual([false])
+		expect(Arr.map(spanToolCalls(requested), (call) => call.own)).toEqual([false])
 	})
 
 	it("reads the tool_call parts of the output this call produced, not the history", () => {
@@ -330,7 +333,7 @@ describe("spanToolCalls", () => {
 
 		const calls = spanToolCalls(span)
 		expect(calls).toHaveLength(1)
-		expect(calls[0]!.id).toBe("toolu_01")
+		expect(Arr.getUnsafe(calls, 0).id).toBe("toolu_01")
 	})
 
 	// A model span's output only makes its calls; the responses come back on
@@ -385,7 +388,7 @@ describe("spanToolCalls", () => {
 		const results = sessionToolResults([model, tool, next])
 		const calls = spanToolCalls(model, results)
 
-		expect(calls.map((call) => [call.id, call.resultText])).toEqual([
+		expect(Arr.map(calls, (call) => [call.id, call.resultText])).toEqual([
 			["toolu_01", "120 lines"],
 			["toolu_02", "exit 0"],
 			// Nothing in the session carries this one's response, so none is shown.
@@ -441,14 +444,17 @@ describe("spanToolCalls", () => {
 
 describe("spanMessages — reasoning payloads", () => {
 	const reasoningPart = (part: Record<string, unknown>) =>
-		spanMessages(
-			llmSpan({
-				spanId: "l1",
-				startMs: 0,
-				durationMs: 1000,
-				genAi: { outputMessages: [{ role: "assistant", parts: [part] }] },
-			}),
-		)[0]!.parts[0]
+		Arr.getUnsafe(
+			spanMessages(
+				llmSpan({
+					spanId: "l1",
+					startMs: 0,
+					durationMs: 1000,
+					genAi: { outputMessages: [{ role: "assistant", parts: [part] }] },
+				}),
+			),
+			0,
+		).parts[0]
 
 	// A payload the reader cannot see is worse than one that is ugly — and that
 	// holds for reasoning too, whatever shape the vendor wrapped it in.

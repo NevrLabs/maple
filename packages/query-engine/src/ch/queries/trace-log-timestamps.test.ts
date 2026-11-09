@@ -1,14 +1,9 @@
-import { describe, expect, it } from "@effect/vitest"
-import { DateTime, Effect, Schema, SchemaAST } from "effect"
+import { assert, describe, expect, it } from "@effect/vitest"
+import { DateTime, Effect, Option, Schema, SchemaAST, Array as Arr } from "effect"
 import { compile, from, type CompiledQuery } from "@maple-dev/effect-orm/clickhouse"
 import type { QueryBuilderError } from "@maple-dev/effect-orm/clickhouse"
 import { OrgId } from "@maple/domain"
-import {
-	errorDetailTracesQuery,
-	spanDetailQuery,
-	spanHierarchyQuery,
-	traceTimeProbeQuery,
-} from "./errors"
+import { errorDetailTracesQuery, spanDetailQuery, spanHierarchyQuery, traceTimeProbeQuery } from "./errors"
 import { getLogByKeyQuery, logsListQuery, logsTimeseriesQuery } from "./logs"
 import { sessionTraceSummariesQuery } from "./session-replays"
 import { Traces, orgIdParam } from "../tables"
@@ -36,9 +31,11 @@ const params = {
 /** One selected field's codec, read off the derived row schema. */
 const fieldCodec = (ast: SchemaAST.AST, field: string) => {
 	const property = SchemaAST.isObjects(ast)
-		? ast.propertySignatures.find((signature) => signature.name === field)
-		: undefined
-	return property && Schema.make<Schema.Codec<unknown, unknown, never, never>>(property.type)
+		? Arr.findFirst(ast.propertySignatures, (signature) => signature.name === field)
+		: Option.none()
+	return Option.getOrUndefined(
+		Option.map(property, (signature) => Schema.make<Schema.Codec<unknown, unknown>>(signature.type)),
+	)
 }
 
 const decodesUtc = <Output>(
@@ -54,7 +51,7 @@ const decodesUtc = <Output>(
 			Effect.gen(function* () {
 				const codec = fieldCodec(ast, field)
 				if (codec === undefined) return expect.fail(`no codec for ${field}`)
-				const value = yield* Schema.decodeUnknownEffect(codec)("2024-01-01 10:00:00.123456789")
+				const value = yield* Schema.decodeEffect(codec)("2024-01-01 10:00:00.123456789")
 				expect(DateTime.isDateTime(value) ? DateTime.formatIso(value) : value).toBe(
 					"2024-01-01T10:00:00.123Z",
 				)
@@ -87,7 +84,8 @@ describe("trace and log rows decode timestamps to DateTime.Utc", () => {
 					timestamp: "2024-01-01 10:00:00",
 				},
 			])
-			expect(DateTime.formatIso(row!.timestamp)).toBe("2024-01-01T10:00:00.000Z")
+			assert.isDefined(row)
+			expect(DateTime.formatIso(row.timestamp)).toBe("2024-01-01T10:00:00.000Z")
 			yield* decodesUtc(compile(traceSummariesQuery({}), params), ["startTime"])
 		}),
 	)
@@ -95,14 +93,22 @@ describe("trace and log rows decode timestamps to DateTime.Utc", () => {
 	it.effect("trace detail reads", () =>
 		Effect.gen(function* () {
 			yield* decodesUtc(compile(spanHierarchyQuery({ traceId: "t1" }), params), ["startTime"])
-			yield* decodesUtc(compile(spanDetailQuery({ traceId: "t1", spanId: "s1" }), params), ["startTime"])
+			yield* decodesUtc(compile(spanDetailQuery({ traceId: "t1", spanId: "s1" }), params), [
+				"startTime",
+			])
 			yield* decodesUtc(compile(traceTimeProbeQuery({ traceId: "t1" }), params), ["timestamp"])
 			// The error_events side still takes string bounds.
-			const stringBounds = { ...params, startTime: "2024-01-01 00:00:00", endTime: "2024-01-02 00:00:00" }
+			const stringBounds = {
+				...params,
+				startTime: "2024-01-01 00:00:00",
+				endTime: "2024-01-02 00:00:00",
+			}
 			yield* decodesUtc(compile(errorDetailTracesQuery({ fingerprintHash: "1" }), stringBounds), [
 				"startTime",
 			])
-			yield* decodesUtc(compile(sessionTraceSummariesQuery({ traceIds: ["t1"] }), params), ["startTime"])
+			yield* decodesUtc(compile(sessionTraceSummariesQuery({ traceIds: ["t1"] }), params), [
+				"startTime",
+			])
 		}),
 	)
 
@@ -142,7 +148,8 @@ describe("trace and log rows decode timestamps to DateTime.Utc", () => {
 			const [row] = yield* compiled.decodeRows([
 				{ events: ["2024-01-01 10:00:00.5", "2024-01-01 10:00:01.123456789"] },
 			])
-			expect(row!.events.map(DateTime.formatIso)).toEqual([
+			assert.isDefined(row)
+			expect(Arr.map(row.events, DateTime.formatIso)).toEqual([
 				"2024-01-01T10:00:00.500Z",
 				"2024-01-01T10:00:01.123Z",
 			])

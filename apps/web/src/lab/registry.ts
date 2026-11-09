@@ -1,3 +1,4 @@
+import { Array as Arr, String as Str } from "effect"
 /**
  * The catalogue of dev-only lab surfaces under `/lab`.
  *
@@ -57,6 +58,54 @@ export const LAB_ENTRIES: ReadonlyArray<LabEntry> = [
 		title: "Uptime monitor",
 		description:
 			"An HTTP monitor's response time, phase breakdown and every-check charts over a fixture shaped like production checks.",
+		kind: "lab",
+		session: "none",
+	},
+	{
+		path: "/lab/alerts-hub",
+		title: "Alerts hub",
+		description:
+			"The alerts Inbox, Rules and Silences tabs loading, failing and populated, with a rule skipped for too few samples and a cancelled silence, and the silence dialog (`?state=`).",
+		kind: "lab",
+		session: "none",
+	},
+	{
+		path: "/lab/slos",
+		title: "SLOs",
+		description:
+			"The SLOs tab, an SLO page healthy, burning, out of budget or failing its status read, and the SLO form (`?state=`).",
+		kind: "lab",
+		session: "none",
+	},
+	{
+		path: "/lab/escalation",
+		title: "Escalation chains",
+		description:
+			"The Routing tab's escalation chains empty and populated, the chain dialog new, editing, invalid and failing, a rule tier's chain picker, and the incident rail escalating, paused or finished (`?state=`).",
+		kind: "lab",
+		session: "none",
+	},
+	{
+		path: "/lab/oncall",
+		title: "On-call schedules",
+		description:
+			"The On-call tab empty and populated, the inbox's who-is-on-call strip, the schedule form new, editing, invalid and failing, the week calendar with overrides and a DST week, the override dialog and its delete confirmation, the chain dialog with people and schedules, and an incident timeline with pages (`?state=`).",
+		kind: "lab",
+		session: "none",
+	},
+	{
+		path: "/lab/maintenance",
+		title: "Maintenance windows",
+		description:
+			"The Maintenance tab populated and empty, the window dialog weekly and once with a validation error, and the Silences tab with window silences, unfiltered and filtered to one window (`?state=`).",
+		kind: "lab",
+		session: "none",
+	},
+	{
+		path: "/lab/anomaly-alerts",
+		title: "Anomaly alerts",
+		description:
+			"Anomaly rules in the rule editor (scoped and the protected default), an anomaly rule's incident with the detector's evidence, the Inbox's Anomalies view and the Overview's alert banner with open anomalies (`?state=`).",
 		kind: "lab",
 		session: "none",
 	},
@@ -121,6 +170,14 @@ export const LAB_ENTRIES: ReadonlyArray<LabEntry> = [
 		title: "Onboarding checklist",
 		description:
 			"The top bar's credits pill and its checklist panel in progress, claimable and claimed, over fixtures.",
+		kind: "lab",
+		session: "none",
+	},
+	{
+		path: "/lab/empty-states",
+		title: "Empty states",
+		description:
+			"Empty, load-more and inline-failure states one at a time (`?item=`), over static fixtures.",
 		kind: "lab",
 		session: "none",
 	},
@@ -220,10 +277,34 @@ export const LAB_ENTRIES: ReadonlyArray<LabEntry> = [
 		session: "none",
 	},
 	{
+		path: "/lab/users",
+		title: "Users",
+		description:
+			"The `/users` directory and one user's page over a fixture week: an id-only user, a backend-only service account, a very long email, no requests, and the six detail tabs (?view=list|detail|empty|loading&tab=activity|sessions|errors|traces|logs|events).",
+		kind: "lab",
+		session: "none",
+	},
+	{
+		path: "/lab/sources",
+		title: "Sources",
+		description:
+			"The `/sources` list, one source and the connect page as an engineer or a member, who reads sources but cannot change them (?page=list|detail|new&role=engineer|member).",
+		kind: "lab",
+		session: "none",
+	},
+	{
 		path: "/lab/agent-tools",
 		title: "Agent tools",
 		description:
 			"The `/agent-sessions/tools` page over a synthetic week: a dominant tool that never fails, one that fails half the time, a p95 thirty times its p50, and a tool that regresses through the back half of the window.",
+		kind: "lab",
+		session: "none",
+	},
+	{
+		path: "/lab/mcp",
+		title: "MCP hub",
+		description:
+			"The MCP hub over maple-ai's spec spans from Nov 1, 2026: the server list, a server's overview, the run_sql tool page, the service page's MCP tab, and the empty, loading, error and quiet states (?view=list|server|tool|service|empty|loading|error|quiet).",
 		kind: "lab",
 		session: "none",
 	},
@@ -254,7 +335,7 @@ export const LAB_ENTRIES: ReadonlyArray<LabEntry> = [
 		path: "/lab/service-api",
 		title: "Service API tab",
 		description:
-			"The service page's API tab over 12 hours of the ingest service: KPI strip, responses by status, the non-2xx breakdown, the endpoint table and its drawer (?endpoint=POST%20/v1/traces).",
+			"The service page's API tab over 12 hours of the ingest service: KPI strip, responses by status, the non-2xx breakdown, the endpoint table and its drawer (?endpoint=POST%20/v1/traces); ?failed=1 fails the first endpoints read.",
 		kind: "lab",
 		session: "none",
 	},
@@ -271,6 +352,14 @@ export const LAB_ENTRIES: ReadonlyArray<LabEntry> = [
 		title: "Service map runtimes",
 		description:
 			"The service map over a small fleet topology with fleet-api (Cloud Run) selected; ?tab=infrastructure opens the panel's Infrastructure tab.",
+		kind: "lab",
+		session: "none",
+	},
+	{
+		path: "/lab/settings-dialogs",
+		title: "Settings dialogs",
+		description:
+			"The integration disconnect, dashboard delete, key create and alert destination dialogs, open, and the settings danger zones and save bars (General, Profile, a source's Settings) over fixtures. Pick one with ?item=.",
 		kind: "lab",
 		session: "none",
 	},
@@ -299,6 +388,14 @@ export const LAB_ENTRIES: ReadonlyArray<LabEntry> = [
 		session: "none",
 	},
 	{
+		path: "/lab/error-issue",
+		title: "Error issue",
+		description:
+			"The error issue page over one surging, regressed high-severity TypeError: the occurrence chart and its tooltip, the Get it fixed panel, the stat rail and the rail.",
+		kind: "lab",
+		session: "none",
+	},
+	{
 		path: "/lab/alerts",
 		title: "Alerts",
 		description:
@@ -311,6 +408,14 @@ export const LAB_ENTRIES: ReadonlyArray<LabEntry> = [
 		title: "Worst case",
 		description:
 			"Existing components over worst-case fixture data (long names, extreme numbers, unbroken URLs, 8KB messages) behind a Demo data / Worst case toggle, for before and after screenshots.",
+		kind: "lab",
+		session: "none",
+	},
+	{
+		path: "/lab/status-pages",
+		title: "Status pages",
+		description:
+			"The status pages list, the look picker and the form fields (hint and error) over fixture pages.",
 		kind: "lab",
 		session: "none",
 	},
@@ -409,6 +514,13 @@ export const LAB_ENTRIES: ReadonlyArray<LabEntry> = [
 		session: "none",
 	},
 	{
+		path: "/lab/bench/ui-lag",
+		title: "Services UI performance",
+		description: "The real Services view over a deterministic offline fixture, never live telemetry.",
+		kind: "bench",
+		session: "none",
+	},
+	{
 		path: "/lab/bench/logs",
 		title: "Logs table",
 		description: "The real LogsTableView over 2,000 synthetic rows × 12 chips: hover and scroll perf.",
@@ -451,7 +563,7 @@ export const LAB_ENTRIES: ReadonlyArray<LabEntry> = [
 
 /** Anything under the `/lab` tree, index included. */
 export function isLabPath(pathname: string): boolean {
-	return pathname === LAB_ROOT || pathname.startsWith(`${LAB_ROOT}/`)
+	return pathname === LAB_ROOT || Str.startsWith(`${LAB_ROOT}/`)(pathname)
 }
 
 /**
@@ -460,5 +572,5 @@ export function isLabPath(pathname: string): boolean {
  */
 export function isSessionlessLabPath(pathname: string): boolean {
 	if (pathname === LAB_ROOT || pathname === `${LAB_ROOT}/`) return true
-	return LAB_ENTRIES.some((entry) => entry.session === "none" && entry.path === pathname)
+	return Arr.some(LAB_ENTRIES, (entry) => entry.session === "none" && entry.path === pathname)
 }

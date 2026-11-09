@@ -1,7 +1,7 @@
 import type { RailwayIntegrationStatus } from "@maple/domain/http"
 import { countLabel } from "@maple/ui/lib/format"
 import type { Html, HtmlBuilder } from "foldkit/html"
-import { button } from "../../ui/button"
+import { button } from "@maple/views/ui/button"
 import {
 	type CheckRow,
 	flowColumns,
@@ -21,6 +21,7 @@ import { Message } from "./message"
 import type { Model } from "./model"
 import { unsyncedEnvironments } from "./railway"
 import { railwayTokenForm } from "./view-railway-token"
+import { Array as Arr, Record as Rec, Option } from "effect"
 
 // Railway in the connect flow: paste a token, then watch the first sync land.
 
@@ -76,16 +77,17 @@ const showsUpRail = (h: H): Html =>
 
 /** Each project the token sees, with how many services it has. */
 const projectChips = (h: H, status: RailwayIntegrationStatus): Html => {
-	const services = status.environments.reduce<Record<string, number>>(
+	const services = Arr.reduce<(typeof status.environments)[number], Record<string, number>>(
+		status.environments,
+		{},
 		(acc, environment) => ({
 			...acc,
 			[environment.projectName]: (acc[environment.projectName] ?? 0) + environment.serviceCount,
 		}),
-		{},
 	)
 	return foundChips(
 		h,
-		Object.entries(services).map(([project, count]) => ({
+		Arr.map(Rec.toEntries(services), ([project, count]) => ({
 			label: project,
 			detail: countLabel(count, "service"),
 		})),
@@ -161,7 +163,7 @@ const liveRows = (
 	timeZone: string,
 ): ReadonlyArray<CheckRow> => {
 	const total = status.environments.length
-	const failing = status.environments.filter((environment) => environment.lastError !== null).length
+	const failing = Arr.filter(status.environments, (environment) => environment.lastError !== null).length
 	const queued = unsyncedEnvironments(status)
 	const synced = total - queued - failing
 	return [
@@ -182,7 +184,11 @@ const liveRows = (
 					state: "done",
 					title: `${countLabel(total, "environment")} found`,
 					detail: `${countLabel(
-						status.environments.reduce((sum, environment) => sum + environment.serviceCount, 0),
+						Arr.reduce(
+							status.environments,
+							0,
+							(sum, environment) => sum + environment.serviceCount,
+						),
 						"service",
 					)}. PR environments are skipped.`,
 				},
@@ -190,7 +196,13 @@ const liveRows = (
 			? {
 					state: "failed",
 					title: "Backfilling the last hour",
-					detail: `${countLabel(failing, "environment")} failed: ${status.environments.find((environment) => environment.lastError !== null)?.lastError ?? ""}`,
+					detail: `${countLabel(failing, "environment")} failed: ${Arr.findFirst(
+						status.environments,
+						(environment) => environment.lastError !== null,
+					).pipe(
+						Option.flatMapNullishOr((found) => found.lastError),
+						Option.getOrElse(() => ""),
+					)}`,
 				}
 			: queued > 0
 				? {

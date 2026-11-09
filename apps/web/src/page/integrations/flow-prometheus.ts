@@ -1,5 +1,5 @@
 import type { V2ScrapeTarget, V2ScrapeTargetCheck } from "@maple/domain/http/v2"
-import { Option } from "effect"
+import { Option, String as Str, Array as Arr } from "effect"
 import { AsyncData } from "foldkit"
 import type { FlowContext, FlowSpec, LiveHealth } from "./flow"
 import type { Model } from "./model"
@@ -14,7 +14,9 @@ export type ScrapeIntegration = "prometheus" | "warpstream"
 /** The target this visit saved: a save selects it, and nothing else selects one on this page. */
 export const flowTarget = (model: Model): V2ScrapeTarget | null => {
 	const id = model.prometheusCard.selectedId
-	return id === null ? null : (prometheusTargets(model).find((target) => target.id === id) ?? null)
+	return id === null
+		? null
+		: Option.getOrNull(Arr.findFirst(prometheusTargets(model), (target) => target.id === id))
 }
 
 export type ProbeState =
@@ -41,8 +43,8 @@ export const probeStateOf = (model: Model, target: V2ScrapeTarget | null): Probe
 export const isChoiceSaved = (model: Model, target: V2ScrapeTarget): boolean => {
 	const form = model.prometheusCard.form
 	return (
-		form.name.value.trim() === target.name &&
-		form.serviceName.value.trim() === (target.service_name ?? "") &&
+		Str.trim(form.name.value) === target.name &&
+		Str.trim(form.serviceName.value) === (target.service_name ?? "") &&
 		parsedInterval(form) === target.scrape_interval_seconds
 	)
 }

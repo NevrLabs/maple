@@ -1,10 +1,11 @@
 import { dbSystemAccentClass } from "@maple/ui/lib/cloud-platforms/accents"
 import { getDbStyle } from "@maple/ui/components/service-map/service-map-db-style"
-import { humanizeDbSystem, pickAttr } from "../../../../service-map/trace-flow/cloud-platforms"
-import { DB_ICON } from "../../../../service-map/map/node-card"
-import { resolveRuntimeGlyph } from "../../../../service-map/map/runtime"
-import type { IconName } from "../../../../ui/icon"
+import { humanizeDbSystem, pickAttr } from "@maple/views/service-map/trace-flow/cloud-platforms"
+import { DB_ICON } from "@maple/views/service-map/map/node-card"
+import { resolveRuntimeGlyph } from "@maple/views/service-map/map/runtime"
+import type { IconName } from "@maple/views/ui/icon"
 import { modelVendorIcon } from "../../../agent-sessions/kit/vendor"
+import { Array as Arr, String as Str, Option } from "effect"
 
 // The marks a waterfall row carries: what the span called (gen_ai, then db, messaging, rpc,
 // the order Jaeger and Uptrace settle on) and what runs the service it enters.
@@ -20,16 +21,20 @@ const MUTED = "text-muted-foreground"
 
 /** `pickAttr`, trimmed and lowercased for the lookups below. */
 const systemOf = (attrs: Record<string, string>, ...keys: ReadonlyArray<string>): string | null =>
-	pickAttr(attrs, ...keys)
-		?.trim()
-		.toLowerCase() ?? null
+	Option.getOrNull(
+		Option.map(Option.fromNullishOr(pickAttr(attrs, ...keys)), (value) =>
+			Str.toLowerCase(Str.trim(value)),
+		),
+	)
 
 const titleCase = (system: string): string =>
-	system
-		.split(/[._\s-]+/)
-		.filter((word) => word !== "")
-		.map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-		.join(" ")
+	Arr.join(
+		Arr.map(
+			Arr.filter(Str.split(/[._\s-]+/)(system), (word) => word !== ""),
+			(word) => Str.toUpperCase(Str.takeLeft(1)(word)) + Str.slice(1)(word),
+		),
+		" ",
+	)
 
 // `gen_ai.provider.name` values (and the older `gen_ai.system`): the `modelVendorIcon` slug and
 // the name a reader knows. Anything else keeps its own value as the slug.

@@ -7,13 +7,14 @@ import { Struct } from "effect"
 import { AsyncData, Submodel } from "foldkit"
 import { createLazy, type Html, type HtmlBuilder } from "foldkit/html"
 import type { BreadcrumbEntry } from "../../../shell"
-import { badge } from "../../../ui/display"
-import { errorState } from "../../../ui/error-state"
-import { eyebrow } from "../../../ui/eyebrow"
-import { icon } from "../../../ui/icon"
-import { inlineCode, inlineCodeClassName } from "../../../ui/inline-code"
-import { skeleton } from "../../../ui/skeleton"
-import { statusDot } from "../../../ui/status-dot"
+import { badge } from "@maple/views/ui/display"
+import { errorState } from "@maple/views/ui/error-state"
+import { eyebrow } from "@maple/views/ui/eyebrow"
+import { heading } from "@maple/views/ui/heading"
+import { icon } from "@maple/views/ui/icon"
+import { inlineCode, inlineCodeClassName } from "@maple/views/ui/inline-code"
+import { skeleton, skeletonBlock } from "@maple/views/ui/skeleton"
+import { statusDot } from "@maple/views/ui/status-dot"
 import type { PageViewInputs } from "../../contract"
 import { dashboardPage } from "../../kit/dashboard-page"
 import { resourceNotFound } from "../../kit/resource-not-found"
@@ -28,7 +29,10 @@ import { replaySurface, replayTransport } from "./view-player"
 import { sessionRail } from "./view-rail"
 import { copy } from "./view-session"
 import { replayTimeline } from "./view-timeline"
-import { warmAvatarTone } from "../../../ui/avatar-tone"
+import { warmAvatarTone } from "@maple/views/ui/avatar-tone"
+import { textLink } from "@maple/views/ui/text-link"
+import { typography } from "@maple/views/ui/typography"
+import { hstack, vstack } from "@maple/views/ui/stack"
 
 // The replay detail page on `ResultPage`, with the replay studio.
 
@@ -70,100 +74,89 @@ const identityBar = (h: H, model: IdentityView, session: ReplayDetail, timeZone:
 	const label = labelOf(session)
 	const startedEpoch = parseChTimestampMs(session.startTime)
 	const sessionActive = isActive(model, session)
-	return h.div(
-		[h.Class("flex flex-wrap items-center gap-x-4 gap-y-2")],
-		[
+	return hstack(h, { wrap: true, className: "gap-x-4 gap-y-2" }, [
+		hstack(h, { gap: "2.5", align: "center", shrink: true, grow: true }, [
 			h.div(
-				[h.Class("flex min-w-0 flex-1 items-center gap-2.5")],
 				[
-					h.div(
-						[
-							h.Class(
-								`grid size-8 shrink-0 place-items-center rounded-full ${warmAvatarTone(model.sessionId)} text-xs font-semibold`,
-							),
-						],
-						[initialsFrom(label)],
-					),
-					h.h2(
-						[h.Class("min-w-0 truncate text-sm font-medium leading-tight"), h.Title(label)],
-						[label],
-					),
-					sessionActive
-						? livePill(h, false)
-						: badge(h, { variant: "muted", pill: true, className: "gap-1.5" }, [
-								statusDot(h),
-								"Ended",
-							]),
-					h.a(
-						[
-							h.Href(session.urlInitial),
-							h.Target("_blank"),
-							h.Rel("noreferrer"),
-							h.Class(
-								"hidden min-w-0 max-w-64 items-center gap-1.5 font-mono text-xs text-muted-foreground hover:text-foreground active:text-foreground sm:inline-flex",
-							),
-						],
-						[
-							icon(h, "GlobeIcon", { className: "size-3 shrink-0" }),
-							h.span([h.Class("truncate")], [hostFromUrl(session.urlInitial)]),
-						],
-					),
-					...(Number.isFinite(startedEpoch)
-						? [
-								h.span(
-									[
-										h.Class(
-											"hidden shrink-0 items-center gap-1.5 text-xs text-muted-foreground md:inline-flex",
-										),
-									],
-									[
-										icon(h, "ClockIcon", { className: "size-3 shrink-0" }),
-										relativeTime(h, {
-											value: startedEpoch,
-											nowMs: model.nowMs,
-											timeZone,
-											prefix: "started",
-											tooltip: "title",
-										}),
-									],
-								),
-							]
-						: []),
-					h.span(
-						[
-							// The id chip holds its copy button, so it borrows the chip's look on a span.
-							h.Class(
-								inlineCodeClassName(
-									"chip",
-									"hidden shrink-0 items-center gap-1 text-2xs text-muted-foreground xl:inline-flex",
-								),
-							),
-						],
-						[
-							shortId(model.sessionId, "session", { length: 8 }),
-							copy(h, model, "identity", model.sessionId, "Session ID", "size-5"),
-						],
+					h.Class(
+						`grid size-8 shrink-0 place-items-center rounded-full ${warmAvatarTone(model.sessionId)} text-xs font-semibold`,
 					),
 				],
+				[initialsFrom(label)],
 			),
-			h.div(
-				[h.Class("flex shrink-0 items-center gap-3")],
+			heading(
+				h,
+				{
+					level: 2,
+					variant: "subsection",
+					className: "min-w-0 truncate leading-tight",
+					attributes: [h.Title(label)],
+				},
+				[label],
+			),
+			sessionActive
+				? livePill(h, false)
+				: badge(h, { variant: "muted", pill: true, className: "gap-1.5" }, [statusDot(h), "Ended"]),
+			textLink(
+				h,
+				{
+					href: session.urlInitial,
+					tone: "muted",
+					isMono: true,
+					className: "hidden min-w-0 max-w-64 gap-1.5 text-xs sm:inline-flex",
+					attributes: [h.Target("_blank"), h.Rel("noreferrer")],
+				},
 				[
-					h.span(
-						[h.Class("flex items-baseline gap-1.5")],
-						[
-							h.span(
-								[h.Class("font-mono text-sm font-semibold tabular-nums")],
-								[formatSessionDuration(durationOf(session))],
-							),
-							eyebrow(h, {}, ["duration"]),
-						],
-					),
-					...(session.errorCount > 0 ? [errorCountPill(h, session.errorCount)] : []),
+					icon(h, "GlobeIcon", { className: "size-3 shrink-0" }),
+					typography(h, { truncate: true }, [hostFromUrl(session.urlInitial)]),
 				],
 			),
-		],
-	)
+			...(Number.isFinite(startedEpoch)
+				? [
+						h.span(
+							[
+								h.Class(
+									"hidden shrink-0 items-center gap-1.5 text-xs text-muted-foreground md:inline-flex",
+								),
+							],
+							[
+								icon(h, "ClockIcon", { className: "size-3 shrink-0" }),
+								relativeTime(h, {
+									value: startedEpoch,
+									nowMs: model.nowMs,
+									timeZone,
+									prefix: "started",
+								}),
+							],
+						),
+					]
+				: []),
+			h.span(
+				[
+					// The id chip holds its copy button, so it borrows the chip's look on a span.
+					h.Class(
+						inlineCodeClassName(
+							"chip",
+							"hidden shrink-0 items-center gap-1 text-2xs text-muted-foreground xl:inline-flex",
+						),
+					),
+				],
+				[
+					shortId(model.sessionId, "session", { length: 8 }),
+					copy(h, model, "identity", model.sessionId, "Session ID", "size-5"),
+				],
+			),
+		]),
+		hstack(h, { gap: "3", align: "center", className: "shrink-0" }, [
+			hstack(h, { gap: "1.5", align: "baseline", as: "span" }, [
+				typography(h, { size: "sm", weight: "semibold", mono: true, numeric: true }, [
+					formatSessionDuration(durationOf(session)),
+				]),
+				eyebrow(h, {}, ["duration"]),
+			]),
+			...(session.errorCount > 0 ? [errorCountPill(h, session.errorCount)] : []),
+		]),
+	])
 }
 
 /** `ReplayStudio`: the stage column (identity, player, timeline) and the rail. */
@@ -173,24 +166,18 @@ const studio = (h: H, model: Model, session: ReplayDetail, timeZone: string): Ht
 	return h.div(
 		[h.Class("flex min-h-0 flex-1 flex-col lg:flex-row"), h.OnMount(WatchPlayerKeys())],
 		[
-			h.div(
-				[h.Class("flex min-w-0 flex-1 flex-col gap-3.5 overflow-y-auto p-4")],
-				[
-					reveal(h, 0, identitySlot(identityBar, [h, identityOf(model), session, timeZone])),
-					h.div(
-						[h.Class("flex flex-col")],
-						[
-							replaySurface(h, model, session, {
-								status,
-								failure,
-								sessionActive: isActive(model, session),
-							}),
-							...(transport === null ? [] : [transport]),
-						],
-					),
-					reveal(h, 0.08, replayTimeline(h, model, session.traceIds)),
-				],
-			),
+			vstack(h, { shrink: true, grow: true, className: "gap-3.5 overflow-y-auto p-4" }, [
+				reveal(h, 0, identitySlot(identityBar, [h, identityOf(model), session, timeZone])),
+				vstack(h, {}, [
+					replaySurface(h, model, session, {
+						status,
+						failure,
+						sessionActive: isActive(model, session),
+					}),
+					...(transport === null ? [] : [transport]),
+				]),
+				reveal(h, 0.08, replayTimeline(h, model, session.traceIds)),
+			]),
 			sessionRail(h, model, session),
 		],
 	)
@@ -201,23 +188,17 @@ const detailSkeleton = (h: H): Html =>
 	h.div(
 		[h.Class("flex flex-col gap-3.5 lg:flex-row")],
 		[
-			h.div(
-				[h.Class("flex min-w-0 flex-1 flex-col gap-3.5")],
-				[
-					h.div(
-						[h.Class("flex items-center gap-3")],
-						[
-							skeleton(h, "size-8 shrink-0 rounded-full"),
-							skeleton(h, "h-4 w-44"),
-							skeleton(h, "h-4 w-64"),
-							skeleton(h, "ml-auto h-4 w-24"),
-						],
-					),
-					skeleton(h, "aspect-video w-full rounded-t-md"),
-					skeleton(h, "-mt-3.5 h-14 w-full rounded-b-md"),
-					skeleton(h, "h-48 w-full rounded-md"),
-				],
-			),
+			vstack(h, { shrink: true, grow: true, className: "gap-3.5" }, [
+				hstack(h, { gap: "3" }, [
+					skeleton(h, "size-8 shrink-0 rounded-full"),
+					skeleton(h, "h-4 w-44"),
+					skeleton(h, "h-4 w-64"),
+					skeleton(h, "ml-auto h-4 w-24"),
+				]),
+				skeleton(h, "aspect-video w-full rounded-t-md"),
+				skeleton(h, "-mt-3.5 h-14 w-full rounded-b-md"),
+				skeletonBlock(h, { height: "48" }),
+			]),
 			skeleton(h, "h-72 w-full rounded-md lg:h-auto lg:w-84 lg:shrink-0"),
 		],
 	)
@@ -239,7 +220,12 @@ export const view = Submodel.defineView<Model, Message, PageViewInputs>((model, 
 	return dashboardPage(h, { fill: isLoaded }, [
 		AsyncData.matchData(model.detail.data, {
 			onEmpty: () => detailSkeleton(h),
-			onFailure: (failure) => errorState(h, { failure, title: "Couldn't load session replay" }),
+			onFailure: (failure) =>
+				errorState(h, {
+					failure,
+					title: "Couldn't load session replay",
+					onRetry: Message.ClickedRetryDetail(),
+				}),
 			onData: (row) =>
 				row === null ? notFound(h, model.sessionId) : studio(h, model, row, inputs.context.timeZone),
 		}),

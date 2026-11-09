@@ -5,7 +5,7 @@ import {
 	VcsSyncService,
 	type VcsSyncServiceApi,
 } from "@maple/backend/services/integrations/vcs/VcsSyncService"
-import { Effect, Layer, Schema } from "effect"
+import { Effect, Layer, Schema, String as Str } from "effect"
 import { HttpServerRequest, HttpServerResponse } from "effect/http"
 import { processBatch, processPlacedBatch, recordExhaustedBatch } from "../vcs-sync-runtime"
 import { handOffVcsSyncBatch, serveVcsSyncBatch } from "./vcs-sync"
@@ -53,7 +53,7 @@ const syncService = (exhausted: Array<unknown>) =>
 	} satisfies VcsSyncServiceApi)
 
 /** A delivered message that records what the consumer decided for it. */
-const message = (id: string, kind: string, settled: Array<string>, attempts = 1): Message<unknown> => ({
+const message = (id: string, kind: string, settled: Array<string>, attempts = 1): Message => ({
 	id,
 	timestamp: new Date(0),
 	body: job(kind),
@@ -108,8 +108,8 @@ describe("VCS sync batches over the self binding", () => {
 			assert.deepStrictEqual(handOff, { run: "placed" })
 			assert.deepStrictEqual(settled, ["a:ack", "b:retry:120", "c:ack", "d:retry"])
 			assert.deepStrictEqual(exhausted, [job("broken")])
-			assert.strictEqual(new URL(seen[0]!.url).pathname, VCS_SYNC_BATCH_PATH)
-			assert.strictEqual(seen[0]!.headers.get("authorization"), `Bearer ${TOKEN}`)
+			assert.strictEqual(new URL(seen[0].url).pathname, VCS_SYNC_BATCH_PATH)
+			assert.strictEqual(seen[0].headers.get("authorization"), `Bearer ${TOKEN}`)
 		}),
 	)
 
@@ -240,7 +240,7 @@ describe("the VCS sync batch route", () => {
 			})
 			assert.deepStrictEqual(yield* serve({}, notAJob), refused)
 			// No content-length on this request: the bounded read is what refuses it.
-			const oversize = JSON.stringify({ messages: [], pad: "x".repeat(VCS_SYNC_BATCH_MAX_BYTES) })
+			const oversize = JSON.stringify({ messages: [], pad: Str.repeat(VCS_SYNC_BATCH_MAX_BYTES)("x") })
 			assert.deepStrictEqual(yield* serve({}, oversize), refused)
 			assert.deepStrictEqual(
 				yield* serve({ "content-length": String(VCS_SYNC_BATCH_MAX_BYTES + 1) }, "{}"),

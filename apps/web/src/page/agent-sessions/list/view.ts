@@ -1,10 +1,10 @@
 import { Option } from "effect"
 import { AsyncData, Submodel } from "foldkit"
 import type { Html, HtmlBuilder } from "foldkit/html"
-import { errorState } from "../../../ui/error-state"
+import { errorState } from "@maple/views/ui/error-state"
 import type { PageViewInputs } from "../../contract"
 import { dashboardPage } from "../../kit/dashboard-page"
-import { presenceOf } from "../../kit/signal-presence"
+import { presenceOf } from "@maple/views/data/signal-presence"
 import { signalEmptyState } from "../../kit/signal-empty-state"
 import { detectLookup } from "../kit/detected-models"
 import { agentSessionsTabs } from "../kit/tabs"
@@ -47,6 +47,7 @@ const listArea = (h: H, model: Model, inputs: PageViewInputs): Html => {
 							signal: "traces",
 							presence: presenceOf(model.presence, "traces"),
 							nowMs: model.nowMs,
+							timeZone: inputs.context.timeZone,
 							noun: "agent sessions",
 							purpose:
 								"Replay each AI agent conversation, with its LLM and tool calls in order.",
@@ -86,7 +87,7 @@ export const view = Submodel.defineView<Model, Message, PageViewInputs>((model, 
 	return dashboardPage(
 		h,
 		{
-			title: "Agent Sessions",
+			title: "Agent sessions",
 			filters: filtersRail(h, model),
 			tabs: agentSessionsTabs(h, {
 				active: "sessions",
@@ -94,7 +95,6 @@ export const view = Submodel.defineView<Model, Message, PageViewInputs>((model, 
 					sessions: tabSessions,
 					tools: Option.getOrUndefined(AsyncData.getData(model.tabTools.data)),
 				},
-				className: "border-b border-border",
 			}),
 			sticky: toolbar(h, model, {
 				sessionCount: AsyncData.hasData(firstPage)

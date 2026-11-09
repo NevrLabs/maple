@@ -13,15 +13,13 @@ import {
 } from "@maple/domain/http/v2"
 import type { V2AuditLogEntry } from "@maple/domain/http/v2"
 import type { AuditLogEntry } from "@maple/backend/services/audit/audit-event"
-import { Cause, Effect, Option, Schema } from "effect"
+import { Cause, Effect, Option, Schema, Array as Arr } from "effect"
 import { summarizeCause } from "@maple/backend/platform/describe-cause"
 import { AuditLogService } from "@maple/backend/services/audit/AuditLogService"
 import { OrgMembersService } from "@maple/backend/services/org/OrgMembersService"
-import { requireAdmin } from "@maple/backend/services/auth/auth"
+import * as Policy from "@maple/domain/policy"
 import type { AuditLogListFilters } from "@maple/backend/services/audit/AuditLogService"
 import { timestampMs } from "@maple/backend/platform/time"
-
-const adminOnly = () => V2InsufficientPermissions.make("Only org admins can read the audit log")
 
 /** No directory, no names — the entries still carry every id they were written with. */
 const unnamed = (cause: Cause.Cause<unknown>) =>
@@ -171,7 +169,8 @@ export const HttpV2AuditLogLive = HttpApiBuilder.group(MapleApiV2, "auditLog", (
 				Effect.map(
 					(all) =>
 						new Map(
-							all.map(
+							Arr.map(
+								all,
 								(member) =>
 									[
 										member.userId,
@@ -191,20 +190,18 @@ export const HttpV2AuditLogLive = HttpApiBuilder.group(MapleApiV2, "auditLog", (
 				// The log carries every member's activity, denial history, and origin
 				// IP for the whole retention window — org admins only. Scoped API keys
 				// are additionally gated by `audit_log:read`.
-				yield* requireAdmin(tenant.roles, adminOnly)
+				yield* Policy.check(tenant.roles, "audit_log:read", (denial) =>
+					V2InsufficientPermissions.make(denial.message),
+				)
 				const identity =
 					query.actor_id !== undefined ? yield* actorIdentityFilter(query.actor_id) : undefined
 				const affectedUser =
 					query.affected_user !== undefined
-						? yield* Option.match(decodeUserIdOption(query.affected_user), {
-								onNone: () =>
-									Effect.fail(
-										V2ParameterInvalid.make("Invalid affected_user.", {
-											param: "affected_user",
-										}),
-									),
-								onSome: (userId) => Effect.succeed(userId),
-							})
+						? yield* Effect.fromOption(decodeUserIdOption(query.affected_user), () =>
+								V2ParameterInvalid.make("Invalid affected_user.", {
+									param: "affected_user",
+								}),
+							)
 						: undefined
 				const page = yield* paginateOffsetQuery(query, ({ limit, offset }) =>
 					audit
@@ -237,7 +234,7 @@ export const HttpV2AuditLogLive = HttpApiBuilder.group(MapleApiV2, "auditLog", (
 									? Effect.succeed([])
 									: directory(tenant.orgId).pipe(
 											Effect.map((known) =>
-												rows.map((row) => toV2AuditLogEntry(row, known)),
+												Arr.map(rows, (row) => toV2AuditLogEntry(row, known)),
 											),
 										),
 							),

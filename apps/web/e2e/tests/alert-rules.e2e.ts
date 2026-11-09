@@ -1,6 +1,6 @@
 import { AlertRulePublicId } from "@maple/domain/http/v2"
 import { test } from "@e2e-dev/web"
-import { Schema } from "effect"
+import { Schema, Array as Arr } from "effect"
 import { expect } from "e2e"
 
 import { api, runTag } from "./support"
@@ -11,6 +11,7 @@ interface Tier {
 	upper: number | null
 	recovery_value: number | null
 	destination_ids: string[]
+	escalation_chain_id: string | null
 }
 interface Rule {
 	id: string
@@ -51,6 +52,7 @@ test.describe("alert rules", () => {
 						upper: null,
 						recovery_value: 0.005,
 						destination_ids: [warn.body.id],
+						escalation_chain_id: null,
 					},
 					{
 						severity: "critical",
@@ -58,6 +60,7 @@ test.describe("alert rules", () => {
 						upper: null,
 						recovery_value: null,
 						destination_ids: [page.body.id],
+						escalation_chain_id: null,
 					},
 				]
 				const created = await api<Rule>(browser, appUrl, "/v2/alerts/rules", {
@@ -95,7 +98,7 @@ test.describe("alert rules", () => {
 					await screen.getByRole("button", "Save changes").tap()
 					await expect(browser).toHaveURL(/\/alerts$/)
 					const retuned = await read()
-					expect(retuned.body.thresholds.map((tier) => tier.value)).toEqual([0.007, 0.04])
+					expect(Arr.map(retuned.body.thresholds, (tier) => tier.value)).toEqual([0.007, 0.04])
 				} finally {
 					await api(browser, appUrl, `/v2/alerts/rules/${created.body.id}`, { method: "DELETE" })
 					await api(browser, appUrl, `/v2/alerts/destinations/${warn.body.id}`, {

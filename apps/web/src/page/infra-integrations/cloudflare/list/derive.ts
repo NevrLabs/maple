@@ -13,6 +13,7 @@ import { AsyncData } from "foldkit"
 import type { PlatformResources, QueueRow, Usage, ZoneBucket, ZoneRow } from "../data"
 import { ingestPhaseOf } from "../ingest"
 import type { Model } from "./model"
+import { Array as Arr, String as Str, Option } from "effect"
 
 /** A loaded value, refreshing included; a failure or an empty slot reads as not there yet. */
 export const dataOf = <A, E>(slot: AsyncData.AsyncData<A, E>): A | null =>
@@ -34,11 +35,14 @@ export const requestSparks = (
 	buckets: ReadonlyArray<ZoneBucket>,
 ): ReadonlyMap<string, ReadonlyArray<number>> => {
 	const byZone = new Map<string, Array<ZoneBucket>>()
-	buckets.forEach((row) => byZone.set(row.serviceName, [...(byZone.get(row.serviceName) ?? []), row]))
+	Arr.forEach(buckets, (row) => byZone.set(row.serviceName, [...(byZone.get(row.serviceName) ?? []), row]))
 	return new Map(
-		[...byZone].map(([serviceName, series]) => [
+		Arr.map([...byZone], ([serviceName, series]) => [
 			serviceName,
-			series.toSorted((a, b) => a.bucket.localeCompare(b.bucket)).map((point) => point.requests),
+			Arr.map(
+				Arr.sort(series, (a: ZoneBucket, b: ZoneBucket) => Str.localeCompare(b.bucket)(a.bucket)),
+				(point) => point.requests,
+			),
 		]),
 	)
 }
@@ -89,41 +93,65 @@ export const listScopeOf = (
 ): ListScope => {
 	const multiAccount = accounts.length > 1
 	const accountId = multiAccount
-		? accounts.find((account) => account.accountId === model.search.account)?.accountId
+		? Option.getOrUndefined(
+				Option.map(
+					Arr.findFirst(accounts, (account) => account.accountId === model.search.account),
+					(account) => account.accountId,
+				),
+			)
 		: undefined
 	const zoneAccount = zoneAccountIds(accounts)
 	const allQueues = data.platform?.queues ?? null
 	const zones =
 		accountId === undefined
 			? data.zones
-			: (data.zones?.filter((zone) => zoneAccount.get(zone.serviceName) === accountId) ?? null)
+			: Option.getOrNull(
+					Option.map(Option.fromNullishOr(data.zones), (rows) =>
+						Arr.filter(rows, (zone) => zoneAccount.get(zone.serviceName) === accountId),
+					),
+				)
 	const workerRows =
 		accountId === undefined
 			? data.workerRows
-			: (data.workerRows?.filter((row) => row.accountId === accountId) ?? null)
+			: Option.getOrNull(
+					Option.map(Option.fromNullishOr(data.workerRows), (rows) =>
+						Arr.filter(rows, (row) => row.accountId === accountId),
+					),
+				)
 	const queues =
 		accountId === undefined
 			? allQueues
-			: (allQueues?.filter((queue) => queue.accountId === accountId) ?? null)
+			: Option.getOrNull(
+					Option.map(Option.fromNullishOr(allQueues), (rows) =>
+						Arr.filter(rows, (queue) => queue.accountId === accountId),
+					),
+				)
 	const counts = {
 		zones: zones?.length ?? null,
 		workers: workerRows?.length ?? null,
 		queues: queues?.length ?? null,
 	}
-	const view = model.search.view ?? CLOUDFLARE_VIEWS.find((v) => (counts[v] ?? 0) > 0) ?? "zones"
+	const view =
+		model.search.view ??
+		Option.getOrElse(
+			Arr.findFirst(CLOUDFLARE_VIEWS, (v) => (counts[v] ?? 0) > 0),
+			(): (typeof CLOUDFLARE_VIEWS)[number] => "zones",
+		)
 	return {
 		accounts,
 		multiAccount,
 		accountId,
 		zoneAccount,
-		accountNames: new Map(accounts.map((account) => [account.accountId, account.name])),
+		accountNames: new Map(Arr.map(accounts, (account) => [account.accountId, account.name])),
 		zones,
 		workerRows,
 		queues,
 		counts,
 		view,
 		showAccountColumn: multiAccount && accountId === undefined,
-		scopedAccount: accounts.find((account) => account.accountId === accountId),
+		scopedAccount: Option.getOrUndefined(
+			Arr.findFirst(accounts, (account) => account.accountId === accountId),
+		),
 	}
 }
 
@@ -135,16 +163,16 @@ export const accountShares = (
 ): ReadonlyMap<string, number> => {
 	const entries: ReadonlyArray<readonly [string | undefined, number]> =
 		view === "zones"
-			? (data.zones ?? []).map((zone) => [zoneAccount.get(zone.serviceName), zone.requests])
+			? Arr.map(data.zones ?? [], (zone) => [zoneAccount.get(zone.serviceName), zone.requests])
 			: view === "queues"
-				? (data.platform?.queues ?? []).map((queue) => [queue.accountId, queue.backlogMessages])
-				: (data.workerRows ?? []).map((row) => [row.accountId, row.requests])
-	const totals = entries.reduce((acc, [id, n]) => {
+				? Arr.map(data.platform?.queues ?? [], (queue) => [queue.accountId, queue.backlogMessages])
+				: Arr.map(data.workerRows ?? [], (row) => [row.accountId, row.requests])
+	const totals = Arr.reduce(entries, new Map<string, number>(), (acc, [id, n]) => {
 		if (id !== undefined) acc.set(id, (acc.get(id) ?? 0) + n)
 		return acc
-	}, new Map<string, number>())
-	const sum = [...totals.values()].reduce((a, b) => a + b, 0)
-	return new Map([...totals].map(([id, n]) => [id, sum > 0 ? n / sum : 0]))
+	})
+	const sum = Arr.reduce([...totals.values()], 0, (a, b) => a + b)
+	return new Map(Arr.map([...totals], ([id, n]) => [id, sum > 0 ? n / sum : 0]))
 }
 
 export const accountCounts = (
@@ -153,13 +181,15 @@ export const accountCounts = (
 	zoneAccount: ReadonlyMap<string, string>,
 ): ReadonlyMap<string, { zones: number; workers: number }> =>
 	new Map(
-		accounts.map((account) => [
+		Arr.map(accounts, (account) => [
 			account.accountId,
 			{
-				zones: (data.zones ?? []).filter(
+				zones: Arr.filter(
+					data.zones ?? [],
 					(zone) => zoneAccount.get(zone.serviceName) === account.accountId,
 				).length,
-				workers: (data.workerRows ?? []).filter((row) => row.accountId === account.accountId).length,
+				workers: Arr.filter(data.workerRows ?? [], (row) => row.accountId === account.accountId)
+					.length,
 			},
 		]),
 	)

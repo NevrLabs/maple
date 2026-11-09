@@ -1,4 +1,3 @@
-import { createHash, timingSafeEqual } from "node:crypto"
 import { createClerkClient } from "@clerk/backend"
 import {
 	PreviewSignInDisabledError,
@@ -7,9 +6,10 @@ import {
 	PreviewSignInStatusResponse,
 	PreviewSignInUnavailableError,
 } from "@maple/domain/http"
-import { Context, Effect, Layer, Option, Redacted } from "effect"
+import { Context, Effect, Layer, Option, Redacted, Array as Arr, String as Str } from "effect"
 import { Env, type EnvConfig } from "@maple/backend/platform/Env"
 import { clerkRequest, type ClerkRequestError } from "@maple/backend/services/auth/clerk-request"
+import { secretsEqual } from "./secret-equal"
 
 /**
  * One reviewer identity shared by every preview, kept apart from the developers' own dev users
@@ -38,7 +38,7 @@ export interface PreviewClerk {
 }
 
 export interface PreviewSignInServiceApi {
-	readonly status: () => Effect.Effect<PreviewSignInStatusResponse>
+	readonly status: Effect.Effect<PreviewSignInStatusResponse>
 	readonly signIn: (
 		key: string,
 	) => Effect.Effect<
@@ -46,11 +46,6 @@ export interface PreviewSignInServiceApi {
 		PreviewSignInDisabledError | PreviewSignInInvalidKeyError | PreviewSignInUnavailableError
 	>
 }
-
-const digest = (value: string) => createHash("sha256").update(value).digest()
-
-/** Hashing first makes the comparison constant-time regardless of the guess's length. */
-const keyMatches = (provided: string, expected: string) => timingSafeEqual(digest(provided), digest(expected))
 
 type PreviewEnv = Pick<
 	EnvConfig,
@@ -62,11 +57,11 @@ type PreviewEnv = Pick<
  * minted by a production instance would be real sessions for real people.
  */
 export const previewKey = (env: PreviewEnv): Option.Option<string> =>
-	env.MAPLE_AUTH_MODE.toLowerCase() === "clerk" &&
+	Str.toLowerCase(env.MAPLE_AUTH_MODE) === "clerk" &&
 	/^pr-\d+$/.test(env.MAPLE_ENVIRONMENT) &&
-	Option.exists(env.CLERK_SECRET_KEY, (secret) => Redacted.value(secret).startsWith("sk_test_"))
+	Option.exists(env.CLERK_SECRET_KEY, (secret) => Str.startsWith("sk_test_")(Redacted.value(secret)))
 		? Option.map(
-				Option.filter(env.PREVIEW_SIGNIN_KEY, (key) => Redacted.value(key).trim().length > 0),
+				Option.filter(env.PREVIEW_SIGNIN_KEY, (key) => Str.trim(Redacted.value(key)).length > 0),
 				Redacted.value,
 			)
 		: Option.none()
@@ -96,7 +91,7 @@ export const makePreviewSignIn = (
 			return yield* new PreviewSignInDisabledError({ message: "Preview sign-in is not enabled here" })
 		}
 		const { clerk } = enabled.value
-		if (!keyMatches(key, enabled.value.key)) {
+		if (!secretsEqual(key, enabled.value.key)) {
 			return yield* new PreviewSignInInvalidKeyError({ message: "Invalid preview access key" })
 		}
 		const userId = yield* ensureReviewer(clerk).pipe(Effect.mapError(unavailable))
@@ -107,7 +102,7 @@ export const makePreviewSignIn = (
 	})
 
 	return {
-		status: () => Effect.succeed(new PreviewSignInStatusResponse({ enabled: Option.isSome(enabled) })),
+		status: Effect.succeed(new PreviewSignInStatusResponse({ enabled: Option.isSome(enabled) })),
 		signIn,
 	}
 }
@@ -131,7 +126,7 @@ const clerkPort = (secretKey: string): PreviewClerk => {
 		isMemberOf: (userId, name) =>
 			clerkRequest("Clerk.users.getOrganizationMembershipList", { "tenant.userId": userId }, () =>
 				clerk.users.getOrganizationMembershipList({ userId, limit: MEMBERSHIP_PAGE_LIMIT }),
-			).pipe(Effect.map((response) => response.data.some((m) => m.organization.name === name))),
+			).pipe(Effect.map((response) => Arr.some(response.data, (m) => m.organization.name === name))),
 		createOrganization: (userId, name) =>
 			clerkRequest("Clerk.organizations.createOrganization", { "tenant.userId": userId }, () =>
 				clerk.organizations.createOrganization({ name, createdBy: userId }),

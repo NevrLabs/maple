@@ -3,9 +3,9 @@ import type { Tone } from "@maple/ui/lib/tone"
 import { cn } from "@maple/ui/lib/utils"
 import { rowSelectedClass } from "@maple/ui/styles/ui/list-row"
 import type { Html, HtmlBuilder } from "foldkit/html"
-import { miniBars } from "../../ui/mini-bars"
-import { skeleton } from "../../ui/skeleton"
-import { statFigure } from "../../ui/stat-figure"
+import { miniBars } from "@maple/views/ui/mini-bars"
+import { skeleton } from "@maple/views/ui/skeleton"
+import { statFigure } from "@maple/views/ui/stat-figure"
 
 // `StatRail`, `StatRailItem`, `StatRailItemSkeleton` and `StatRailLoading`.
 
@@ -20,7 +20,13 @@ const COLUMNS_CLASS = new Map<StatRailColumns, string>([
 
 export const statRail = <M>(
 	h: HtmlBuilder<M>,
-	options: Readonly<{ columns?: StatRailColumns; className?: string; isBusy?: boolean }>,
+	options: Readonly<{
+		columns?: StatRailColumns
+		className?: string
+		isBusy?: boolean
+		/** Edge to edge under a page header: square, ruled below only, like the hub's metric strip. */
+		isFlush?: boolean
+	}>,
 	children: ReadonlyArray<Html>,
 ): Html =>
 	h.div(
@@ -28,7 +34,8 @@ export const statRail = <M>(
 			...(options.isBusy === true ? [h.AriaBusy(true)] : []),
 			h.Class(
 				cn(
-					"grid grid-cols-2 divide-x divide-y divide-border rounded-md border bg-card md:divide-y-0",
+					"grid grid-cols-2 divide-x divide-y divide-border md:divide-y-0",
+					options.isFlush === true ? "border-b border-border" : "rounded-md border bg-card",
 					COLUMNS_CLASS.get(options.columns ?? 4),
 					options.className,
 				),
@@ -48,8 +55,6 @@ export type StatRailItemOptions<M> = Readonly<{
 	/** The trailing `MiniBars` (last 28 values), toned like the value unless `sparkColor` says. */
 	spark?: ReadonlyArray<number>
 	sparkColor?: string
-	/** Entry animation delay in ms (the rail staggers its tiles). */
-	delay?: number
 	/** Makes the tile a button, which then honours `isSelected` and `isDisabled`. */
 	onSelect?: M
 	isSelected?: boolean
@@ -83,14 +88,14 @@ export const statRailItem = <M>(h: HtmlBuilder<M>, options: StatRailItemOptions<
 						h.Class(
 							cn(
 								"truncate text-2xs font-medium transition-colors",
-								options.isCardTitle === true && "uppercase tracking-[0.08em]",
+								options.isCardTitle === true && "uppercase tracking-caption",
 								isSelected ? "text-primary" : "text-muted-foreground",
 							),
 						),
 					],
 					[options.eyebrow],
 				),
-				...(corner === undefined ? [] : [corner]),
+				...(corner === undefined ? [] : [h.span([h.Class("shrink-0 whitespace-nowrap")], [corner])]),
 			],
 		),
 		h.div(
@@ -100,8 +105,13 @@ export const statRailItem = <M>(h: HtmlBuilder<M>, options: StatRailItemOptions<
 					value: options.value,
 					unit: options.hint,
 					size: isSmall ? "sm" : "lg",
-					className: "shrink-0",
-					valueClassName: cn(VALUE_TONE[options.tone ?? "neutral"], options.valueClassName),
+					// A long value steps down a size on phones, and its unit wraps under it.
+					className: "min-w-0 flex-wrap",
+					valueClassName: cn(
+						VALUE_TONE[options.tone ?? "neutral"],
+						!isSmall && "max-sm:text-xl",
+						options.valueClassName,
+					),
 				}),
 				...(options.spark !== undefined && options.spark.length > 1
 					? [
@@ -121,15 +131,9 @@ export const statRailItem = <M>(h: HtmlBuilder<M>, options: StatRailItemOptions<
 			? []
 			: [h.div([h.Class("mt-2 truncate text-2xs text-muted-foreground")], [options.subline])]),
 	]
-	const shell = cn(
-		"relative animate-in fade-in slide-in-from-bottom-1 duration-500",
-		isSmall ? "px-4 py-3" : "px-5 py-4",
-		options.className,
-	)
-	const delay = options.delay ?? 0
-	const delayStyle =
-		delay > 0 ? [h.Style({ "animation-delay": `${delay}ms`, "animation-fill-mode": "backwards" })] : []
-	if (options.onSelect === undefined) return h.div([h.Class(shell), ...delayStyle], body)
+	// No entry animation: tiles remount on every refetch and tab switch, so it would replay each time.
+	const shell = cn("relative", isSmall ? "px-4 py-3" : "px-5 py-4", options.className)
+	if (options.onSelect === undefined) return h.div([h.Class(shell)], body)
 	const isDisabled = options.isDisabled === true
 	return h.button(
 		[
@@ -138,13 +142,14 @@ export const statRailItem = <M>(h: HtmlBuilder<M>, options: StatRailItemOptions<
 			...(options.isSelected === undefined ? [] : [h.AriaPressed(String(isSelected))]),
 			...(options.ariaLabel === undefined ? [] : [h.AriaLabel(options.ariaLabel)]),
 			h.OnClick(options.onSelect),
-			...delayStyle,
 			h.Class(
 				cn(
 					shell,
 					"w-full text-left",
 					rowSelectedClass(isSelected),
-					isDisabled ? "cursor-default" : "cursor-pointer hover:bg-surface-faint active:bg-surface-faint",
+					isDisabled
+						? "cursor-default"
+						: "cursor-pointer hover:bg-surface-faint active:bg-surface-faint",
 					"focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset",
 				),
 			),

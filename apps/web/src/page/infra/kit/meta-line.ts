@@ -1,6 +1,9 @@
 import { cn } from "@maple/ui/lib/utils"
 import type { Html, HtmlBuilder } from "foldkit/html"
-import { icon, type IconName } from "../../../ui/icon"
+import { icon, type IconName } from "@maple/views/ui/icon"
+import { hstackClass } from "@maple/views/ui/stack"
+import { Array as Arr, String as Str } from "effect"
+import { typography } from "@maple/views/ui/typography"
 
 // `MetaLine` and `PlatformLabel`.
 
@@ -12,12 +15,13 @@ export const metaLine = <M>(
 	items: ReadonlyArray<MetaItem>,
 	options: Readonly<{ title?: string; className?: string }> = {},
 ): Html => {
-	const present = items.filter(
+	const present = Arr.filter(
+		items,
 		(item): item is Html | string => item !== null && item !== undefined && item !== false && item !== "",
 	)
 	if (present.length === 0) return null
-	const texts = present.filter((item): item is string => typeof item === "string")
-	const derivedTitle = texts.length === present.length ? texts.join(" · ") : undefined
+	const texts = Arr.filter(present, (item): item is string => typeof item === "string")
+	const derivedTitle = texts.length === present.length ? Arr.join(texts, " · ") : undefined
 	const title = options.title ?? derivedTitle
 	return h.div(
 		[
@@ -29,12 +33,19 @@ export const metaLine = <M>(
 			),
 			...(title === undefined ? [] : [h.Title(title)]),
 		],
-		present.map((item, index) =>
+		Arr.map(present, (item, index) =>
 			h.span(
 				// The last item shrinks so an overflowing line ends in an ellipsis, not a clipped word.
-				[h.Class(cn("flex items-center gap-x-2", index === present.length - 1 ? "min-w-0" : "shrink-0"))],
 				[
-					...(index > 0 ? [h.span([h.Class("text-foreground-faint")], ["·"])] : []),
+					h.Class(
+						cn(
+							"flex items-center gap-x-2",
+							index === present.length - 1 ? "min-w-0" : "shrink-0",
+						),
+					),
+				],
+				[
+					...(index > 0 ? [typography(h, { tone: "faint" }, ["·"])] : []),
 					typeof item === "string" ? h.span([h.Class("max-w-[28ch] truncate")], [item]) : item,
 				],
 			),
@@ -49,7 +60,7 @@ type Known = Readonly<{ icon?: IconName; label: string; color?: string }>
 const OS = new Map<string, Known>([
 	["linux", { icon: "LinuxIcon", label: "Linux" }],
 	["darwin", { icon: "AppleIcon", label: "macOS" }],
-	["windows", { icon: "MicrosoftIcon", label: "Windows", color: "#0078D4" }],
+	["windows", { icon: "MicrosoftIcon", label: "Windows", color: "var(--color-brand-microsoft)" }],
 ])
 
 const CLOUD = new Map<string, Known>([
@@ -59,7 +70,7 @@ const CLOUD = new Map<string, Known>([
 ])
 
 const resolve = (kind: PlatformKind, value: string): Known => {
-	const key = value.toLowerCase()
+	const key = Str.toLowerCase(value)
 	if (kind === "arch") return { icon: "MicrochipIcon", label: key }
 	return (kind === "os" ? OS : CLOUD).get(key) ?? { label: value }
 }
@@ -67,7 +78,7 @@ const resolve = (kind: PlatformKind, value: string): Known => {
 export const platformLabel = <M>(h: HtmlBuilder<M>, kind: PlatformKind, value: string): Html => {
 	const known = resolve(kind, value)
 	return h.span(
-		[h.Class(cn("inline-flex items-center gap-1"))],
+		[h.Class(cn(hstackClass({ gap: "1", inline: true })))],
 		[
 			...(known.icon === undefined
 				? []

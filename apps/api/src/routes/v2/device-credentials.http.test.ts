@@ -3,7 +3,18 @@ import { afterEach, describe, expect, it } from "@effect/vitest"
 import { EdgeCacheService } from "@maple/cache"
 import { OrgId, UserId } from "@maple/domain/http"
 import { MapleApiV2 } from "@maple/domain/http/v2"
-import { ConfigProvider, Context, Effect, Exit, Layer, ManagedRuntime, Option, Schema } from "effect"
+import {
+	ConfigProvider,
+	Context,
+	Effect,
+	Exit,
+	Layer,
+	ManagedRuntime,
+	Option,
+	Schema,
+	Array as Arr,
+	String as Str,
+} from "effect"
 import { HttpRouter } from "effect/http"
 import { HttpApiBuilder } from "effect/http-api"
 import { Env } from "@maple/backend/platform/Env"
@@ -44,9 +55,9 @@ afterEach(() => cleanupTestDbs(createdDbs))
 const BASE = "http://maple.test"
 const TEAM_ID = "TEAMID1234"
 const APP_ID = `${TEAM_ID}.com.maple.mobile`
-const ORG = Schema.decodeUnknownSync(OrgId)("org_device_cred")
-const USER = Schema.decodeUnknownSync(UserId)("user_device_cred")
-const OTHER_USER = Schema.decodeUnknownSync(UserId)("user_device_other")
+const ORG = Schema.decodeSync(OrgId)("org_device_cred")
+const USER = Schema.decodeSync(UserId)("user_device_cred")
+const OTHER_USER = Schema.decodeSync(UserId)("user_device_other")
 const INSTALLATION = "F9E1B4C0-8F2A-4C6D-9E1B-4C08F2A4C6D9"
 const SIGNING_KEY = generateKeyPairSync("ec", {
 	namedCurve: "P-256",
@@ -126,7 +137,7 @@ const proof = async (key: DeviceKey, options: ProofOptions) => {
 const ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
 /** The same 32 bytes spelled differently: the last character's unused low bit set. */
 const nonCanonical = (coordinate: string) =>
-	`${coordinate.slice(0, -1)}${ALPHABET[ALPHABET.indexOf(coordinate.slice(-1)) | 1]}`
+	`${Str.slice(0, -1)(coordinate)}${ALPHABET[Option.getOrElse(Str.indexOf(Str.slice(-1)(coordinate))(ALPHABET), () => -1) | 1]}`
 
 const testConfig = () =>
 	ConfigProvider.layer(
@@ -152,7 +163,7 @@ const edgeCacheStub = Layer.succeed(EdgeCacheService, {
 		compute.pipe(Effect.map((value) => ({ value, status: "miss" as const, readMs: 0, wrote: false }))),
 	invalidate: () => Effect.void,
 	rawGetDetailed: () => Effect.succeed({ status: "miss" as const, value: Option.none(), readMs: 0 }),
-	rawGet: () => Effect.succeed(Option.none()),
+	rawGet: () => Effect.succeedNone,
 	rawPut: () => Effect.void,
 	rawDelete: () => Effect.void,
 })
@@ -295,7 +306,7 @@ const makeHarness = (trustAnchor?: Uint8Array, limited?: (key: string) => boolea
 	/** Whoever the self-hosted session resolves to, read back from the registered row. */
 	const sessionUser = Effect.promise(() =>
 		testDb.pglite.query<{ user_id: string }>("select user_id from device_credentials limit 1"),
-	).pipe(Effect.map((result) => Schema.decodeUnknownSync(UserId)(result.rows[0]?.user_id)))
+	).pipe(Effect.map((result) => Schema.decodeSync(UserId)(result.rows[0]?.user_id)))
 
 	const sql = (statement: string, params: ReadonlyArray<unknown>) =>
 		testDb.pglite.query(statement, [...params])
@@ -436,7 +447,7 @@ describe("device token issuance", () => {
 				expires_in: 3600,
 				scope: "widget_summary:read",
 			})
-			const [, payload] = String(issued.body.access_token).split(".")
+			const [, payload] = Str.split(".")(String(issued.body.access_token))
 			const claims = JSON.parse(Buffer.from(payload ?? "", "base64url").toString("utf8"))
 			expect(claims).toMatchObject({
 				iss: BASE,
@@ -591,7 +602,7 @@ describe("DPoP-authenticated requests", () => {
 		"rejects a token this server did not sign",
 		withHarness(async (harness) => {
 			const { key, accessToken } = await harness.enrolled()
-			const [header, payload] = accessToken.split(".")
+			const [header, payload] = Str.split(".")(accessToken)
 			const forged = `${header}.${payload}.${b64url(new Uint8Array(64))}`
 			const response = await harness.call("GET", "/v2/widget_summary", key, forged)
 			expect(response.status).toBe(401)
@@ -819,7 +830,7 @@ describe("security hardening", () => {
 				harness.register(secret, await newDeviceKey()),
 				harness.register(secret, await newDeviceKey()),
 			])
-			expect(results.every((result) => result.status === 200 || result.status === 409)).toBe(true)
+			expect(Arr.every(results, (result) => result.status === 200 || result.status === 409)).toBe(true)
 			const live = await harness.sql("select id from device_credentials where revoked_at is null", [])
 			expect(live.rows).toHaveLength(1)
 			// The index itself refuses a second live row, whatever the code path.
@@ -909,7 +920,7 @@ describe("security hardening", () => {
 
 describe("device token rate limits", () => {
 	it("limits the token endpoint per client IP before verifying anything", async () => {
-		const harness = makeHarness(undefined, (key) => key.startsWith("v2devip:203.0.113.9"))
+		const harness = makeHarness(undefined, (key) => Str.startsWith("v2devip:203.0.113.9")(key))
 		try {
 			const { key } = await harness.enrolled()
 			const dpop = await proof(key, { htm: "POST", htu: `${BASE}/v2/device_tokens` })

@@ -5,6 +5,7 @@
  */
 import { parseWarehouseDateTime } from "@maple/query-engine"
 import type { FixtureRule } from "./fake-warehouse"
+import { Array as Arr, Option, String as Str } from "effect"
 
 export const PROVIDER_WORLD = {
 	failingZone: "api.example.com",
@@ -14,12 +15,12 @@ export const PROVIDER_WORLD = {
 
 const BUCKETS = 12
 
-const has = (sql: string, alias: string) => sql.includes(` AS ${alias}`)
+const has = (sql: string, alias: string) => Str.includes(` AS ${alias}`)(sql)
 const bucketed = (sql: string) => has(sql, "bucket")
-const mentions = (sql: string, text: string) => sql.includes(text)
+const mentions = (sql: string, text: string) => Str.includes(text)(sql)
 
 const windowOf = (sql: string): { start: number; end: number } => {
-	const stamps = [...sql.matchAll(/'(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)'/g)].map((m) =>
+	const stamps = Arr.map(Arr.fromIterable(Str.matchAll(/'(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)'/g)(sql)), (m) =>
 		parseWarehouseDateTime(m[1] ?? ""),
 	)
 	const start = stamps[0] ?? parseWarehouseDateTime("2026-10-01 06:00:00")
@@ -32,8 +33,8 @@ const buckets = (sql: string) => {
 	const step = (end - start) / BUCKETS
 	return Array.from({ length: BUCKETS }, (_, i) => ({ at: start + i * step, t: i / BUCKETS }))
 }
-const isoZ = (ms: number) => `${new Date(ms).toISOString().slice(0, 19)}Z`
-const wire = (ms: number) => new Date(ms).toISOString().slice(0, 19).replace("T", " ")
+const isoZ = (ms: number) => `${Str.slice(0, 19)(new Date(ms).toISOString())}Z`
+const wire = (ms: number) => Str.replace("T", " ")(Str.slice(0, 19)(new Date(ms).toISOString()))
 
 interface Zone {
 	readonly name: string
@@ -58,7 +59,10 @@ const ZONES: ReadonlyArray<Zone> = [
 
 /** The zone a single-zone query names, or the failing one. */
 const zoneFor = (sql: string): Zone =>
-	ZONES.find((zone) => mentions(sql, `'cloudflare/${zone.name}'`)) ?? FAILING_ZONE
+	Option.getOrElse(
+		Arr.findFirst(ZONES, (zone) => mentions(sql, `'cloudflare/${zone.name}'`)),
+		() => FAILING_ZONE,
+	)
 
 const WORKERS = [
 	{
@@ -130,7 +134,7 @@ export const providerFixtureRules = (): FixtureRule[] => [
 	// Cloudflare zones: the fleet list, then single-zone views.
 	{
 		match: (sql) => has(sql, "cacheableRequests"),
-		rows: ZONES.map((zone) => ({
+		rows: Arr.map(ZONES, (zone) => ({
 			serviceName: `cloudflare/${zone.name}`,
 			requests: zone.requests,
 			errors5xx: Math.round(zone.requests * zone.rate5xx),
@@ -145,7 +149,7 @@ export const providerFixtureRules = (): FixtureRule[] => [
 	},
 	{
 		match: (sql) => has(sql, "ttfbP95Ms") && !bucketed(sql),
-		rows: ZONES.map((zone) => ({
+		rows: Arr.map(ZONES, (zone) => ({
 			serviceName: `cloudflare/${zone.name}`,
 			ttfbP50Ms: zone.ttfbP95 / 3,
 			ttfbP95Ms: zone.ttfbP95,
@@ -161,7 +165,7 @@ export const providerFixtureRules = (): FixtureRule[] => [
 			const zone = zoneFor(sql)
 			const per = zone.requests / BUCKETS
 			// 5xx climb in the last third: the incident an agent should find.
-			return buckets(sql).flatMap(({ at, t }) => [
+			return Arr.flatMap(buckets(sql), ({ at, t }) => [
 				{ bucket: isoZ(at), statusClass: "2xx", requests: Math.round(per * 0.9) },
 				{ bucket: isoZ(at), statusClass: "4xx", requests: Math.round(per * 0.02) },
 				{
@@ -177,7 +181,7 @@ export const providerFixtureRules = (): FixtureRule[] => [
 		rows: (sql) => {
 			const zone = zoneFor(sql)
 			const per = zone.requests / BUCKETS
-			return buckets(sql).flatMap(({ at }) => [
+			return Arr.flatMap(buckets(sql), ({ at }) => [
 				{ bucket: isoZ(at), cacheStatus: "hit", requests: Math.round(per * 0.7 * zone.cacheHit) },
 				{
 					bucket: isoZ(at),
@@ -192,7 +196,7 @@ export const providerFixtureRules = (): FixtureRule[] => [
 		match: (sql) => has(sql, "ttfbP95Ms") && bucketed(sql),
 		rows: (sql) => {
 			const zone = zoneFor(sql)
-			return buckets(sql).map(({ at, t }) => ({
+			return Arr.map(buckets(sql), ({ at, t }) => ({
 				bucket: isoZ(at),
 				ttfbP50Ms: zone.ttfbP95 / 3,
 				ttfbP95Ms: zone.ttfbP95 * (t > 0.66 ? 1.6 : 0.8),
@@ -233,7 +237,7 @@ export const providerFixtureRules = (): FixtureRule[] => [
 	{
 		match: (sql) => has(sql, "action") && has(sql, "events") && bucketed(sql),
 		rows: (sql) =>
-			buckets(sql).flatMap(({ at, t }) => [
+			Arr.flatMap(buckets(sql), ({ at, t }) => [
 				{ bucket: isoZ(at), action: "block", events: Math.round(300 + 600 * t) },
 				{ bucket: isoZ(at), action: "challenge", events: 100 },
 			]),
@@ -248,7 +252,7 @@ export const providerFixtureRules = (): FixtureRule[] => [
 	{
 		match: (sql) => has(sql, "responseCode") && bucketed(sql),
 		rows: (sql) =>
-			buckets(sql).flatMap(({ at }) => [
+			Arr.flatMap(buckets(sql), ({ at }) => [
 				{ bucket: isoZ(at), responseCode: "NOERROR", queries: 7_300 },
 				{ bucket: isoZ(at), responseCode: "NXDOMAIN", queries: 260 },
 			]),
@@ -256,7 +260,7 @@ export const providerFixtureRules = (): FixtureRule[] => [
 	// Cloudflare Workers.
 	{
 		match: (sql) => has(sql, "subrequests"),
-		rows: WORKERS.map((w) => ({
+		rows: Arr.map(WORKERS, (w) => ({
 			serviceName: `cloudflare-worker/${w.name}`,
 			accountId: w.accountId,
 			requests: w.requests,
@@ -267,7 +271,7 @@ export const providerFixtureRules = (): FixtureRule[] => [
 	{
 		match: (sql) => has(sql, "doWallP99Ms"),
 		rows: (sql) =>
-			buckets(sql).map(({ at }) => ({
+			Arr.map(buckets(sql), ({ at }) => ({
 				bucket: isoZ(at),
 				cpuP50Ms: 4,
 				cpuP99Ms: 18,
@@ -279,7 +283,7 @@ export const providerFixtureRules = (): FixtureRule[] => [
 	},
 	{
 		match: (sql) => has(sql, "cpuP99Ms") && !bucketed(sql),
-		rows: WORKERS.map((w) => ({
+		rows: Arr.map(WORKERS, (w) => ({
 			serviceName: `cloudflare-worker/${w.name}`,
 			accountId: w.accountId,
 			cpuP50Ms: w.cpuP99 / 4,
@@ -295,7 +299,7 @@ export const providerFixtureRules = (): FixtureRule[] => [
 	{
 		match: (sql) => has(sql, "status") && bucketed(sql) && mentions(sql, "cloudflare.worker.requests"),
 		rows: (sql) =>
-			buckets(sql).flatMap(({ at }) => [
+			Arr.flatMap(buckets(sql), ({ at }) => [
 				{ bucket: isoZ(at), status: "success", requests: 170_000 },
 				{ bucket: isoZ(at), status: "scriptThrewException", requests: 3_700 },
 			]),
@@ -304,9 +308,11 @@ export const providerFixtureRules = (): FixtureRule[] => [
 	{
 		match: (sql) => has(sql, "networkRx"),
 		rows: (sql) => {
-			const service =
-				RAILWAY.find((s) => mentions(sql, `'${s.envId}'`) && mentions(sql, `'${s.id}'`)) ?? RAILWAY[0]
-			return buckets(sql).map(({ at, t }) => ({
+			const service = Option.getOrElse(
+				Arr.findFirst(RAILWAY, (s) => mentions(sql, `'${s.envId}'`) && mentions(sql, `'${s.id}'`)),
+				() => RAILWAY[0],
+			)
+			return Arr.map(buckets(sql), ({ at, t }) => ({
 				bucket: wire(at),
 				cpuAvg: service.cpu * (0.8 + 0.3 * t),
 				cpuMax: Math.min(service.cpuLimit, service.cpuMax * (0.8 + 0.25 * t)),
@@ -325,7 +331,7 @@ export const providerFixtureRules = (): FixtureRule[] => [
 	{
 		match: (sql) => has(sql, "replicas") && has(sql, "projectName"),
 		rows: (sql) =>
-			RAILWAY.map((s) => ({
+			Arr.map(RAILWAY, (s) => ({
 				environmentId: s.envId,
 				serviceId: s.id,
 				serviceName: s.service,
@@ -345,8 +351,11 @@ export const providerFixtureRules = (): FixtureRule[] => [
 	{
 		match: (sql) => has(sql, "connectionsAvg") && bucketed(sql),
 		rows: (sql) => {
-			const db = DATABASES.find((d) => mentions(sql, `'${d.database}'`)) ?? DATABASES[0]
-			return buckets(sql).map(({ at, t }) => ({
+			const db = Option.getOrElse(
+				Arr.findFirst(DATABASES, (d) => mentions(sql, `'${d.database}'`)),
+				() => DATABASES[0],
+			)
+			return Arr.map(buckets(sql), ({ at, t }) => ({
 				bucket: wire(at),
 				connectionsAvg: db.conns,
 				cpuMaxPercent: db.cpu * (0.7 + 0.4 * t),
@@ -359,7 +368,7 @@ export const providerFixtureRules = (): FixtureRule[] => [
 	},
 	{
 		match: (sql) => has(sql, "cpuMaxPercent"),
-		rows: DATABASES.map((d) => ({
+		rows: Arr.map(DATABASES, (d) => ({
 			database: d.database,
 			cpuMaxPercent: d.cpu,
 			memMaxPercent: d.mem,
@@ -368,7 +377,7 @@ export const providerFixtureRules = (): FixtureRule[] => [
 	},
 	{
 		match: (sql) => has(sql, "connectionsMax"),
-		rows: DATABASES.map((d) => ({
+		rows: Arr.map(DATABASES, (d) => ({
 			database: d.database,
 			connectionsAvg: d.conns,
 			connectionsMax: d.connsMax,
@@ -376,7 +385,7 @@ export const providerFixtureRules = (): FixtureRule[] => [
 	},
 	{
 		match: (sql) => has(sql, "storageSamples"),
-		rows: DATABASES.map((d) => ({
+		rows: Arr.map(DATABASES, (d) => ({
 			database: d.database,
 			storageUsedPercent: d.storage,
 			storageSamples: 40,

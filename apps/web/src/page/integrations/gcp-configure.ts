@@ -4,16 +4,16 @@ import {
 	type V2GcpConnector,
 } from "@maple/domain/http/v2"
 import { GcpConnectorId, GcpLogRuntime } from "@maple/domain/primitives"
-import { Effect, Schema } from "effect"
+import { Effect, Schema, Option, Array as Arr } from "effect"
 import { Command } from "foldkit"
-import * as Keyed from "../../data/keyed"
-import { toLoadFailure } from "../../data/load-failure"
+import * as Keyed from "@maple/views/data/keyed"
+import { toLoadFailure } from "@maple/views/data/load-failure"
 import { MapleApiV2Client } from "../../platform/api-clients"
-import * as CopyButton from "../../ui/copy-button"
-import * as Dialog from "../../ui/dialog"
-import * as Field from "../../ui/field"
-import * as Select from "../../ui/select"
-import * as ToggleGroup from "../../ui/toggle-group"
+import * as CopyButton from "@maple/views/ui/copy-button"
+import * as Dialog from "@maple/views/ui/dialog"
+import * as Field from "@maple/views/ui/field"
+import * as Select from "@maple/views/ui/select"
+import * as ToggleGroup from "@maple/views/ui/toggle-group"
 import { type ConfigureModel, GcpFlags } from "./gcp-configure-schema"
 import type { ConfigureTarget } from "./gcp-schema"
 import { Message } from "./message"
@@ -36,7 +36,9 @@ export const initConfigure = (
 	metricsAvailable: boolean,
 ): ConfigureModel => {
 	const connector =
-		target._tag === "Connection" ? connectors.find((entry) => entry.id === target.id) : undefined
+		target._tag === "Connection"
+			? Arr.findFirst(connectors, (entry) => entry.id === target.id)
+			: Option.none()
 	return {
 		target,
 		dialog: Dialog.init(CONFIGURE_DIALOG_ID, "dialog"),
@@ -51,8 +53,10 @@ export const initConfigure = (
 		newFlags: { logs_enabled: true, metrics_enabled: metricsAvailable },
 		createError: null,
 		isCreating: false,
-		chooseFlags:
-			connector === undefined ? { logs_enabled: true, metrics_enabled: false } : flagsOf(connector),
+		chooseFlags: Option.match(connector, {
+			onNone: () => ({ logs_enabled: true, metrics_enabled: false }),
+			onSome: flagsOf,
+		}),
 		asked: null,
 		opened: null,
 		confirm: initConfirm(),

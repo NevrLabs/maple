@@ -1,11 +1,12 @@
+import * as Policy from "@maple/domain/policy"
 import { UptimeMonitorId } from "@maple/domain"
 import { V2UptimeMonitor, V2UptimeMonitorTestResult } from "@maple/domain/http/v2"
 import { AlertDestinationRowSchema } from "@maple/web-data/collections/alerts"
 import { Schema } from "effect"
-import { KeyedSchema } from "../../../data/keyed"
-import { LoadFailure } from "../../../data/load-failure"
+import { KeyedSchema } from "@maple/views/data/keyed"
+import { LoadFailure } from "@maple/views/data/load-failure"
 import { AlertsUptimeNewSearch } from "../../../route/search"
-import * as Menu from "../../../ui/menu"
+import * as Menu from "@maple/views/ui/menu"
 import { Form } from "./form"
 
 // `/alerts/uptime/new`: create an uptime monitor, or edit one (`?monitorId=`).
@@ -30,8 +31,12 @@ export const Model = Schema.Struct({
 	timeZones: Schema.Array(Schema.String),
 	destinations: Schema.NullOr(Schema.Array(AlertDestinationRowSchema)),
 	destinationMenu: Menu.Model,
-	isAdmin: Schema.Boolean,
+	grants: Schema.Array(Policy.PermissionName),
 	/** The session answered; until then a member is not yet told the form is admin-only. */
 	isSessionLoaded: Schema.Boolean,
 })
 export type Model = typeof Model.Type
+
+/** The viewer may change what this page edits (`uptime_monitors:manage`). */
+export const canManage = (model: Pick<Model, "grants">): boolean =>
+	Policy.has(model.grants, "uptime_monitors:manage")

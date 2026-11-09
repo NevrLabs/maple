@@ -1,38 +1,54 @@
 import { initWhereFields } from "../../kit/where-field"
-import { pickDashboardControlParams } from "../../../lib/dashboard-controls/search-params"
+import {
+	pickDashboardControlParams,
+	variableValuesFromSearch,
+} from "../../../lib/dashboard-controls/search-params"
 import {
 	computeBucketSecondsForWidthRange,
 	formatBucketSecondsShort,
 	resolveTimeRangeWindow,
 } from "@maple/query-engine"
-import { Option } from "effect"
+import { Option, Schema, Array as Arr } from "effect"
 import { Command } from "foldkit"
-import * as Chart from "../../../charts/chart"
-import { LoadChartRuntime } from "../../../charts/chart-runtime"
-import * as Keyed from "../../../data/keyed"
-import { requestKey } from "../../../data/request-key"
+import * as Chart from "@maple/views/charts/chart"
+import { LoadChartRuntime } from "@maple/views/charts/chart-runtime"
+import * as Keyed from "@maple/views/data/keyed"
+import { requestKey } from "@maple/views/data/request-key"
 import { AUTOCOMPLETE_LOOKUPS } from "../../kit/autocomplete-lookups"
 import { AppRoute, hrefOf } from "../../../route"
 import type { DashboardWidgetSearch } from "../../../route/search"
-import * as Dialog from "../../../ui/dialog"
-import * as Tabs from "../../../ui/tabs"
-import * as Tooltip from "../../../ui/tooltip"
+import * as Dialog from "@maple/views/ui/dialog"
+import * as Tabs from "@maple/views/ui/tabs"
+import * as Tooltip from "@maple/views/ui/tooltip"
 import { type PageContext, PageOutMessage, type PageReturn } from "../../contract"
 import * as QueryPanel from "../../kit/query-builder/panel"
 import * as TimeRangePicker from "../../kit/time-range-picker"
 import { DEFAULT_WIDGET_WIDTH_PX, maxDataPointsForWidth, toPanelType } from "../kit/chart-registry"
 import { planWidget } from "../kit/widget-data"
-import { dataStateOf } from "../kit/data-state"
 import { FetchAutocomplete, FetchVariableOptions, FetchWidget, ReadClock } from "./command"
 import { planOptionRequests, planVariablesOf } from "../kit/variables"
 import type { EditorState } from "./editor-state"
-import { buildDataSource, buildDisplay, toInitialState, validationErrorOf, type Widget } from "./lowering"
-import { initRawSql, type RawSqlDraft, rawSqlDataSourceOf } from "./raw-sql"
+import {
+	buildDisplay,
+	buildSqlDisplay,
+	builderDataSourceOf,
+	toInitialState,
+	trackStoredSource,
+	validationErrorOf,
+	type Widget,
+} from "./lowering"
+import { initRawSql, isRunnableSql, type RawSqlDraft, rawSqlDataSourceOf } from "./raw-sql"
 import { askMetricOptions } from "./metric-options"
 import { eventNamesKeyOf, requestSuggestions } from "./product-step"
 import { dataSourceRawSql } from "@maple/widgets/dashboard"
 import { Message } from "./message"
 import type { Model } from "./model"
+import { codeUnitAt } from "@maple/strings"
+
+const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown))
+/** `JSON.stringify` equality: an absent value reads as `null`, never as a thrown encode. */
+const encodeJsonOption = Schema.encodeOption(Schema.fromJsonString(Schema.Unknown))
+const jsonKeyOf = (value: unknown): string | null => Option.getOrNull(encodeJsonOption(value))
 
 export type Return = PageReturn<Model, Message>
 type Search = typeof DashboardWidgetSearch.Type
@@ -103,7 +119,7 @@ export const routeChanged = (model: Model, route: Route): Return => ({
 })
 
 export const widgetOf = (model: Model): Widget | null =>
-	model.document?.widgets.find((widget) => widget.id === model.widgetId) ?? null
+	Option.getOrNull(Arr.findFirst(model.document?.widgets ?? [], (widget) => widget.id === model.widgetId))
 
 /** `navigateBack`: the dashboard in edit mode, with the controls the editor carried. */
 export const backHref = (model: Model): string =>
@@ -114,44 +130,63 @@ export const backHref = (model: Model): string =>
 		}),
 	)
 
-/**
- * `previewWidget`: the staged queries with the live presentation (type, legend, stats, points),
- * so those apply without Run preview.
- */
+/** The fields that shape the preview's request: they wait for Run preview. Every other field is live. */
+const stagedFieldsOf = (staged: EditorState) => ({
+	queries: staged.queries,
+	keepsStoredSource: staged.keepsStoredSource,
+	formulas: staged.formulas,
+	comparisonMode: staged.comparisonMode,
+	includePercentChange: staged.includePercentChange,
+	statAggregate: staged.statAggregate,
+	statValueField: staged.statValueField,
+	tableLimit: staged.tableLimit,
+	listDataSource: staged.listDataSource,
+	listWhereClause: staged.listWhereClause,
+	listLimit: staged.listLimit,
+	listColumns: staged.listColumns,
+	listRootOnly: staged.listRootOnly,
+	paths: staged.paths,
+})
+
+/** `previewWidget`: the staged query fields under the live display, so presentation edits apply without Run preview. */
 export const previewWidgetOf = (model: Model): Widget | null => {
 	const widget = widgetOf(model)
 	if (widget === null || model.state === null || model.staged === null) return null
 	const state = model.state
 	const preview: EditorState = {
-		...model.staged,
-		visualization: state.visualization,
-		chartId: state.chartId,
-		legendPosition: state.legendPosition,
-		seriesStatsEnabled: state.seriesStatsEnabled,
-		pointsMode: state.pointsMode,
-		markdownContent: state.markdownContent,
-		// The funnel's view and step labels are presentation too; its steps stay staged.
-		funnel: { ...model.staged.funnel, variant: state.funnel.variant, showStepPercent: state.funnel.showStepPercent },
+		...state,
+		...stagedFieldsOf(model.staged),
+		// The funnel's view and step labels are presentation; its steps stay staged.
+		funnel: {
+			...model.staged.funnel,
+			variant: state.funnel.variant,
+			showStepPercent: state.funnel.showStepPercent,
+		},
 		queries: listPreviewQueries(model.staged.queries, state, model.staged, widget),
+		// The live flag, like Apply: a type switch releases it, an edit undone restores it.
+		// A fixed query always previews its stored route.
+		keepsStoredSource: state.queryFixed || state.keepsStoredSource,
 	}
+	const isSql = isSqlSource(model) && model.rawSql !== null
 	return {
 		...widget,
 		timeRange: state.timeRange ?? undefined,
 		visualization: state.visualization,
 		dataSource:
-			isSqlSource(model) && model.rawSql !== null
+			isSql && model.rawSql !== null
 				? rawSqlDataSourceOf(widget, model.rawSql.staged, state)
-				: buildDataSource(preview),
-		// The SQL's display follows the editing state; the builder's, its staged queries.
-		display: buildDisplay(widget, isSqlSource(model) ? state : preview),
+				: builderDataSourceOf(widget, preview),
+		display: isSql ? buildSqlDisplay(widget, state) : buildDisplay(widget, preview),
 	}
 }
 
 /** FNV-1a over a string: a short, pure revision tag. */
 const revisionOf = (text: string): string =>
-	Array.from(text)
-		.reduce((hash, char) => Math.imul(hash ^ char.charCodeAt(0), 16777619) >>> 0, 2166136261)
-		.toString(36)
+	Arr.reduce(
+		Array.from(text),
+		2166136261,
+		(hash, char) => Math.imul(hash ^ codeUnitAt(char, 0), 16777619) >>> 0,
+	).toString(36)
 
 /**
  * The list builds its engine query from a fresh `createQueryDraft(0)` each time the preview
@@ -165,7 +200,7 @@ const listPreviewQueries = (
 ): EditorState["queries"] => {
 	const [first, ...rest] = queries
 	if (state.visualization !== "list" || first === undefined) return queries
-	return [{ ...first, id: `${first.id}:${revisionOf(JSON.stringify([state, staged, widget]))}` }, ...rest]
+	return [{ ...first, id: `${first.id}:${revisionOf(encodeJson([state, staged, widget]))}` }, ...rest]
 }
 
 /** The preview's requests, and the metric list while a query reads metrics. */
@@ -187,12 +222,19 @@ const planWidgetPreview = (model: Model, context: PageContext): Return => {
 		timeZone: context.timeZone,
 		nowMs: model.nowMs,
 	})
-	// `DashboardVariablesProvider` with no URL values: `$name` previews at the variable's default.
+	// The board's current selections, carried in the editor's search; an unset one previews at its default.
 	const definitions = model.document?.variables ?? []
 	const options = planOptionRequests(context.orgId, definitions, model.variableOptions, window, "Load")
-	const variables = planVariablesOf(context.orgId, definitions, {}, options.slots, window)
-	const optionCommands = options.requests.map((request) => FetchVariableOptions(request))
-	const planned = planWidgetGates({ ...model, variableOptions: options.slots }, context, widget, window, variables)
+	const values = variableValuesFromSearch(model.search)
+	const variables = planVariablesOf(context.orgId, definitions, values, options.slots, window)
+	const optionCommands = Arr.map(options.requests, (request) => FetchVariableOptions(request))
+	const planned = planWidgetGates(
+		{ ...model, variableOptions: options.slots },
+		context,
+		widget,
+		window,
+		variables,
+	)
 	return { model: planned.model, commands: [...optionCommands, ...planned.commands] }
 }
 
@@ -213,13 +255,10 @@ const planWidgetGates = (
 		variables,
 	})
 	const asked = ask({ model: { ...model, gate }, commands: [] }, gate)
-	// `StatSparklineLoader`: the trend is asked for once the stat itself has its value.
+	// `StatSparklineLoader`: the trend is asked for beside the stat; it does not read the stat's value.
 	const sparkline = widget.display.sparkline
 	const sparkGate =
-		panel === "stat" &&
-		sparkline?.enabled === true &&
-		sparkline.dataSource !== undefined &&
-		dataStateOf(asked.model.requests, widget, gate)._tag === "Ready"
+		panel === "stat" && sparkline?.enabled === true && sparkline.dataSource !== undefined
 			? planWidget({
 					orgId: context.orgId,
 					dataSource: sparkline.dataSource,
@@ -234,18 +273,24 @@ const planWidgetGates = (
 
 type Planned = Readonly<{ model: Model; commands: ReadonlyArray<ReturnType<typeof FetchWidget>> }>
 
-
 /** A gate's request asked for unless its key is already held. */
 const ask = (planned: Planned, gate: Model["gate"]): Planned => {
 	if (gate === null || gate._tag !== "Request") return planned
 	const { key, endpoint, params } = gate.request
-	return Option.match(Keyed.request(planned.model.requests[key] ?? Keyed.idle(), key, "Load"), {
+	return Option.match(Keyed.request(Keyed.at(planned.model.requests, key), key, "Load"), {
 		onNone: () => planned,
 		onSome: (slot) => ({
 			model: { ...planned.model, requests: { ...planned.model.requests, [key]: slot } },
 			commands: [...planned.commands, FetchWidget({ key, endpoint, params })],
 		}),
 	})
+}
+
+/** Apply's gate: a valid query set, or SQL the warehouse check accepts. */
+export const canApply = (model: Model): boolean => {
+	if (model.state === null) return false
+	const rawSql = isSqlSource(model) ? model.rawSql : null
+	return rawSql === null ? validationErrorOf(model.state) === null : isRunnableSql(rawSql)
 }
 
 /** Run preview: the editing state is staged, unless the query set is invalid. */
@@ -263,14 +308,19 @@ export const receiveDocument = (
 	Option.match(message.maybeDocument, {
 		onNone: () => ({ model: { ...model, status: "Missing", document: null } }),
 		onSome: (document) => {
-			const widget = document.widgets.find((candidate) => candidate.id === model.widgetId)
-			if (widget === undefined) return { model: { ...model, status: "Missing", document } }
+			const found = Arr.findFirst(document.widgets, (candidate) => candidate.id === model.widgetId)
+			if (Option.isNone(found)) return { model: { ...model, status: "Missing", document } }
+			const widget = found.value
 			const seeded = model.state ?? toInitialState(widget)
 			// The first read picks the source the widget was saved with.
 			const opened =
 				model.rawSql === null
 					? openedSource(model, widget)
-					: { sourceMode: model.sourceMode, initialSourceMode: model.initialSourceMode, sourceTabs: model.sourceTabs }
+					: {
+							sourceMode: model.sourceMode,
+							initialSourceMode: model.initialSourceMode,
+							sourceTabs: model.sourceTabs,
+						}
 			return planPreview(
 				{
 					...model,
@@ -315,13 +365,16 @@ export const editState = (
 	model: Model,
 	context: PageContext,
 	edit: (state: EditorState) => EditorState,
-): Return => (model.state === null ? { model } : planPreview({ ...model, state: edit(model.state) }, context))
+): Return =>
+	model.state === null
+		? { model }
+		: planPreview({ ...model, state: trackStoredSource(model.initial, edit(model.state)) }, context)
 
 /** `isDirty`: the source tab moved, or the state (or, in Raw SQL, the SQL) differs from what was opened. */
 export const isDirty = (model: Model): boolean =>
 	model.sourceMode !== model.initialSourceMode ||
-	JSON.stringify(model.state) !== JSON.stringify(model.initial) ||
-	(model.sourceMode === "rawSql" && JSON.stringify(model.rawSql?.draft) !== JSON.stringify(model.rawSql?.initial))
+	encodeJson(model.state) !== encodeJson(model.initial) ||
+	(model.sourceMode === "rawSql" && jsonKeyOf(model.rawSql?.draft) !== jsonKeyOf(model.rawSql?.initial))
 
 export const navigate = (model: Model, url: string): Return => ({
 	model,
@@ -348,14 +401,14 @@ export const askToLeave = (model: Model, url: string): Return => {
 	}
 }
 
-/** The widget Apply writes: the stored widget with the edited type, source and display. */
-/** `rawSql` set: the Raw SQL source, built for the type picked in the editor. */
+/** The widget Apply writes; with `rawSql`, the Raw SQL source built for the type picked in the editor. */
 export const editedWidget = (widget: Widget, state: EditorState, rawSql: RawSqlDraft | null): Widget => {
 	const edited: Widget = {
 		...widget,
 		visualization: state.visualization,
-		dataSource: rawSql === null ? buildDataSource(state) : rawSqlDataSourceOf(widget, rawSql, state),
-		display: buildDisplay(widget, state),
+		dataSource:
+			rawSql === null ? builderDataSourceOf(widget, state) : rawSqlDataSourceOf(widget, rawSql, state),
+		display: rawSql === null ? buildDisplay(widget, state) : buildSqlDisplay(widget, state),
 	}
 	if (state.timeRange !== null) return { ...edited, timeRange: state.timeRange }
 	// No override: the key goes, so the widget follows the dashboard again.
@@ -379,7 +432,11 @@ export const autoIntervalLabel = (model: Model, timeZone: string): string => {
 /** The provider's window: the board's range, snapped, once the editor took focus. */
 export const autocompleteWindowOf = (model: Model, context: PageContext) => {
 	if (!model.isAutocompleteActive || model.timeRange === null || model.nowMs === null) return null
-	const window = resolveTimeRangeWindow(model.timeRange, { snap: true, timeZone: context.timeZone, nowMs: model.nowMs })
+	const window = resolveTimeRangeWindow(model.timeRange, {
+		snap: true,
+		timeZone: context.timeZone,
+		nowMs: model.nowMs,
+	})
 	return window === null ? null : { startTime: window.startTime, endTime: window.endTime }
 }
 
@@ -387,13 +444,18 @@ export const autocompleteWindowOf = (model: Model, context: PageContext) => {
 export const requestAutocomplete = (model: Model, context: PageContext): Return => {
 	const range = autocompleteWindowOf(model, context)
 	if (range === null) return { model }
-	return AUTOCOMPLETE_LOOKUPS.reduce<Return>(
+	return Arr.reduce<(typeof AUTOCOMPLETE_LOOKUPS)[number], Return>(
+		AUTOCOMPLETE_LOOKUPS,
+		{ model, commands: [] },
 		(step, lookup) => {
 			// The suggestions already asked for these names over this window: read them once.
-			if (lookup === "productEventNames" && step.model.suggestions.eventNames?.key === eventNamesKeyOf(context.orgId, range))
+			if (
+				lookup === "productEventNames" &&
+				step.model.suggestions.eventNames?.key === eventNamesKeyOf(context.orgId, range)
+			)
 				return step
 			const key = requestKey(context.orgId, `autocomplete.${lookup}`, range)
-			return Option.match(Keyed.request(step.model.autocomplete[lookup] ?? Keyed.idle(), key, "Load"), {
+			return Option.match(Keyed.request(Keyed.at(step.model.autocomplete, lookup), key, "Load"), {
 				onNone: () => step,
 				onSome: (slot) => ({
 					model: { ...step.model, autocomplete: { ...step.model.autocomplete, [lookup]: slot } },
@@ -401,6 +463,5 @@ export const requestAutocomplete = (model: Model, context: PageContext): Return 
 				}),
 			})
 		},
-		{ model, commands: [] },
 	)
 }

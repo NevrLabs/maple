@@ -1,5 +1,6 @@
 import { describe, expect, it } from "@effect/vitest"
-import { Effect, Layer, Tracer } from "effect"
+import { vi } from "vitest"
+import { Effect, Layer, Option, Tracer, Array as Arr } from "effect"
 import { makeSpanBuffer, type OtlpSpan } from "../shared/flushable-tracer.js"
 import { makeArgsScrubber, REDACTED } from "./args.js"
 import { makeFoldkitTracing, NAVIGATION_ARG, nowNanos } from "./tracer.js"
@@ -35,9 +36,17 @@ const setup = (
 }
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 5))
-const byName = (spans: ReadonlyArray<OtlpSpan>, name: string) => spans.find((span) => span.name === name)
+const byName = (spans: ReadonlyArray<OtlpSpan>, name: string) =>
+	Option.getOrUndefined(Arr.findFirst(spans, (span) => span.name === name))
 const attribute = (span: OtlpSpan | undefined, key: string) =>
-	span?.attributes.find((kv) => kv.key === key)?.value
+	span === undefined
+		? undefined
+		: Option.getOrUndefined(
+				Option.map(
+					Arr.findFirst(span.attributes, (kv) => kv.key === key),
+					(kv) => kv.value,
+				),
+			)
 
 describe("Foldkit command tracing", () => {
 	it("drops a Command that finished without a child span", async () => {
@@ -62,13 +71,13 @@ describe("Foldkit command tracing", () => {
 	it("exports a failed Command even without a child span", async () => {
 		const { buffer, runCommand } = setup()
 		await runCommand("SaveDraft", {}, Effect.fail("disk full"))
-		expect(buffer.drain().map((span) => span.name)).toEqual(["SaveDraft"])
+		expect(Arr.map(buffer.drain(), (span) => span.name)).toEqual(["SaveDraft"])
 	})
 
 	it("exports a kept Command without a child span", async () => {
 		const { buffer, runCommand } = setup({ keepCommands: ["VerifyTotp"] })
 		await runCommand("VerifyTotp", {}, Effect.void)
-		expect(buffer.drain().map((span) => span.name)).toEqual(["VerifyTotp"])
+		expect(Arr.map(buffer.drain(), (span) => span.name)).toEqual(["VerifyTotp"])
 	})
 
 	it("parents navigation Commands under one navigation span that ends after the last", async () => {
@@ -88,14 +97,14 @@ describe("Foldkit command tracing", () => {
 		await settle()
 		const spans = buffer.drain()
 		const navigation = byName(spans, "navigate /chat/:id")
-		expect(spans.map((span) => span.name).sort()).toEqual(
+		expect(Arr.map(spans, (span) => span.name).sort()).toEqual(
 			["LoadMembers", "LoadMessages", "RpcClient.load", "RpcClient.load", "navigate /chat/:id"].sort(),
 		)
 		expect(navigation?.parentSpanId).toBeUndefined()
 		expect(byName(spans, "LoadMessages")?.parentSpanId).toBe(navigation?.spanId)
 		expect(byName(spans, "LoadMembers")?.traceId).toBe(navigation?.traceId)
 		expect(attribute(navigation, "url.path")).toEqual({ stringValue: "/chat/1" })
-		expect(spans.some((span) => attribute(span, NAVIGATION_ARG) !== undefined)).toBe(false)
+		expect(Arr.some(spans, (span) => attribute(span, NAVIGATION_ARG) !== undefined)).toBe(false)
 	})
 
 	it("makes a Command whose navigation closed before it had a span a root, not a child of nothing", async () => {
@@ -112,7 +121,7 @@ describe("Foldkit command tracing", () => {
 		)
 		await runCommand("LoadMessages", { [NAVIGATION_ARG]: id }, work)
 		const spans = buffer.drain()
-		expect(spans.map((span) => span.name).sort()).toEqual(["LoadMessages", "RpcClient.load"])
+		expect(Arr.map(spans, (span) => span.name).sort()).toEqual(["LoadMessages", "RpcClient.load"])
 		expect(byName(spans, "LoadMessages")?.parentSpanId).toBeUndefined()
 	})
 
@@ -126,12 +135,10 @@ describe("Foldkit command tracing", () => {
 		expect(dropped.buffer.drain()).toEqual([])
 		const kept = setup({ sampleRates: { SendHeartbeat: 1 } })
 		await kept.runCommand("SendHeartbeat", {}, Effect.void.pipe(Effect.withSpan("RpcClient.heartbeat")))
-		expect(
-			kept.buffer
-				.drain()
-				.map((span) => span.name)
-				.sort(),
-		).toEqual(["RpcClient.heartbeat", "SendHeartbeat"])
+		expect(Arr.map(kept.buffer.drain(), (span) => span.name).sort()).toEqual([
+			"RpcClient.heartbeat",
+			"SendHeartbeat",
+		])
 	})
 
 	it("exports nothing for a navigation whose Commands were all UI work", async () => {
@@ -238,6 +245,79 @@ describe("Command args", () => {
 		expect(makeArgsScrubber({ allow: ["provider"] })({ provider: "linear", token: "secret" })).toEqual({
 			provider: "linear",
 			token: REDACTED,
+		})
+	})
+})
+
+describe("Foldkit navigation timing", () => {
+	const durationMs = (span: OtlpSpan | undefined) =>
+		span === undefined
+			? undefined
+			: Number(BigInt(span.endTimeUnixNano) - BigInt(span.startTimeUnixNano)) / 1_000_000
+
+	it("keeps a navigation short when the machine slept earlier in the page's life", async () => {
+		const { buffer, tracing, runCommand } = setup()
+		// `performance.now()` stands still while the machine sleeps; the wall clock does not.
+		const wake = Date.now() + 900_000
+		const dateNow = vi.spyOn(Date, "now").mockImplementation(() => wake)
+		const id = tracing.startNavigation({
+			kind: "navigate",
+			route: "/security",
+			path: "/security",
+			startTime: nowNanos(),
+		})
+		await runCommand(
+			"LoadFindings",
+			{ [NAVIGATION_ARG]: id },
+			Effect.void.pipe(Effect.withSpan("http.client GET")),
+		)
+		await settle()
+		dateNow.mockRestore()
+		const navigation = byName(buffer.drain(), "navigate /security")
+		expect(durationMs(navigation)).toBeLessThan(1_000)
+		expect(attribute(navigation, "maple.navigation.interrupted")).toBeUndefined()
+	})
+
+	it("ends a navigation at its cap, marked interrupted, when a Command ends past it", async () => {
+		const { buffer, tracing, runCommand } = setup()
+		const id = tracing.startNavigation({
+			kind: "navigate",
+			route: "/errors/:id",
+			path: "/errors/1",
+			// A tab throttled in the background: the cap timer has not fired yet.
+			startTime: nowNanos() - 45_000_000_000n,
+		})
+		await runCommand(
+			"LoadIssue",
+			{ [NAVIGATION_ARG]: id },
+			Effect.void.pipe(Effect.withSpan("http.client GET")),
+		)
+		await settle()
+		const navigation = byName(buffer.drain(), "navigate /errors/:id")
+		expect(durationMs(navigation)).toBe(30_000)
+		expect(attribute(navigation, "maple.navigation.interrupted")).toEqual({ boolValue: true })
+	})
+
+	it("links records about the document to the page load span", async () => {
+		const { buffer, tracing, runCommand } = setup()
+		expect(tracing.pageloadLink()).toBeUndefined()
+		const id = tracing.startNavigation({
+			kind: "pageload",
+			route: "/",
+			path: "/",
+			startTime: nowNanos(),
+		})
+		await runCommand(
+			"LoadHome",
+			{ [NAVIGATION_ARG]: id },
+			Effect.void.pipe(Effect.withSpan("http.client GET")),
+		)
+		await settle()
+		const pageload = byName(buffer.drain(), "pageload /")
+		expect(tracing.pageloadLink()).toEqual({
+			traceId: pageload?.traceId,
+			spanId: pageload?.spanId,
+			traceFlags: 1,
 		})
 	})
 })

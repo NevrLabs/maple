@@ -1,3 +1,4 @@
+import { Schema, Array as Arr, Option } from "effect"
 import type { AiSessionSpan } from "@maple/domain/http"
 import {
 	classifyAiSpan,
@@ -11,16 +12,15 @@ import {
 import { formatDuration } from "@maple/ui/lib/format"
 import { cn } from "@maple/ui/lib/utils"
 import type { ChildAttribute, Html, HtmlBuilder } from "foldkit/html"
-import { iconButtonTooltipStyles } from "@maple/ui/styles/ui/icon-button"
-import * as Tooltip from "../../../ui/tooltip"
+import * as Tooltip from "@maple/views/ui/tooltip"
 import { AppRoute, hrefOf } from "../../../route"
 import { orderedSearch } from "../../../route/tanstack-search"
-import { button, linkButton } from "../../../ui/button"
-import * as Dialog from "../../../ui/dialog"
-import * as DialogView from "../../../ui/dialog-view"
-import { icon } from "../../../ui/icon"
-import { iconButton } from "../../../ui/icon-button"
-import * as ToggleGroup from "../../../ui/toggle-group"
+import { button, linkButton } from "@maple/views/ui/button"
+import * as Dialog from "@maple/views/ui/dialog"
+import * as DialogView from "@maple/views/ui/dialog-view"
+import { icon } from "@maple/views/ui/icon"
+import { iconButton } from "@maple/views/ui/icon-button"
+import * as ToggleGroup from "@maple/views/ui/toggle-group"
 import { Message } from "./message"
 import type { SessionData } from "./derive"
 import type { Model, SessionView, SpanDetailTab } from "./model"
@@ -28,6 +28,10 @@ import { CATEGORY_ICON, CATEGORY_TEXT } from "./span-visuals"
 import { detailsSection, logsSection, metaStrip, toolCallsSection } from "./span-popover-details"
 import { messagesSection, POPOVER_KEY } from "./span-popover-messages"
 import { payloadCopyButton } from "./transcript-kit"
+import { typography } from "@maple/views/ui/typography"
+import { hstack, vstack } from "@maple/views/ui/stack"
+
+const encodePrettyJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown, { space: 2 }))
 
 // The span popover over its expansion: one span
 // inspected over the whole page, from the Overview's findings, the flow's nodes and the waterfall's rows.
@@ -37,7 +41,11 @@ type H = HtmlBuilder<Message>
 export const SPAN_DIALOG_ID = "agent-session-span"
 
 /** Each span opens on its own payload until the reader picks a tab: an error, messages, a tool call. */
-export const activeTab = (model: Model, span: AiSessionSpan, toolResults: SessionToolResults): SpanDetailTab =>
+export const activeTab = (
+	model: Model,
+	span: AiSessionSpan,
+	toolResults: SessionToolResults,
+): SpanDetailTab =>
 	model.spanTab ??
 	(spanFailed(span)
 		? "details"
@@ -80,75 +88,83 @@ const expansion = (
 				return logsSection(h, model, span, timeZone)
 		}
 	}
-	return h.div(
-		[h.Class("flex min-h-0 min-w-0 grow flex-col text-left")],
-		[
-			titleRow(h, span, inputs, closeTrigger),
-			h.div(
-				[h.Class("flex shrink-0 flex-wrap items-center gap-2 border-border border-b px-5 pb-2")],
-				[
-					tabStrip(h, active, messages.length, toolCalls.length),
-					h.div(
-						[h.Class("ml-auto flex items-center gap-2")],
-						[
-							payloadCopyButton(h, model, {
-								key: `${keyPrefix}:json`,
-								value: JSON.stringify(span, null, 2),
-								label: "Span JSON",
-								idleLabel: "Copy JSON",
-								iconSize: 12,
-								variant: "outline",
-								size: "sm",
-								className: "h-6.5 gap-1.5 text-xs",
-								hasTooltip: false,
-							}),
-							linkButton(
-								h,
-								{
-									variant: "outline",
-									size: "sm",
-									className: "h-6.5 gap-1.5 text-xs",
-									href: `${hrefOf(AppRoute.Trace({ traceId: span.traceId, search: {} }))}${orderedSearch([
-										["t", span.timestamp],
-										["spanId", span.spanId],
-									])}`,
-								},
-								["Open in Traces", icon(h, "ExternalLinkIcon")],
-							),
-						],
+	return vstack(h, { shrink: true, className: "min-h-0 grow text-left" }, [
+		titleRow(h, span, inputs, closeTrigger),
+		hstack(
+			h,
+			{ gap: "2", align: "center", wrap: true, className: "shrink-0 border-border border-b px-5 pb-2" },
+			[
+				tabStrip(h, active, messages.length, toolCalls.length),
+				hstack(h, { gap: "2", className: "ml-auto" }, [
+					payloadCopyButton(h, model, {
+						key: `${keyPrefix}:json`,
+						value: encodePrettyJson(span),
+						label: "Span JSON",
+						idleLabel: "Copy JSON",
+						iconSize: 12,
+						variant: "outline",
+						size: "sm",
+						className: "h-6.5 gap-1.5 text-xs",
+						hasTooltip: false,
+					}),
+					linkButton(
+						h,
+						{
+							variant: "outline",
+							size: "sm",
+							className: "h-6.5 gap-1.5 text-xs",
+							href: `${hrefOf(AppRoute.Trace({ traceId: span.traceId, search: {} }))}${orderedSearch(
+								[
+									["t", span.timestamp],
+									["spanId", span.spanId],
+								],
+							)}`,
+						},
+						["Open in Traces", icon(h, "ExternalLinkIcon")],
 					),
-				],
-			),
-			h.div(
-				[h.Class("min-h-0 grow overflow-y-auto overscroll-contain px-5 pb-6")],
-				[metaStrip(h, model, span, timeZone), section()],
-			),
-		],
-	)
+				]),
+			],
+		),
+		h.div(
+			[h.Class("min-h-0 grow overflow-y-auto overscroll-contain px-5 pb-6")],
+			[metaStrip(h, model, span, timeZone), section()],
+		),
+	])
 }
 
 /** The same wording the waterfall's headers use for the fallback partition. */
-const turnOrdinal = (turn: SessionTurn): string => `${turn.anchorKind === "trace" ? "Segment" : "Turn"} ${turn.index}`
+const turnOrdinal = (turn: SessionTurn): string =>
+	`${turn.anchorKind === "trace" ? "Segment" : "Turn"} ${turn.index}`
 
 /** The overlay of the Overview, Traces and Flow views; only the Flow names the span's turn. */
-export const viewPopover = (h: H, model: Model, data: SessionData, view: SessionView, timeZone: string): Html => {
+export const viewPopover = (
+	h: H,
+	model: Model,
+	data: SessionData,
+	view: SessionView,
+	timeZone: string,
+): Html => {
 	const spanId = model.search.span
 	const found =
 		spanId === undefined
-			? undefined
-			: data.turns.flatMap((turn) => turn.spans.map((span) => ({ span, turn }))).find(({ span }) => span.spanId === spanId)
+			? Option.none()
+			: Arr.findFirst(
+					Arr.flatMap(data.turns, (turn) => Arr.map(turn.spans, (span) => ({ span, turn }))),
+					({ span }) => span.spanId === spanId,
+				)
 	return spanPopover(
 		h,
 		model,
-		found === undefined
-			? undefined
-			: {
-					span: found.span,
-					toolResults: data.toolResults,
-					turnOrdinal: view === "flow" ? turnOrdinal(found.turn) : undefined,
-					isTraceDoor: view !== "trace",
-					timeZone,
-				},
+		Option.match(found, {
+			onNone: () => undefined,
+			onSome: ({ span, turn }) => ({
+				span,
+				toolResults: data.toolResults,
+				turnOrdinal: view === "flow" ? turnOrdinal(turn) : undefined,
+				isTraceDoor: view !== "trace",
+				timeZone,
+			}),
+		}),
 	)
 }
 
@@ -162,7 +178,7 @@ export const spanPopover = (h: H, model: Model, inputs: SpanPopoverInputs | unde
 		viewInputs: {
 			// `IconButton`'s tooltip: its label, in the icon-button popup layout.
 			toContent: () => ["Close span detail"],
-			className: iconButtonTooltipStyles,
+			layout: "icon-button",
 			toView: ({ trigger, portal }) =>
 				h.submodel({
 					slotId: SPAN_DIALOG_ID,
@@ -184,11 +200,13 @@ export const spanPopover = (h: H, model: Model, inputs: SpanPopoverInputs | unde
 							inputs === undefined
 								? []
 								: [
-										h.div(
-											[
-												h.DataAttribute("slot", "span-popover"),
-												h.Class("flex min-h-0 min-w-0 grow flex-col"),
-											],
+										vstack(
+											h,
+											{
+												shrink: true,
+												className: "min-h-0 grow",
+												attributes: [h.DataAttribute("slot", "span-popover")],
+											},
 											[expansion(h, model, inputs, trigger())],
 										),
 										...(portal === null ? [] : [portal]),
@@ -199,7 +217,9 @@ export const spanPopover = (h: H, model: Model, inputs: SpanPopoverInputs | unde
 	})
 
 const tabCount = (h: H, count: number): ReadonlyArray<Html> =>
-	count === 0 ? [] : [h.span([h.Class("font-mono text-3xs text-muted-foreground tabular-nums")], [String(count)])]
+	count === 0
+		? []
+		: [typography(h, { size: "3xs", tone: "muted", mono: true, numeric: true }, [String(count)])]
 
 const isSpanTab = (value: string): value is SpanDetailTab =>
 	value === "details" || value === "messages" || value === "tools" || value === "logs"
@@ -232,46 +252,46 @@ const titleRow = (
 ): Html => {
 	const category = classifyAiSpan(span)
 	const isErrored = spanFailed(span)
-	const subtitle = [turnOrdinal, spanModel(span), formatDuration(span.durationMs)]
-		.filter((part): part is string => part !== undefined)
-		.join(" · ")
-	return h.div(
-		[h.Class("flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 px-5 pt-4 pb-3")],
-		[
-			icon(h, isErrored ? "CircleXmarkIcon" : CATEGORY_ICON[category], {
-				size: 14,
-				className: cn("shrink-0", isErrored ? "text-severity-error" : CATEGORY_TEXT[category]),
-				attributes: [h.AriaHidden(true)],
-			}),
-			h.span([h.Class("min-w-0 truncate font-medium font-mono text-sm")], [span.spanName]),
-			...(subtitle === "" ? [] : [h.span([h.Class("text-muted-foreground text-xs")], [subtitle])]),
-			h.div(
-				[h.Class("ml-auto flex items-center gap-2")],
-				[
-					...(isTraceDoor
-						? [
-								button(
-									h,
-									{
-										variant: "outline",
-										size: "xs",
-										attributes: [h.OnClick(Message.ClickedOpenInTraceView())],
-									},
-									["Open in Traces view"],
-								),
-							]
-						: []),
-					iconButton(
-						h,
-						{
-							label: "Close span detail",
-							hasTooltip: false,
-							attributes: [...closeTrigger, h.OnClick(Message.ClickedCloseSpan())],
-						},
-						[icon(h, "XmarkIcon")],
-					),
-				],
-			),
-		],
+	const subtitle = Arr.join(
+		Arr.filter(
+			[turnOrdinal, spanModel(span), formatDuration(span.durationMs)],
+			(part): part is string => part !== undefined,
+		),
+		" · ",
 	)
+	return hstack(h, { align: "center", wrap: true, className: "shrink-0 gap-x-3 gap-y-1 px-5 pt-4 pb-3" }, [
+		icon(h, isErrored ? "CircleXmarkIcon" : CATEGORY_ICON[category], {
+			size: 14,
+			className: cn("shrink-0", isErrored ? "text-severity-error" : CATEGORY_TEXT[category]),
+			attributes: [h.AriaHidden(true)],
+		}),
+		typography(h, { size: "sm", weight: "medium", mono: true, truncate: true, className: "min-w-0" }, [
+			span.spanName,
+		]),
+		...(subtitle === "" ? [] : [typography(h, { size: "xs", tone: "muted" }, [subtitle])]),
+		hstack(h, { gap: "2", className: "ml-auto" }, [
+			...(isTraceDoor
+				? [
+						button(
+							h,
+							{
+								variant: "outline",
+								size: "xs",
+								attributes: [h.OnClick(Message.ClickedOpenInTraceView())],
+							},
+							["Open in Traces view"],
+						),
+					]
+				: []),
+			iconButton(
+				h,
+				{
+					label: "Close span detail",
+					hasTooltip: false,
+					attributes: [...closeTrigger, h.OnClick(Message.ClickedCloseSpan())],
+				},
+				[icon(h, "XmarkIcon")],
+			),
+		]),
+	])
 }

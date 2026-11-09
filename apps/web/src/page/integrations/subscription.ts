@@ -1,4 +1,4 @@
-import { Duration, Effect, Option, Queue, Schema, Stream } from "effect"
+import { Duration, Effect, Option, Queue, Schema, Stream, Array as Arr } from "effect"
 import { AsyncData, Subscription } from "foldkit"
 import { gcpConnectionState } from "../../components/integrations/gcp-connector-state"
 import { ingestPhaseOf } from "../infra-integrations/cloudflare/ingest"
@@ -18,6 +18,12 @@ import { runConfirmed } from "./gcp-configure-derive"
 import { configureConnector } from "./update-gcp-configure"
 import { backoffPollTicks, pollTicks, whenPresent } from "../../data/poll"
 
+/** The popup's document could not be written: it is already on the provider's cross-origin page. */
+export class PopupDocumentError extends Schema.TaggedError<PopupDocumentError>()(
+	"@maple/web/integrations/PopupDocumentError",
+	{ message: Schema.String, cause: Schema.Defect() },
+) {}
+
 const one = (message: Message): Stream.Stream<Message> => Stream.make(message)
 
 const POPUP_TICK_MS = 500
@@ -34,15 +40,31 @@ const interimDocument = (label: string) => `<!doctype html>
   @media (prefers-color-scheme: dark) { body { background:#1c1917; color:#d6d3d1; } }
 </style></head><body>Connecting to ${label}…</body></html>`
 
+/**
+ * A popup still open from an earlier click is reused by name; once it is on the provider's page it
+ * is cross-origin and its document throws, so it keeps that page until it is sent to the new URL.
+ */
 const openPopup = (name: string, features: string, label: string) =>
-	Effect.sync(() => {
-		const popup = window.open("", name, features)
-		if (popup !== null) {
-			popup.document.write(interimDocument(label))
-			popup.document.close()
-		}
-		return popup
-	})
+	Effect.sync(() => window.open("", name, features)).pipe(
+		Effect.tap((popup) =>
+			popup === null
+				? Effect.void
+				: Effect.ignore(
+						Effect.try({
+							try: () => {
+								// oxlint-disable-next-line typescript/no-deprecated -- fills a blank popup before it navigates; nothing else writes an about:blank document.
+								popup.document.write(interimDocument(label))
+								popup.document.close()
+							},
+							catch: (cause) =>
+								new PopupDocumentError({
+									message: "could not write the popup's placeholder",
+									cause,
+								}),
+						}),
+					),
+		),
+	)
 
 /** Polls the popup until it closes: `PolledConnect` every 3 s (polling providers), then `Closed`. */
 
@@ -52,33 +74,32 @@ const openPopup = (name: string, features: string, label: string) =>
  */
 const ticker = (attempt: number, polls: boolean, isClosed: () => boolean, graceMs: number | null) =>
 	Stream.callback<Message>((queue) =>
-		Effect.acquireRelease(
-			Effect.sync(() => {
-				const state = { ticks: 0 }
-				const interval = setInterval(() => {
-					state.ticks += 1
-					if (polls && state.ticks % POLL_EVERY_TICKS === 0)
+		Effect.gen(function* () {
+			// One tick; `false` once the popup is gone, which ends the ticking.
+			const tick = (ticks: number) =>
+				Effect.sync(() => {
+					if (polls && ticks % POLL_EVERY_TICKS === 0)
 						Queue.offerUnsafe(queue, Message.PolledConnect({ attempt }))
 					if (graceMs === null && isClosed()) {
-						clearInterval(interval)
 						Queue.offerUnsafe(queue, Message.ClosedConnectPopup({ attempt }))
+						return false
 					}
-				}, POPUP_TICK_MS)
-				const timeout =
-					graceMs === null
-						? undefined
-						: setTimeout(
-								() => Queue.offerUnsafe(queue, Message.EndedConnectGrace({ attempt })),
-								graceMs,
-							)
-				return { interval, timeout }
-			}),
-			({ interval, timeout }) =>
-				Effect.sync(() => {
-					clearInterval(interval)
-					if (timeout !== undefined) clearTimeout(timeout)
-				}),
-		).pipe(Effect.andThen(Effect.never)),
+					return true
+				})
+			const ticking = (ticks: number): Effect.Effect<void> =>
+				Effect.flatMap(Effect.delay(tick(ticks), POPUP_TICK_MS), (isOpen) =>
+					isOpen ? ticking(ticks + 1) : Effect.void,
+				)
+			yield* Effect.forkScoped(ticking(1))
+			if (graceMs !== null)
+				yield* Effect.forkScoped(
+					Effect.delay(
+						Effect.sync(() => Queue.offerUnsafe(queue, Message.EndedConnectGrace({ attempt }))),
+						graceMs,
+					),
+				)
+			return yield* Effect.never
+		}),
 	)
 
 const watchPopup = (popup: Window, attempt: number, polls: boolean) =>
@@ -91,13 +112,13 @@ const grace = ({ provider, attempt }: ConnectAttempt) => {
 }
 
 /** `useOAuthPopupFlow`'s `connect`: open in the click, start, then send the popup to the provider. */
-const popupFlow = ({ provider, attempt }: ConnectAttempt) =>
+const popupFlow = ({ provider, attempt, githubMode }: ConnectAttempt) =>
 	Stream.unwrap(
 		Effect.gen(function* () {
 			const spec = PROVIDERS[provider]
 			const popup = yield* openPopup(spec.windowName, spec.windowFeatures, spec.label)
 			const returnTo = yield* currentReturnPath
-			const started = yield* Effect.result(startConnect(provider, returnTo))
+			const started = yield* Effect.result(startConnect(provider, returnTo, githubMode))
 			if (started._tag === "Failure") {
 				yield* Effect.sync(() => popup?.close())
 				return one(
@@ -135,11 +156,8 @@ const every = (millis: number, message: () => Message) =>
 	Stream.map(pollTicks(Duration.millis(millis)), message)
 
 const after = (millis: number, message: () => Message) =>
-	Stream.callback<Message>((queue) =>
-		Effect.acquireRelease(
-			Effect.sync(() => setTimeout(() => Queue.offerUnsafe(queue, message()), millis)),
-			(timeout) => Effect.sync(() => clearTimeout(timeout)),
-		).pipe(Effect.andThen(Effect.never)),
+	Stream.fromEffect(Effect.delay(Effect.sync(message), Duration.millis(millis))).pipe(
+		Stream.concat(Stream.never),
 	)
 
 const CLOUDFLARE_INGEST_MS = 30_000
@@ -169,7 +187,10 @@ const isAwsPending = (model: Model): boolean => {
 	return (
 		status !== null &&
 		setupId !== null &&
-		status.connections.some((connection) => connection.id === setupId && connection.verified_at === null)
+		Arr.some(
+			status.connections,
+			(connection) => connection.id === setupId && connection.verified_at === null,
+		)
 	)
 }
 
@@ -179,7 +200,8 @@ const isAwsStreaming = (model: Model): boolean => {
 	const status = Option.getOrNull(AsyncData.getData(model.statuses.aws.data))
 	return (
 		status !== null &&
-		status.connections.some(
+		Arr.some(
+			status.connections,
 			(connection) => connection.verified_at !== null && connection.metric_stream !== null,
 		)
 	)
@@ -203,7 +225,10 @@ const gcpRefreshInterval = (model: Model): number | null => {
 		onSome: (status) => status.connectors,
 	})
 	if (connectors.length === 0) return null
-	const settling = connectors.some((connector) => gcpConnectionState(connector, model.nowMs) !== "healthy")
+	const settling = Arr.some(
+		connectors,
+		(connector) => gcpConnectionState(connector, model.nowMs) !== "healthy",
+	)
 	return settling ? 10_000 : 60_000
 }
 
@@ -215,7 +240,7 @@ const isAwaitingRun = (model: Model): boolean => {
 	if (connector === undefined) return false
 	if (configure.method === "script") return !runConfirmed(connector, configure.opened, model.nowMs)
 	// `MethodApplyStage`: until each capability's first data, or its removal, is confirmed.
-	return CAPABILITY_IDS.some((capability) => {
+	return Arr.some(CAPABILITY_IDS, (capability) => {
 		const applied =
 			capability === "logs" ? connector.applied_logs_enabled : connector.applied_metrics_enabled
 		return connector[CAPABILITIES[capability].flag] ? applied !== true : applied === true
@@ -237,14 +262,23 @@ const isCloudflareSettling = (model: Model): boolean => {
 	return phase !== null && phase.kind !== "live"
 }
 
-/** The popup (and its grace) is out, a branch change settles, or a repository is still syncing. */
+/** The popup is out, repository discovery is pending, or a repository is still syncing. */
 const isGithubPolling = (model: Model): boolean => {
 	if (integrationOfSearch(model.search.integration) !== "github") return false
 	const status = githubStatusOf(model)
 	const syncing =
 		status?.connected === true &&
-		status.repositories.some((repo) => repo.syncStatus === "pending" || repo.syncStatus === "backfilling")
-	return model.connect.active !== null || model.githubCard.isForcePolling || syncing
+		status.repositoryDiscovery?._tag !== "Failed" &&
+		Arr.some(
+			status.repositories,
+			(repo) => repo.syncStatus === "pending" || repo.syncStatus === "backfilling",
+		)
+	return (
+		model.connect.active !== null ||
+		model.githubCard.isForcePolling ||
+		status?.repositoryDiscovery?._tag === "Pending" ||
+		syncing
+	)
 }
 
 /** The provider whose callback messages this page listens for (`useIntegrationMessage`). */
@@ -257,9 +291,10 @@ const callbackMessages = (provider: ConnectProvider) =>
 	Stream.map(openerReturns(provider), (callback) => Message.ReceivedConnectMessage(callback))
 
 /** Every provider's status lives on this page, so every relayed return re-reads one. */
-const relayMessages = Stream.map(relayedReturns, ({ provider, status, message }) =>
-	Message.ReceivedConnectRelay({ provider, status, message: message ?? "" }),
-)
+const relayMessages = Stream.map(relayedReturns, ({ provider, status, message, github }) => {
+	const relay = { provider, status, message: message ?? "" }
+	return Message.ReceivedConnectRelay(github === undefined ? relay : { ...relay, github })
+})
 
 export const subscriptions = Subscription.make<PageSubscriptionInput<Model>, Message, Resources>()(
 	(entry) => ({

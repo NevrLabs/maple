@@ -15,6 +15,8 @@ import {
 	type Vec3,
 } from "./kit"
 import { linkSeed } from "./transport"
+import { Array as Arr, Order } from "effect"
+import { codeUnitAt } from "@maple/strings"
 
 // The zone and path drawing: stone terraces, meadow mats, worn paths, terrace steps and their
 // helpers.
@@ -65,7 +67,7 @@ export function stoneTerrace(
 /** A small stable number per zone id, so wobble and tufts never reshuffle. */
 function zoneSeed(id: string) {
 	let seed = 7
-	for (let i = 0; i < id.length; i++) seed = (seed * 31 + id.charCodeAt(i)) % 997
+	for (let i = 0; i < id.length; i++) seed = (seed * 31 + codeUnitAt(id, i)) % 997
 	return seed
 }
 
@@ -90,19 +92,23 @@ function meadowOutline({ id, width, depth }: District) {
 	const ring = rounded.getSpacedPoints(samples).slice(0, samples)
 	const salt = zoneSeed(id)
 	// Whole-number frequencies keep the noise periodic, so the outline closes cleanly.
-	const waves = [
-		{ k: 2, a: 0.45 },
-		{ k: 5, a: 0.35 },
-		{ k: Math.max(7, Math.round(perimeter / 1.6)), a: 0.2 },
-	].map((wave, i) => ({ ...wave, phase: ((salt * (i + 3)) % 360) * (Math.PI / 180) }))
-	const outline = ring.map((point, i) => {
+	const waves = Arr.map(
+		[
+			{ k: 2, a: 0.45 },
+			{ k: 5, a: 0.35 },
+			{ k: Math.max(7, Math.round(perimeter / 1.6)), a: 0.2 },
+		],
+		(wave, i) => ({ ...wave, phase: ((salt * (i + 3)) % 360) * (Math.PI / 180) }),
+	)
+	const outline = Arr.map(ring, (point, i) => {
 		const t = i / samples
 		const next = ring[(i + 1) % samples] ?? point,
 			previous = ring[(i + samples - 1) % samples] ?? point
 		const tangent = next.clone().sub(previous).normalize()
-		const noise = waves.reduce(
-			(sum, { k, a, phase }) => sum + a * Math.sin(2 * Math.PI * k * t + phase),
+		const noise = Arr.reduce(
+			waves,
 			0,
+			(sum, { k, a, phase }) => sum + a * Math.sin(2 * Math.PI * k * t + phase),
 		)
 		return point.clone().addScaledVector(new THREE.Vector2(tangent.y, -tangent.x), 0.09 + 0.2 * noise)
 	})
@@ -140,7 +146,7 @@ export function meadowMat(_scope: Scope, { district, palette }: { district: Dist
 function paintTurf(geometry: THREE.BufferGeometry, moss: string, soil: string) {
 	const normal = geometry.getAttribute("normal")
 	const colors = geometry.getAttribute("color")
-	if (!normal || !colors) return
+	if (normal == null || colors == null) return
 	const [top, wall] = [new THREE.Color(moss), new THREE.Color(soil)]
 	const tone = new THREE.Color()
 	for (let i = 0; i < normal.count; i++) {
@@ -164,7 +170,7 @@ function meadowTufts(edge: THREE.Shape, x: number, top: number, z: number, seed:
 	const ring = edge.extractPoints(1).shape
 	const salt = zoneSeed(seed)
 	const points: number[] = []
-	ring.forEach((point, i) => {
+	Arr.forEach(ring, (point, i) => {
 		if ((i + salt) % 5 !== 0) return
 		const next = ring[(i + 1) % ring.length] ?? point
 		const tangent = next.clone().sub(point).normalize()
@@ -246,10 +252,13 @@ export function terraceSteps(
 	_scope: Scope,
 	{ districts, palette }: { districts: ReadonlyArray<District>; palette: InkPalette },
 ): Child {
-	const tiers = districts.toSorted((a, b) => a.position[0] - b.position[0])
-	return tiers.slice(1).flatMap((lower, i) => {
+	const tiers = Arr.sort(
+		districts,
+		Order.mapInput(Order.Number, (district: District) => district.position[0]),
+	)
+	return Arr.flatMap(tiers.slice(1), (lower, i) => {
 		const upper = tiers[i]
-		if (!upper) return []
+		if (upper === undefined) return []
 		const from = upper.position[0] + upper.width / 2,
 			to = lower.position[0] - lower.width / 2
 		const drop = upper.position[1] - lower.position[1]

@@ -1,14 +1,14 @@
 import { OrgId } from "@maple/domain"
-import { Option, Result, Schema } from "effect"
+import { Option, Result, Schema, Array as Arr } from "effect"
 import { AsyncData } from "foldkit"
 import { expect as expectView, given, label, Mount, role, scene, text, withViewInputs } from "foldkit/scene"
 import { describe, expect, test } from "vitest"
-import { LinkedCursorMessage, MountLinkedCursor } from "../../charts/linked-cursor"
-import { ResolveThemeColors, ThemeMessage } from "../../charts/theme-colors"
-import { toLoadFailure } from "../../data/load-failure"
+import { LinkedCursorMessage, MountLinkedCursor } from "@maple/views/charts/linked-cursor"
+import { ResolveThemeColors, ThemeMessage } from "@maple/views/charts/theme-colors"
+import { toLoadFailure } from "@maple/views/data/load-failure"
 import { PageOutMessage, type PageContext } from "../contract"
 import { Message } from "./message"
-import type { FacetsHint, HealthSnapshot, Model } from "./model"
+import type { FacetsHint, HealthSnapshot, Incident, Model } from "./model"
 import { init, update } from "./update"
 import { view as pageView } from "./view"
 import { healthData } from "./view-health"
@@ -22,7 +22,7 @@ const pageUpdate = (model: Model, message: Message) => update(model, message, co
 const view = withViewInputs(pageView, { context })()
 
 const names = (commands: ReadonlyArray<{ readonly name: string }> | undefined) =>
-	(commands ?? []).map(({ name }) => name)
+	Arr.map(commands ?? [], ({ name }) => name)
 
 const snapshotRow = (serviceName: string): HealthSnapshot => ({
 	serviceName,
@@ -46,18 +46,20 @@ const withFacets = (model: Model, environments: ReadonlyArray<string>) =>
 	)
 
 /** Everything the health sections block on has loaded, with `rows` in the snapshot. */
-const loaded = (rows: ReadonlyArray<HealthSnapshot>): Model => {
+const loaded = (
+	rows: ReadonlyArray<HealthSnapshot>,
+	incidents: ReadonlyArray<Incident> = [
+		{ status: "open", groupKey: null, severity: "critical", signalType: "error_rate" },
+	],
+): Model => {
 	const facets = withFacets(entered().model, ["production"]).model
 	const steps: ReadonlyArray<Message> = [
 		Message.CompletedFetchSnapshot({ key: facets.snapshot.key ?? "", result: Result.succeed(rows) }),
 		Message.CompletedFetchAnomalies({ key: facets.anomalies.key ?? "", result: Result.succeed([]) }),
-		Message.UpdatedIncidents({
-			orgId,
-			incidents: [{ status: "open", groupKey: null, severity: "critical", signalType: "error_rate" }],
-		}),
+		Message.UpdatedIncidents({ orgId, incidents }),
 		Message.UpdatedRules({ orgId, enabled: [true, false] }),
 	]
-	return steps.reduce((model, message) => pageUpdate(model, message).model, facets)
+	return Arr.reduce(steps, facets, (model, message) => pageUpdate(model, message).model)
 }
 
 type Presence = "present" | "absent"
@@ -216,7 +218,7 @@ describe("overview", () => {
 				result: Result.fail(toLoadFailure("boom")),
 			}),
 		]
-		const waiting = steps.reduce((model, message) => pageUpdate(model, message).model, facets)
+		const waiting = Arr.reduce(steps, facets, (model, message) => pageUpdate(model, message).model)
 		expect(AsyncData.isLoading(healthData(waiting))).toBe(true)
 		const failed = pageUpdate(waiting, Message.FailedLoadIncidents({ orgId })).model
 		expect(AsyncData.getData(healthData(failed))).toEqual(
@@ -241,7 +243,7 @@ describe("overview", () => {
 				[ResolveThemeColors, ThemeMessage.ResolvedThemeColors({ colors: {} })],
 				[MountLinkedCursor, LinkedCursorMessage.CompletedMountLinkedCursor()],
 			),
-			expectView(text("All clear")).toBeAbsent(),
+			expectView(text("Firing now:")).toBeAbsent(),
 		)
 	})
 
@@ -271,10 +273,46 @@ describe("overview", () => {
 			given(loaded([snapshotRow("checkout"), snapshotRow("cart")])),
 			themeResolved(),
 			cursorMounted(),
-			expectView(text("Firing now")).toExist(),
-			expectView(text("1 critical")).toExist(),
+			expectView(text("Firing now:")).toExist(),
+			expectView(text("1 incident · 1 critical")).toExist(),
 			expectView(role("link", { name: "View healthy services" })).toExist(),
 			expectView(role("link", { name: /checkout/ })).toExist(),
+		)
+	})
+
+	test("an open anomaly-rule incident is an open anomaly, not a firing incident", () => {
+		const anomaly: Incident = {
+			status: "open",
+			groupKey: null,
+			severity: "critical",
+			signalType: "anomaly",
+		}
+		scene(
+			{ update: pageUpdate, view },
+			given(loaded([snapshotRow("checkout")], [anomaly])),
+			themeResolved(),
+			cursorMounted(),
+			expectView(text("Open:")).toExist(),
+			expectView(text("1 anomaly")).toExist(),
+			expectView(text("Firing now:")).not.toExist(),
+		)
+		scene(
+			{ update: pageUpdate, view },
+			given(
+				loaded(
+					[snapshotRow("checkout")],
+					[
+						anomaly,
+						{ status: "open", groupKey: null, severity: "warning", signalType: "error_rate" },
+					],
+				),
+			),
+			themeResolved(),
+			cursorMounted(),
+			expectView(text("Firing now:")).toExist(),
+			expectView(text("1 incident · 1 warning")).toExist(),
+			expectView(text("Open:")).toExist(),
+			expectView(text("1 anomaly")).toExist(),
 		)
 	})
 

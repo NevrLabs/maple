@@ -1,27 +1,31 @@
+import { AI_CREDITS_FEATURE_ID } from "@maple/domain/billing"
 import { formatCurrency } from "@maple/domain/format"
-import type { BillingCustomer } from "@maple/domain/http"
+import type { AiCreditSourceUsage, BillingCustomer } from "@maple/domain/http"
 import { cn } from "@maple/ui/lib/utils"
 import { capApplies, parseCapInput, spendLimitFor } from "../../../lib/billing/controls"
 import {
 	FEATURE_COLORS,
 	type FeatureSpend,
 	featureUnit,
+	formatCredits,
 	rateCaption,
 	SPEND_FEATURES,
 	type SpendModel,
 	usageMeter,
 } from "../../../lib/billing/spend"
 import { formatCount, formatUsage, formatUsageAgainst } from "../../../lib/billing/usage"
-import { Option, Schema } from "effect"
+import { Option, Schema, Array as Arr } from "effect"
 import { AsyncData } from "foldkit"
 import type { Html, HtmlBuilder } from "foldkit/html"
-import { button } from "../../../ui/button"
-import { inputGroup, inputGroupAddon, inputGroupInput, inputGroupText } from "../../../ui/input-group"
-import { segmentedBar } from "../../../ui/meter"
-import { panel } from "../../../ui/panel"
-import { skeleton } from "../../../ui/skeleton"
-import { table, tableBody, tableCell, tableHead, tableHeader, tableRow } from "../../../ui/table"
-import { CAP_INPUT_ID, Message, type Model, SpendFeatureId } from "./model"
+import { button } from "@maple/views/ui/button"
+import { inputGroup, inputGroupAddon, inputGroupInput, inputGroupText } from "@maple/views/ui/input-group"
+import { segmentedBar } from "@maple/views/ui/meter"
+import { panel } from "@maple/views/ui/panel"
+import { skeleton } from "@maple/views/ui/skeleton"
+import { table, tableBody, tableCell, tableHead, tableHeader, tableRow } from "@maple/views/ui/table"
+import { canManage, CAP_INPUT_ID, Message, type Model, SpendFeatureId } from "./model"
+import { typography, typographyClass } from "@maple/views/ui/typography"
+import { hstack, vstack } from "@maple/views/ui/stack"
 
 type H = HtmlBuilder<Message>
 
@@ -31,11 +35,13 @@ type H = HtmlBuilder<Message>
 const featureUsage = (featureId: string, value: number): string =>
 	featureUnit(featureId) === "GB" ? formatUsage(value) : formatCount(value)
 
-/** A volume with its unit: "164.00 GB", "3,412 sessions". */
+/** A volume with its unit: "164.00 GB", "3,412 sessions", or dollars for AI credits ("$4.20"). */
 const withUnit = (featureId: string, value: number) =>
-	featureUnit(featureId) === "GB"
-		? featureUsage(featureId, value)
-		: `${formatCount(value)} ${featureUnit(featureId)}`
+	featureId === AI_CREDITS_FEATURE_ID
+		? formatCredits(value)
+		: featureUnit(featureId) === "GB"
+			? featureUsage(featureId, value)
+			: `${formatCount(value)} ${featureUnit(featureId)}`
 
 /** "164.00 GB of 100.00 GB": usage against the allotment, or what stands in for one. */
 const usageLine = (feature: FeatureSpend): string => {
@@ -43,6 +49,8 @@ const usageLine = (feature: FeatureSpend): string => {
 	if (feature.unlimited) return `${used}, unlimited`
 	if (feature.included === null)
 		return feature.ratePerUnit === null ? `${used}, not on your plan` : `${used}, no allotment`
+	if (feature.featureId === AI_CREDITS_FEATURE_ID)
+		return `${used} of ${withUnit(feature.featureId, feature.included)}`
 	return featureUnit(feature.featureId) === "GB"
 		? formatUsageAgainst(feature.used, feature.included)
 		: `${formatCount(feature.used)} of ${withUnit(feature.featureId, feature.included)}`
@@ -52,9 +60,15 @@ export const usageTableSkeleton = (h: H): Html =>
 	panel(
 		h,
 		{},
-		SPEND_FEATURES.map((featureId) =>
-			h.div(
-				[h.Key(featureId), h.Class("flex items-center gap-4 border-b px-3 py-3 last:border-b-0")],
+		Arr.map(SPEND_FEATURES, (featureId) =>
+			hstack(
+				h,
+				{
+					gap: "4",
+					align: "center",
+					className: "border-b px-3 py-3 last:border-b-0",
+					attributes: [h.Key(featureId)],
+				},
 				[
 					skeleton(h, "h-4 w-32"),
 					skeleton(h, "h-1 flex-1"),
@@ -67,67 +81,61 @@ export const usageTableSkeleton = (h: H): Html =>
 
 const capEditor = (h: H, model: Model, feature: FeatureSpend): Html => {
 	const parsed = parseCapInput(model.capDraft)
-	return h.div(
-		[h.Class("flex flex-col gap-1.5")],
-		[
-			h.div(
-				[h.Class("flex items-center gap-1.5")],
-				[
-					inputGroup(h, { className: "w-28" }, [
-						inputGroupInput(h, {
-							id: CAP_INPUT_ID,
-							// Text, not number: a number input reports unparseable text as "", which reads as "no cap".
-							type: "text",
-							controlClassName: "font-mono tabular-nums",
-							attributes: [
-								h.AriaLabel(`${feature.label} paid overage cap`),
-								h.InputMode("decimal"),
-								h.Value(model.capDraft),
-								h.Placeholder("No cap"),
-								h.OnInput((value) => Message.ChangedCap({ value })),
-								h.OnKeyDown((key) => Message.PressedCapKey({ key })),
-							],
-						}),
-						inputGroupAddon(h, { align: "inline-end" }, [
-							inputGroupText(h, {}, [featureUnit(feature.featureId)]),
-						]),
-					]),
-					button(
-						h,
-						{
-							size: "sm",
-							isLoading: model.isSavingCap,
-							isDisabled: !parsed.valid,
-							attributes: [h.OnClick(Message.ClickedSaveCap())],
-						},
-						["Save"],
-					),
-					button(
-						h,
-						{
-							size: "sm",
-							variant: "ghost",
-							isDisabled: model.isSavingCap,
-							attributes: [h.OnClick(Message.ClickedCancelCap())],
-						},
-						["Cancel"],
-					),
-				],
+	return vstack(h, { gap: "1.5" }, [
+		hstack(h, { gap: "1.5" }, [
+			inputGroup(h, { className: "w-28" }, [
+				inputGroupInput(h, {
+					id: CAP_INPUT_ID,
+					// Text, not number: a number input reports unparseable text as "", which reads as "no cap".
+					type: "text",
+					controlClassName: typographyClass({ mono: true, numeric: true }),
+					attributes: [
+						h.AriaLabel(`${feature.label} paid overage cap`),
+						h.InputMode("decimal"),
+						h.Value(model.capDraft),
+						h.Placeholder("No cap"),
+						h.OnInput((value) => Message.ChangedCap({ value })),
+						h.OnKeyDown((key) => Message.PressedCapKey({ key })),
+					],
+				}),
+				inputGroupAddon(h, { align: "inline-end" }, [
+					inputGroupText(h, {}, [featureUnit(feature.featureId)]),
+				]),
+			]),
+			button(
+				h,
+				{
+					size: "sm",
+					isLoading: model.isSavingCap,
+					isDisabled: !parsed.valid,
+					attributes: [h.OnClick(Message.ClickedSaveCap())],
+				},
+				["Save"],
 			),
-			h.p(
-				[h.Class(cn("text-2xs", parsed.valid ? "text-muted-foreground" : "text-destructive"))],
-				[
-					!parsed.valid
-						? "Enter zero or more, or leave empty for no cap."
-						: parsed.cap === null
-							? "Empty removes the cap."
-							: feature.included === null
-								? "Paid overage."
-								: `Paid overage. Stops at ${withUnit(feature.featureId, feature.included + parsed.cap)}`,
-				],
+			button(
+				h,
+				{
+					size: "sm",
+					variant: "ghost",
+					isDisabled: model.isSavingCap,
+					attributes: [h.OnClick(Message.ClickedCancelCap())],
+				},
+				["Cancel"],
 			),
-		],
-	)
+		]),
+		h.p(
+			[h.Class(cn("text-2xs", parsed.valid ? "text-muted-foreground" : "text-destructive-foreground"))],
+			[
+				!parsed.valid
+					? "Enter zero or more, or leave empty for no cap."
+					: parsed.cap === null
+						? "Empty removes the cap."
+						: feature.included === null
+							? "Paid overage."
+							: `Paid overage. Stops at ${withUnit(feature.featureId, feature.included + parsed.cap)}`,
+			],
+		),
+	])
 }
 
 /** The cap cell at rest: the cap and where usage stops, or why a cap does not apply. */
@@ -138,42 +146,83 @@ const capSummary = (h: H, feature: FeatureSpend, cap: number | undefined): Html 
 			: feature.overageAllowed === false
 				? "Hard cap at included"
 				: "Not billed"
-		return h.span([h.Class("text-muted-foreground")], [reason])
+		return typography(h, { tone: "muted" }, [reason])
 	}
-	if (cap === undefined) return h.span([h.Class("text-muted-foreground")], ["Uncapped"])
+	if (cap === undefined) return typography(h, { tone: "muted" }, ["Uncapped"])
 	const isReached = feature.overageUnits > 0 && feature.overageUnits >= cap
-	return h.div(
-		[h.Class("flex min-w-0 flex-col")],
-		[
-			h.span(
-				[h.Class("font-mono tabular-nums")],
-				[cap === 0 ? "No overage" : `+${withUnit(feature.featureId, cap)}`],
-			),
-			h.span(
-				[h.Class(cn("text-2xs", isReached ? "text-severity-error" : "text-muted-foreground"))],
-				[
-					isReached
-						? "Cap reached, new data rejected"
-						: feature.included === null
-							? "Paid overage"
-							: `Stops at ${withUnit(feature.featureId, feature.included + cap)}`,
-				],
-			),
-		],
-	)
+	return vstack(h, { shrink: true }, [
+		typography(h, { mono: true, numeric: true }, [
+			cap === 0 ? "No overage" : `+${withUnit(feature.featureId, cap)}`,
+		]),
+		h.span(
+			[h.Class(cn("text-2xs", isReached ? "text-severity-error" : "text-muted-foreground"))],
+			[
+				isReached
+					? feature.featureId === AI_CREDITS_FEATURE_ID
+						? "Cap reached, AI features paused"
+						: "Cap reached, new data rejected"
+					: feature.included === null
+						? "Paid overage"
+						: `Stops at ${withUnit(feature.featureId, feature.included + cap)}`,
+			],
+		),
+	])
 }
 
 /** Bytes ingest rules dropped for a signal this cycle; never metered, so never billed. */
 const droppedLine = (h: H, model: Model, featureId: string): ReadonlyArray<Html> => {
 	const stats = AsyncData.getOrElse(model.ruleStats, () => null)
-	const signal = stats?.signals.find((entry) => entry.signal === featureId)
+	const signal = Option.getOrUndefined(
+		Arr.findFirst(stats?.signals ?? [], (entry) => entry.signal === featureId),
+	)
 	return signal === undefined || signal.dropped_bytes <= 0
 		? []
 		: [
-				h.span(
-					[h.Class("truncate font-mono text-2xs tabular-nums text-muted-foreground")],
-					[`${formatUsage(signal.dropped_bytes / 1e9)} dropped by rules, not billed`],
+				typography(h, { size: "2xs", tone: "muted", mono: true, numeric: true, truncate: true }, [
+					`${formatUsage(signal.dropped_bytes / 1e9)} dropped by rules, not billed`,
+				]),
+			]
+}
+
+/** Names for the `source` each AI credit charge is tracked with. */
+const AI_SOURCE_LABELS = {
+	chat: "Chat",
+	triage: "Investigations",
+	review: "Code review",
+	bot: "Slack and Discord",
+	security_audit: "Security audits",
+	other: "Other",
+} satisfies Record<AiCreditSourceUsage["source"], string>
+
+/** Where this cycle's AI credits went: "Investigations $3.10 · Chat $1.05". */
+const aiSourcesLine = (h: H, model: Model, feature: FeatureSpend): ReadonlyArray<Html> => {
+	if (feature.featureId !== AI_CREDITS_FEATURE_ID) return []
+	if (AsyncData.isFailure(model.aiUsage))
+		return [
+			hstack(h, { gap: "1.5", shrink: true }, [
+				typography(h, { size: "2xs", tone: "muted", truncate: true }, [
+					"Couldn't load where it went.",
+				]),
+				button(
+					h,
+					{ size: "xs", variant: "link", attributes: [h.OnClick(Message.ClickedRetryAiUsage())] },
+					["Retry"],
 				),
+			]),
+		]
+	const sources = AsyncData.getOrElse(model.aiUsage, () => null)?.bySource ?? []
+	return sources.length === 0
+		? []
+		: [
+				typography(h, { size: "2xs", tone: "muted", mono: true, numeric: true, truncate: true }, [
+					Arr.join(
+						Arr.map(
+							sources,
+							(entry) => `${AI_SOURCE_LABELS[entry.source]} ${formatCredits(entry.credits)}`,
+						),
+						" · ",
+					),
+				]),
 			]
 }
 
@@ -189,97 +238,87 @@ const featureRow = (
 	const hasOverage = feature.overageUnits > 0 && !isHardCapped
 	const meter = usageMeter(feature)
 	const isEditing = model.editingCap === feature.featureId
-	const featureId = Option.getOrNull(Schema.decodeUnknownOption(SpendFeatureId)(feature.featureId))
+	const featureId = Option.getOrNull(Schema.decodeOption(SpendFeatureId)(feature.featureId))
 	const color = FEATURE_COLORS[feature.featureId]
 	return tableRow(
 		h,
 		[
 			tableCell(h, [
-				h.div(
-					[h.Class("flex min-w-0 items-center gap-2")],
-					[
-						h.span([
-							h.AriaHidden(true),
-							h.Class("size-2 shrink-0 rounded-full"),
-							h.Style({ background: color }),
-						]),
-						h.span([h.Class("truncate")], [feature.label]),
-					],
-				),
+				hstack(h, { gap: "2", shrink: true }, [
+					h.span([
+						h.AriaHidden(true),
+						h.Class("size-2 shrink-0 rounded-full"),
+						h.Style({ background: color }),
+					]),
+					typography(h, { truncate: true }, [feature.label]),
+				]),
 			]),
 			tableCell(h, [
-				h.div(
-					[h.Class("flex min-w-0 flex-col gap-1.5")],
-					[
-						segmentedBar(h, {
-							className: "h-1 w-full rounded-none bg-muted",
-							total: 100,
-							segments: [
-								{ key: "included", value: meter.included, color },
-								{ key: "overage", value: meter.overage, className: "bg-primary" },
-							],
-						}),
-						h.span(
-							[h.Class("truncate font-mono text-2xs tabular-nums text-muted-foreground")],
-							[usageLine(feature)],
-						),
-						...droppedLine(h, model, feature.featureId),
-					],
-				),
+				vstack(h, { gap: "1.5", shrink: true }, [
+					segmentedBar(h, {
+						className: "h-1 w-full rounded-none bg-muted",
+						total: 100,
+						segments: [
+							{ key: "included", value: meter.included, color },
+							{ key: "overage", value: meter.overage, className: "bg-primary" },
+						],
+					}),
+					typography(h, { size: "2xs", tone: "muted", mono: true, numeric: true, truncate: true }, [
+						usageLine(feature),
+					]),
+					...droppedLine(h, model, feature.featureId),
+					...aiSourcesLine(h, model, feature),
+				]),
 			]),
 			tableCell(
 				h,
 				[
-					h.div(
-						[h.Class("flex flex-col items-end")],
-						[
-							h.span(
-								[
-									h.Class(
-										cn("font-mono tabular-nums", !hasOverage && "text-muted-foreground"),
+					vstack(h, { align: "end" }, [
+						h.span(
+							[
+								h.Class(
+									cn(
+										typographyClass({ mono: true, numeric: true }),
+										!hasOverage && "text-muted-foreground",
 									),
-								],
-								[
-									isHardCapped && feature.overageUnits > 0
-										? "Rejected"
-										: formatCurrency(feature.overageCents / 100, spend.currency),
-								],
-							),
-							h.span(
-								[h.Class("font-mono text-2xs tabular-nums text-muted-foreground")],
-								[rateCaption(feature)],
-							),
-						],
-					),
+								),
+							],
+							[
+								isHardCapped && feature.overageUnits > 0
+									? "Rejected"
+									: formatCurrency(feature.overageCents / 100, spend.currency),
+							],
+						),
+						typography(h, { size: "2xs", tone: "muted", mono: true, numeric: true }, [
+							rateCaption(feature),
+						]),
+					]),
 				],
 				"text-right",
 			),
 			tableCell(h, [
 				isEditing
 					? capEditor(h, model, feature)
-					: h.div(
-							[h.Class("flex items-center justify-between gap-2")],
-							[
-								capSummary(h, feature, cap),
-								...(model.isAdmin && capApplies(feature) && featureId !== null
-									? [
-											button(
-												h,
-												{
-													size: "sm",
-													variant: "ghost",
-													isDisabled: model.isSavingCap,
-													attributes: [
-														h.AriaLabel(`Edit ${feature.label} cap`),
-														h.OnClick(Message.ClickedEditCap({ featureId })),
-													],
-												},
-												["Edit"],
-											),
-										]
-									: []),
-							],
-						),
+					: hstack(h, { gap: "2", justify: "between" }, [
+							capSummary(h, feature, cap),
+							...(canManage(model) && capApplies(feature) && featureId !== null
+								? [
+										button(
+											h,
+											{
+												size: "sm",
+												variant: "ghost",
+												isDisabled: model.isSavingCap,
+												attributes: [
+													h.AriaLabel(`Edit ${feature.label} cap`),
+													h.OnClick(Message.ClickedEditCap({ featureId })),
+												],
+											},
+											["Edit"],
+										),
+									]
+								: []),
+						]),
 			]),
 		],
 		cn(isEditing && "bg-surface-sunken"),
@@ -301,7 +340,7 @@ export const usageTable = (h: H, model: Model, spend: SpendModel, customer: Bill
 			]),
 			tableBody(
 				h,
-				spend.features.map((feature) => featureRow(h, model, spend, customer, feature)),
+				Arr.map(spend.features, (feature) => featureRow(h, model, spend, customer, feature)),
 			),
 		]),
 	])

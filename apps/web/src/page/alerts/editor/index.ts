@@ -1,5 +1,6 @@
 import { Option, Schema, Stream } from "effect"
 import { Subscription } from "foldkit"
+import { returns } from "../../../data/poll"
 import type { Resources } from "../../../platform/resources"
 import { definePage, type PageSubscriptionInput } from "../../contract"
 import { documentStream } from "../../dashboards/kit/document-stream"
@@ -13,6 +14,8 @@ import { Message } from "./message"
 import { Model } from "./model"
 import { update } from "./update"
 import { breadcrumbsOf, view } from "./view"
+
+const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown))
 
 const byOrg = { orgId: Schema.String }
 const watching = { orgId: Schema.String, isWatching: Schema.Boolean }
@@ -32,11 +35,13 @@ const subscriptions = Subscription.make<PageSubscriptionInput<Model>, Message, R
 	}),
 	states: entry(byOrg, {
 		modelToDependencies: ({ context }) => ({ orgId: context.orgId }),
-		dependenciesToStream: ({ orgId }) => ruleStateRows(orgId, (rows) => Message.UpdatedRuleStates({ orgId, rows })),
+		dependenciesToStream: ({ orgId }) =>
+			ruleStateRows(orgId, (rows) => Message.UpdatedRuleStates({ orgId, rows })),
 	}),
 	incidents: entry(byOrg, {
 		modelToDependencies: ({ context }) => ({ orgId: context.orgId }),
-		dependenciesToStream: ({ orgId }) => incidentRows(orgId, (rows) => Message.UpdatedIncidents({ orgId, rows })),
+		dependenciesToStream: ({ orgId }) =>
+			incidentRows(orgId, (rows) => Message.UpdatedIncidents({ orgId, rows })),
 	}),
 	destinations: entry(byOrg, {
 		modelToDependencies: ({ context }) => ({ orgId: context.orgId }),
@@ -47,18 +52,22 @@ const subscriptions = Subscription.make<PageSubscriptionInput<Model>, Message, R
 	menuChatConnect: entry(ChatConnectStream.Dependencies.fields, {
 		modelToDependencies: ({ model }) => ChatConnectStream.dependenciesOf(model.chatConnect),
 		dependenciesToStream: (dependencies) =>
-			Stream.map(ChatConnectStream.streamOf(dependencies), (message) => Message.GotChatConnectMessage({ message })),
+			Stream.map(ChatConnectStream.streamOf(dependencies), (message) =>
+				Message.GotChatConnectMessage({ message }),
+			),
 	}),
 	/** The destination dialog's Linear connect popup coming back. */
 	destinationConnectReturn: entry(DestinationDialog.ConnectReturnDependencies, {
-		modelToDependencies: ({ model }) => DestinationDialog.connectReturnDependencies(model.destinationDialog),
+		modelToDependencies: ({ model }) =>
+			DestinationDialog.connectReturnDependencies(model.destinationDialog),
 		dependenciesToStream: (dependencies) =>
 			Stream.map(DestinationDialog.connectReturnStream(dependencies), (message) =>
 				Message.GotDestinationDialogMessage({ message }),
 			),
 	}),
 	destinationChatConnect: entry(ChatConnectStream.Dependencies.fields, {
-		modelToDependencies: ({ model }) => DestinationDialog.chatConnectDependencies(model.destinationDialog),
+		modelToDependencies: ({ model }) =>
+			DestinationDialog.chatConnectDependencies(model.destinationDialog),
 		dependenciesToStream: (dependencies) =>
 			Stream.map(DestinationDialog.chatConnectStream(dependencies), (message) =>
 				Message.GotDestinationDialogMessage({ message }),
@@ -75,11 +84,22 @@ const subscriptions = Subscription.make<PageSubscriptionInput<Model>, Message, R
 				? collectionLoadFailed(`alert_rules:${orgId}`, () => Message.FailedLoadRules({ orgId }))
 				: Stream.empty,
 	}),
+	/** Chains are read again on each return to the tab, so one made from "Create a chain" shows up. */
+	chainsRefresh: entry(
+		{},
+		{
+			modelToDependencies: () => ({}),
+			dependenciesToStream: () => Stream.map(returns(), () => Message.ReturnedToTab()),
+		},
+	),
 	/** `useDashboardsRead`, only for the id-lookup fallback (a widget link without its snapshot). */
 	sourceDashboard: entry(
 		{ orgId: Schema.String, dashboardId: Schema.NullOr(Schema.String) },
 		{
-			modelToDependencies: ({ model, context }) => ({ orgId: context.orgId, dashboardId: lookupDashboardId(model) }),
+			modelToDependencies: ({ model, context }) => ({
+				orgId: context.orgId,
+				dashboardId: lookupDashboardId(model),
+			}),
 			dependenciesToStream: ({ orgId, dashboardId }) =>
 				dashboardId === null
 					? Stream.empty
@@ -91,7 +111,10 @@ const subscriptions = Subscription.make<PageSubscriptionInput<Model>, Message, R
 	dashboardsLoad: entry(watching, {
 		modelToDependencies: ({ model, context }) => ({
 			orgId: context.orgId,
-			isWatching: lookupDashboardId(model) !== null && model.sourceDashboards === null && !model.isDashboardsLoadFailed,
+			isWatching:
+				lookupDashboardId(model) !== null &&
+				model.sourceDashboards === null &&
+				!model.isDashboardsLoadFailed,
 		}),
 		dependenciesToStream: ({ orgId, isWatching }) =>
 			isWatching
@@ -107,7 +130,7 @@ export const page = definePage(
 	{
 		routes: ["AlertsCreate"],
 		// A different rule or prefill source is a different draft (`RuleDraft.key` remounts the surface).
-		key: (route) => JSON.stringify(route.search),
+		key: (route) => encodeJson(route.search),
 		init,
 		update,
 		view,

@@ -4,6 +4,7 @@ import {
 	QUERY_ENGINE_BATCH_MAX,
 	type QueryEngineBatchOutcome,
 } from "@maple/query-engine"
+import { Array as Arr } from "effect"
 
 /**
  * Coalesces individual query executions into `/internal/query-engine/execute-batch`.
@@ -52,6 +53,7 @@ export const makeExecuteBatcher = (
 
 	const schedule = () => {
 		if (flushHandle !== undefined) return
+		// @effect-diagnostics-next-line globalTimers:off -- the Promise batcher under the Effect executor
 		flushHandle = setTimeout(flush, windowMs)
 	}
 
@@ -67,9 +69,9 @@ export const makeExecuteBatcher = (
 		pending = pending.slice(QUERY_ENGINE_BATCH_MAX)
 		if (pending.length > 0) schedule()
 
-		send(batch.map((entry) => entry.payload)).then(
+		send(Arr.map(batch, (entry) => entry.payload)).then(
 			(results) => {
-				batch.forEach((entry, index) => {
+				Arr.forEach(batch, (entry, index) => {
 					const outcome = results[index]
 					if (outcome === undefined) {
 						entry.reject(new Error("Batch response was missing a result for this query."))
@@ -91,6 +93,7 @@ export const makeExecuteBatcher = (
 
 	return {
 		enqueue: (payload) =>
+			// @effect-diagnostics-next-line newPromise:off -- the Promise batcher under the Effect executor
 			new Promise<QueryEngineExecuteResponse>((resolve, reject) => {
 				pending.push({ payload, resolve, reject })
 				// A full batch has nothing to gain from waiting out the window.

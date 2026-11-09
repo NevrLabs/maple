@@ -1,5 +1,17 @@
+import { ok } from "node:assert"
 import { beforeEach, describe, expect, it } from "bun:test"
-import { Arbitrary, Cause, Effect, Exit, Option, Schema } from "effect"
+import {
+	Arbitrary,
+	Cause,
+	DateTime,
+	Effect,
+	Exit,
+	Option,
+	Schema,
+	Array as Arr,
+	Record as Rec,
+	String as Str,
+} from "effect"
 import { FetchHttpClient } from "effect/http"
 import { encodePublicId, V2LogSearchParams, V2TelemetryWindowQuery } from "@maple/domain/http/v2"
 import { MAX_LIST_RANGE_SECONDS, timeWindowViolation } from "@maple/query-engine"
@@ -48,7 +60,7 @@ const fetchStub = Object.assign(
 		const text = await request.clone().text()
 		requests.push({
 			url: request.url,
-			method: request.method.toUpperCase(),
+			method: Str.toUpperCase(request.method),
 			authorization: request.headers.get("authorization"),
 			body: text.length > 0 ? decodeCapturedBody(JSON.parse(text)) : {},
 		})
@@ -90,7 +102,8 @@ describe("remote-ops request shapes", () => {
 		await Effect.runPromise(Effect.flatMap(v2Client, (v2) => Remote.listServices(v2, { range: RANGE })))
 
 		expect(requests).toHaveLength(1)
-		const request = requests[0]!
+		const request = requests[0]
+		ok(request !== undefined)
 		expect(request.method).toBe("GET")
 		expect(request.authorization).toBe("Bearer maple_ak_testtoken")
 		const url = new URL(request.url)
@@ -110,7 +123,8 @@ describe("remote-ops request shapes", () => {
 		)
 
 		expect(requests).toHaveLength(1)
-		const request = requests[0]!
+		const request = requests[0]
+		ok(request !== undefined)
 		expect(request.method).toBe("POST")
 		expect(new URL(request.url).pathname).toBe("/v2/traces/search")
 		expect(request.body).toMatchObject({
@@ -152,7 +166,7 @@ describe("remote-ops request shapes", () => {
 	it("inspectTrace derives the log window from the trace's own bounds", async () => {
 		const traceId = "7f3a4b5c6d7e8f901234567890abcdef"
 		const requests = stubV2((url) =>
-			url.includes("/logs/search")
+			Str.includes("/logs/search")(url)
 				? listEnvelope([])
 				: {
 						id: traceId,
@@ -169,10 +183,10 @@ describe("remote-ops request shapes", () => {
 		await Effect.runPromise(Effect.flatMap(v2Client, (v2) => Remote.inspectTrace(v2, { traceId })))
 
 		expect(requests).toHaveLength(2)
-		expect(new URL(requests[0]!.url).pathname).toBe(`/v2/traces/${traceId}`)
+		expect(new URL(Arr.getUnsafe(requests, 0).url).pathname).toBe(`/v2/traces/${traceId}`)
 		// `maple trace <id>` takes no time flags, so the window has to come from
 		// the trace itself — a wrong window here silently drops its logs.
-		expect(requests[1]!.body).toMatchObject({
+		expect(Arr.getUnsafe(requests, 1).body).toMatchObject({
 			start_time: "2026-08-15T12:30:00.000Z",
 			// 1 ms past the trace's end: its bounds are truncated to the millisecond.
 			end_time: "2026-08-15T12:30:02.001Z",
@@ -183,7 +197,7 @@ describe("remote-ops request shapes", () => {
 	it("inspectTrace widens the log window when every span shares one instant", async () => {
 		const traceId = "671403778c461093dbe435b41b677d18"
 		const requests = stubV2((url) =>
-			url.includes("/logs/search")
+			Str.includes("/logs/search")(url)
 				? listEnvelope([])
 				: {
 						id: traceId,
@@ -200,7 +214,7 @@ describe("remote-ops request shapes", () => {
 		await Effect.runPromise(Effect.flatMap(v2Client, (v2) => Remote.inspectTrace(v2, { traceId })))
 
 		// The logs search rejects `end_time == start_time` with invalid_time_range.
-		expect(requests[1]!.body).toMatchObject({
+		expect(Arr.getUnsafe(requests, 1).body).toMatchObject({
 			start_time: "2026-10-24T22:04:19.898Z",
 			end_time: "2026-10-24T22:04:19.899Z",
 		})
@@ -222,7 +236,7 @@ describe("remote-ops request shapes", () => {
 			resource_attributes: {},
 		}
 		const requests = stubV2((url) =>
-			url.includes("/logs/search")
+			Str.includes("/logs/search")(url)
 				? listEnvelope([boundaryLog])
 				: {
 						id: traceId,
@@ -241,7 +255,7 @@ describe("remote-ops request shapes", () => {
 		)
 
 		// A 10-day trace takes two 7-day-capped searches, and both return the log.
-		expect(requests.filter((r) => r.url.includes("/logs/search"))).toHaveLength(2)
+		expect(Arr.filter(requests, (r) => Str.includes("/logs/search")(r.url))).toHaveLength(2)
 		expect(output.logs).toHaveLength(1)
 	})
 
@@ -298,7 +312,7 @@ describe("remote-ops request shapes", () => {
 		)
 
 		expect(rows).toHaveLength(1)
-		expect(Object.keys(rows[0]!).sort()).toEqual(
+		expect(Rec.keys(Arr.getUnsafe(rows, 0)).sort()).toEqual(
 			[
 				"avgDuration",
 				"bucket",
@@ -397,7 +411,7 @@ describe("serviceHasTelemetry", () => {
 			sampling_weight: 1,
 		})
 		expect(present).toBe(true)
-		const url = new URL(urls[0]!)
+		const url = new URL(Arr.getUnsafe(urls, 0))
 		expect(url.pathname).toBe("/v2/services/checkout")
 		expect(url.searchParams.get("start_time")).toBe("2026-08-15T12:00:00.000Z")
 	})
@@ -458,15 +472,17 @@ describe("remote-ops window properties", () => {
 				traces,
 				({ startMs, durationMs }) =>
 					Effect.gen(function* () {
-						const start = new Date(startMs).toISOString()
+						const start = DateTime.formatIso(DateTime.makeUnsafe(startMs))
 						const sent = stubV2((url) =>
-							url.includes("/logs/search")
+							Str.includes("/logs/search")(url)
 								? listEnvelope([])
 								: {
 										id: "671403778c461093dbe435b41b677d18",
 										object: "trace",
 										start_time: start,
-										end_time: new Date(startMs + durationMs).toISOString(),
+										end_time: DateTime.formatIso(
+											DateTime.makeUnsafe(startMs + durationMs),
+										),
 										duration_ms: durationMs,
 										span_count: 0,
 										service_count: 0,
@@ -477,30 +493,32 @@ describe("remote-ops window properties", () => {
 						const before = sent.length
 						const v2 = yield* v2Client
 						yield* Remote.inspectTrace(v2, { traceId: "671403778c461093dbe435b41b677d18" })
-						const searches = sent
-							.slice(before)
-							.filter((r) => r.url.includes("/logs/search"))
-							.map((r) => decodeLogSearch(r.body))
-						if (!searches.every(Option.isSome)) return false
-						const windows = searches
-							.map((search) => ({
-								startMs: Date.parse(search.value.start_time),
-								endMs: Date.parse(search.value.end_time),
-							}))
-							.sort((a, b) => a.startMs - b.startMs)
+						const searches = Arr.map(
+							Arr.filter(sent.slice(before), (r) => Str.includes("/logs/search")(r.url)),
+							(r) => decodeLogSearch(r.body),
+						)
+						if (!Arr.every(searches, Option.isSome)) return false
+						const windows = Arr.map(searches, (search) => ({
+							startMs: Date.parse(search.value.start_time),
+							endMs: Date.parse(search.value.end_time),
+						})).sort((a, b) => a.startMs - b.startMs)
 						// Every window is one the logs search serves (it reads the raw logs
 						// table, so it carries the list cap). Logs keep nanoseconds, so the
 						// windows share boundaries and reach past the millisecond-truncated end.
 						return (
 							windows.length > 0 &&
-							windows.every(
+							Arr.every(
+								windows,
 								(w) =>
 									timeWindowViolation(w.startMs, w.endMs, MAX_LIST_RANGE_SECONDS) ===
 									undefined,
 							) &&
-							windows[0]!.startMs === startMs &&
-							windows.every((w, i) => i === 0 || w.startMs === windows[i - 1]!.endMs) &&
-							windows[windows.length - 1]!.endMs > startMs + durationMs
+							Arr.getUnsafe(windows, 0).startMs === startMs &&
+							Arr.every(
+								windows,
+								(w, i) => i === 0 || w.startMs === Arr.getUnsafe(windows, i - 1).endMs,
+							) &&
+							Arr.getUnsafe(windows, windows.length - 1).endMs > startMs + durationMs
 						)
 					}),
 				{ runs: 200 },

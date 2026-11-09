@@ -20,6 +20,7 @@
  */
 import * as m from "../paraglide/messages.js"
 import type { Feature } from "./page-registry"
+import { Array as Arr } from "effect"
 
 export const features: Feature[] = [
 	{
@@ -476,7 +477,10 @@ export const features: Feature[] = [
 				{ key: "evaluates", value: "every minute" },
 				{ key: "fires.after", value: "N consecutive breaches" },
 				{ key: "group.by", value: "service.name · attr.*" },
-				{ key: "routes.to", value: "slack · discord · telegram · pagerduty · email · webhook" },
+				{
+					key: "routes.to",
+					value: "slack · teams · google chat · discord · telegram · pagerduty · incident.io · linear · email · webhook",
+				},
 			],
 			title: m.feat_alerts_panel_title,
 			lede: m.feat_alerts_panel_lede,
@@ -724,6 +728,6 @@ export const features: Feature[] = [
 	},
 ]
 
-export const featureSlugs = features.map((feature) => feature.slug)
+export const featureSlugs = Arr.map(features, (feature) => feature.slug)
 
 export const featureBySlug = (slug: string) => features.find((feature) => feature.slug === slug)

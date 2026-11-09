@@ -3,20 +3,21 @@ import { maximumInvoiceCents, uncappedFeatures } from "../../../lib/billing/cont
 import { getLegacyPlanInfo, getTrialStatus } from "../../../lib/billing/plan-gating"
 import { AsyncData, Submodel } from "foldkit"
 import type { Html, HtmlBuilder } from "foldkit/html"
-import type { LoadFailure } from "../../../data/load-failure"
-import { button } from "../../../ui/button"
-import { errorState } from "../../../ui/error-state"
-import { panel } from "../../../ui/panel"
-import { spinner } from "../../../ui/spinner"
+import type { LoadFailure } from "@maple/views/data/load-failure"
+import { button } from "@maple/views/ui/button"
+import { errorState } from "@maple/views/ui/error-state"
+import { panel } from "@maple/views/ui/panel"
+import { spinner } from "@maple/views/ui/spinner"
 import { adminOnlyNotice } from "../kit/members"
 import { settingsSection, settingsSections } from "../kit/section"
-import { Message, type Model } from "./model"
+import { canManage, Message, type Model } from "./model"
 import { accountOf, spendModelOf, USAGE_HEADING_ID } from "./update"
 import { accountDialogs, billedOrgsSection, linkSection, memberSection } from "./view-account"
 import { cyclePanel, cyclePanelSkeleton } from "./view-cycle"
 import { planSection } from "./view-plan"
 import { detailsSection, invoicesSection, unpaidInvoicesNotice } from "./view-records"
 import { usageTable, usageTableSkeleton } from "./view-usage"
+import { typography, typographyClass } from "@maple/views/ui/typography"
 
 export type ViewInputs = Readonly<{
 	/** The settings page's `billingCustomerAtom`. */
@@ -31,7 +32,7 @@ export type ViewInputs = Readonly<{
 /** Billing, spend-first: this cycle, its usage and caps, the plan, invoices and details. */
 export const view = Submodel.defineView<Model, Message, ViewInputs>((model, inputs, h) => {
 	const notice = adminOnlyNotice(h, {
-		isKnownMember: inputs.isKnownMember && !model.isAdmin,
+		isKnownMember: inputs.isKnownMember && !canManage(model),
 		subject: "billing",
 		adminName: inputs.adminName,
 	})
@@ -62,7 +63,7 @@ export const view = Submodel.defineView<Model, Message, ViewInputs>((model, inpu
 				onRetry: Message.ClickedRetryCustomer(),
 			}),
 			detailsSection(h, model),
-			invoicesSection(h, model, inputs.timeZone),
+			invoicesSection(h, model, inputs.timeZone, inputs.nowMs),
 			...accountDialogs(h, model, account),
 		])
 	const customer = AsyncData.getOrElse(inputs.customer, () => null)
@@ -84,7 +85,7 @@ export const view = Submodel.defineView<Model, Message, ViewInputs>((model, inpu
 				title: "This cycle",
 				description: ["Estimated spend for the current billing period."],
 				framed: false,
-				...(model.isAdmin && {
+				...(canManage(model) && {
 					actions: button(
 						h,
 						{
@@ -118,7 +119,7 @@ export const view = Submodel.defineView<Model, Message, ViewInputs>((model, inpu
 						id: USAGE_HEADING_ID,
 						title: "Usage",
 						description: [
-							"Included usage resets each cycle. A cap limits paid overage for one feature; once it is reached, new data for that feature is rejected until the cycle resets or the cap is raised.",
+							"Included usage resets each cycle. A cap limits paid overage for one feature; once it is reached, new data for that feature is rejected (for AI credits, AI features pause) until the cycle resets or the cap is raised.",
 						],
 						framed: false,
 					},
@@ -134,12 +135,12 @@ export const view = Submodel.defineView<Model, Message, ViewInputs>((model, inpu
 			spend: isLoading ? null : spend,
 			customer,
 			isLegacy,
-			canManage: model.isAdmin,
+			canManage: canManage(model),
 		}),
 		...(account !== null && account.role === "billing_org" && account.members.length > 0
 			? [billedOrgsSection(h, model, account, inputs.timeZone)]
 			: []),
-		invoicesSection(h, model, inputs.timeZone),
+		invoicesSection(h, model, inputs.timeZone, inputs.nowMs),
 		detailsSection(h, model),
 		...(account !== null && account.role === "standalone" ? linkSection(h, model) : []),
 		...accountDialogs(h, model, account),
@@ -174,17 +175,13 @@ const checkoutReturnPanel = (h: H, model: Model): ReadonlyArray<Html> => {
 					},
 					[
 						spinner(h, "size-4 shrink-0"),
-						h.p(
-							[h.Class("text-sm")],
-							[
-								"Confirming your subscription.",
-								" ",
-								h.span(
-									[h.Class("text-muted-foreground")],
-									["This usually takes a few seconds; there's nothing else to click."],
-								),
-							],
-						),
+						typography(h, { size: "sm", as: "p" }, [
+							"Confirming your subscription.",
+							" ",
+							typography(h, { tone: "muted" }, [
+								"This usually takes a few seconds; there's nothing else to click.",
+							]),
+						]),
 					],
 				),
 			]
@@ -194,7 +191,7 @@ const checkoutReturnPanel = (h: H, model: Model): ReadonlyArray<Html> => {
 					h,
 					{
 						tone: "muted",
-						className: "px-4 py-3 text-sm text-muted-foreground",
+						className: typographyClass({ size: "sm", tone: "muted", className: "px-4 py-3" }),
 						attributes: [h.Role("status")],
 					},
 					[

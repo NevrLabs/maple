@@ -1,8 +1,8 @@
 import { assert, describe, it } from "@effect/vitest"
 import { generateKeyPairSync } from "node:crypto"
-import { ConfigProvider, Effect, Layer } from "effect"
+import { ConfigProvider, Effect, Layer, Schema, Array as Arr, String as Str } from "effect"
 import { TestClock } from "effect/testing"
-import type { VcsInstallation } from "@maple/domain/http"
+import { VcsInstallation } from "@maple/domain/http"
 import { Env } from "@maple/backend/platform/Env"
 import { fakeGithubHttp } from "@maple/backend/services/integrations/vcs/__tests__/harness"
 import { makeVcsSyncIsolateCaches } from "@maple/backend/services/integrations/vcs/vcs-sync-isolate-caches"
@@ -34,7 +34,24 @@ const env = Env.layer.pipe(
 	),
 )
 
-const INSTALLATION = { externalInstallationId: "42" } as VcsInstallation
+const INSTALLATION = Schema.decodeSync(VcsInstallation)({
+	id: "00000000-0000-4000-8000-000000000042",
+	orgId: "org_test",
+	provider: "github",
+	externalInstallationId: "42",
+	accountLogin: "octo",
+	accountType: "organization",
+	externalAccountId: "1",
+	accountAvatarUrl: null,
+	repositorySelection: "all",
+	status: "active",
+	suspendedAt: null,
+	ciTracesEnabled: true,
+	repositoryDiscovery: null,
+	installedByUserId: "user_1",
+	createdAt: 0,
+	updatedAt: 0,
+})
 const REPO = { externalRepoId: "1", owner: "octo", name: "shop" }
 
 // Answers the token mint and any annotations page, recording each path.
@@ -42,7 +59,7 @@ const recordingGithub = (paths: Array<string>) =>
 	fakeGithubHttp(({ url }) => {
 		const path = new URL(url).pathname
 		paths.push(path)
-		const body = path.endsWith("/access_tokens")
+		const body = Str.endsWith("/access_tokens")(path)
 			? { token: "installation-token", expires_at: "2099-01-01T00:00:00Z" }
 			: []
 		return new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } })
@@ -53,7 +70,7 @@ const revokingGithub = (paths: Array<string>, auths: Array<string>, rejection: R
 	fakeGithubHttp(({ url, headers }) => {
 		const path = new URL(url).pathname
 		paths.push(path)
-		if (path.endsWith("/access_tokens")) {
+		if (Str.endsWith("/access_tokens")(path)) {
 			const token = `token-${mints(paths).length}`
 			return Response.json({ token, expires_at: "2099-01-01T00:00:00Z" })
 		}
@@ -77,7 +94,8 @@ const readAnnotations = GithubProvider.use((provider) =>
 	provider.fetchWorkflowJobAnnotations(INSTALLATION, REPO, "555"),
 )
 
-const mints = (paths: ReadonlyArray<string>) => paths.filter((path) => path.endsWith("/access_tokens"))
+const mints = (paths: ReadonlyArray<string>) =>
+	Arr.filter(paths, (path) => Str.endsWith("/access_tokens")(path))
 
 describe("GitHub installation tokens across queue batches", () => {
 	it.effect("two batches in one isolate mint one token", () => {
@@ -106,7 +124,7 @@ describe("GitHub installation tokens across queue batches", () => {
 			new Response(JSON.stringify({ message: "Bad credentials" }), { status: 403 }),
 		],
 	] as const
-	rejections.forEach(([label, rejection]) =>
+	Arr.forEach(rejections, ([label, rejection]) =>
 		it.effect(`a cached token GitHub rejects with ${label} is evicted, so the next batch mints`, () => {
 			const paths: Array<string> = []
 			const auths: Array<string> = []

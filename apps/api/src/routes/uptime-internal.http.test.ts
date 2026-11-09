@@ -1,5 +1,15 @@
 import { afterEach, describe, expect, it } from "@effect/vitest"
-import { ConfigProvider, Context, Effect, Layer, ManagedRuntime, Schema } from "effect"
+import {
+	ConfigProvider,
+	Context,
+	Effect,
+	Layer,
+	ManagedRuntime,
+	Option,
+	Schema,
+	Array as Arr,
+	String as Str,
+} from "effect"
 import { FetchHttpClient, HttpRouter } from "effect/http"
 import { IngestKeysResponse, IsoDateTimeString, OrgId, UserId } from "@maple/domain/http"
 import type { UptimeMonitorId } from "@maple/domain/primitives"
@@ -14,8 +24,8 @@ import { UptimeHeartbeatRouter, UptimeInternalRouter } from "./uptime-internal.h
 const createdDbs: TestDb[] = []
 afterEach(() => cleanupTestDbs(createdDbs))
 
-const ORG = Schema.decodeUnknownSync(OrgId)("org_uptime_internal")
-const USER = Schema.decodeUnknownSync(UserId)("user_uptime_internal")
+const ORG = Schema.decodeSync(OrgId)("org_uptime_internal")
+const USER = Schema.decodeSync(UserId)("user_uptime_internal")
 const asIso = Schema.decodeUnknownSync(IsoDateTimeString)
 const die = () => Effect.die(new Error("not used by the uptime routes"))
 
@@ -24,7 +34,7 @@ const ingestKeysStub = Layer.succeed(OrgIngestKeysService, {
 	getOrCreateMany: (orgIds) =>
 		Effect.succeed(
 			new Map(
-				orgIds.map((orgId) => [
+				Arr.map(orgIds, (orgId) => [
 					orgId,
 					new IngestKeysResponse({
 						publicKey: `maple_pk_${orgId}`,
@@ -82,7 +92,7 @@ const makeHarness = () => {
 				},
 				body: init.body === undefined ? undefined : JSON.stringify(init.body),
 			}),
-			Context.empty() as never,
+			Context.empty(),
 		)
 		return { status: response.status, text: await response.text() }
 	}
@@ -122,7 +132,14 @@ const createMonitors = Effect.gen(function* () {
 		createdBy: USER,
 	})
 	const url = heartbeat.heartbeatUrl ?? ""
-	return { http, heartbeat, token: url.slice(url.lastIndexOf("/") + 1) }
+	return {
+		http,
+		heartbeat,
+		token: Option.match(Str.lastIndexOf("/")(url), {
+			onNone: () => url,
+			onSome: (slash) => Str.slice(slash + 1)(url),
+		}),
+	}
 })
 
 const getMonitor = (id: UptimeMonitorId) =>
@@ -151,6 +168,12 @@ describe("uptime internal routes", () => {
 			expect((await harness.request("POST", "/api/internal/uptime-results", { body: [] })).status).toBe(
 				401,
 			)
+		}))
+
+	it("refuses a token of the internal token's length in other characters", () =>
+		withHarness(async (harness) => {
+			const token = Str.repeat("sd-token".length)("\u00e9")
+			expect((await harness.request("GET", "/api/internal/uptime-targets", { token })).status).toBe(401)
 		}))
 
 	it("lists probe targets with the org's ingest key and applies reported results", () =>

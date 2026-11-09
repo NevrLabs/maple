@@ -2,10 +2,10 @@
 // which the changesets "Version Packages" PR writes. Embedding means `maple
 // changelog` works offline and a freshly updated binary knows its own notes.
 
-import { Effect, Option } from "effect"
+import { Effect, Option, Array as Arr, String as Str } from "effect"
 import changelogMarkdown from "../../CHANGELOG.md" with { type: "text" }
 import { bold, dim, green } from "../lib/style"
-import { MAPLE_VERSION } from "../version"
+import { MAPLE_VERSION } from "@maple/local-server/version"
 import { MapleConfig } from "./config"
 import { isNewer, shouldRunNotify, stripV } from "./update"
 
@@ -17,18 +17,23 @@ export interface ReleaseNotes {
 
 /** Each `## <version>` section, newest first as changesets writes them. */
 export const parseChangelog = (markdown: string): ReadonlyArray<ReleaseNotes> =>
-	markdown
-		.split(/^## /m)
-		.slice(1)
-		.map((section) => {
-			const newline = section.indexOf("\n")
-			const heading = newline === -1 ? section : section.slice(0, newline)
+	Arr.filter(
+		Arr.map(Str.split(/^## /m)(markdown).slice(1), (section) => {
+			const newline = Str.indexOf("\n")(section)
+			const heading = Option.match(newline, {
+				onNone: () => section,
+				onSome: (index) => Str.slice(0, index)(section),
+			})
 			return {
-				version: stripV(heading.trim()),
-				notes: newline === -1 ? "" : section.slice(newline + 1).trim(),
+				version: stripV(Str.trim(heading)),
+				notes: Option.match(newline, {
+					onNone: () => "",
+					onSome: (index) => Str.trim(Str.slice(index + 1)(section)),
+				}),
 			}
-		})
-		.filter((release) => /^\d+\.\d+\.\d+/.test(release.version))
+		}),
+		(release) => /^\d+\.\d+\.\d+/.test(release.version),
+	)
 
 export const RELEASES: ReadonlyArray<ReleaseNotes> = parseChangelog(changelogMarkdown)
 
@@ -41,7 +46,8 @@ export const releasesBetween = (
 	since: string,
 	current: string,
 ): ReadonlyArray<ReleaseNotes> =>
-	releases.filter(
+	Arr.filter(
+		releases,
 		(r) =>
 			isNewer(since, r.version) &&
 			(current === "dev" || stripV(current) === r.version || isNewer(r.version, current)),
@@ -65,7 +71,7 @@ export const maybeNotifyWhatsNew: Effect.Effect<void, never, MapleConfig> = Effe
 		seen !== undefined
 			? releasesBetween(RELEASES, seen, MAPLE_VERSION).length > 0
 			: Option.isSome(config.lastUpdateCheck) &&
-				RELEASES.some((r) => r.version === stripV(MAPLE_VERSION))
+				Arr.some(RELEASES, (r) => r.version === stripV(MAPLE_VERSION))
 	if (!upgraded) return
 	yield* Effect.sync(() => process.stderr.write(whatsNewHint(seen, MAPLE_VERSION)))
 })

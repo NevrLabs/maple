@@ -51,18 +51,13 @@ export const SKIP_LABELS = {
 	external_author: "author outside the organization",
 } satisfies Record<PrReviewSkipReason, string>
 
-const COUNT = new Intl.NumberFormat("en-US")
-const COMPACT = new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 })
-
-// Not `formatNumber`: that compacts from 1K, while review counts stay exact below 10K.
-export const formatCount = (value: number) => (value >= 10_000 ? COMPACT.format(value) : COUNT.format(value))
-
 /** A span in the largest unit that keeps it readable: `42s`, `14m`, `5.2h`, `7.0d`. */
 export function formatSpan(seconds: number | null): string {
 	if (seconds === null || !Number.isFinite(seconds)) return EMPTY_VALUE
-	if (seconds < 60) return `${Math.round(seconds)}s`
-	if (seconds < 3_600) return `${Math.round(seconds / 60)}m`
-	if (seconds < 86_400) return `${(seconds / 3_600).toFixed(1)}h`
+	// Pick the unit from the rounded value, so 59.6s reads `1m`, not `60s`.
+	if (Math.round(seconds) < 60) return `${Math.round(seconds)}s`
+	if (Math.round(seconds / 60) < 60) return `${Math.round(seconds / 60)}m`
+	if (Number((seconds / 3_600).toFixed(1)) < 24) return `${(seconds / 3_600).toFixed(1)}h`
 	return `${(seconds / 86_400).toFixed(1)}d`
 }
 
@@ -78,7 +73,7 @@ export const outcomeOf = (review: Pick<CodeReviewListItem, "status" | "verdict">
 		case "queued":
 			return { label: "Queued", tone: "text-muted-foreground", kind: "queued" }
 		case "running":
-			return { label: "Reviewing", tone: TONE_TEXT.info, kind: "running" }
+			return { label: "Reviewing", tone: TONE_TEXT.live, kind: "running" }
 		case "failed":
 			return { label: "Failed", tone: TONE_TEXT.crit, kind: "failed" }
 		case "skipped":

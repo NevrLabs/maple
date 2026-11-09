@@ -36,7 +36,7 @@ import {
 	shellQuote,
 	type SandboxExecResponse,
 } from "@maple/domain/sandbox"
-import { Cause, Effect, Option, Schema } from "effect"
+import { Cause, Effect, Option, Schema, Array as Arr, Record as Rec, String as Str } from "effect"
 
 export interface SandboxExecResult {
 	readonly exitCode: number
@@ -106,7 +106,8 @@ export const commandArgv = (command: string, timeoutMs?: number): ReadonlyArray<
 export const isTimedOut = (exitCode: number, durationMs: number, timeoutMs?: number): boolean =>
 	timeoutMs !== undefined && (exitCode === 124 || exitCode === 137) && durationMs >= timeoutMs
 
-const utf8 = new TextEncoder()
+/** The byte bound {@link wrapCommand} cuts each stream at. */
+const outputLimit = (maxOutputBytes: number): number => Math.max(1, Math.floor(maxOutputBytes))
 
 /**
  * A shell program that runs `command` as the unprivileged account, bounds each
@@ -122,37 +123,43 @@ export const wrapCommand = (
 	request: Pick<SandboxExecRequest, "command" | "args" | "maxOutputBytes">,
 ): string => {
 	// HOME is the per-command directory `$h`, expanded by this program rather than quoted.
-	const environment = [
-		...Object.entries(SANDBOX_COMMAND_ENV).map(([name, value]) => `${name}=${shellQuote(value)}`),
-		`${SANDBOX_COMMAND_HOME_VAR}="$h"`,
-	].join(" ")
+	const environment = Arr.join(
+		[
+			...Arr.map(Rec.toEntries(SANDBOX_COMMAND_ENV), ([name, value]) => `${name}=${shellQuote(value)}`),
+			`${SANDBOX_COMMAND_HOME_VAR}="$h"`,
+		],
+		" ",
+	)
 	// `runuser` first, then `env -i`: the command starts from an empty environment
 	// and receives only the names the contract's allowlist covers. The other order
 	// looks equivalent and is not — `runuser` adds `USER` and `LOGNAME` after
 	// `env -i` has run, so the command would see five names while `admit` promised
 	// three, and `runuser` itself would have to be found on the command's PATH.
 	const dropped = `runuser -u ${SANDBOX_RUN_AS_USER} -- env -i ${environment} ${shellCommand(request.command, request.args)}`
-	const limit = String(Math.max(1, Math.floor(request.maxOutputBytes)))
+	const limit = String(outputLimit(request.maxOutputBytes))
 	// Streams land in files, are cut to the bound, and the real exit status rides
 	// the trailer — piping through `head` directly would report `head`'s status.
 	// The command runs only if its own network namespace could be opened, so one
 	// that asked for no egress never runs with some.
-	return [
-		`o=$(mktemp) && e=$(mktemp)`,
-		// A fresh HOME per command, so nothing one command writes there reaches the next.
-		`h=$(mktemp -d) || h=`,
-		`if [ -n "$h" ] && ! chown ${SANDBOX_RUN_AS_USER} "$h"; then rmdir "$h"; h=; fi`,
-		`if unshare -n true 2>/dev/null; then ns=isolated; else ns=unavailable; fi`,
-		`rc=0`,
-		`if [ "$ns" = isolated ] && [ -z "$h" ]; then echo "could not create a home directory" >"$e"; rc=1; fi`,
-		`if [ "$ns" = isolated ] && [ -n "$h" ]; then { unshare -n ${dropped}; } >"$o" 2>"$e"; rc=$?; fi`,
-		`ob=$(wc -c <"$o") && eb=$(wc -c <"$e")`,
-		`head -c ${limit} "$o"`,
-		`head -c ${limit} "$e" >&2`,
-		`rm -f "$o" "$e"`,
-		`if [ -n "$h" ]; then rm -rf "$h"; fi`,
-		`printf '\n${SANDBOX_TRAILER} %s %s %s %s\n' "$rc" "$ob" "$eb" "$ns"`,
-	].join("\n")
+	return Arr.join(
+		[
+			`o=$(mktemp) && e=$(mktemp)`,
+			// A fresh HOME per command, so nothing one command writes there reaches the next.
+			`h=$(mktemp -d) || h=`,
+			`if [ -n "$h" ] && ! chown ${SANDBOX_RUN_AS_USER} "$h"; then rmdir "$h"; h=; fi`,
+			`if unshare -n true 2>/dev/null; then ns=isolated; else ns=unavailable; fi`,
+			`rc=0`,
+			`if [ "$ns" = isolated ] && [ -z "$h" ]; then echo "could not create a home directory" >"$e"; rc=1; fi`,
+			`if [ "$ns" = isolated ] && [ -n "$h" ]; then { unshare -n ${dropped}; } >"$o" 2>"$e"; rc=$?; fi`,
+			`ob=$(wc -c <"$o") && eb=$(wc -c <"$e")`,
+			`head -c ${limit} "$o"`,
+			`head -c ${limit} "$e" >&2`,
+			`rm -f "$o" "$e"`,
+			`if [ -n "$h" ]; then rm -rf "$h"; fi`,
+			`printf '\n${SANDBOX_TRAILER} %s %s %s %s\n' "$rc" "$ob" "$eb" "$ns"`,
+		],
+		"\n",
+	)
 }
 
 interface Trailer {
@@ -171,25 +178,23 @@ interface Trailer {
 export const parseTrailer = (
 	stdout: string,
 ): Option.Option<{ readonly body: string; readonly trailer: Trailer }> => {
-	const at = stdout.lastIndexOf(SANDBOX_TRAILER)
-	if (at === -1) return Option.none()
-	const parts = stdout
-		.slice(at + SANDBOX_TRAILER.length)
-		.trim()
-		.split(/\s+/)
-	const [exitCode, stdoutBytes, stderrBytes] = parts.slice(0, 3).map(Number)
+	const found = Str.lastIndexOf(SANDBOX_TRAILER)(stdout)
+	if (Option.isNone(found)) return Option.none()
+	const at = found.value
+	const parts = Str.split(/\s+/)(Str.trim(Str.slice(at + SANDBOX_TRAILER.length)(stdout)))
+	const [exitCode, stdoutBytes, stderrBytes] = Arr.map(parts.slice(0, 3), Number)
 	const isolation = parts[3]
 	if (
 		parts.length < 4 ||
 		exitCode === undefined ||
 		stdoutBytes === undefined ||
 		stderrBytes === undefined ||
-		![exitCode, stdoutBytes, stderrBytes].every(Number.isFinite) ||
+		!Arr.every([exitCode, stdoutBytes, stderrBytes], Number.isFinite) ||
 		(isolation !== "isolated" && isolation !== "unavailable")
 	)
 		return Option.none()
 	// The wrapper prints a newline before the sentinel; drop exactly that one.
-	const body = stdout.slice(0, at).replace(/\n$/, "")
+	const body = Str.replace(/\n$/, "")(Str.slice(0, at)(stdout))
 	return Option.some({ body, trailer: { exitCode, stdoutBytes, stderrBytes, isolation } })
 }
 
@@ -206,61 +211,99 @@ export const cloneScript = (checkout: SandboxCheckout): string => {
 	// The token comes from this process's environment through a credential helper, never the URL
 	// or an argument: arguments are readable by the account the agent's commands run as.
 	const helper = `!f() { echo username=x-access-token; echo "password=$${CLONE_TOKEN_ENV}"; }; f`
+	return Arr.join(
+		[
+			"set -e",
+			// A seed move that fails midway leaves no temporary mirror behind.
+			`trap 'rm -rf "\${m:-}"' EXIT`,
+			// Nothing a fetch or clone writes may be writable by the agent's account.
+			"umask 022",
+			`mkdir -p ${shellQuote(SANDBOX_WORKSPACE_ROOT)}`,
+			// Two commits of one repository clone at once, and the backup snapshot reads the
+			// mirror; one lock keeps each of them from seeing a fetch half-written.
+			`exec 9>${shellQuote(SANDBOX_MIRROR_LOCK)}`,
+			// Root's alone: the agent's account could otherwise hold it and stall every clone.
+			`chmod 600 ${shellQuote(SANDBOX_MIRROR_LOCK)}`,
+			"flock 9",
+			// Free space first, before anything writes: once the disk is full every clone fails before
+			// reaching the end, and `/etc` usually shares that disk, so nothing would give the space back.
+			...reclaimDiskScript(),
+			// Under the lock: two clones creating the account or writing /etc/gitconfig at once fail.
+			`id -u ${SANDBOX_RUN_AS_USER} >/dev/null 2>&1 || useradd --system --no-create-home --home-dir /tmp --shell /usr/sbin/nologin ${SANDBOX_RUN_AS_USER}`,
+			// Commands run as an account that does not own the tree, which git refuses to read without this.
+			// Written once: every rewrite of /etc/gitconfig needs free space.
+			`[ "$(git config --system --get-all safe.directory 2>/dev/null)" = '*' ] || git config --system --replace-all safe.directory '*'`,
+			`if [ ! -d ${mirror}/objects ]; then`,
+			`  m=$(mktemp -d ${shellQuote(`${SANDBOX_MIRROR_DIR}.XXXXXX`)})`,
+			// A restored seed is ordinary files on the same disk, so it moves into place rather than copies.
+			`  if [ -d ${shellQuote(SANDBOX_SEED_DIR)}/objects ]; then rmdir "$m" && mv -T ${shellQuote(SANDBOX_SEED_DIR)} "$m"; else git init --quiet --bare "$m"; fi`,
+			// Checkouts borrow the mirror's objects, so nothing may ever prune them.
+			`  git -C "$m" config gc.auto 0`,
+			`  mv -T "$m" ${mirror}`,
+			"  m=",
+			"fi",
+			// Every branch keeps `origin/*` in the checkout what a full clone gave, and the
+			// commit is pinned under its own ref so a force-pushed branch cannot orphan it.
+			`git -C ${mirror} -c ${shellQuote(`credential.helper=${helper}`)} fetch --quiet --no-tags ${shellQuote(checkout.remoteUrl)} '+refs/heads/*:refs/heads/*' ${shellQuote(`+${checkout.sha}:refs/maple/${checkout.sha}`)}`,
+			`unset ${CLONE_TOKEN_ENV}`,
+			`chmod -R a+rX,go-w ${mirror}`,
+			// Named after this script's PID, so eviction can tell a live clone's directory from a leftover.
+			`t=$(mktemp -d ${shellQuote(`${SANDBOX_WORKSPACE_ROOT}/.clone-`)}"$$"-XXXXXX)`,
+			`git clone --quiet --shared --no-checkout ${mirror} "$t"`,
+			"exec 9>&-",
+			`git -C "$t" remote set-url origin ${shellQuote(checkout.remoteUrl)}`,
+			// A committed symlink is checked out as a file holding its target, so no command the agent
+			// runs can follow one out of the checkout; the index still records mode 120000.
+			`git -C "$t" config core.symlinks false`,
+			`git -C "$t" checkout --quiet --detach ${shellQuote(checkout.sha)}`,
+			// Readable and traversable by the agent account, writable by nobody but root.
+			// `mktemp -d` creates the directory mode 700, so read and execute have to be
+			// added back — removing write alone would leave a tree nothing else can enter.
+			`chmod -R a+rX,go-w "$t"`,
+			// `-T` refuses to nest inside an existing directory, so a checkout another
+			// caller finished first stands and this one's copy is discarded.
+			`mv -T "$t" ${shellQuote(dir)} 2>/dev/null || rm -rf "$t"`,
+			...evictCheckoutsScript(),
+			"true",
+		],
+		"\n",
+	)
+}
+
+/** Below this much free space a clone evicts any checkout not used in the last few minutes. */
+export const SANDBOX_MIN_FREE_KB = 2 * 1024 * 1024
+
+/** A checkout used this recently is never evicted, even to free space: a command may be reading it. */
+const IN_USE_MINUTES = 2
+
+/**
+ * Keep the most recently used commits and drop the rest; a container's disk is small and every
+ * distinct commit leaves one behind. Nothing used within the grace period goes, nor another
+ * clone's scratch directory: concurrent reviews each hold a commit, and evicting by count alone
+ * deleted checkouts and clones still in use.
+ */
+const evictCheckoutsScript = (): ReadonlyArray<string> => {
+	const root = shellQuote(SANDBOX_WORKSPACE_ROOT)
 	return [
-		"set -e",
-		// A seed move that fails midway leaves no temporary mirror behind.
-		`trap 'rm -rf "\${m:-}"' EXIT`,
-		// Nothing a fetch or clone writes may be writable by the agent's account.
-		"umask 022",
-		`id -u ${SANDBOX_RUN_AS_USER} >/dev/null 2>&1 || useradd --system --no-create-home --home-dir /tmp --shell /usr/sbin/nologin ${SANDBOX_RUN_AS_USER}`,
-		// Commands run as an account that does not own the tree, which git refuses to read without this.
-		`git config --system --replace-all safe.directory '*'`,
-		`mkdir -p ${shellQuote(SANDBOX_WORKSPACE_ROOT)}`,
-		// Two commits of one repository clone at once, and the backup snapshot reads the
-		// mirror; one lock keeps each of them from seeing a fetch half-written.
-		`exec 9>${shellQuote(SANDBOX_MIRROR_LOCK)}`,
-		// Root's alone: the agent's account could otherwise hold it and stall every clone.
-		`chmod 600 ${shellQuote(SANDBOX_MIRROR_LOCK)}`,
-		"flock 9",
-		`if [ ! -d ${mirror}/objects ]; then`,
-		`  m=$(mktemp -d ${shellQuote(`${SANDBOX_MIRROR_DIR}.XXXXXX`)})`,
-		// A restored seed is ordinary files on the same disk, so it moves into place rather than copies.
-		`  if [ -d ${shellQuote(SANDBOX_SEED_DIR)}/objects ]; then rmdir "$m" && mv -T ${shellQuote(SANDBOX_SEED_DIR)} "$m"; else git init --quiet --bare "$m"; fi`,
-		// Checkouts borrow the mirror's objects, so nothing may ever prune them.
-		`  git -C "$m" config gc.auto 0`,
-		`  mv -T "$m" ${mirror}`,
-		"  m=",
-		"fi",
-		// Every branch keeps `origin/*` in the checkout what a full clone gave, and the
-		// commit is pinned under its own ref so a force-pushed branch cannot orphan it.
-		`git -C ${mirror} -c ${shellQuote(`credential.helper=${helper}`)} fetch --quiet --no-tags ${shellQuote(checkout.remoteUrl)} '+refs/heads/*:refs/heads/*' ${shellQuote(`+${checkout.sha}:refs/maple/${checkout.sha}`)}`,
-		`unset ${CLONE_TOKEN_ENV}`,
-		`chmod -R a+rX,go-w ${mirror}`,
-		// Named after this script's PID, so eviction can tell a live clone's directory from a leftover.
-		`t=$(mktemp -d ${shellQuote(`${SANDBOX_WORKSPACE_ROOT}/.clone-`)}"$$"-XXXXXX)`,
-		`git clone --quiet --shared --no-checkout ${mirror} "$t"`,
-		"exec 9>&-",
-		`git -C "$t" remote set-url origin ${shellQuote(checkout.remoteUrl)}`,
-		// A committed symlink is checked out as a file holding its target, so no command the agent
-		// runs can follow one out of the checkout; the index still records mode 120000.
-		`git -C "$t" config core.symlinks false`,
-		`git -C "$t" checkout --quiet --detach ${shellQuote(checkout.sha)}`,
-		// Readable and traversable by the agent account, writable by nobody but root.
-		// `mktemp -d` creates the directory mode 700, so read and execute have to be
-		// added back — removing write alone would leave a tree nothing else can enter.
-		`chmod -R a+rX,go-w "$t"`,
-		// `-T` refuses to nest inside an existing directory, so a checkout another
-		// caller finished first stands and this one's copy is discarded.
-		`mv -T "$t" ${shellQuote(dir)} 2>/dev/null || rm -rf "$t"`,
-		// Keep the most recently used commits and drop the rest; a container's disk is small and
-		// every distinct commit leaves one behind. Nothing used within the grace period goes, nor
-		// another clone's scratch directory: concurrent reviews each hold a commit, and evicting by
-		// count alone deleted checkouts and clones still in use.
-		`ls -1dt ${shellQuote(SANDBOX_WORKSPACE_ROOT)}/*/ 2>/dev/null | tail -n +${SANDBOX_MAX_CHECKOUTS + 1} | while read -r old; do if [ -n "$(find "$old" -maxdepth 0 -mmin +${SANDBOX_CHECKOUT_GRACE_MINUTES})" ]; then chmod -R u+w "$old" && rm -rf "$old"; fi; done`,
+		`ls -1dt ${root}/*/ 2>/dev/null | tail -n +${SANDBOX_MAX_CHECKOUTS + 1} | while read -r old; do if [ -n "$(find "$old" -maxdepth 0 -mmin +${SANDBOX_CHECKOUT_GRACE_MINUTES})" ]; then chmod -R u+w "$old" && rm -rf "$old"; fi; done`,
 		// Scratch directories a failed clone left behind: only those whose clone is no longer running.
-		`for old in ${shellQuote(SANDBOX_WORKSPACE_ROOT)}/.clone-*/; do [ -d "$old" ] || continue; pid=$(basename "$old" | cut -d- -f2); if ! kill -0 "$pid" 2>/dev/null; then chmod -R u+w "$old" && rm -rf "$old"; fi; done`,
-		"true",
-	].join("\n")
+		`for old in ${root}/.clone-*/; do [ -d "$old" ] || continue; pid=$(basename "$old" | cut -d- -f2); if ! kill -0 "$pid" 2>/dev/null; then chmod -R u+w "$old" && rm -rf "$old"; fi; done`,
+	]
+}
+
+/**
+ * Run under the mirror lock before a fetch. Removes temporary mirrors a killed clone left (only
+ * the lock holder makes one), evicts as {@link evictCheckoutsScript} does, and while free space is
+ * under {@link SANDBOX_MIN_FREE_KB} drops the least recently used checkouts that are not in use.
+ */
+const reclaimDiskScript = (): ReadonlyArray<string> => {
+	const root = shellQuote(SANDBOX_WORKSPACE_ROOT)
+	const freeKb = `$(df -Pk ${root} | awk 'NR==2 {print $4}')`
+	return [
+		`rm -rf ${shellQuote(SANDBOX_MIRROR_DIR)}.??????`,
+		...evictCheckoutsScript(),
+		`for old in $(ls -1dtr ${root}/*/ 2>/dev/null); do [ "${freeKb}" -lt ${SANDBOX_MIN_FREE_KB} ] || break; if [ -n "$(find "$old" -maxdepth 0 -mmin +${IN_USE_MINUTES})" ]; then chmod -R u+w "$old" && rm -rf "$old"; fi; done`,
+	]
 }
 
 /**
@@ -271,16 +314,19 @@ export const cloneScript = (checkout: SandboxCheckout): string => {
  * while the next fetch carries on. Then repacked into one pack. Exits 3 when there is no mirror.
  */
 export const snapshotScript = (): string =>
-	[
-		"set -e",
-		`test -d ${shellQuote(SANDBOX_MIRROR_DIR)}/objects || exit 3`,
-		`rm -rf ${shellQuote(SANDBOX_SNAPSHOT_DIR)}`,
-		`flock ${shellQuote(SANDBOX_MIRROR_LOCK)} cp -al ${shellQuote(SANDBOX_MIRROR_DIR)} ${shellQuote(SANDBOX_SNAPSHOT_DIR)}`,
-		// One pack per fetch would otherwise ride every archive into the next container and grow
-		// forever. Repacking the copy unlinks only the copy's names, so the live mirror is untouched
-		// and no lock is held while it runs.
-		`git -C ${shellQuote(SANDBOX_SNAPSHOT_DIR)} repack -a -d -q`,
-	].join("\n")
+	Arr.join(
+		[
+			"set -e",
+			`test -d ${shellQuote(SANDBOX_MIRROR_DIR)}/objects || exit 3`,
+			`rm -rf ${shellQuote(SANDBOX_SNAPSHOT_DIR)}`,
+			`flock ${shellQuote(SANDBOX_MIRROR_LOCK)} cp -al ${shellQuote(SANDBOX_MIRROR_DIR)} ${shellQuote(SANDBOX_SNAPSHOT_DIR)}`,
+			// One pack per fetch would otherwise ride every archive into the next container and grow
+			// forever. Repacking the copy unlinks only the copy's names, so the live mirror is untouched
+			// and no lock is held while it runs.
+			`git -C ${shellQuote(SANDBOX_SNAPSHOT_DIR)} repack -a -d -q`,
+		],
+		"\n",
+	)
 
 /**
  * Reports where a commit's checkout stands, as its first line, and claims the clone when nobody
@@ -294,34 +340,55 @@ export const checkoutStatusScript = (sha: string): string => {
 	const dir = shellQuote(checkoutDir(sha))
 	const state = cloneStateDir(sha)
 	const s = shellQuote(state)
-	return [
-		// Touched on every use: eviction goes by modification time, so this keeps a commit in use.
-		`if [ -d ${dir}/.git ]; then touch -c ${dir} || true; rm -rf ${s}; echo ready; exit 0; fi`,
-		`if [ -e ${s}/exit-code ]; then`,
-		`  code=$(cat ${s}/exit-code)`,
-		`  if [ "$code" != 0 ]; then echo "failed $code"; tail -c 2000 ${s}/stderr.log 2>/dev/null; rm -rf ${s}; exit 0; fi`,
-		`  rm -rf ${s}`,
-		`elif [ -e ${s}/pid ]; then`,
-		`  if kill -0 "$(cat ${s}/pid)" 2>/dev/null || [ -e ${s}/exit-code ]; then echo cloning; exit 0; fi`,
-		`  echo lost; rm -rf ${s}; exit 0`,
-		// Claimed but never started: the Durable Object went away in between. Give it two minutes.
-		`elif [ -d ${s} ]; then`,
-		`  if [ -z "$(find ${s} -maxdepth 0 -mmin +2)" ]; then echo cloning; exit 0; fi`,
-		`  rm -rf ${s}`,
-		"fi",
-		`mkdir -p ${shellQuote(state.slice(0, state.lastIndexOf("/")))}`,
-		`if mkdir ${s} 2>/dev/null; then echo claimed; else echo cloning; fi`,
-	].join("\n")
+	return Arr.join(
+		[
+			// Touched on every use: eviction goes by modification time, so this keeps a commit in use.
+			`if [ -d ${dir}/.git ]; then touch -c ${dir} || true; rm -rf ${s}; echo ready; exit 0; fi`,
+			`if [ -e ${s}/exit-code ]; then`,
+			`  code=$(cat ${s}/exit-code)`,
+			`  if [ "$code" != 0 ]; then echo "failed $code"; tail -c 2000 ${s}/stderr.log 2>/dev/null; rm -rf ${s}; exit 0; fi`,
+			`  rm -rf ${s}`,
+			`elif [ -e ${s}/pid ]; then`,
+			`  if kill -0 "$(cat ${s}/pid)" 2>/dev/null || [ -e ${s}/exit-code ]; then echo cloning; exit 0; fi`,
+			// The free space follows: a full disk is what kills a runner before it records an exit code.
+			`  echo lost; df -Pk ${shellQuote(SANDBOX_WORKSPACE_ROOT)} 2>/dev/null | awk 'NR==2 {print $4}'; rm -rf ${s}; exit 0`,
+			// Claimed but never started: the Durable Object went away in between. Give it two minutes.
+			`elif [ -d ${s} ]; then`,
+			`  if [ -z "$(find ${s} -maxdepth 0 -mmin +2)" ]; then echo cloning; exit 0; fi`,
+			`  rm -rf ${s}`,
+			"fi",
+			`mkdir -p ${shellQuote(
+				Str.slice(
+					0,
+					Option.getOrElse(Str.lastIndexOf("/")(state), () => -1),
+				)(state),
+			)}`,
+			`if mkdir ${s} 2>/dev/null; then echo claimed; else echo cloning; fi`,
+		],
+		"\n",
+	)
 }
 
 /** The background clone: {@link cloneScript} under a runner that records how it went. */
 export const cloneRunner = (checkout: SandboxCheckout): string => {
 	const s = shellQuote(cloneStateDir(checkout.sha))
-	return [
-		`echo $$ >${s}/pid`,
-		`(\n${cloneScript(checkout)}\n) >/dev/null 2>${s}/stderr.log`,
-		`echo $? >${s}/exit-code.tmp && mv ${s}/exit-code.tmp ${s}/exit-code`,
-	].join("\n")
+	return Arr.join(
+		[
+			`echo $$ >${s}/pid`,
+			`(\n${cloneScript(checkout)}\n) >/dev/null 2>${s}/stderr.log`,
+			`echo $? >${s}/exit-code.tmp && mv ${s}/exit-code.tmp ${s}/exit-code`,
+		],
+		"\n",
+	)
+}
+
+const lostMessage = (checkout: SandboxCheckout, detail: ReadonlyArray<string>): string => {
+	// `Number("")` is 0, so an empty line (no `df`) must not read as a full disk.
+	const reported = Str.trim(detail[0] ?? "")
+	const freeKb = reported === "" ? Number.NaN : Number(reported)
+	return Number.isFinite(freeKb) && freeKb < SANDBOX_MIN_FREE_KB
+		? `Cloning ${checkout.repository} stopped before it finished: the sandbox disk is nearly full (${Math.round(freeKb / 1024)} MB free). The next call frees space and clones again.`
+		: `Cloning ${checkout.repository} stopped before it finished. Call again to retry.`
 }
 
 /**
@@ -337,8 +404,8 @@ export const ensureCheckout = (
 	Effect.gen(function* () {
 		const redact = (text: string) => boundMessage(redactSecret(text, checkout.token))
 		const status = yield* container.exec(checkoutStatusScript(checkout.sha))
-		const [state = "", ...detail] = status.stdout.split("\n")
-		const [name, code] = state.trim().split(" ")
+		const [state, ...detail] = Str.split("\n")(status.stdout)
+		const [name, code] = Str.split(" ")(Str.trim(state))
 		if (name === "ready") {
 			// Every ready checkout asks; the Durable Object answers from memory unless a day has passed.
 			if (container.backupMirror) yield* container.backupMirror
@@ -364,8 +431,8 @@ export const ensureCheckout = (
 				new SandboxRunCheckoutFailed({
 					message: redact(
 						name === "lost"
-							? `Cloning ${checkout.repository} stopped before it finished. Call again to retry.`
-							: `Cloning ${checkout.repository} failed (exit ${code}): ${detail.join("\n").trim().slice(0, 500)}`,
+							? lostMessage(checkout, detail)
+							: `Cloning ${checkout.repository} failed (exit ${code}): ${Str.slice(0, 500)(Str.trim(Arr.join(detail, "\n")))}`,
 					),
 				}),
 			)
@@ -395,7 +462,7 @@ export const runExec = (
 			return new SandboxRunCheckoutFailed({
 				message: boundMessage(
 					redactSecret(
-						`The sandbox did not run the command: ${result.stderr.trim().slice(0, 500) || "no output"}`,
+						`The sandbox did not run the command: ${Str.slice(0, 500)(Str.trim(result.stderr)) || "no output"}`,
 						request.checkout.token,
 					),
 				),
@@ -408,14 +475,17 @@ export const runExec = (
 					"this container cannot open a network namespace, so a command requiring no egress was refused",
 			})
 		const stderr = result.stderr
+		// Decided from the byte counts the wrapper measured: the decoded text's length says
+		// nothing about bytes once invalid UTF-8 became replacement characters.
+		const limit = outputLimit(request.maxOutputBytes)
 		return new SandboxRunExited({
 			exitCode: trailer.exitCode,
 			stdout: body,
 			stderr,
 			stdoutBytes: trailer.stdoutBytes,
 			stderrBytes: trailer.stderrBytes,
-			stdoutTruncated: trailer.stdoutBytes > utf8.encode(body).length,
-			stderrTruncated: trailer.stderrBytes > utf8.encode(stderr).length,
+			stdoutTruncated: trailer.stdoutBytes > limit,
+			stderrTruncated: trailer.stderrBytes > limit,
 			wallTimeMs: result.duration,
 		})
 	})

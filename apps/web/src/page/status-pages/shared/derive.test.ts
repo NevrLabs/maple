@@ -16,6 +16,18 @@ describe("status page summary", () => {
 		expect(summary.componentCount).toBe(2)
 	})
 
+	test("informational outages stay visible without degrading the page banner", () => {
+		const down = downMonitor()
+		const summary = summarizePage({
+			page: statusPage(),
+			components: [component(1), component(2, { group: "Informational · Dev & lab", monitor_id: down.id })],
+			incidents: [],
+			monitors: [down],
+		})
+		expect(summary.overall).toBe("operational")
+		expect(summary.componentCount).toBe(2)
+	})
+
 	test("a draft incident counts as open but does not change what visitors see", () => {
 		const summary = summarizePage({
 			page: statusPage(),

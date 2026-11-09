@@ -1,5 +1,5 @@
 /** Pieces the uptime monitor MCP tools share: rows, target summaries, config building, errors. */
-import { Effect, Schema } from "effect"
+import { Effect, Option, Schema, Array as Arr, Record as Rec } from "effect"
 import type { UptimeMonitorRow } from "@maple/domain/mcp-outputs"
 import { UPTIME_DEFAULT_TIMEOUT_MS } from "@maple/domain/http/v2"
 import type { UptimeMonitorKind } from "@maple/domain/primitives"
@@ -49,7 +49,7 @@ export const targetSummary = (config: UptimeMonitorConfig): string => {
 
 /** Share of recent checks that passed; null before the first one. */
 export const uptimeRatio = (recent: ReadonlyArray<UptimeRecentCheck>): number | null =>
-	recent.length === 0 ? null : recent.filter((check) => check.ok).length / recent.length
+	recent.length === 0 ? null : Arr.filter(recent, (check) => check.ok).length / recent.length
 
 /** `canWrite`: the ping URL is a credential, so only org admins see it. */
 export const toMonitorRow = (
@@ -119,11 +119,7 @@ export const toMcpUptimeError = (tool: string) => (error: UptimeServiceError) =>
 				capability: "uptime_monitor_allowance",
 			})
 		case "@maple/http/errors/UptimeMonitorPersistenceError":
-			return new McpQueryError({
-				message: `${error._tag}: ${error.message}`,
-				pipeName: tool,
-				cause: error,
-			})
+			return new McpQueryError({ message: error.message, pipeName: tool, cause: error })
 	}
 }
 
@@ -176,15 +172,15 @@ const CLEAR_PAIRS: ReadonlyArray<readonly [keyof UptimeConfigFields, keyof Uptim
 
 /** A clear flag and the value it clears cannot both be set. */
 const rejectClearConflicts = (fields: UptimeConfigFields) => {
-	const conflict = CLEAR_PAIRS.find(
+	const conflict = Arr.findFirst(
+		CLEAR_PAIRS,
 		([clear, field]) => fields[clear] === true && fields[field] !== undefined,
 	)
-	return conflict === undefined
-		? Effect.void
-		: invalid(
-				`Pass ${conflict[1]} to set it, or ${conflict[0]}=true to remove it, not both.`,
-				conflict[0],
-			)
+	return Option.match(conflict, {
+		onNone: () => Effect.void,
+		onSome: ([clear, field]) =>
+			invalid(`Pass ${field} to set it, or ${clear}=true to remove it, not both.`, clear),
+	})
 }
 
 const isLatency = (assertion: UptimeAssertion) => assertion._tag === "latency"
@@ -198,15 +194,15 @@ const invalid = (message: string, parameter?: string) =>
 
 /** A field for another kind is a mistake to name, not to drop: the model meant something by it. */
 const rejectMisplaced = (kind: UptimeMonitorKind, fields: UptimeConfigFields) => {
-	const misplaced = FIELD_KINDS.find(
+	const misplaced = Arr.findFirst(
+		FIELD_KINDS,
 		([field, kinds]) => fields[field] !== undefined && !kinds.includes(kind),
 	)
-	return misplaced === undefined
-		? Effect.void
-		: invalid(
-				`${misplaced[0]} applies to ${misplaced[1].join(" and ")} monitors, not ${kind}.`,
-				misplaced[0],
-			)
+	return Option.match(misplaced, {
+		onNone: () => Effect.void,
+		onSome: ([field, kinds]) =>
+			invalid(`${field} applies to ${Arr.join(kinds, " and ")} monitors, not ${kind}.`, field),
+	})
 }
 
 const decodeConfig = (kind: UptimeMonitorKind, raw: unknown) =>
@@ -223,32 +219,38 @@ const withAssertion = (
 	matches: (assertion: UptimeAssertion) => boolean,
 ): ReadonlyArray<UptimeAssertion> => {
 	if (next === undefined) return assertions
-	const at = assertions.findIndex(matches)
-	const kept = assertions.filter((assertion) => !matches(assertion))
-	return at === -1 ? [...kept, next] : [...kept.slice(0, at), next, ...kept.slice(at)]
+	const kept = Arr.filter(assertions, (assertion) => !matches(assertion))
+	return Option.match(
+		Arr.findFirstIndex(assertions, (assertion) => matches(assertion)),
+		{
+			onNone: () => [...kept, next],
+			onSome: (at) => [...kept.slice(0, at), next, ...kept.slice(at)],
+		},
+	)
 }
 
 const httpAssertions = (current: ReadonlyArray<UptimeAssertion>, fields: UptimeConfigFields) =>
-	withAssertion(
+	Arr.filter(
 		withAssertion(
 			withAssertion(
-				current,
-				fields.expected_status === undefined
+				withAssertion(
+					current,
+					fields.expected_status === undefined
+						? undefined
+						: { _tag: "status", op: "is", value: fields.expected_status },
+					// An expected status replaces every status rule, so `is_not 5xx` cannot contradict it.
+					(assertion) => assertion._tag === "status",
+				),
+				fields.max_response_ms === undefined
 					? undefined
-					: { _tag: "status", op: "is", value: fields.expected_status },
-				// An expected status replaces every status rule, so `is_not 5xx` cannot contradict it.
-				(assertion) => assertion._tag === "status",
+					: { _tag: "latency", underMs: fields.max_response_ms },
+				isLatency,
 			),
-			fields.max_response_ms === undefined
+			fields.body_contains === undefined
 				? undefined
-				: { _tag: "latency", underMs: fields.max_response_ms },
-			isLatency,
+				: { _tag: "body", op: "contains", value: fields.body_contains },
+			isBodyContains,
 		),
-		fields.body_contains === undefined
-			? undefined
-			: { _tag: "body", op: "contains", value: fields.body_contains },
-		isBodyContains,
-	).filter(
 		(assertion) =>
 			!(fields.clear_max_response_ms === true && isLatency(assertion)) &&
 			!(fields.clear_body_contains === true && isBodyContains(assertion)),
@@ -355,13 +357,13 @@ export const updateUptimeConfig = Effect.fnUntraced(function* (
 ) {
 	yield* rejectMisplaced(current._tag, fields)
 	yield* rejectClearConflicts(fields)
-	if (!FIELD_KINDS.some(([field]) => fields[field] !== undefined)) return undefined
+	if (!Arr.some(FIELD_KINDS, ([field]) => fields[field] !== undefined)) return undefined
 	switch (current._tag) {
 		case "http":
 			// Stored header values (an Authorization, say) must not follow the check to another host.
 			if (
 				fields.url !== undefined &&
-				Object.keys(current.headers).length > 0 &&
+				Rec.keys(current.headers).length > 0 &&
 				originOf(fields.url) !== originOf(current.url)
 			) {
 				return yield* invalid(

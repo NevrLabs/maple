@@ -47,14 +47,20 @@ const run = (
 ) => {
 	const seen: Array<Seen> = []
 	const fakeFetch: typeof fetch = async (input, init) => {
-		seen.push({ url: String(input), host: hostHeaderOf(init), serverName: serverNameOf(init) })
+		seen.push({
+			url: input instanceof Request ? input.url : String(input),
+			host: hostHeaderOf(init),
+			serverName: serverNameOf(init),
+		})
 		return respond(seen)
 	}
 	return Effect.flatMap(HttpClient.HttpClient, (client) => guardPinned(client, resolve).get(url)).pipe(
 		Effect.provide(FetchHttpClient.layer),
 		Effect.provideService(FetchHttpClient.Fetch, fakeFetch),
-		Effect.map((response) => ({ response, seen })),
-		Effect.mapError((error) => ({ error, seen })),
+		Effect.mapBoth({
+			onSuccess: (response) => ({ response, seen }),
+			onFailure: (error) => ({ error, seen }),
+		}),
 	)
 }
 

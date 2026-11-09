@@ -4,7 +4,7 @@
 // and shape the wire model; this owns the queries, their profiles and contexts.
 // Aggregations that go through the query engine stay on `QueryEngineService`.
 
-import { Context, Effect, Layer, Schema } from "effect"
+import { Context, Effect, Layer, Schema, Array as Arr } from "effect"
 import {
 	ServiceHealthBaselineRequest,
 	ServiceHealthSnapshotRequest,
@@ -45,14 +45,14 @@ export type ServiceBaselines = ReadonlyMap<string, { p95LatencyMs: number; spanC
 const collapseBaselines = (
 	rows: ReadonlyArray<{ serviceName: string; baselineP95LatencyMs: number; baselineSpanCount: number }>,
 ): ServiceBaselines =>
-	rows.reduce((map, row) => {
+	Arr.reduce(rows, new Map<string, { p95LatencyMs: number; spanCount: number }>(), (map, row) => {
 		const current = map.get(row.serviceName)
 		if (current !== undefined && current.spanCount >= row.baselineSpanCount) return map
 		return map.set(row.serviceName, {
 			p95LatencyMs: row.baselineP95LatencyMs,
 			spanCount: row.baselineSpanCount,
 		})
-	}, new Map<string, { p95LatencyMs: number; spanCount: number }>())
+	})
 
 const make = Effect.gen(function* () {
 	const warehouse = yield* WarehouseQueryService
@@ -143,7 +143,7 @@ const make = Effect.gen(function* () {
 		Effect.gen(function* () {
 			// Hour-floored, like the dashboard's, so a drifting client window keeps one cache entry.
 			const endMs = Math.floor(windowStartMs / HOUR_MS) * HOUR_MS
-			const request = yield* Schema.decodeUnknownEffect(ServiceHealthBaselineRequest)({
+			const request = yield* Schema.decodeEffect(ServiceHealthBaselineRequest)({
 				startTime: formatWarehouseDateTime(endMs - BASELINE_WINDOW_MS),
 				endTime: formatWarehouseDateTime(endMs),
 				environments: filters.deploymentEnvironment ? [filters.deploymentEnvironment] : undefined,
@@ -191,7 +191,7 @@ const make = Effect.gen(function* () {
 	) =>
 		Effect.gen(function* () {
 			// Built from a window the route already validated, so a decode failure is a defect.
-			const request = yield* Schema.decodeUnknownEffect(ServiceOperationsRequest)({
+			const request = yield* Schema.decodeEffect(ServiceOperationsRequest)({
 				serviceName: opts.serviceName,
 				startTime: window.startTime,
 				endTime: window.endTime,
@@ -218,7 +218,7 @@ const make = Effect.gen(function* () {
 		opts: { readonly environments?: ReadonlyArray<string> | undefined },
 		window: TelemetryWindow,
 	) {
-		const request = yield* Schema.decodeUnknownEffect(ServiceHealthSnapshotRequest)({
+		const request = yield* Schema.decodeEffect(ServiceHealthSnapshotRequest)({
 			startTime: window.startTime,
 			endTime: window.endTime,
 			environments: opts.environments,

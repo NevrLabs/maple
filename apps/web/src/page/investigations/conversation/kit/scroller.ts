@@ -1,4 +1,4 @@
-import { Effect, Schema } from "effect"
+import { Effect, Schema, Array as Arr, Option } from "effect"
 import { Mount } from "foldkit"
 import { defineMessageUnion } from "foldkit/message"
 
@@ -42,7 +42,8 @@ const attach = (root: Element, focusMessageId: string | null): (() => void) => {
 	const handled = new WeakSet<Element>()
 
 	const items = (): ReadonlyArray<HTMLElement> =>
-		Array.from(content.children).filter(
+		Arr.filter(
+			Array.from(content.children),
 			(child): child is HTMLElement =>
 				child instanceof HTMLElement && !child.hasAttribute("data-message-scroller-spacer"),
 		)
@@ -53,10 +54,8 @@ const attach = (root: Element, focusMessageId: string | null): (() => void) => {
 	const contentBottom = (): number => {
 		const top = viewport.getBoundingClientRect().top
 		const pad = paddings()
-		return items().reduce(
-			(bottom, item) =>
-				Math.max(bottom, item.getBoundingClientRect().bottom - top + viewport.scrollTop + pad.end),
-			pad.start + pad.end,
+		return Arr.reduce(items(), pad.start + pad.end, (bottom, item) =>
+			Math.max(bottom, item.getBoundingClientRect().bottom - top + viewport.scrollTop + pad.end),
 		)
 	}
 	const setSpacer = (height: number) => {
@@ -115,10 +114,10 @@ const attach = (root: Element, focusMessageId: string | null): (() => void) => {
 	let pendingFocus = focusMessageId
 	const flushFocus = (): boolean => {
 		if (pendingFocus === null || content.hasAttribute("data-markdown-pending")) return false
-		const target = items().find((item) => item.dataset.messageId === pendingFocus)
+		const target = Arr.findFirst(items(), (item) => item.dataset.messageId === pendingFocus)
 		pendingFocus = null
-		if (target === undefined) return false
-		jumpTo(target)
+		if (Option.isNone(target)) return false
+		jumpTo(target.value)
 		return true
 	}
 
@@ -128,12 +127,12 @@ const attach = (root: Element, focusMessageId: string | null): (() => void) => {
 		count = list.length
 		// The turns already there when the thread loads are history, never re-anchored to later.
 		if (previous === 0) {
-			list.filter(isAnchor).forEach((item) => handled.add(item))
+			Arr.forEach(Arr.filter(list, isAnchor), (item) => handled.add(item))
 			return flushFocus() ? undefined : toEnd("auto")
 		}
 		if (flushFocus()) return
 		if (list.length > previous) {
-			const added = list.slice(previous).filter(isAnchor)
+			const added = Arr.filter(list.slice(previous), isAnchor)
 			const first = added[0]
 			if (first !== undefined) {
 				if (mode === "following-bottom" && added.length > 1) return toEnd("auto")
@@ -141,10 +140,10 @@ const attach = (root: Element, focusMessageId: string | null): (() => void) => {
 				return anchorTo(first)
 			}
 		} else if (list.length === previous) {
-			const pending = list.find((item) => isAnchor(item) && !handled.has(item))
-			if (pending !== undefined) {
-				handled.add(pending)
-				return anchorTo(pending)
+			const pending = Arr.findFirst(list, (item) => isAnchor(item) && !handled.has(item))
+			if (Option.isSome(pending)) {
+				handled.add(pending.value)
+				return anchorTo(pending.value)
 			}
 		}
 		return mode === "following-bottom" ? toEnd("auto") : syncButton()
@@ -167,8 +166,8 @@ const attach = (root: Element, focusMessageId: string | null): (() => void) => {
 	const onClick = () => toEnd("smooth")
 	const onScrollToMessage = (event: Event) => {
 		const id = event instanceof CustomEvent && typeof event.detail === "string" ? event.detail : null
-		const target = items().find((item) => item.dataset.messageId === id)
-		if (target !== undefined) jumpTo(target, "smooth")
+		const target = Arr.findFirst(items(), (item) => item.dataset.messageId === id)
+		if (Option.isSome(target)) jumpTo(target.value, "smooth")
 	}
 
 	const mutation = new MutationObserver(onContentChange)
@@ -244,7 +243,7 @@ export const MountJumpToMessage = Mount.define("MountChatJumpToMessage", {
 						return () => {}
 					const observer = new IntersectionObserver(
 						(entries) =>
-							entries.forEach((entry) =>
+							Arr.forEach(entries, (entry) =>
 								element.toggleAttribute("hidden", entry.isIntersecting),
 							),
 						{

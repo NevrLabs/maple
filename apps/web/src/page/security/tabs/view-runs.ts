@@ -1,16 +1,17 @@
 import type { SecurityAuditRun, SecurityAuditRunDetail, SecurityAuditTarget } from "@maple/domain/http"
 import { AsyncData } from "foldkit"
 import { countLabel } from "@maple/ui/lib/format"
+import { cn } from "@maple/ui/lib/utils"
 import type { Html, HtmlBuilder } from "foldkit/html"
+import { ROOMY_COLUMN, WIDE_COLUMN } from "../kit/layout"
 import { AppRoute, hrefOf } from "../../../route"
-import { button, linkButton } from "../../../ui/button"
-import { empty, emptyDescription, emptyHeader, emptyTitle } from "../../../ui/empty"
-import { errorState } from "../../../ui/error-state"
-import { icon } from "../../../ui/icon"
-import * as SelectView from "../../../ui/select-view"
-import { table, tableBody, tableCell, tableHead, tableHeader, tableRow } from "../../../ui/table"
-import { nothingInWindow } from "../../kit/nothing-in-window"
-import { relativeTime } from "../../kit/relative-time"
+import { button, linkButton } from "@maple/views/ui/button"
+import { empty, emptyDescription, emptyFrameClass, emptyHeader, emptyTitle } from "@maple/views/ui/empty"
+import { errorState } from "@maple/views/ui/error-state"
+import { icon } from "@maple/views/ui/icon"
+import * as SelectView from "@maple/views/ui/select-view"
+import { table, tableBody, tableCell, tableHead, tableHeader, tableRow } from "@maple/views/ui/table"
+import { listRelativeTime } from "../../kit/relative-time"
 import {
 	formatElapsed,
 	formatUsd,
@@ -30,6 +31,7 @@ import {
 	coverageOf,
 	latestDetailOf,
 	RUN_LIST_CAP,
+	repositoryOf,
 	runCountsOf,
 	runsForTab,
 	runsForTarget,
@@ -38,9 +40,13 @@ import {
 import { stopSummaryOf } from "../kit/outcome"
 import { BUCKET_LABEL, type BucketCounts, SCORED_BUCKETS } from "../kit/findings"
 import { bucketDot } from "../kit/findings-view"
-import { meter } from "../../../ui/meter"
-import { Message, type Model } from "./model"
+import { meter } from "@maple/views/ui/meter"
+import { canRunAudits, Message, type Model } from "./model"
 import { listToolbar, toolbarCount } from "../../kit/list-toolbar"
+import { typography, typographyClass } from "@maple/views/ui/typography"
+import { hstack, vstack, vstackClass } from "@maple/views/ui/stack"
+import { borderedBox } from "@maple/views/ui/bordered-box"
+import { Array as Arr, String as Str, Option } from "effect"
 
 // The Runs tab: every run, newest first, narrowed to one target from the select.
 
@@ -54,25 +60,25 @@ const statusCell = (h: H, run: SecurityAuditRun): Html => {
 			: run.status === "failed"
 				? (run.error ?? "could not finish")
 				: stopSummaryOf(run.incompleteReason)
-	return h.div(
-		[h.Class("flex min-w-0 flex-col items-start gap-1")],
-		[
-			runStatusBadge(h, run),
-			...(reason === null
-				? []
-				: [
-						h.span(
-							[h.Class("max-w-48 truncate text-xs text-muted-foreground"), h.Title(reason)],
-							[reason],
-						),
-					]),
-		],
-	)
+	return vstack(h, { gap: "1", align: "start", shrink: true }, [
+		runStatusBadge(h, run),
+		...(reason === null
+			? []
+			: [
+					h.span(
+						[h.Class("max-w-48 truncate text-xs text-muted-foreground"), h.Title(reason)],
+						[reason],
+					),
+				]),
+	])
 }
 
 const muted = (h: H, text: string, title?: string): Html =>
 	h.span(
-		[h.Class("text-xs text-muted-foreground"), ...(title === undefined ? [] : [h.Title(title)])],
+		[
+			h.Class(typographyClass({ size: "xs", tone: "muted" })),
+			...(title === undefined ? [] : [h.Title(title)]),
+		],
 		[text],
 	)
 
@@ -82,23 +88,44 @@ const findingsCell = (
 	counts: Readonly<{ buckets: BucketCounts; unverified: number }> | null,
 	run: SecurityAuditRun,
 ): Html => {
-	if (counts === null) return muted(h, "", "Findings are visible to org admins only")
+	if (counts === null) return muted(h, "", "Findings are visible to org admins and engineers only")
 	const { buckets, unverified } = counts
-	const shown = SCORED_BUCKETS.filter((bucket) => buckets[bucket] > 0)
+	const shown = Arr.filter(SCORED_BUCKETS, (bucket) => buckets[bucket] > 0)
 	if (shown.length === 0) return muted(h, isLive(run) ? "" : "None")
-	return h.span(
-		[
-			h.Class("flex flex-wrap items-center justify-end gap-x-2.5 gap-y-1"),
-			h.Title(
-				[
-					...shown.map((bucket) => `${buckets[bucket]} ${BUCKET_LABEL[bucket].toLowerCase()}`),
-					...(unverified === 0 ? [] : [`${unverified} of them estimated, not yet proven`]),
-				].join(", "),
-			),
-		],
-		shown.map((bucket) =>
-			h.span(
-				[h.Key(bucket), h.Class("inline-flex items-center gap-1 font-mono text-xs tabular-nums")],
+	return hstack(
+		h,
+		{
+			align: "center",
+			justify: "end",
+			wrap: true,
+			as: "span",
+			className: "gap-x-2.5 gap-y-1",
+			attributes: [
+				h.Title(
+					Arr.join(
+						[
+							...Arr.map(
+								shown,
+								(bucket) => `${buckets[bucket]} ${Str.toLowerCase(BUCKET_LABEL[bucket])}`,
+							),
+							...(unverified === 0 ? [] : [`${unverified} of them estimated, not yet proven`]),
+						],
+						", ",
+					),
+				),
+			],
+		},
+		Arr.map(shown, (bucket) =>
+			hstack(
+				h,
+				{
+					gap: "1",
+					align: "center",
+					inline: true,
+					as: "span",
+					className: typographyClass({ mono: true, size: "xs", numeric: true }),
+					attributes: [h.Key(bucket)],
+				},
 				[bucketDot(h, bucket, "size-2"), String(buckets[bucket])],
 			),
 		),
@@ -108,22 +135,20 @@ const findingsCell = (
 const coverageCell = (h: H, run: SecurityAuditRun, detail: SecurityAuditRunDetail | null): Html => {
 	if (detail === null || detail.unitTotal === 0) return muted(h, "")
 	const { closed, total } = coverageOf(detail)
-	return h.div(
-		[h.Class("flex items-center justify-end gap-2")],
-		[
-			meter(h, {
-				value: closed,
-				max: total,
-				tone: runToneOf(run),
-				className: "w-10",
-				label: `${closed} of ${total} units closed`,
-			}),
-			h.span(
-				[h.Class("whitespace-nowrap font-mono text-xs tabular-nums text-muted-foreground")],
-				[`${closed} / ${total}`],
-			),
-		],
-	)
+	return hstack(h, { gap: "2", justify: "end" }, [
+		meter(h, {
+			value: closed,
+			max: total,
+			tone: runToneOf(run),
+			className: "w-10",
+			label: `${closed} of ${total} units closed`,
+		}),
+		typography(
+			h,
+			{ size: "xs", tone: "muted", mono: true, numeric: true, className: "whitespace-nowrap" },
+			[`${closed} / ${total}`],
+		),
+	])
 }
 
 const runRow = (
@@ -135,62 +160,70 @@ const runRow = (
 ): Html => {
 	const nowMs = model.nowMs
 	const href = hrefOf(AppRoute.SecurityRun({ runId: run.id }))
-	const repository = targets.find((target) => target.id === run.targetId)?.repository ?? "Removed target"
+	const repository = repositoryOf(targets, run.targetId)
 	return tableRow(
 		h,
 		[
-			tableCell(h, [
-				h.a(
-					[h.Href(href), h.Class("flex min-w-0 flex-col")],
-					[
-						h.span([h.Class("font-mono text-sm")], [`Run ${shortId(run.id)}`]),
-						h.span(
-							[h.Class("truncate text-xs text-muted-foreground")],
-							[
-								[
-									RUN_KIND_LABEL[run.kind].toLowerCase(),
-									PROFILE_LABEL[run.profile],
-									scopeLabel(run.scopePaths),
-								].join(" · "),
-							],
-						),
-					],
-				),
-			]),
-			tableCell(h, [
-				h.span(
-					[h.Class("flex min-w-0 flex-col")],
-					[
-						repositoryName(h, repository, "text-sm"),
-						h.span(
-							[h.Class("truncate font-mono text-xs text-muted-foreground")],
-							[refLabel(run.sourceRef)],
-						),
-					],
-				),
-			]),
-			tableCell(h, [statusCell(h, run)]),
-			tableCell(h, [findingsCell(h, runCountsOf(model, run.id), run)], "text-right"),
-			tableCell(h, [coverageCell(h, run, latestDetailOf(model, run.id))], "text-right"),
-			tableCell(h, [formatUsd(runTotalUsd(run))], "text-right font-mono tabular-nums"),
 			tableCell(
 				h,
 				[
-					h.span(
-						[h.Class("flex flex-col items-end")],
+					h.a(
+						[h.Href(href), h.Class(vstackClass({ shrink: true }))],
 						[
-							relativeTime(h, {
-								value: run.startedAt,
-								nowMs,
-								timeZone,
-								variant: "short",
-								tooltip: "title",
-							}),
-							h.span([h.Title("Duration")], [formatElapsed(runElapsed(run, nowMs))]),
+							typography(h, { size: "sm", mono: true }, [`Run ${shortId(run.id)}`]),
+							typography(h, { size: "xs", tone: "muted", truncate: true }, [
+								Arr.join(
+									[
+										Str.toLowerCase(RUN_KIND_LABEL[run.kind]),
+										PROFILE_LABEL[run.profile],
+										scopeLabel(run.scopePaths),
+									],
+									" · ",
+								),
+							]),
+							// Phones drop the target and cost columns, so they ride under the run.
+							h.span(
+								[h.Class("truncate text-xs text-muted-foreground sm:hidden")],
+								[`${repository} · ${formatUsd(runTotalUsd(run))}`],
+							),
 						],
 					),
 				],
-				"text-right font-mono text-xs text-muted-foreground",
+				"max-sm:w-full max-sm:max-w-0",
+			),
+			tableCell(
+				h,
+				[
+					vstack(h, { shrink: true, as: "span" }, [
+						repositoryName(h, repository, "text-sm"),
+						typography(h, { size: "xs", tone: "muted", mono: true, truncate: true }, [
+							refLabel(run.sourceRef),
+						]),
+					]),
+				],
+				WIDE_COLUMN,
+			),
+			tableCell(h, [statusCell(h, run)]),
+			tableCell(h, [findingsCell(h, runCountsOf(model, run.id), run)], cn("text-right", WIDE_COLUMN)),
+			tableCell(
+				h,
+				[coverageCell(h, run, latestDetailOf(model, run.id))],
+				cn("text-right", ROOMY_COLUMN),
+			),
+			tableCell(
+				h,
+				[formatUsd(runTotalUsd(run))],
+				cn(typographyClass({ mono: true, numeric: true, className: "text-right" }), WIDE_COLUMN),
+			),
+			tableCell(
+				h,
+				[
+					vstack(h, { align: "end", as: "span" }, [
+						listRelativeTime(h, { value: run.startedAt, nowMs, timeZone, variant: "short" }),
+						h.span([h.Title("Duration")], [formatElapsed(runElapsed(run, nowMs))]),
+					]),
+				],
+				cn("text-right font-mono text-xs text-muted-foreground", WIDE_COLUMN),
 			),
 		],
 		undefined,
@@ -214,7 +247,7 @@ const toolbar = (
 			viewInputs: {
 				entries: [
 					{ _tag: "Item", item: { value: "all", label: "All targets" } },
-					...targets.map((target): SelectView.SelectEntry => ({
+					...Arr.map(targets, (target): SelectView.SelectEntry => ({
 						_tag: "Item",
 						item: { value: target.id, label: target.repository },
 					})),
@@ -223,26 +256,23 @@ const toolbar = (
 				ariaLabel: "Target",
 				className: "h-7 w-auto min-w-40 text-xs",
 				renderValue: (value) => [
-					h.span([h.Class("text-muted-foreground")], ["Target "]),
-					value === "all"
-						? "All targets"
-						: (targets.find((target) => target.id === value)?.repository ?? "Removed target"),
+					typography(h, { tone: "muted" }, ["Target "]),
+					value === "all" ? "All targets" : repositoryOf(targets, value),
 				],
 				toView: (parts) => h.div([h.Class("contents")], parts),
 			},
 			toParentMessage: (message) => Message.GotRunsTargetSelectMessage({ message }),
 		}),
-		trailing: [
-			toolbarCount(h, [isCapped ? `showing the ${RUN_LIST_CAP} newest` : countLabel(count, "run")]),
-		],
+		trailing: [toolbarCount(h, [isCapped ? `${RUN_LIST_CAP}+ runs` : countLabel(count, "run")])],
 	})
 
 /** "Start run" for the target the list is narrowed to. */
 export const startRunAction = (h: H, model: Model): Html | undefined => {
 	const targetId = model.runsSearch.target
-	const target = targetsOf(model).find((candidate) => candidate.id === targetId)
-	if (target === undefined || !model.isAdmin) return undefined
-	const isRunning = runsForTarget(model, target.id).some(isLive)
+	const found = Arr.findFirst(targetsOf(model), (candidate) => candidate.id === targetId)
+	if (Option.isNone(found) || !canRunAudits(model)) return undefined
+	const target = found.value
+	const isRunning = Arr.some(runsForTarget(model, target.id), isLive)
 	return button(
 		h,
 		{
@@ -266,21 +296,21 @@ const noTargets = (h: H, model: Model): Html =>
 			emptyHeader(h, [
 				emptyTitle(h, ["No runs yet"]),
 				emptyDescription(h, [
-					model.isAdmin
+					canRunAudits(model)
 						? "Add a target, then start its first run."
 						: "An org admin adds the first target on the Overview tab.",
 				]),
 			]),
-			model.isAdmin
+			canRunAudits(model)
 				? button(h, { size: "sm", attributes: [h.OnClick(Message.ClickedAddTarget())] }, [
 						icon(h, "PlusIcon"),
 						"Add target",
 					])
-				: linkButton(h, { size: "sm", variant: "outline", href: hrefOf(AppRoute.Security()) }, [
+				: linkButton(h, { size: "sm", variant: "outline", href: hrefOf(AppRoute.SecurityCode()) }, [
 						"Open the overview",
 					]),
 		],
-		"rounded-md border border-dashed md:py-14",
+		emptyFrameClass("dashed"),
 	)
 
 export const runsBody = (h: H, model: Model, timeZone: string): ReadonlyArray<Html> => {
@@ -305,34 +335,42 @@ export const runsBody = (h: H, model: Model, timeZone: string): ReadonlyArray<Ht
 						[
 							targets.length === 0
 								? noTargets(h, model)
-								: nothingInWindow(h, {
-										title: "No runs yet",
-										description:
-											"Runs start manually for now: pick a target and start one.",
-									}),
+								: empty(
+										h,
+										[
+											emptyHeader(h, [
+												emptyTitle(h, ["No runs yet"]),
+												emptyDescription(h, [
+													"Runs start manually for now: pick a target and start one.",
+												]),
+											]),
+										],
+										emptyFrameClass("dashed"),
+									),
 						],
 					)
 				: table(h, { variant: "bare", ariaLabel: "Audit runs" }, [
 						tableHeader(h, [
 							tableRow(h, [
 								tableHead(h, ["Run"]),
-								tableHead(h, ["Target"]),
+								tableHead(h, ["Target"], WIDE_COLUMN),
 								tableHead(h, ["Status"]),
-								tableHead(h, ["Findings"], "text-right"),
-								tableHead(h, ["Coverage"], "text-right"),
-								tableHead(h, ["Cost"], "text-right"),
-								tableHead(h, ["Started"], "text-right"),
+								tableHead(h, ["Findings"], cn("text-right", WIDE_COLUMN)),
+								tableHead(h, ["Coverage"], cn("text-right", ROOMY_COLUMN)),
+								tableHead(h, ["Cost"], cn("text-right", WIDE_COLUMN)),
+								tableHead(h, ["Started"], cn("text-right", WIDE_COLUMN)),
 							]),
 						]),
 						tableBody(
 							h,
-							runs.map((run) => runRow(h, model, run, targets, timeZone)),
+							Arr.map(runs, (run) => runRow(h, model, run, targets, timeZone)),
 						),
 					]),
 	})
 	return [
-		h.section(
-			[h.AriaLabel("Runs"), h.Class("overflow-hidden rounded-md border bg-card")],
+		borderedBox(
+			h,
+			{ as: "section", overflow: "hidden", card: true, attributes: [h.AriaLabel("Runs")] },
 			// Nothing to narrow until there is a target, as on the Findings tab.
 			[...(targets.length === 0 ? [] : [toolbar(h, model, targets, runs.length, isCapped)]), content],
 		),

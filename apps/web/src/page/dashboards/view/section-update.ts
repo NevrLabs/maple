@@ -6,15 +6,16 @@ import {
 } from "../../../lib/dashboards/section-view-state"
 import { Command } from "foldkit"
 import { AppRoute, hrefOf } from "../../../route"
-import * as Dialog from "../../../ui/dialog"
-import * as Menu from "../../../ui/menu"
+import * as Dialog from "@maple/views/ui/dialog"
+import * as Menu from "@maple/views/ui/menu"
 import { type PageContext, PageOutMessage, type PageReturn } from "../../contract"
 import { EditSections } from "./command"
 import { Message } from "./message"
 import type { Model } from "./model"
-import { isEditing } from "./mode"
+import { isEditing, isWriteBlocked } from "./mode"
 import { menuStep } from "./menu-step"
 import { SectionEdit } from "./section-edit"
+import { Array as Arr, String as Str, Option } from "effect"
 
 // The groups' interactions (`DashboardSectionView`, `SectionTabBar`, `InlineEditableText`): view state
 // rides the URL with `replace`; every structural change is one `EditSections` write.
@@ -49,7 +50,12 @@ export const sectionMenuIdOf = (sectionId: string): string => `dashboard-section
  */
 const applySectionView = (model: Model, update: (search: SectionViewSearch) => SectionViewSearch): Return => {
 	if (model.history.previewed !== null)
-		return { model: { ...model, history: { ...model.history, sectionView: update(model.history.sectionView) } } }
+		return {
+			model: {
+				...model,
+				history: { ...model.history, sectionView: update(model.history.sectionView) },
+			},
+		}
 	const { collapsed, expanded, tab, widget, ...rest } = pickDashboardControlParams(model.search)
 	// The update may drop a key (an emptied list); only what it hands back is written.
 	const controls = { ...rest, ...update({ collapsed, expanded, tab, widget }) }
@@ -69,7 +75,7 @@ const applySectionView = (model: Model, update: (search: SectionViewSearch) => S
 }
 
 const write = (model: Model, context: PageContext, edit: SectionEdit): Return =>
-	model.persistenceError !== null
+	isWriteBlocked(model)
 		? { model }
 		: { model, commands: [EditSections({ orgId: context.orgId, dashboardId: model.dashboardId, edit })] }
 
@@ -97,22 +103,35 @@ const closeDialog = (
 	wrap: (message: Dialog.Message) => Message,
 ): Return => {
 	const next = Dialog.close(model[dialog])
-	return { model: { ...model, [dialog]: next.model }, commands: Command.mapMessages(next.commands ?? [], wrap) }
+	return {
+		model: { ...model, [dialog]: next.model },
+		commands: Command.mapMessages(next.commands ?? [], wrap),
+	}
 }
 
 /** The group options menu: add tab, move up or down, the collapse defaults, delete. */
 const sectionAction = (model: Model, context: PageContext, sectionId: string, value: string): Return => {
 	const sections = sectionsOf(model)
-	const index = sections.findIndex((section) => section.id === sectionId)
+	const foundIndex = Arr.findFirstIndex(sections, (section) => section.id === sectionId)
+	if (Option.isNone(foundIndex)) return { model }
+	const index = foundIndex.value
 	const section = sections[index]
 	if (section === undefined) return { model }
 	switch (value) {
 		case "add-tab":
 			return write(model, context, SectionEdit.AddTab({ sectionId }))
 		case "move-up":
-			return write(model, context, SectionEdit.ReorderSections({ fromIndex: index, toIndex: index - 1 }))
+			return write(
+				model,
+				context,
+				SectionEdit.ReorderSections({ fromIndex: index, toIndex: index - 1 }),
+			)
 		case "move-down":
-			return write(model, context, SectionEdit.ReorderSections({ fromIndex: index, toIndex: index + 1 }))
+			return write(
+				model,
+				context,
+				SectionEdit.ReorderSections({ fromIndex: index, toIndex: index + 1 }),
+			)
 		case "collapsed-default":
 			return write(
 				model,
@@ -137,11 +156,9 @@ const submitRename = (model: Model, context: PageContext): Return => {
 	const rename = model.rename
 	const closed = { ...model, rename: null }
 	if (rename === null) return { model: closed }
-	const section = sectionsOf(model).find((candidate) => candidate.id === rename.sectionId)
-	const current =
-		rename.tabId === null ? section?.title : section?.tabs.find((tab) => tab.id === rename.tabId)?.title
-	const title = rename.draft.trim()
-	if (title === "" || title === current) return { model: closed }
+	const current = titleOf(sectionsOf(model), rename.sectionId, rename.tabId)
+	const title = Str.trim(rename.draft)
+	if (title === "" || Option.exists(current, (value) => value === title)) return { model: closed }
 	return write(
 		closed,
 		context,
@@ -152,11 +169,29 @@ const submitRename = (model: Model, context: PageContext): Return => {
 }
 
 const startRename = (model: Model, sectionId: string, tabId: string | null): Return => {
-	if (!isEditing(model) || model.persistenceError !== null) return { model }
-	const section = sectionsOf(model).find((candidate) => candidate.id === sectionId)
-	const title = tabId === null ? section?.title : section?.tabs.find((tab) => tab.id === tabId)?.title
-	return title === undefined ? { model } : { model: { ...model, rename: { sectionId, tabId, draft: title } } }
+	if (!isEditing(model)) return { model }
+	return Option.match(titleOf(sectionsOf(model), sectionId, tabId), {
+		onNone: (): Return => ({ model }),
+		onSome: (title): Return => ({ model: { ...model, rename: { sectionId, tabId, draft: title } } }),
+	})
 }
+
+/** The title of a section, or of one of its tabs. */
+const titleOf = (
+	sections: ReturnType<typeof sectionsOf>,
+	sectionId: string,
+	tabId: string | null,
+): Option.Option<string> =>
+	Option.flatMap(
+		Arr.findFirst(sections, (candidate) => candidate.id === sectionId),
+		(section) =>
+			tabId === null
+				? Option.fromNullishOr(section.title)
+				: Option.flatMapNullishOr(
+						Arr.findFirst(section.tabs, (tab) => tab.id === tabId),
+						(tab) => tab.title,
+					),
+	)
 
 export const sectionStep = (model: Model, context: PageContext, message: SectionMessage): Return => {
 	switch (message._tag) {
@@ -165,7 +200,9 @@ export const sectionStep = (model: Model, context: PageContext, message: Section
 				withSectionCollapsed(search, message.sectionId, message.collapsed),
 			)
 		case "ClickedSectionTab":
-			return applySectionView(model, (search) => withActiveTab(search, message.sectionId, message.tabId))
+			return applySectionView(model, (search) =>
+				withActiveTab(search, message.sectionId, message.tabId),
+			)
 		case "ClickedAddSectionWidget": {
 			const next = Dialog.open(model.pickerDialog)
 			return {
@@ -181,7 +218,9 @@ export const sectionStep = (model: Model, context: PageContext, message: Section
 		}
 		case "GotSectionMenuMessage": {
 			const current =
-				model.sectionMenuId === message.sectionId ? model.sectionMenu : Menu.init(sectionMenuIdOf(message.sectionId))
+				model.sectionMenuId === message.sectionId
+					? model.sectionMenu
+					: Menu.init(sectionMenuIdOf(message.sectionId))
 			const next = menuStep(current, message.message, (menu) =>
 				Message.GotSectionMenuMessage({ sectionId: message.sectionId, message: menu }),
 			)
@@ -193,7 +232,9 @@ export const sectionStep = (model: Model, context: PageContext, message: Section
 		case "StartedRename":
 			return startRename(model, message.sectionId, message.tabId)
 		case "ChangedRenameDraft":
-			return model.rename === null ? { model } : { model: { ...model, rename: { ...model.rename, draft: message.value } } }
+			return model.rename === null
+				? { model }
+				: { model: { ...model, rename: { ...model.rename, draft: message.value } } }
 		case "SubmittedRename":
 			return submitRename(model, context)
 		case "CancelledRename":
@@ -222,10 +263,14 @@ export const sectionStep = (model: Model, context: PageContext, message: Section
 			const sectionId = model.pendingSectionDelete
 			const closed = closeDialog(model, "sectionDialog", wrapSectionDialog)
 			if (sectionId === null) return closed
-			const written = write(closed.model, context, SectionEdit.DeleteSection({ sectionId, action: message.action }))
+			const written = write(
+				closed.model,
+				context,
+				SectionEdit.DeleteSection({ sectionId, action: message.action }),
+			)
 			const removed =
 				message.action === "delete"
-					? (model.document?.widgets ?? []).filter((widget) => widget.sectionId === sectionId)
+					? Arr.filter(model.document?.widgets ?? [], (widget) => widget.sectionId === sectionId)
 					: []
 			return {
 				...written,
@@ -256,7 +301,11 @@ export const sectionStep = (model: Model, context: PageContext, message: Section
 			const pending = model.pendingTabDelete
 			const closed = closeDialog(model, "tabDialog", wrapTabDialog)
 			if (pending === null) return closed
-			const written = write(closed.model, context, SectionEdit.DeleteTab({ ...pending, action: message.action }))
+			const written = write(
+				closed.model,
+				context,
+				SectionEdit.DeleteTab({ ...pending, action: message.action }),
+			)
 			return { ...written, commands: [...(closed.commands ?? []), ...(written.commands ?? [])] }
 		}
 	}

@@ -1,4 +1,4 @@
-import { Context, Duration, Effect, Layer, Redacted, Schema } from "effect"
+import { Context, Duration, Effect, Layer, Redacted, Schema, String as Str } from "effect"
 import { HttpClient, HttpClientRequest } from "effect/http"
 import {
 	InternalScrapeTargetList,
@@ -12,7 +12,7 @@ import {
 	type UptimeProbeTarget,
 } from "@maple/domain/uptime"
 import { ScraperEnv } from "./Env"
-import { isTransientStatus, TRANSIENT_RETRY } from "./retry"
+import { executeAttempt, isTransientStatus, TRANSIENT_RETRY } from "./retry"
 
 export class ApiRequestError extends Schema.TaggedError<ApiRequestError>()("@maple/scraper/ApiRequestError", {
 	message: Schema.String,
@@ -24,13 +24,13 @@ export interface ApiClientApi {
 	 * Enabled scrape targets from `/api/internal/scrape-targets`, each carrying
 	 * the URL to fetch and its decrypted auth headers (see {@link InternalScrapeTarget}).
 	 */
-	readonly listTargets: () => Effect.Effect<ReadonlyArray<InternalScrapeTarget>, ApiRequestError>
+	readonly listTargets: Effect.Effect<ReadonlyArray<InternalScrapeTarget>, ApiRequestError>
 	/** Report scrape outcomes to `/api/internal/scrape-results`. */
 	readonly reportResults: (
 		results: ReadonlyArray<ScrapeResultReport>,
 	) => Effect.Effect<void, ApiRequestError>
 	/** Enabled HTTP, TCP and DNS uptime monitors from `/api/internal/uptime-targets`. */
-	readonly listUptimeTargets: () => Effect.Effect<ReadonlyArray<UptimeProbeTarget>, ApiRequestError>
+	readonly listUptimeTargets: Effect.Effect<ReadonlyArray<UptimeProbeTarget>, ApiRequestError>
 	/** Report uptime check outcomes to `/api/internal/uptime-results`. */
 	readonly reportUptimeResults: (
 		results: ReadonlyArray<UptimeCheckReport>,
@@ -39,6 +39,7 @@ export interface ApiClientApi {
 
 const encodeUptimeReports = Schema.encodeSync(UptimeCheckReportList)
 const decodeJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))
+const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))
 
 /** Not idempotent: a timeout may follow a batch that landed, so only an explicit refusal retries. */
 const isRefusal = (status: number | null): boolean => status === 429 || status === 503
@@ -67,21 +68,20 @@ export class ApiClient extends Context.Service<ApiClient, ApiClientApi>()("@mapl
 			retryable: (status: number | null) => boolean,
 		) =>
 			Effect.gen(function* () {
-				const response = yield* client
-					.execute(request)
-					.pipe(
-						Effect.annotateSpans("peer.service", "maple-api"),
-						Effect.timeout(REQUEST_TIMEOUT),
-						Effect.mapError(transportError),
-					)
-				const text = yield* response.text.pipe(
-					Effect.timeout(REQUEST_TIMEOUT),
-					Effect.mapError(transportError),
-				)
-				if (response.status < 200 || response.status >= 300) {
+				const { status, text } = yield* executeAttempt(
+					client,
+					request,
+					{ peerService: "maple-api", timeout: REQUEST_TIMEOUT },
+					(response) =>
+						response.text.pipe(
+							Effect.timeout(REQUEST_TIMEOUT),
+							Effect.map((text) => ({ status: response.status, text })),
+						),
+				).pipe(Effect.mapError(transportError))
+				if (status < 200 || status >= 300) {
 					return yield* new ApiRequestError({
-						message: `${label} returned HTTP ${response.status}: ${text.slice(0, 200)}`,
-						status: response.status,
+						message: `${label} returned HTTP ${status}: ${Str.slice(0, 200)(text)}`,
+						status,
 					})
 				}
 				return text
@@ -112,35 +112,43 @@ export class ApiClient extends Context.Service<ApiClient, ApiClientApi>()("@mapl
 				)
 			})
 
-		const postJson = (label: string, body: string) =>
-			roundTrip(
-				HttpClientRequest.post(`${env.MAPLE_API_URL}/api/internal/${label}`, {
-					headers: authHeaders,
-				}).pipe(HttpClientRequest.bodyText(body, "application/json")),
-				label,
-				isRefusal,
+		const postJson = (label: string, payload: unknown) =>
+			encodeJson(payload).pipe(
+				Effect.mapError(
+					(error) =>
+						new ApiRequestError({
+							message: `${label} body not encodable: ${error.message}`,
+							status: null,
+						}),
+				),
+				Effect.flatMap((body) =>
+					roundTrip(
+						HttpClientRequest.post(`${env.MAPLE_API_URL}/api/internal/${label}`, {
+							headers: authHeaders,
+						}).pipe(HttpClientRequest.bodyText(body, "application/json")),
+						label,
+						isRefusal,
+					),
+				),
 			)
 
-		const listTargets = Effect.fn("ApiClient.listTargets")(function* () {
-			return yield* getList("scrape-targets", InternalScrapeTargetList)
-		})
+		const listTargets = getList("scrape-targets", InternalScrapeTargetList).pipe(
+			Effect.withSpan("ApiClient.listTargets"),
+		)
 
-		const listUptimeTargets = Effect.fn("ApiClient.listUptimeTargets")(function* () {
-			return yield* getList("uptime-targets", UptimeProbeTargetList)
-		})
+		const listUptimeTargets = getList("uptime-targets", UptimeProbeTargetList).pipe(
+			Effect.withSpan("ApiClient.listUptimeTargets"),
+		)
 
-		const reportUptimeResults = Effect.fn("ApiClient.reportUptimeResults")(function* (
-			results: ReadonlyArray<UptimeCheckReport>,
-		) {
+		// Untraced: the batch reporter retries these and owns the span around the retry.
+		const reportUptimeResults = Effect.fnUntraced(function* (results: ReadonlyArray<UptimeCheckReport>) {
 			if (results.length === 0) return
-			yield* postJson("uptime-results", JSON.stringify(encodeUptimeReports(results)))
+			yield* postJson("uptime-results", encodeUptimeReports(results))
 		})
 
-		const reportResults = Effect.fn("ApiClient.reportResults")(function* (
-			results: ReadonlyArray<ScrapeResultReport>,
-		) {
+		const reportResults = Effect.fnUntraced(function* (results: ReadonlyArray<ScrapeResultReport>) {
 			if (results.length === 0) return
-			yield* postJson("scrape-results", JSON.stringify(results))
+			yield* postJson("scrape-results", results)
 		})
 
 		return { listTargets, reportResults, listUptimeTargets, reportUptimeResults } satisfies ApiClientApi

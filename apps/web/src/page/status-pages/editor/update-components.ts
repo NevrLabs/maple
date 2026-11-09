@@ -1,9 +1,9 @@
 import type { StatusPageComponentId } from "@maple/domain"
 import type { V2StatusPageComponent, V2UptimeMonitor } from "@maple/domain/http/v2"
-import { Option, Result } from "effect"
+import { Option, Result, Schema, Array as Arr, String as Str } from "effect"
 import { AsyncData } from "foldkit"
-import type { LoadFailure } from "../../../data/load-failure"
-import * as Dialog from "../../../ui/dialog"
+import type { LoadFailure } from "@maple/views/data/load-failure"
+import * as Dialog from "@maple/views/ui/dialog"
 import type { PageContext } from "../../contract"
 import {
 	type ComponentTextField,
@@ -29,7 +29,7 @@ import {
 	SaveComponent,
 } from "./command"
 import { Message } from "./message"
-import type { Model } from "./model"
+import { canManage, type Model } from "./model"
 import {
 	chain,
 	componentsOf,
@@ -41,6 +41,8 @@ import {
 	type Return,
 	toast,
 } from "./reads"
+
+const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown))
 
 // Components in the side panel: saved as you go, removed behind a confirm, moved in the list,
 // and added from the same checklist the builder uses.
@@ -67,16 +69,16 @@ export const focusPanel = (model: Model): Return => ({
 })
 
 export const selectComponent = (model: Model, componentId: StatusPageComponentId): Return => {
-	const component = componentsOf(model).find((row) => row.id === componentId)
-	return component === undefined
-		? { model }
-		: focusPanel({
-				...model,
-				panel: { _tag: "Component", componentId },
-				componentForm: componentFormOf(component),
-				componentSave: "idle",
-				componentFailure: null,
-			})
+	const found = Arr.findFirst(componentsOf(model), (row) => row.id === componentId)
+	if (Option.isNone(found)) return { model }
+	const component = found.value
+	return focusPanel({
+		...model,
+		panel: { _tag: "Component", componentId },
+		componentForm: componentFormOf(component),
+		componentSave: "idle",
+		componentFailure: null,
+	})
 }
 
 export const changeComponent = (model: Model, field: ComponentTextField, value: string): Return => ({
@@ -84,21 +86,22 @@ export const changeComponent = (model: Model, field: ComponentTextField, value: 
 })
 
 const isSame = (form: ComponentForm, component: V2StatusPageComponent): boolean =>
-	JSON.stringify(componentPayload(form)) === JSON.stringify(componentPayload(componentFormOf(component)))
+	encodeJson(componentPayload(form)) === encodeJson(componentPayload(componentFormOf(component)))
 
 /** Saves the form when it differs from the component; a save in flight re-commits when it lands. */
 export const commitComponent = (model: Model): Return => {
 	const form = model.componentForm
-	const saved = componentsOf(model).find((row) => row.id === form.editingId)
+	const found = Arr.findFirst(componentsOf(model), (row) => row.id === form.editingId)
 	if (
-		!model.isAdmin ||
+		!canManage(model) ||
 		model.pageId === null ||
-		saved === undefined ||
+		Option.isNone(found) ||
 		model.componentSave === "saving" ||
-		form.name.trim() === "" ||
-		isSame(form, saved)
+		Str.trim(form.name) === "" ||
+		isSame(form, found.value)
 	)
 		return { model }
+	const saved = found.value
 	return {
 		model: { ...model, componentSave: "saving", componentFailure: null },
 		commands: [
@@ -125,7 +128,7 @@ export const savedComponent = (
 				components: {
 					...model.components,
 					data: AsyncData.map(model.components.data, (rows) =>
-						rows.map((row) => (row.id === component.id ? component : row)),
+						Arr.map(rows, (row) => (row.id === component.id ? component : row)),
 					),
 				},
 			}
@@ -142,18 +145,20 @@ export const moved = <A extends { readonly id: StatusPageComponentId }>(
 	componentId: StatusPageComponentId,
 	offset: number,
 ): ReadonlyArray<A> | null => {
-	const from = components.findIndex((component) => component.id === componentId)
+	const found = Arr.findFirstIndex(components, (component) => component.id === componentId)
+	if (Option.isNone(found)) return null
+	const from = found.value
 	const to = from + offset
 	const item = components[from]
-	if (from < 0 || to < 0 || to >= components.length || item === undefined) return null
-	const rest = components.filter((_, index) => index !== from)
+	if (to < 0 || to >= components.length || item === undefined) return null
+	const rest = Arr.filter(components, (_, index) => index !== from)
 	return [...rest.slice(0, to), item, ...rest.slice(to)]
 }
 
 /** Moves the row at once; the server's order lands with the re-read. */
 export const moveComponent = (model: Model, componentId: StatusPageComponentId, offset: number): Return => {
 	const next = moved(componentsOf(model), componentId, offset)
-	if (model.pageId === null || model.isReordering || next === null || !model.isAdmin) return { model }
+	if (model.pageId === null || model.isReordering || next === null || !canManage(model)) return { model }
 	return {
 		model: {
 			...model,
@@ -161,7 +166,10 @@ export const moveComponent = (model: Model, componentId: StatusPageComponentId, 
 			components: { ...model.components, data: AsyncData.map(model.components.data, () => next) },
 		},
 		commands: [
-			ReorderComponents({ pageId: model.pageId, componentIds: next.map((component) => component.id) }),
+			ReorderComponents({
+				pageId: model.pageId,
+				componentIds: Arr.map(next, (component) => component.id),
+			}),
 		],
 	}
 }
@@ -182,7 +190,7 @@ export const reordered = (
 }
 
 export const askDeleteComponent = (model: Model, componentId: StatusPageComponentId): Return =>
-	model.isAdmin
+	canManage(model)
 		? deleteComponentDialog(
 				{ ...model, confirmDeleteComponentId: componentId },
 				Dialog.open(model.deleteComponentDialog),
@@ -231,14 +239,14 @@ export const deletedComponent = (
 
 /** The monitors not on the page yet, none picked; a URL or a component by hand join them. */
 export const openAdd = (model: Model): Return => {
-	if (!model.isAdmin || model.isAddingComponents) return { model }
+	if (!canManage(model) || model.isAddingComponents) return { model }
 	const used = new Set(
-		componentsOf(model).flatMap((component) =>
+		Arr.flatMap(componentsOf(model), (component) =>
 			component.monitor_id === null ? [] : [component.monitor_id],
 		),
 	)
 	const picker = seedPicker(
-		monitorsOf(model).filter((monitor) => !used.has(monitor.id)),
+		Arr.filter(monitorsOf(model), (monitor) => !used.has(monitor.id)),
 		false,
 	)
 	const session = model.addSession + 1
@@ -328,7 +336,10 @@ export const addedComponents = (
 			outMessage: toast(
 				"success",
 				added.length === 1 ? "Component added" : `${added.length} components added`,
-				added.map((component) => component.name).join(", "),
+				Arr.join(
+					Arr.map(added, (component) => component.name),
+					", ",
+				),
 			),
 		}),
 		// Some may have been created before the failure, so the panel closes rather than offer a

@@ -16,6 +16,7 @@ import {
 } from "./list-model"
 import { gcpMetricReader } from "./tabs"
 import { gcpRailFacts, type GcpRailFact } from "./workload-signals"
+import { Array as Arr, Option, Order, String as Str } from "effect"
 
 const DATABASE = "gcp.cloud_sql"
 
@@ -28,12 +29,25 @@ const ENGINES: ReadonlyArray<readonly [prefix: string, name: string]> = [
 /** `POSTGRES_15` as "Postgres 15", `MYSQL_8_0` as "MySQL 8.0", `SQLSERVER_2022_STANDARD` as "SQL Server 2022 standard". */
 export function gcpSqlEngine(databaseVersion: string | null): string | undefined {
 	if (databaseVersion === null) return undefined
-	const [prefix, ...version] = databaseVersion.split("_")
-	const name = ENGINES.find(([engine]) => engine === prefix)?.[1]
-	if (name === undefined) return databaseVersion
-	if (prefix !== "SQLSERVER") return [name, version.join(".")].filter(Boolean).join(" ")
-	const [year, ...edition] = version
-	return [name, year, edition.join(" ").toLowerCase()].filter(Boolean).join(" ")
+	const [prefix, ...version] = Str.split("_")(databaseVersion)
+	return Option.match(
+		Arr.findFirst(ENGINES, ([engine]) => engine === prefix),
+		{
+			onNone: () => databaseVersion,
+			onSome: ([, name]) => {
+				if (prefix !== "SQLSERVER")
+					return Arr.join(Arr.filter([name, Arr.join(version, ".")], Boolean), " ")
+				const [year, ...edition] = version
+				return Arr.join(
+					Arr.filter(
+						[name, year, Str.toLowerCase(Arr.join(edition, " "))],
+						(part): part is string => part !== undefined && part !== "",
+					),
+					" ",
+				)
+			},
+		},
+	)
 }
 
 const gigabytes = (value: number) => value.toLocaleString(undefined, { maximumFractionDigits: 2 })
@@ -50,10 +64,13 @@ export function gcpSqlSize(instance: GcpCloudSqlInstance): string | undefined {
 export const gcpSqlEdition = (edition: string | null): string | undefined =>
 	edition === null
 		? undefined
-		: edition
-				.split("_")
-				.map((word) => word.charAt(0) + word.slice(1).toLowerCase())
-				.join(" ")
+		: Arr.join(
+				Arr.map(
+					Str.split("_")(edition),
+					(word) => Str.slice(0, 1)(word) + Str.toLowerCase(Str.slice(1)(word)),
+				),
+				" ",
+			)
 
 /** The console page where Query Insights is turned on for an instance. */
 export const gcpQueryInsightsConsoleUrl = (project: string, instance: string): string =>
@@ -89,10 +106,10 @@ export function gcpStatements(
 ): ReadonlyArray<GcpStatement> {
 	const whole = Math.max(
 		gcpMetricReader(gcpWindowPoints(points)).total(`${DATABASE}.query.execution.time`),
-		rows.reduce((sum, row) => sum + row.executionSeconds, 0),
+		Arr.reduce(rows, 0, (sum, row) => sum + row.executionSeconds),
 	)
 	const share = (part: number, of: number) => (of > 0 ? part / of : 0)
-	return rows.map((row) => ({
+	return Arr.map(rows, (row) => ({
 		queryHash: row.queryHash,
 		querystring: row.statement,
 		calls: row.calls,
@@ -109,7 +126,7 @@ export function gcpStatements(
 /** Why Query Insights has no statements for an instance, when its settings say so. */
 export function gcpQueryInsightsUnavailable(instance: GcpCloudSqlInstance | undefined): string | null {
 	if (instance === undefined) return null
-	if (instance.databaseVersion !== null && !instance.databaseVersion.startsWith("POSTGRES")) {
+	if (instance.databaseVersion !== null && !Str.startsWith("POSTGRES")(instance.databaseVersion)) {
 		return `Maple reads Query Insights for PostgreSQL instances only. ${instance.name} runs ${gcpSqlEngine(instance.databaseVersion)}.`
 	}
 	return instance.queryInsightsEnabled
@@ -123,16 +140,37 @@ export function gcpQueryInsightsUnavailable(instance: GcpCloudSqlInstance | unde
  * length one `?`, whitespace collapsed and dropped around punctuation, no trailing semicolon.
  */
 export const gcpNormalizeStatement = (statement: string): string =>
-	statement
-		.toLowerCase()
-		.replace(/'(?:[^']|'')*'/g, "?")
-		.replace(/\$\d+/g, "?")
-		.replace(/\b\d+(?:\.\d+)?\b/g, "?")
-		.replace(/\s+/g, " ")
-		.replace(/\s*([(),=])\s*/g, "$1")
-		.replace(/\?(?:,\?)+/g, "?")
-		.replace(/[\s;]+$/, "")
-		.trim()
+	Str.trim(
+		Str.replace(
+			/[\s;]+$/,
+			"",
+		)(
+			Str.replace(
+				/\?(?:,\?)+/g,
+				"?",
+			)(
+				Str.replace(
+					/\s*([(),=])\s*/g,
+					"$1",
+				)(
+					Str.replace(
+						/\s+/g,
+						" ",
+					)(
+						Str.replace(
+							/\b\d+(?:\.\d+)?\b/g,
+							"?",
+						)(
+							Str.replace(
+								/\$\d+/g,
+								"?",
+							)(Str.replace(/'(?:[^']|'')*'/g, "?")(Str.toLowerCase(statement))),
+						),
+					),
+				),
+			),
+		),
+	)
 
 /** A query pattern the traces recorded against the instance's databases: see `serviceDbTopQueriesSQL`. */
 export interface GcpTracedQuery {
@@ -170,16 +208,22 @@ export function gcpMatchStatements(
 	}
 	const matched = new Map<string, GcpTracedStatement>()
 	for (const row of rows) {
-		const found = byStatement
-			.get(gcpNormalizeStatement(row.querystring))
-			?.toSorted((a, b) => b.estimatedQueryCount - a.estimatedQueryCount)
-		if (found === undefined) continue
-		const services = [...new Set(found.map((query) => query.sampleService))]
+		const queries = byStatement.get(gcpNormalizeStatement(row.querystring))
+		if (queries === undefined) continue
+		const found = Arr.sort(
+			queries,
+			Order.flip(
+				Order.mapInput(Order.Number, (query: (typeof queries)[number]) => query.estimatedQueryCount),
+			),
+		)
+		const [top] = found
+		if (top === undefined) continue
+		const services = [...new Set(Arr.map(found, (query) => query.sampleService))]
 		matched.set(row.queryHash, {
 			services,
-			serviceCount: Math.max(services.length, ...found.map((query) => query.serviceCount)),
-			appP95Ms: found[0].p95DurationMs,
-			queryKeys: [...new Set(found.map((query) => query.queryKey))],
+			serviceCount: Math.max(services.length, ...Arr.map(found, (query) => query.serviceCount)),
+			appP95Ms: top.p95DurationMs,
+			queryKeys: [...new Set(Arr.map(found, (query) => query.queryKey))],
 		})
 	}
 	return matched
@@ -194,7 +238,7 @@ const MAX_PREFIX = 200
  * that is too short to tell statements apart.
  */
 export const gcpStatementTextPrefix = (statement: string): string | null => {
-	const prefix = (statement.split(/\$\d/)[0] ?? "").split("\n")[0]?.trim().slice(0, MAX_PREFIX) ?? ""
+	const prefix = Str.slice(0, MAX_PREFIX)(Str.trim(Str.split("\n")(Str.split(/\$\d/)(statement)[0])[0]))
 	return prefix.length >= MIN_PREFIX ? prefix : null
 }
 
@@ -215,16 +259,24 @@ export function gcpAppWait(
 	rows: ReadonlyArray<Pick<GcpStatement, "queryHash" | "querystring" | "p95LatencyMillis">>,
 	traced: ReadonlyMap<string, GcpTracedStatement>,
 ): GcpAppWait | null {
-	const waits = rows.flatMap((row): ReadonlyArray<GcpAppWait> => {
+	const waits = Arr.flatMap(rows, (row): ReadonlyArray<GcpAppWait> => {
 		const app = traced.get(row.queryHash)
 		const db = row.p95LatencyMillis
 		if (app === undefined || db === null) return []
 		const appP95Ms = app.appP95Ms
-		return appP95Ms >= APP_WAIT_RATIO * db && appP95Ms - db >= APP_WAIT_MIN_MS
-			? [{ service: app.services[0], statement: row.querystring, appP95Ms, dbP95Ms: db }]
+		const [service] = app.services
+		return service !== undefined && appP95Ms >= APP_WAIT_RATIO * db && appP95Ms - db >= APP_WAIT_MIN_MS
+			? [{ service, statement: row.querystring, appP95Ms, dbP95Ms: db }]
 			: []
 	})
-	return waits.toSorted((a, b) => b.appP95Ms / b.dbP95Ms - a.appP95Ms / a.dbP95Ms)[0] ?? null
+	return Option.getOrNull(
+		Arr.head(
+			Arr.sort(
+				waits,
+				Order.flip(Order.mapInput(Order.Number, (wait: GcpAppWait) => wait.appP95Ms / wait.dbP95Ms)),
+			),
+		),
+	)
 }
 
 // Connections ------------------------------------------------------------------------------------
@@ -271,7 +323,7 @@ export const gcpPoolFull = (peak: GcpConnectionPeak | undefined): boolean =>
  */
 export function gcpCloudSqlHealth(points: ReadonlyArray<GcpBucketPoint>): ReadonlyArray<GcpRailFact> {
 	const read = gcpMetricReader(gcpWindowPoints(points))
-	const reported = (metric: string) => points.some((point) => point.metric === metric)
+	const reported = (metric: string) => Arr.some(points, (point) => point.metric === metric)
 	const cached = read.total(`${DATABASE}.postgresql.block_reads`, "buffer_cache")
 	const blocks = read.total(`${DATABASE}.postgresql.block_reads`)
 	const transactionIds = read.mean(`${DATABASE}.postgresql.transaction_id.utilization`)
@@ -328,9 +380,9 @@ function cloudSqlFacts(
 			: [{ label: "engine", value: edition === undefined ? engine : `${engine} · ${edition}` }]),
 		...(databases === undefined || databases.length === 0
 			? []
-			: [{ label: "databases", value: databases.join(" · ") }]),
+			: [{ label: "databases", value: Arr.join(databases, " · ") }]),
 		// The name and its lag on lines of their own: a replica's name is long enough to wrap mid-word.
-		...replicas.flatMap((replica) => [
+		...Arr.flatMap(replicas, (replica) => [
 			{ label: "read replica", value: replica.name },
 			...(replica.lagSeconds === undefined
 				? []
@@ -370,6 +422,6 @@ export function gcpCloudSqlView(input: {
 			...gcpRailFacts("cloudSql", points, bucketSeconds),
 		],
 		health: gcpCloudSqlHealth(points),
-		focusService: statements.flatMap((row) => traced.get(row.queryHash)?.services ?? [])[0],
+		focusService: Arr.flatMap(statements, (row) => traced.get(row.queryHash)?.services ?? [])[0],
 	}
 }

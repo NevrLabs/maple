@@ -2,6 +2,9 @@
 // resource with the usual service attributes and records carrying a handful of
 // semconv attributes. Timestamps are "now" so the raw-table TTL keeps every row.
 
+import { Array as Arr } from "effect"
+import { encodeJson } from "@maple/local-server/json"
+
 export type Signal = "traces" | "logs" | "metrics"
 
 const hex = (bytes: number): string =>
@@ -26,7 +29,7 @@ const spans = (count: number, nowNanos: bigint) => {
 	const traceId = hex(16)
 	const rootId = hex(8)
 	return Array.from({ length: count }, (_, i) => {
-		const route = ROUTES[i % ROUTES.length]
+		const route = Arr.getUnsafe(ROUTES, i % ROUTES.length)
 		const failed = i % 20 === 19
 		const start = nowNanos - BigInt(5_000_000 + i * 1_000)
 		return {
@@ -64,8 +67,8 @@ const logRecords = (count: number, nowNanos: bigint) => {
 		observedTimeUnixNano: String(nowNanos),
 		severityNumber: i % 10 === 9 ? 17 : 9,
 		severityText: i % 10 === 9 ? "ERROR" : "INFO",
-		body: { stringValue: `handled request ${i} for ${ROUTES[i % ROUTES.length]}` },
-		attributes: [str("http.route", ROUTES[i % ROUTES.length]), int("attempt", i % 3)],
+		body: { stringValue: `handled request ${i} for ${Arr.getUnsafe(ROUTES, i % ROUTES.length)}` },
+		attributes: [str("http.route", Arr.getUnsafe(ROUTES, i % ROUTES.length)), int("attempt", i % 3)],
 		traceId,
 		spanId: hex(8),
 	}))
@@ -79,7 +82,7 @@ const metrics = (count: number, nowNanos: bigint) => {
 		Array.from({ length: n }, (_, i) => ({
 			startTimeUnixNano: start,
 			timeUnixNano: time,
-			attributes: [str("http.route", ROUTES[i % ROUTES.length])],
+			attributes: [str("http.route", Arr.getUnsafe(ROUTES, i % ROUTES.length))],
 			...make(i),
 		}))
 	if (count < 3)
@@ -125,13 +128,13 @@ export const exportBody = (signal: Signal, count: number, service = "bench-api")
 	const scope = { name: "maple-bench", version: "1.0.0" }
 	switch (signal) {
 		case "traces":
-			return JSON.stringify({
+			return encodeJson({
 				resourceSpans: [
 					{ resource: resource(service), scopeSpans: [{ scope, spans: spans(count, now) }] },
 				],
 			})
 		case "logs":
-			return JSON.stringify({
+			return encodeJson({
 				resourceLogs: [
 					{
 						resource: resource(service),
@@ -140,7 +143,7 @@ export const exportBody = (signal: Signal, count: number, service = "bench-api")
 				],
 			})
 		case "metrics":
-			return JSON.stringify({
+			return encodeJson({
 				resourceMetrics: [
 					{ resource: resource(service), scopeMetrics: [{ scope, metrics: metrics(count, now) }] },
 				],

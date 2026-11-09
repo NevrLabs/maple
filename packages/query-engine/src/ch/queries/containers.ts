@@ -30,6 +30,7 @@ import { MetricsGauge, MetricsSum, orgIdParam } from "../tables"
 import { containerRuntimeExpr, deploymentEnvExpr } from "@maple/domain/tinybird/semconv-renames"
 import { avgIfOrZero, facetAttrExpr, maxIfOrZero, type FacetOutput } from "./query-helpers"
 import type { SortDirection } from "./infra"
+import { Array as Arr } from "effect"
 
 const CONTAINER_METRIC_NAMES = [
 	"container.cpu.utilization",
@@ -150,13 +151,13 @@ const containerFilterConditions = (
 	CH.when(opts.search, (v: string) =>
 		CH.positionCaseInsensitive($.ResourceAttributes.get("container.name"), CH.lit(v)).gt(0),
 	),
-	...CONTAINER_FACETS.flatMap(({ include, exclude, attr }) => {
+	...Arr.flatMap(CONTAINER_FACETS, ({ include, exclude, attr }) => {
 		const expr = attr === null ? deploymentEnvExpr($.ResourceAttributes) : $.ResourceAttributes.get(attr)
 		const included = opts[include]
 		const excluded = opts[exclude]
 		return [
-			included?.length ? CH.inList(expr, included) : undefined,
-			excluded?.length ? CH.notInList(expr, excluded) : undefined,
+			included !== undefined && included.length > 0 ? CH.inList(expr, included) : undefined,
+			excluded !== undefined && excluded.length > 0 ? CH.notInList(expr, excluded) : undefined,
 		]
 	}),
 ]
@@ -166,7 +167,7 @@ export function listContainersQuery(opts: ListContainersOpts = {}) {
 	const sortDir = opts.sortDir ?? (sortBy === "containerName" ? "asc" : "desc")
 	const orderBy: Array<[string, SortDirection]> = [
 		[sortBy, sortDir],
-		...CONTAINER_SORT_TIEBREAK.filter(([key]) => key !== sortBy),
+		...Arr.filter(CONTAINER_SORT_TIEBREAK, ([key]) => key !== sortBy),
 	]
 
 	const grouped = from(MetricsGauge)
@@ -423,7 +424,10 @@ export function containerGaugeTimeseriesQuery(opts: ContainerGaugeTimeseriesOpts
 		.select(($) => ({
 			bucket: CH.toStartOfInterval($.TimeUnix, param.int("bucketSeconds")),
 			attributeValue: CH.lit(""),
-			avgValue: opts.divideBy ? CH.avg($.Value).div(opts.divideBy) : CH.avg($.Value),
+			avgValue:
+				opts.divideBy !== undefined && opts.divideBy !== 0
+					? CH.avg($.Value).div(opts.divideBy)
+					: CH.avg($.Value),
 		}))
 		.where(($) => [
 			$.OrgId.eq(orgIdParam),
@@ -440,9 +444,8 @@ export function containerGaugeTimeseriesQuery(opts: ContainerGaugeTimeseriesOpts
 }
 
 // Container sum time-series — metrics_sum families. Cumulative counters
-// (network, block IO) surface bucketed sums — same crude caveat as
-// hostNetworkTimeseriesQuery: the UI renders relative shape, not exact
-// bytes/sec. Sampled non-monotonic sums (memory bytes) must set `average`
+// (network, block IO) surface bucketed sums: the UI renders relative shape,
+// not exact bytes/sec. Sampled non-monotonic sums (memory bytes) must set `average`
 // instead: summing samples would inflate the chart by samples-per-bucket.
 
 export interface ContainerSumTimeseriesOpts {
@@ -465,16 +468,19 @@ export function containerSumTimeseriesQuery(opts: ContainerSumTimeseriesOpts) {
 	return from(MetricsSum)
 		.select(($) => ({
 			bucket: CH.toStartOfInterval($.TimeUnix, param.int("bucketSeconds")),
-			attributeValue: labels?.length
-				? CH.multiIf(
-						labels.map(
-							([metricName, label]) => [$.MetricName.eq(metricName), CH.lit(label)] as const,
-						) as Array<[CH.Condition, CH.Expr<string>]>,
-						CH.lit(""),
-					)
-				: opts.groupByAttributeKey
-					? $.Attributes.get(opts.groupByAttributeKey)
-					: CH.lit(""),
+			attributeValue:
+				labels !== undefined && labels.length > 0
+					? CH.multiIf(
+							Arr.map(
+								labels,
+								([metricName, label]) =>
+									[$.MetricName.eq(metricName), CH.lit(label)] as const,
+							),
+							CH.lit(""),
+						)
+					: opts.groupByAttributeKey
+						? $.Attributes.get(opts.groupByAttributeKey)
+						: CH.lit(""),
 			sumValue: opts.average ? CH.avg($.Value) : CH.sum($.Value),
 		}))
 		.where(($) => [

@@ -1,17 +1,18 @@
 import type { CodeReviewDetail } from "@maple/domain/http"
 import { AsyncData, Submodel } from "foldkit"
 import type { Html, HtmlBuilder } from "foldkit/html"
-import * as DialogView from "../../../ui/dialog-view"
-import { linkButton } from "../../../ui/button"
-import { errorState } from "../../../ui/error-state"
-import { icon } from "../../../ui/icon"
-import { skeleton } from "../../../ui/skeleton"
-import { truncatedId } from "../../../ui/truncated-id"
+import * as DialogView from "@maple/views/ui/dialog-view"
+import { linkButton } from "@maple/views/ui/button"
+import { errorState } from "@maple/views/ui/error-state"
+import { icon } from "@maple/views/ui/icon"
+import { reviewSheetSkeleton } from "./skeletons"
+import { truncatedId } from "@maple/views/ui/truncated-id"
 import { sheetDetailHeader } from "../../kit/sheet-detail-header"
 import { authorLabel } from "./author"
 import type { ReviewSheet } from "./review-sheet"
 import { SheetMessage } from "./review-sheet"
 import { reviewSections } from "./review-sheet-sections"
+import { hstack, vstackClass } from "@maple/views/ui/stack"
 
 // `ReviewDetailSheet`, `ReviewDetailBody` and `SheetDetailHeader`.
 
@@ -51,15 +52,12 @@ const detailHeader = (h: H, id: string, detail: CodeReviewDetail): Html => {
 					truncatedId(h, { value: review.headSha, kind: "sha" }),
 				],
 			),
-			h.div(
-				[h.Class("flex flex-wrap gap-2 pt-1")],
-				[
-					linkOut(h, review.url, "Pull request"),
-					...(review.commentUrl === null ? [] : [linkOut(h, review.commentUrl, "Summary comment")]),
-					...(detail.reviewUrl === null ? [] : [linkOut(h, detail.reviewUrl, "Inline review")]),
-					...(detail.checkRunUrl === null ? [] : [linkOut(h, detail.checkRunUrl, "Check run")]),
-				],
-			),
+			hstack(h, { gap: "2", align: "stretch", wrap: true, className: "pt-1" }, [
+				linkOut(h, review.url, "Pull request"),
+				...(review.commentUrl === null ? [] : [linkOut(h, review.commentUrl, "Summary comment")]),
+				...(detail.reviewUrl === null ? [] : [linkOut(h, detail.reviewUrl, "Inline review")]),
+				...(detail.checkRunUrl === null ? [] : [linkOut(h, detail.checkRunUrl, "Check run")]),
+			]),
 		],
 	})
 }
@@ -72,15 +70,7 @@ const body = (h: H, sheet: ReviewSheet, timeZone: string): ReadonlyArray<Html> =
 	const id = sheet.dialog.id
 	if (sheet.reviewId === null) return []
 	return AsyncData.matchData(sheet.detail.data, {
-		onEmpty: () => [
-			DialogView.dialogHeader(
-				h,
-				"sheet",
-				[DialogView.dialogTitle(h, "sheet", id, [skeleton(h, "h-6 w-72")])],
-				"gap-1.5 pr-14",
-			),
-			panel(h, id, "space-y-4", [skeleton(h, "h-20 w-full"), skeleton(h, "h-40 w-full")]),
-		],
+		onEmpty: () => reviewSheetSkeleton(h, id),
 		onFailure: (failure) => [
 			panel(h, id, undefined, [
 				errorState(h, {
@@ -92,7 +82,7 @@ const body = (h: H, sheet: ReviewSheet, timeZone: string): ReadonlyArray<Html> =
 		],
 		onData: (detail) => [
 			detailHeader(h, id, detail),
-			panel(h, id, "flex flex-col gap-6", reviewSections(h, sheet, detail, timeZone)),
+			panel(h, id, vstackClass({ gap: "6" }), reviewSections(h, sheet, detail, timeZone)),
 		],
 	})
 }

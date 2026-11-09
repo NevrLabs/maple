@@ -1,4 +1,4 @@
-import { Array as Arr, Option } from "effect"
+import { Array as Arr, Option, Record as Rec, String as Str } from "effect"
 import {
 	MAPLE_SERVICES_NAMESPACE,
 	UPTIME_MONITOR_ID_ATTRIBUTE,
@@ -67,7 +67,7 @@ const anyValue = (value: string | number | boolean): OtlpAnyValue => {
 }
 
 const keyValues = (attributes: Readonly<Record<string, string | number | boolean>>) =>
-	Object.entries(attributes).map(([key, value]): OtlpKeyValue => ({ key, value: anyValue(value) }))
+	Arr.map(Rec.toEntries(attributes), ([key, value]): OtlpKeyValue => ({ key, value: anyValue(value) }))
 
 /** Epoch ms as the decimal-string nanos OTLP/JSON uses; BigInt because ns overflow 2^53. */
 export const toUnixNano = (ms: number): string => (BigInt(Math.round(ms)) * 1_000_000n).toString()
@@ -97,7 +97,7 @@ const targetAttributes = (
 			// The query and fragment may carry credentials, so the span keeps scheme, host and path.
 			return Option.match(parseUrl(config.url), {
 				onNone: () => ({
-					"url.full": config.url.split(/[?#]/u)[0] ?? "",
+					"url.full": Str.split(/[?#]/u)(config.url)[0] ?? "",
 					"http.request.method": config.method,
 				}),
 				onSome: (url) => ({
@@ -125,8 +125,8 @@ const PHASE_FIELDS = ["dnsMs", "connectMs", "tlsMs", "ttfbMs", "transferMs"] as 
 
 /** An HTTP check's phases in ms to 0.1 ms; a phase that did not happen has no attribute. */
 export const timingAttributes = (timings: PhaseTimings | undefined): Record<string, number> =>
-	Object.fromEntries(
-		PHASE_FIELDS.flatMap((field) => {
+	Rec.fromEntries(
+		Arr.flatMap(PHASE_FIELDS, (field) => {
 			const value = timings?.[field] ?? null
 			return value === null ? [] : [[UPTIME_TIMING_ATTRIBUTES[field], Math.round(value * 10) / 10]]
 		}),

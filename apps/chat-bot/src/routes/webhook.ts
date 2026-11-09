@@ -12,7 +12,7 @@
  * `../worker.ts`.
  */
 import { connectors as registeredConnectors } from "@maple/chat-platform/connectors"
-import { ConfigProvider, Effect, Schema } from "effect"
+import { ConfigProvider, Effect, Option, Schema, Array as Arr } from "effect"
 import { HttpRouter, HttpServerResponse } from "effect/http"
 import { resolveConnectorConfig, type IngressConnector } from "../config.ts"
 import { InboundHandler } from "../inbound.ts"
@@ -32,7 +32,7 @@ class ConnectorUnavailable extends Schema.TaggedError<ConnectorUnavailable>()(
 	{ connector: Schema.String, missing: Schema.Array(Schema.String) },
 ) {
 	override get message(): string {
-		return `Connector ${this.connector} is unavailable: missing ${this.missing.join(", ")}`
+		return `Connector ${this.connector} is unavailable: missing ${Arr.join(this.missing, ", ")}`
 	}
 }
 
@@ -65,8 +65,12 @@ export const connectorWebhookRouter = (registry: ReadonlyArray<IngressConnector>
 					// attributable to the id that was asked for rather than anonymous.
 					yield* Effect.annotateCurrentSpan("maple.chat.connector", connectorId)
 
-					const connector = registry.find((candidate) => candidate.id === connectorId)
-					if (connector === undefined || connector.ingress.kind !== "webhook") {
+					const found = Arr.findFirst(registry, (candidate) => candidate.id === connectorId)
+					if (Option.isNone(found)) {
+						return yield* rejectCaller(404, "ConnectorNotFound", "No such connector")
+					}
+					const connector = found.value
+					if (connector.ingress.kind !== "webhook") {
 						return yield* rejectCaller(404, "ConnectorNotFound", "No such connector")
 					}
 
@@ -98,7 +102,7 @@ export const connectorWebhookRouter = (registry: ReadonlyArray<IngressConnector>
 						Effect.logWarning("Chat connector webhook is not configured").pipe(
 							Effect.annotateLogs({
 								"maple.chat.connector": error.connector,
-								"maple.chat.missing_config": error.missing.join(","),
+								"maple.chat.missing_config": Arr.join(error.missing, ","),
 							}),
 							Effect.andThen(
 								Effect.annotateCurrentSpan({

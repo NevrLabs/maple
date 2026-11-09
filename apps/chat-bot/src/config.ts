@@ -8,7 +8,7 @@
  * so the deploy graph stays out of the bundle.
  */
 import type { ChatConnector, ConnectorConfig } from "@maple/chat-platform"
-import { Config, Effect, Option, Redacted } from "effect"
+import { Config, Effect, Option, Redacted, Array as Arr, String as Str } from "effect"
 
 /**
  * The half of a connector this Worker touches.
@@ -26,7 +26,7 @@ export type ConnectorConfigResult =
 	| { readonly _tag: "missing"; readonly names: ReadonlyArray<string> }
 
 const trimmedNonBlank = (value: string): Option.Option<string> => {
-	const trimmed = value.trim()
+	const trimmed = Str.trim(value)
 	return trimmed === "" ? Option.none() : Option.some(trimmed)
 }
 
@@ -42,7 +42,7 @@ export const optionalSetting = (name: string): Config.Config<Option.Option<strin
 	)
 
 /** {@link optionalSetting} for a secret: kept `Redacted` until the one place that uses it. */
-export const optionalSecret = (name: string): Config.Config<Option.Option<Redacted.Redacted<string>>> =>
+export const optionalSecret = (name: string): Config.Config<Option.Option<Redacted.Redacted>> =>
 	optionalSetting(name).pipe(Config.map(Option.map((value) => Redacted.make(value))))
 
 /**
@@ -60,9 +60,15 @@ export const resolveConnectorConfig = (connector: IngressConnector): Effect.Effe
 		Effect.map((entries): ConnectorConfigResult => {
 			const config = new Map<string, string>()
 			const missing: string[] = []
+			const optional = new Set(
+				Arr.map(
+					Arr.filter(connector.ingress.requiredConfig, (key) => key.optional === true),
+					(key) => key.name,
+				),
+			)
 			for (const [name, value] of entries) {
 				if (Option.isSome(value)) config.set(name, value.value)
-				else missing.push(name)
+				else if (!optional.has(name)) missing.push(name)
 			}
 			return missing.length === 0 ? { _tag: "ready", config } : { _tag: "missing", names: missing }
 		}),
@@ -71,4 +77,4 @@ export const resolveConnectorConfig = (connector: IngressConnector): Effect.Effe
 /** The connectors whose events arrive over a long-lived socket rather than an HTTP request. */
 export const socketConnectors = (
 	registry: ReadonlyArray<IngressConnector>,
-): ReadonlyArray<IngressConnector> => registry.filter((connector) => connector.ingress.kind === "socket")
+): ReadonlyArray<IngressConnector> => Arr.filter(registry, (connector) => connector.ingress.kind === "socket")

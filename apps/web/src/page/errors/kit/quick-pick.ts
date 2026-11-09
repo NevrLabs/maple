@@ -1,18 +1,16 @@
 import { cn } from "@maple/ui/lib/utils"
-import {
-	autocompleteEmptyStyles,
-	autocompleteItemStyles,
-	autocompleteListStyles,
-} from "@maple/ui/styles/ui/autocomplete"
-import { commandEmptyStyles, commandItemStyles, commandListStyles } from "@maple/ui/styles/ui/command"
-import { Option, Schema } from "effect"
+import { Option, Schema, Array as Arr, String as Str } from "effect"
 import { Command, type Update } from "foldkit"
 import type { Html, HtmlBuilder } from "foldkit/html"
 import { defineMessageUnion } from "foldkit/message"
-import { kbd } from "../../../ui/display"
-import { icon } from "../../../ui/icon"
-import * as Popover from "../../../ui/popover"
-import { scrollArea } from "../../../ui/scroll-area"
+import { bareInput } from "@maple/views/ui/bare-input"
+import { commandEmpty, commandListbox, commandOption } from "@maple/views/ui/command"
+import { kbd } from "@maple/views/ui/display"
+import { icon } from "@maple/views/ui/icon"
+import * as Popover from "@maple/views/ui/popover"
+import { scrollArea } from "@maple/views/ui/scroll-area"
+import { typography } from "@maple/views/ui/typography"
+import { hstack } from "@maple/views/ui/stack"
 
 // A quick-pick menu: a popover with a type-to-filter input
 // (an inline, always-open Autocomplete, first match highlighted) and one row per choice; a digit
@@ -48,8 +46,10 @@ export const visibleOf = <T extends Readonly<{ label: string; keywords?: string 
 	items: ReadonlyArray<T>,
 	query: string,
 ): ReadonlyArray<T> => {
-	const needle = query.trim().toLowerCase()
-	return items.filter((item) => `${item.label} ${item.keywords ?? ""}`.toLowerCase().includes(needle))
+	const needle = Str.toLowerCase(Str.trim(query))
+	return Arr.filter(items, (item) =>
+		Str.includes(needle)(Str.toLowerCase(`${item.label} ${item.keywords ?? ""}`)),
+	)
 }
 
 // MESSAGE
@@ -118,10 +118,13 @@ export const update = (model: Model, message: Message): Return =>
 				return item === undefined || item.isDisabled === true ? { model } : picked(model, item.value)
 			}
 			if (model.query === "" && /^[0-9]$/.test(key)) {
-				const item = items.find(
-					(candidate) => candidate.shortcut === key && candidate.isDisabled !== true,
+				return Option.match(
+					Arr.findFirst(
+						items,
+						(candidate) => candidate.shortcut === key && candidate.isDisabled !== true,
+					),
+					{ onNone: () => ({ model }), onSome: (item) => picked(model, item.value) },
 				)
-				return item === undefined ? { model } : picked(model, item.value)
 			}
 			return { model }
 		},
@@ -170,33 +173,28 @@ const row = <M>(h: HtmlBuilder<M>, options: ViewOptions<M>, item: QuickPickItem,
 	const { model, toMessage } = options
 	const isHighlighted = model.highlighted === index
 	const isDisabled = item.isDisabled ?? false
-	return h.div(
+	return commandOption(
+		h,
+		{
+			className: "gap-2 rounded-md px-2 py-1.5 text-xs text-foreground data-disabled:opacity-40",
+			attributes: [
+				...(isDisabled ? [h.AriaDisabled(true)] : []),
+				...(isDisabled ? [h.DataAttribute("disabled", "")] : []),
+				...(isHighlighted ? [h.DataAttribute("highlighted", "")] : []),
+				h.Id(optionId(model.popover.id, index)),
+				...(isDisabled
+					? []
+					: [
+							h.OnMouseMove(toMessage(Message.HoveredItem({ index }))),
+							h.OnClick(toMessage(Message.ClickedItem({ value: item.value }))),
+						]),
+			],
+		},
 		[
-			...(isDisabled ? [h.AriaDisabled(true)] : []),
-			h.Class(
-				cn(
-					autocompleteItemStyles,
-					cn(
-						commandItemStyles,
-						"gap-2 rounded-md px-2 py-1.5 text-xs text-foreground data-disabled:opacity-40",
-					),
-				),
-			),
-			...(isDisabled ? [h.DataAttribute("disabled", "")] : []),
-			...(isHighlighted ? [h.DataAttribute("highlighted", "")] : []),
-			h.DataAttribute("slot", "command-item"),
-			h.Id(optionId(model.popover.id, index)),
-			h.Role("option"),
-			...(isDisabled
-				? []
-				: [
-						h.OnMouseMove(toMessage(Message.HoveredItem({ index }))),
-						h.OnClick(toMessage(Message.ClickedItem({ value: item.value }))),
-					]),
-		],
-		[
-			h.span([h.Class("flex size-4 shrink-0 items-center justify-center")], [item.icon]),
-			h.span([h.Class("min-w-0 flex-1 truncate")], [item.label]),
+			hstack(h, { align: "center", justify: "center", as: "span", className: "size-4 shrink-0" }, [
+				item.icon,
+			]),
+			typography(h, { truncate: true, className: "min-w-0 flex-1" }, [item.label]),
 			...(item.value === options.current
 				? [icon(h, "CheckIcon", { size: 14, className: "shrink-0 text-foreground" })]
 				: []),
@@ -204,11 +202,7 @@ const row = <M>(h: HtmlBuilder<M>, options: ViewOptions<M>, item: QuickPickItem,
 				? []
 				: [
 						h.span(
-							[
-								h.Class(
-									"w-3 shrink-0 text-right text-2xs tabular-nums text-foreground-subtle",
-								),
-							],
+							[h.Class("w-3 shrink-0 text-right text-2xs tabular-nums text-foreground-subtle")],
 							[item.shortcut],
 						),
 					]),
@@ -219,7 +213,7 @@ const row = <M>(h: HtmlBuilder<M>, options: ViewOptions<M>, item: QuickPickItem,
 const content = <M>(h: HtmlBuilder<M>, options: ViewOptions<M>): ReadonlyArray<Html> => {
 	const { model, toMessage } = options
 	const visible = visibleOf(options.items, model.query)
-	const facts = options.items.map(({ value, label, shortcut, isDisabled, keywords }) => ({
+	const facts = Arr.map(options.items, ({ value, label, shortcut, isDisabled, keywords }) => ({
 		value,
 		label,
 		shortcut,
@@ -231,10 +225,10 @@ const content = <M>(h: HtmlBuilder<M>, options: ViewOptions<M>): ReadonlyArray<H
 			? [h.AriaActiveDescendant(optionId(model.popover.id, model.highlighted))]
 			: []
 	return [
-		h.div(
-			[h.Class("flex items-center gap-2 border-b border-border-subtle px-3")],
-			[
-				h.input([
+		hstack(h, { gap: "2", align: "center", className: "border-b border-border-subtle px-3" }, [
+			bareInput(h, {
+				className: "h-9 flex-1 text-sm text-foreground placeholder:text-muted-foreground",
+				attributes: [
 					...activeDescendant,
 					h.AriaAutocomplete("list"),
 					h.AriaControls(listId(model.popover.id)),
@@ -244,9 +238,6 @@ const content = <M>(h: HtmlBuilder<M>, options: ViewOptions<M>): ReadonlyArray<H
 					h.Attribute("autocapitalize", "none"),
 					h.Attribute("autocomplete", "off"),
 					h.Attribute("autocorrect", "off"),
-					h.Class(
-						"h-9 min-w-0 flex-1 bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground",
-					),
 					h.DataAttribute("popup-open", ""),
 					h.DataAttribute("pressed", ""),
 					h.Placeholder(options.placeholder),
@@ -259,34 +250,24 @@ const content = <M>(h: HtmlBuilder<M>, options: ViewOptions<M>): ReadonlyArray<H
 							? Option.some(toMessage(Message.PressedInputKey({ key, items: facts })))
 							: Option.none(),
 					),
-				]),
-				kbd(h, "h-4.5 min-w-4.5 text-3xs", [options.hotkey]),
-			],
-		),
-		scrollArea(h, { idPrefix: `${model.popover.id}-scroll`, className: "size-full min-h-0" }, [
-			h.div(
-				[
-					...activeDescendant,
-					h.Class(cn(autocompleteListStyles, cn(commandListStyles, "not-empty:p-1"))),
-					h.DataAttribute("slot", "command-list"),
-					h.Id(listId(model.popover.id)),
-					h.Role("listbox"),
-					h.Tabindex(-1),
 				],
+			}),
+			kbd(h, "h-4.5 min-w-4.5 text-3xs", [options.hotkey]),
+		]),
+		scrollArea(h, { idPrefix: `${model.popover.id}-scroll`, className: "size-full min-h-0" }, [
+			commandListbox(
+				h,
+				{
+					className: "not-empty:p-1",
+					attributes: [...activeDescendant, h.Id(listId(model.popover.id))],
+				},
 				[
-					h.div(
-						[
-							h.AriaAtomic(true),
-							h.AriaLive("polite"),
-							h.Class(
-								cn(autocompleteEmptyStyles, cn(commandEmptyStyles, "not-empty:py-4 text-xs")),
-							),
-							h.DataAttribute("slot", "command-empty"),
-							h.Role("status"),
-						],
+					commandEmpty(
+						h,
+						{ className: "not-empty:py-4 text-xs" },
 						visible.length === 0 ? ["No match"] : [],
 					),
-					...visible.map((item, index) => row(h, options, item, index)),
+					...Arr.map(visible, (item, index) => row(h, options, item, index)),
 				],
 			),
 		]),

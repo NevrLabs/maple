@@ -49,6 +49,16 @@ import { migration_0047_ci_runs_jobs } from "./0047_ci_runs_jobs"
 import { migration_0048_service_api_http_details } from "./0048_service_api_http_details"
 import { migration_0049_service_map_db_edges_minutely } from "./0049_service_map_db_edges_minutely"
 import { migration_0050_security_telemetry } from "./0050_security_telemetry"
+import { migration_0051_error_fingerprint_fuzz_fixes } from "./0051_error_fingerprint_fuzz_fixes"
+import { migration_0052_error_fingerprint_json_frames } from "./0052_error_fingerprint_json_frames"
+import { migration_0053_error_fingerprint_interleaved_values } from "./0053_error_fingerprint_interleaved_values"
+import { migration_0054_error_custom_fingerprint } from "./0054_error_custom_fingerprint"
+import { migration_0055_error_fingerprint_v4 } from "./0055_error_fingerprint_v4"
+import { migration_0056_user_activity_hourly } from "./0056_user_activity_hourly"
+import { migration_0057_error_events_user_id } from "./0057_error_events_user_id"
+import { migration_0058_user_activity_channels } from "./0058_user_activity_channels"
+import { migration_0059_service_overview_slo_latency_ladder } from "./0059_service_overview_slo_latency_ladder"
+import { Array as Arr } from "effect"
 
 /**
  * A migration statement is either a raw SQL string (structural DDL) or a
@@ -130,13 +140,21 @@ export const migrations: ReadonlyArray<ClickHouseMigration> = [
 	migration_0048_service_api_http_details,
 	migration_0049_service_map_db_edges_minutely,
 	migration_0050_security_telemetry,
+	migration_0051_error_fingerprint_fuzz_fixes,
+	migration_0052_error_fingerprint_json_frames,
+	migration_0053_error_fingerprint_interleaved_values,
+	migration_0054_error_custom_fingerprint,
+	migration_0055_error_fingerprint_v4,
+	migration_0056_user_activity_hourly,
+	migration_0057_error_events_user_id,
+	migration_0058_user_activity_channels,
+	migration_0059_service_overview_slo_latency_ladder,
 ] as const
 
 /** Highest migration `version` bundled — i.e. the schema level a fully-applied
  * ClickHouse instance reaches. */
-export const latestMigrationVersion: number = migrations.reduce(
-	(max, migration) => Math.max(max, migration.version),
-	0,
+export const latestMigrationVersion: number = Arr.reduce(migrations, 0, (max, migration) =>
+	Math.max(max, migration.version),
 )
 
 /**
@@ -158,8 +176,7 @@ export const latestMigrationVersion: number = migrations.reduce(
  * `clickhouse_insert_mappings.rs` by `scripts/generate-clickhouse-insert-mappings.ts`).
  */
 export const clickHouseSchemaVersion: string = String(
-	migrations.reduce(
-		(max, migration) => (migration.requiredForIngest === false ? max : Math.max(max, migration.version)),
-		0,
+	Arr.reduce(migrations, 0, (max, migration) =>
+		migration.requiredForIngest === false ? max : Math.max(max, migration.version),
 	),
 )

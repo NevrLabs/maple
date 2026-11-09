@@ -1,3 +1,4 @@
+import * as Policy from "@maple/domain/policy"
 import {
 	GithubIntegrationStatus,
 	SecurityAuditFindingsResponse,
@@ -10,15 +11,15 @@ import {
 import { SecurityAuditRunId, SecurityAuditTargetId } from "@maple/domain/security-audit"
 import { Schema } from "effect"
 import { defineMessageUnion } from "foldkit/message"
-import { KeyedSchema } from "../../../data/keyed"
-import { LoadFailure } from "../../../data/load-failure"
+import { KeyedSchema } from "@maple/views/data/keyed"
+import { LoadFailure } from "@maple/views/data/load-failure"
 import { SeverityBucket } from "../kit/findings"
 import { SecurityFindingsSearch, SecurityRunsSearch } from "../../../route/search"
-import * as Select from "../../../ui/select"
+import * as Select from "@maple/views/ui/select"
 import * as AddTarget from "../kit/add-target"
 import * as SpendSettings from "../kit/spend-settings"
 
-// `/security`, `/security/findings` and `/security/runs` as one page instance: the three tabs read
+// `/security/code`, `/security/code/findings` and `/security/code/runs` as one page instance: the three tabs read
 // the same targets, runs and findings, so a tab change reuses what the last one read.
 
 export const Tab = Schema.Literals(["overview", "findings", "runs"])
@@ -30,7 +31,7 @@ export const Model = Schema.Struct({
 	runsSearch: SecurityRunsSearch,
 	nowMs: Schema.Finite,
 	/** `useIsOrgAdmin`: hides writes a member would be refused. The server still decides. */
-	isAdmin: Schema.Boolean,
+	grants: Schema.Array(Policy.PermissionName),
 	targets: KeyedSchema(SecurityAuditTargetsResponse, LoadFailure),
 	runs: KeyedSchema(SecurityAuditRunsResponse, LoadFailure),
 	/** Each target's own runs: its latest run and this month's spend, past the global list's cap. */
@@ -56,6 +57,10 @@ export const Model = Schema.Struct({
 })
 export type Model = typeof Model.Type
 
+/** The viewer may add targets, change settings and start or stop runs (`security_audit:run`). */
+export const canRunAudits = (model: Pick<Model, "grants">): boolean =>
+	Policy.has(model.grants, "security_audit:run")
+
 const result = <S extends Schema.Top>(schema: S) => ({
 	key: Schema.String,
 	result: Schema.Result(schema, LoadFailure),
@@ -63,7 +68,7 @@ const result = <S extends Schema.Top>(schema: S) => ({
 
 export const Message = defineMessageUnion({
 	ReadClock: { nowMs: Schema.Finite },
-	CompletedReadIsAdmin: { isAdmin: Schema.Boolean },
+	CompletedReadGrants: { grants: Schema.Array(Policy.PermissionName) },
 	CompletedFetchTargets: result(SecurityAuditTargetsResponse),
 	CompletedFetchRuns: result(SecurityAuditRunsResponse),
 	CompletedFetchTargetRuns: { targetId: SecurityAuditTargetId, ...result(SecurityAuditRunsResponse) },

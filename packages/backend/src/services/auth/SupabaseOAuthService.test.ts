@@ -1,5 +1,5 @@
 import { afterEach, assert, describe, it } from "@effect/vitest"
-import { ConfigProvider, Effect, Layer, Schema } from "effect"
+import { ConfigProvider, Effect, Layer, Schema, Array as Arr, String as Str, Option } from "effect"
 import { TestClock } from "effect/testing"
 import { FetchHttpClient, HttpClient } from "effect/http"
 import { OrgId, UserId } from "@maple/domain/http"
@@ -137,7 +137,9 @@ describe("SupabaseOAuthService", () => {
 					name: "Acme",
 				})
 
-				const exchange = fake.state.calls.find((call) => call.path === "/v1/oauth/token")
+				const exchange = Option.getOrUndefined(
+					Arr.findFirst(fake.state.calls, (call) => call.path === "/v1/oauth/token"),
+				)
 				const params = new URLSearchParams(exchange?.body ?? "")
 				// The secret travels only in the Basic header, never in the form body.
 				assert.isNull(params.get("client_secret"))
@@ -181,7 +183,7 @@ describe("SupabaseOAuthService", () => {
 		return Effect.gen(function* () {
 			const error = yield* connect(fake).pipe(Effect.flip)
 			assert.strictEqual(error._tag, "@maple/http/errors/IntegrationsValidationError")
-			assert.isTrue(fake.state.calls.some((call) => call.path === "/v1/oauth/revoke"))
+			assert.isTrue(Arr.some(fake.state.calls, (call) => call.path === "/v1/oauth/revoke"))
 		}).pipe(Effect.provide(makeLayer(testDb, fake)))
 	})
 
@@ -191,7 +193,7 @@ describe("SupabaseOAuthService", () => {
 		return Effect.gen(function* () {
 			const error = yield* connect(fake).pipe(Effect.flip)
 			assert.strictEqual(error._tag, "@maple/http/errors/IntegrationsUpstreamError")
-			assert.isTrue(fake.state.calls.some((call) => call.path === "/v1/oauth/revoke"))
+			assert.isTrue(Arr.some(fake.state.calls, (call) => call.path === "/v1/oauth/revoke"))
 			assert.isFalse(yield* (yield* SupabaseOAuthService).isGrantUsable(ORG))
 		}).pipe(Effect.provide(makeLayer(testDb, fake)))
 	})
@@ -202,7 +204,9 @@ describe("SupabaseOAuthService", () => {
 		return Effect.gen(function* () {
 			const error = yield* connect(fake).pipe(Effect.flip)
 			assert.strictEqual(error._tag, "@maple/http/errors/IntegrationsRevokedError")
-			const revoke = fake.state.calls.find((call) => call.path === "/v1/oauth/revoke")
+			const revoke = Option.getOrUndefined(
+				Arr.findFirst(fake.state.calls, (call) => call.path === "/v1/oauth/revoke"),
+			)
 			assert.include(revoke?.body ?? "", "refresh_1")
 			assert.isFalse(yield* (yield* SupabaseOAuthService).isGrantUsable(ORG))
 		}).pipe(Effect.provide(makeLayer(testDb, fake)))
@@ -216,8 +220,10 @@ describe("SupabaseOAuthService", () => {
 			yield* TestClock.adjust("25 hours")
 			const organizations = yield* listWithGrant
 			assert.strictEqual(organizations.length, 1)
-			const refreshes = fake.state.calls.filter(
-				(call) => call.path === "/v1/oauth/token" && call.body.includes("grant_type=refresh_token"),
+			const refreshes = Arr.filter(
+				fake.state.calls,
+				(call) =>
+					call.path === "/v1/oauth/token" && Str.includes("grant_type=refresh_token")(call.body),
 			)
 			assert.strictEqual(refreshes.length, 1)
 		}).pipe(Effect.provide(makeLayer(testDb, fake)))
@@ -260,9 +266,11 @@ describe("SupabaseOAuthService", () => {
 			yield* connect(fake)
 			const service = yield* SupabaseOAuthService
 			assert.deepStrictEqual(yield* service.disconnect(ORG), { disconnected: true })
-			const revoke = fake.state.calls.find((call) => call.path === "/v1/oauth/revoke")
+			const revoke = Option.getOrUndefined(
+				Arr.findFirst(fake.state.calls, (call) => call.path === "/v1/oauth/revoke"),
+			)
 			assert.deepStrictEqual(
-				Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown))(revoke?.body ?? "{}"),
+				Schema.decodeSync(Schema.fromJsonString(Schema.Unknown))(revoke?.body ?? "{}"),
 				{
 					client_id: FAKE_CLIENT_ID,
 					client_secret: FAKE_CLIENT_SECRET,

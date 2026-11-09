@@ -4,42 +4,110 @@ import {
 	ONBOARD_SKILL_COMMAND,
 	onboardSkillPrompt,
 } from "../../components/ingest/onboard-skill"
-import { type FrameworkId, sdkSnippets } from "../../components/quick-start/sdk-snippets"
+import {
+	type FrameworkId,
+	fillSnippet,
+	type SdkSnippet,
+	type SnippetBlock,
+	sdkSnippets,
+} from "../../components/quick-start/sdk-snippets"
 import { type DocsPage, docsUrl } from "../../lib/docs"
-import { type Lang, resolveLang } from "../../lib/highlight"
+import type { Lang } from "@maple/views/lib/highlight"
 import { ingestUrl } from "../../lib/services/common/ingest-url"
 import { cn } from "@maple/ui/lib/utils"
 import type { Html, HtmlBuilder } from "foldkit/html"
-import { button } from "../../ui/button"
-import * as CopyButton from "../../ui/copy-button"
-import { eyebrow } from "../../ui/eyebrow"
-import { icon, type IconName } from "../../ui/icon"
-import { inlineCode } from "../../ui/inline-code"
-import { panel } from "../../ui/panel"
-import type * as Tabs from "../../ui/tabs"
-import * as TabsView from "../../ui/tabs-view"
+import { button } from "@maple/views/ui/button"
+import * as CopyButton from "@maple/views/ui/copy-button"
+import { eyebrow } from "@maple/views/ui/eyebrow"
+import { icon, type IconName } from "@maple/views/ui/icon"
+import { inlineCode } from "@maple/views/ui/inline-code"
+import { panel } from "@maple/views/ui/panel"
+import type * as Tabs from "@maple/views/ui/tabs"
+import * as TabsView from "@maple/views/ui/tabs-view"
 import { codeBlock } from "../settings/kit/code-block"
+import { Array as Arr, Option } from "effect"
 
 // `FrameworkIconStrip`, `FrameworkPicker` and `ConnectInstructions`, with `PackageManagerCodeBlock`.
 
 const FRAMEWORK_ICONS = {
-	nextjs: "FrameworkNextjsIcon",
 	nodejs: "FrameworkNodejsIcon",
+	nextjs: "FrameworkNextjsIcon",
+	browser: "GlobeIcon",
 	python: "FrameworkPythonIcon",
 	go: "FrameworkGoIcon",
+	java: "OpenjdkIcon",
+	dotnet: "CsharpIcon",
+	laravel: "LaravelIcon",
+	ruby: "RubyIcon",
+	rust: "RustIcon",
+	deno: "DenoIcon",
 	effect: "FrameworkEffectIcon",
 	otel: "FrameworkOpenTelemetryIcon",
 } as const satisfies { readonly [Id in FrameworkId]: IconName }
 
 /** The guide each snippet's Instrument tab links to. */
 const FRAMEWORK_DOCS = {
-	nextjs: { label: "Next.js", page: "nextjsGuide" },
 	nodejs: { label: "Node.js", page: "nodejsGuide" },
+	nextjs: { label: "Next.js", page: "nextjsGuide" },
+	browser: { label: "Browser SDK", page: "browserSdk" },
 	python: { label: "Python", page: "pythonGuide" },
 	go: { label: "Go", page: "goGuide" },
+	java: { label: "Java", page: "javaGuide" },
+	dotnet: { label: ".NET", page: "dotnetGuide" },
+	laravel: { label: "Laravel", page: "laravelGuide" },
+	ruby: { label: "Ruby", page: "rubyGuide" },
+	rust: { label: "Rust", page: "rustGuide" },
+	deno: { label: "OpenTelemetry", page: "instrumentation" },
 	effect: { label: "Effect", page: "effectSdk" },
 	otel: { label: "OpenTelemetry", page: "instrumentation" },
 } as const satisfies { readonly [Id in FrameworkId]: InstructionsDocs }
+
+/** The org's ingest keys as far as the viewer can read them; `null` where a key could not be read. */
+export type SetupKeys = Readonly<{ privateKey: string | null; publicKey: string | null }>
+
+export const NO_KEYS: SetupKeys = { privateKey: null, publicKey: null }
+
+/**
+ * The key a snippet carries: browser code gets the public key; server code the private one, or the
+ * public one when the viewer cannot read the private key (it sends from servers too).
+ */
+export const keyFor = (snippet: Pick<SdkSnippet, "key">, keys: SetupKeys): string | null =>
+	snippet.key === "public" ? keys.publicKey : (keys.privateKey ?? keys.publicKey)
+
+/** One code block of the Instrument tab, filled in. */
+export type SetupBlock = Readonly<{ id: "env" | "instrument"; label: string; lang: Lang; code: string }>
+
+/** The Instrument tab's blocks for `framework`: where the key goes, then what starts sending. */
+export const setupBlocks = (framework: string, keys: SetupKeys): ReadonlyArray<SetupBlock> =>
+	Option.match(
+		Arr.findFirst(sdkSnippets, (entry) => entry.language === framework),
+		{
+			onNone: () => [],
+			onSome: (snippet) => {
+				const key = keyFor(snippet, keys) ?? "<your-ingest-key>"
+				const fill = (block: SnippetBlock, id: SetupBlock["id"]): SetupBlock => ({
+					id,
+					label: block.label,
+					lang: block.lang,
+					code: fillSnippet(block.code, ingestUrl, key),
+				})
+				return [
+					...(snippet.env === null ? [] : [fill(snippet.env, "env")]),
+					fill(snippet.code, "instrument"),
+				]
+			},
+		},
+	)
+
+/** The key a server snippet gets. */
+export const serverKey = (keys: SetupKeys): string | null => keyFor({ key: "private" }, keys)
+
+/** The key the coding-agent prompts carry: the one the picked stack's setup uses (public for the browser). */
+export const promptKey = (framework: string, keys: SetupKeys): string | null =>
+	Option.match(
+		Arr.findFirst(sdkSnippets, (entry) => entry.language === framework),
+		{ onNone: () => serverKey(keys), onSome: (snippet) => keyFor(snippet, keys) },
+	)
 
 const SETUP_TAB_ICONS = {
 	install: "DownloadIcon",
@@ -48,7 +116,7 @@ const SETUP_TAB_ICONS = {
 } as const satisfies { readonly [Value in (typeof SETUP_TAB_VALUES)[number]]: IconName }
 
 const isSetupTab = (value: string): value is (typeof SETUP_TAB_VALUES)[number] =>
-	SETUP_TAB_VALUES.some((tab) => tab === value)
+	Arr.some(SETUP_TAB_VALUES, (tab) => tab === value)
 
 const PACKAGE_MANAGERS = [
 	{ id: "npm", command: "npm install" },
@@ -58,12 +126,14 @@ const PACKAGE_MANAGERS = [
 ] as const
 
 export const SETUP_TAB_VALUES = ["install", "instrument", "claude-code"] as const
-export const PACKAGE_TAB_VALUES = PACKAGE_MANAGERS.map((pm) => pm.id)
+export const PACKAGE_TAB_VALUES = Arr.map(PACKAGE_MANAGERS, (pm) => pm.id)
 
 export const frameworkIconStrip = <M>(h: HtmlBuilder<M>): Html =>
 	h.span(
 		[h.Class("text-muted-foreground flex shrink-0 items-center gap-2"), h.AriaHidden(true)],
-		sdkSnippets.map((snippet) => icon(h, FRAMEWORK_ICONS[snippet.language], { size: 14 })),
+		Arr.map(Arr.take(sdkSnippets, 6), (snippet) =>
+			icon(h, FRAMEWORK_ICONS[snippet.language], { size: 14 }),
+		),
 	)
 
 /** `FrameworkPicker`: pill chips (`compact`) or labelled cards under "Pick your stack". */
@@ -74,7 +144,7 @@ export const frameworkPicker = <M>(
 	const { compact, selected } = options
 	const chips = h.div(
 		[h.Class("flex flex-wrap gap-1.5")],
-		sdkSnippets.map((snippet) => {
+		Arr.map(sdkSnippets, (snippet) => {
 			const isActive = selected === snippet.language
 			return h.button(
 				[
@@ -108,7 +178,7 @@ export const frameworkPicker = <M>(
 export type InstructionsDocs = Readonly<{ label: string; page: DocsPage }>
 
 const AGENT_MARKS = [
-	{ name: "ClaudeIcon", className: "text-[#D97757]" },
+	{ name: "ClaudeIcon", className: "text-brand-claude" },
 	{ name: "OpenAiIcon", className: "text-foreground" },
 	{ name: "CursorIcon", className: "text-foreground" },
 ] as const satisfies ReadonlyArray<Readonly<{ name: IconName; className: string }>>
@@ -120,14 +190,19 @@ const AGENT_LABELS = {
 } as const satisfies Record<CopyButton.CopyStatus, string>
 
 /**
- * maple.dev's "Build with your agent": one prompt for Claude Code, Codex or Cursor, here with the
- * org's endpoint and key. Without a key (a member, or the key store is down) the skill uses its
- * `MAPLE_TEST` placeholder and says where to get one.
+ * The onboarding agent prompt with the org's endpoint and key. Without a key (a member, or the key
+ * store is down) the skill uses its `MAPLE_TEST` placeholder and says where to get one.
+ */
+export const setupAgentPrompt = (apiKey: string | null): string => agentSetupPrompt(ingestUrl, apiKey ?? "")
+
+/**
+ * maple.dev's "Build with your agent": copies one prompt for Claude Code, Codex or Cursor, usually
+ * a line that points the agent at a skill served by maple.dev (`agentSetupPrompt`).
  */
 export const agentPromptButton = <M>(
 	h: HtmlBuilder<M>,
 	options: Readonly<{
-		apiKey: string
+		prompt: string
 		copy: CopyButton.Model
 		toCopyMessage: (message: CopyButton.Message) => M
 	}>,
@@ -143,7 +218,9 @@ export const agentPromptButton = <M>(
 				h.Title("Copy a setup prompt for Claude Code, Codex or Cursor"),
 				h.OnClick(
 					options.toCopyMessage(
-						CopyButton.Message.ClickedCopy({ text: agentSetupPrompt(ingestUrl, options.apiKey) }),
+						CopyButton.Message.ClickedCopy({
+							text: options.prompt,
+						}),
 					),
 				),
 			],
@@ -154,7 +231,7 @@ export const agentPromptButton = <M>(
 				[
 					h.span(
 						[h.AriaHidden(true), h.Class("flex")],
-						AGENT_MARKS.map((mark, index) =>
+						Arr.map(AGENT_MARKS, (mark, index) =>
 							h.span(
 								[
 									h.Attribute("style", `--n:${index}`),
@@ -180,14 +257,14 @@ export const agentPromptButton = <M>(
 								[h.Class("sr-only"), h.AriaLive("polite")],
 								[AGENT_LABELS[options.copy.status]],
 							),
-							...CopyButton.CopyStatus.literals.map((state) =>
+							...Arr.map(CopyButton.CopyStatus.literals, (state) =>
 								h.span(
 									[
 										h.AriaHidden(true),
 										h.Class("agent-prompt__label"),
 										h.DataAttribute("label", state),
 									],
-									[...AGENT_LABELS[state]].map((char, index) =>
+									Arr.map(Array.from(AGENT_LABELS[state]), (char, index) =>
 										h.span([h.Attribute("style", `--i:${index}`)], [char]),
 									),
 								),
@@ -205,7 +282,7 @@ export type InstructionsParts<M> = Readonly<{
 	/** Slot id prefix, unique per page (`ingestion`, `overview-setup`). */
 	slot: string
 	framework: string
-	apiKey: string
+	keys: SetupKeys
 	setupTabs: Tabs.Model
 	packageTabs: Tabs.Model
 	snippetCopies: Readonly<Record<string, CopyButton.Model>>
@@ -226,7 +303,7 @@ const block = <M>(
 	language: string,
 	className?: string,
 	isPlain = false,
-	lang: Lang = resolveLang(language),
+	lang: Lang = language,
 ): Html =>
 	codeBlock(h, {
 		code,
@@ -249,27 +326,35 @@ const packageManagerBlock = <M>(
 		view: TabsView.view,
 		toParentMessage: parts.toPackageTabs,
 		viewInputs: {
-			labels: PACKAGE_MANAGERS.map((pm) => pm.id),
+			labels: Arr.map(PACKAGE_MANAGERS, (pm) => pm.id),
 			panel: (value) => {
-				const pm = PACKAGE_MANAGERS.find((entry) => entry.id === value)
-				return pm === undefined
-					? undefined
-					: [block(h, parts, `install:${pm.id}`, `${pm.command} ${packages.join(" ")}`, "shell")]
+				return Option.match(
+					Arr.findFirst(PACKAGE_MANAGERS, (entry) => entry.id === value),
+					{
+						onNone: () => undefined,
+						onSome: (pm) => [
+							block(
+								h,
+								parts,
+								`install:${pm.id}`,
+								`${pm.command} ${Arr.join(packages, " ")}`,
+								"shell",
+							),
+						],
+					},
+				)
 			},
 		},
 	})
 
 /** `ConnectInstructions` without credentials: Install / Instrument / Claude Code tabs. */
 export const connectInstructions = <M>(h: HtmlBuilder<M>, parts: InstructionsParts<M>): Html => {
-	const snippet = sdkSnippets.find((entry) => entry.language === parts.framework)
-	if (snippet === undefined) return h.empty
+	const found = Arr.findFirst(sdkSnippets, (entry) => entry.language === parts.framework)
+	if (Option.isNone(found)) return h.empty
+	const snippet = found.value
 	const isBoxed = parts.variant === "boxed"
 	const padding = isBoxed ? "p-3" : "px-4 pt-3 pb-4"
-	const apiKey = parts.apiKey
-	const interpolate = (template: string) =>
-		template
-			.replace(/\{\{INGEST_URL\}\}/g, ingestUrl)
-			.replace(/\{\{API_KEY\}\}/g, apiKey || "<your-api-key>")
+	const blocks = setupBlocks(snippet.language, parts.keys)
 	const install = snippet.install
 	const docs = parts.docs ?? FRAMEWORK_DOCS[snippet.language]
 	const tabs = h.submodel({
@@ -322,15 +407,17 @@ export const connectInstructions = <M>(h: HtmlBuilder<M>, parts: InstructionsPar
 					]
 				if (value === "instrument")
 					return [
-						block(
-							h,
-							parts,
-							"instrument",
-							interpolate(snippet.instrument),
-							snippet.label.toLowerCase(),
-							REPLAY_BLOCK_CLASS,
-							false,
-							snippet.lang,
+						...Arr.map(blocks, (entry, index) =>
+							block(
+								h,
+								parts,
+								entry.id,
+								entry.code,
+								entry.label,
+								cn(REPLAY_BLOCK_CLASS, index < blocks.length - 1 && "mb-3"),
+								false,
+								entry.lang,
+							),
 						),
 						h.a(
 							[
@@ -371,7 +458,7 @@ export const connectInstructions = <M>(h: HtmlBuilder<M>, parts: InstructionsPar
 						h,
 						parts,
 						"skill-prompt",
-						onboardSkillPrompt(ingestUrl, apiKey),
+						onboardSkillPrompt(ingestUrl, promptKey(parts.framework, parts.keys) ?? ""),
 						"prompt",
 						REPLAY_BLOCK_CLASS,
 						true,

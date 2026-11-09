@@ -14,6 +14,8 @@ import {
 	shadeFaces,
 } from "./kit"
 import { factoryMotion } from "./motion"
+import { Array as Arr } from "effect"
+import { codeUnitAt } from "@maple/strings"
 
 interface TransportProps {
 	readonly link: FactoryLink
@@ -25,10 +27,10 @@ interface TransportProps {
 
 /** A canvas texture built once per scope under `key`. */
 function cachedTexture(scope: Scope, key: string, build: () => THREE.Texture) {
-	const cached = scope.textures.get(key)
+	const cached = scope.shared.get(key)
 	if (cached) return cached
 	const texture = build()
-	scope.textures.set(key, texture)
+	scope.shared.set(key, texture)
 	return texture
 }
 
@@ -105,7 +107,7 @@ function boardwalkLines(curve: THREE.Curve<THREE.Vector3>, width: number, flume:
 		const step = 0.35 / length
 		const crack = [at(i / planks - step, -half), at(i / planks + step, -half / 3)]
 		crack.push(at(i / planks - step, half / 3), at(i / planks + step, half))
-		crack.slice(1).forEach((point, k) => stroke(crack[k] ?? point, point, 1))
+		Arr.forEach(crack.slice(1), (point, k) => stroke(crack[k] ?? point, point, 1))
 	}
 	const posts = Math.max(2, Math.round(length / 0.9))
 	for (let i = 0; i <= posts; i++)
@@ -233,7 +235,7 @@ function parcels(
 	// Each slot on the shared timetable carries one kind of cargo.
 	const all = [...motion.phases]
 	const of = (kind: ReturnType<typeof cargoKind>) =>
-		Float32Array.from(all.filter((_, i) => cargoKind(i) === kind))
+		Float32Array.from(Arr.filter(all, (_, i) => cargoKind(i) === kind))
 	const crates = of("crate"),
 		logs = of("log"),
 		buckets = of("bucket")
@@ -243,18 +245,20 @@ function parcels(
 	const [bark, grain] = logTextures(scope, palette)
 	const { onBeforeCompile, customProgramCacheKey } = motion.material
 	// Staves, a sap surface (toned down so it never reads as a health signal), and the base; all ride the shared motion shader.
-	const bucketPaint = [
-		{ map: bucketTexture(scope, palette) },
-		{ color: new THREE.Color(fade(palette.glow, palette.kraft, 0.45)) },
-		{ color: new THREE.Color(palette.stone) },
-	].map((paint) =>
-		Object.assign(new THREE.MeshBasicMaterial({ ...paint, vertexColors: true }), {
-			onBeforeCompile,
-			customProgramCacheKey,
-		}),
+	const bucketPaint = Arr.map(
+		[
+			{ map: bucketTexture(scope, palette) },
+			{ color: new THREE.Color(fade(palette.glow, palette.kraft, 0.45)) },
+			{ color: new THREE.Color(palette.stone) },
+		],
+		(paint) =>
+			Object.assign(new THREE.MeshBasicMaterial({ ...paint, vertexColors: true }), {
+				onBeforeCompile,
+				customProgramCacheKey,
+			}),
 	)
 	// Cylinder groups: 0 is the bark side, 1 and 2 the cut ends.
-	const logPaint = [{ map: bark }, { map: grain }, { map: grain }].map((paint) =>
+	const logPaint = Arr.map([{ map: bark }, { map: grain }, { map: grain }], (paint) =>
 		Object.assign(new THREE.MeshBasicMaterial({ ...paint, vertexColors: true }), {
 			onBeforeCompile,
 			customProgramCacheKey,
@@ -306,9 +310,9 @@ function coveredSpan(
 		half = (r * Math.sqrt(3)) / 2
 	const lift = eave - base
 	const z = width / 2 + 0.04
-	const posts = [-0.5, 0.5].flatMap((x) => [-z, z].flatMap((side) => [x, 0, side, x, eave, side]))
-	const shingles = [1 / 3, 2 / 3].flatMap((f) =>
-		[-1, 1].flatMap((side) => {
+	const posts = Arr.flatMap([-0.5, 0.5], (x) => Arr.flatMap([-z, z], (side) => [x, 0, side, x, eave, side]))
+	const shingles = Arr.flatMap([1 / 3, 2 / 3], (f) =>
+		Arr.flatMap([-1, 1], (side) => {
 			const y = lift + base + (ridge - base) * f
 			return [-0.6, y, side * half * (1 - f), 0.6, y, side * half * (1 - f)]
 		}),
@@ -343,9 +347,9 @@ function lanternPost(
 		recede: (color: string) => string
 	},
 ): Child {
-	const elbows = link.curve.curves.filter((curve) => curve instanceof THREE.QuadraticBezierCurve3)
+	const elbows = Arr.filter(link.curve.curves, (curve) => curve instanceof THREE.QuadraticBezierCurve3)
 	const elbow = elbows[seed % Math.max(1, elbows.length)]
-	if (!elbow) return null
+	if (elbow === undefined) return null
 	const inside = elbow.v0.clone().add(elbow.v2).multiplyScalar(0.5)
 	const out = elbow.v1.clone().sub(inside).setY(0).normalize()
 	const foot = elbow.v1.clone().addScaledVector(out, width / 2 + 0.14)
@@ -379,7 +383,7 @@ function beltWidth(link: FactoryLink) {
 /** A stable 0..996 number per link, for rare seeded dressing. */
 export function linkSeed(id: string) {
 	let seed = 11
-	for (let i = 0; i < id.length; i++) seed = (seed * 31 + id.charCodeAt(i)) % 997
+	for (let i = 0; i < id.length; i++) seed = (seed * 31 + codeUnitAt(id, i)) % 997
 	return seed
 }
 
@@ -393,7 +397,7 @@ function paintBoardwalk(
 	const colors = geometry.getAttribute("color")
 	const railTone = new THREE.Color(rail)
 	const seam = railTone.clone().lerp(new THREE.Color(deck), 0.55)
-	weights.forEach((weight, i) => {
+	Arr.forEach(weights, (weight, i) => {
 		const tone = weight === 1 ? railTone : seam
 		colors.setXYZ(i, tone.r, tone.g, tone.b)
 	})
@@ -431,7 +435,8 @@ export function factoryTransport(
 	)
 	const boardwalk = new THREE.LineSegments(
 		lines,
-		new THREE.LineBasicMaterial({ color: "#ffffff", vertexColors: true }),
+		// A white base multiplies to the vertex colours unchanged.
+		new THREE.LineBasicMaterial({ color: 0xffffff, vertexColors: true }),
 	)
 	paintBoardwalk(lines, weights, recede(railColor), deckColor)
 	return group({}, [

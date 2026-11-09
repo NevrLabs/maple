@@ -1,5 +1,49 @@
 # @maple-dev/alchemy
 
+## 0.6.0
+
+### Minor Changes
+
+- b999d45: `Maple.AlertDestination` accepts `type: "microsoft-teams"` with a `webhook_url` (a Teams Workflows webhook) and `type: "incident-io"` with an `alert_source_config_id` and `token` (an incident.io HTTP alert source).
+
+    `Maple.AlertDestination` attributes gain `channelLabel` (the Telegram chat ID or incident.io alert source ID, otherwise null), so a channel changed outside IaC shows up as drift.
+
+### Patch Changes
+
+- 4fbdc08: `Telemetry` is generic over the requirements of the resource declarations it is given (`ResourceInput<T, Req>`, `TelemetryProps<Req>`), so they are no longer typed as `unknown`. Calls are unchanged: `Req` is inferred.
+- Updated dependencies [82843de]
+- Updated dependencies [83e69e9]
+- Updated dependencies [a9720c2]
+- Updated dependencies [a8506ba]
+    - @maple-dev/effect-sdk@0.14.0
+
+## 0.5.1
+
+### Patch Changes
+
+- 0bfd6bd: Maple Local now closes its store when the host process exits before scope teardown (another handler calling `process.exit()`, or a write to a closed stdout), so the next start no longer fails with a dirty-store error. A session sharing another session's server that finds a dirty store during takeover now logs the refusal and recovery steps once instead of retrying forever.
+
+## 0.5.0
+
+### Minor Changes
+
+- f31efa0: `Maple.AlertDestination` no longer accepts `type: "hazel-oauth"`. Hazel channels are now chat destinations through the Hazel connector linked in Maple, the same as other chat-connector destinations.
+
+## 0.4.0
+
+### Minor Changes
+
+- 22960ae: `alchemy dev` can run Maple Local for the stack. Declare `Local("observability")` from `@maple-dev/alchemy/local`, register `localProviders()`, and pass it as `Telemetry({ local })`: under `alchemy dev` every Worker exports to one shared loopback server, with no ingest key and no Maple account, and the dashboard opens at `local.maple.dev`. Deploys ignore `local` and use `ingestKey` and `endpoint` as before.
+
+    The server runs in an Alchemy sidecar process, survives stack reloads, and stores data per stack, stage and resource under `.alchemy/maple-local/`. The first run downloads the pinned chDB library, verifies its sha256 and caches it in `~/.maple/cache/libchdb`; `MAPLE_LIBCHDB` points at a copy you already have. Another project on `4318` moves the listener to a free port, and a second `alchemy dev` of the same stack shares the running server. `LocalProps` takes `dataDir`, `port` (binds exactly that port) and `onDirtyStore`: a store left unclean by a killed sidecar is refused unless it is `"wipe"`.
+
+    Requires Bun, and `@effect/platform-bun` as an optional peer dependency (Alchemy already needs it under Bun).
+
+### Patch Changes
+
+- Updated dependencies [1c7c733]
+    - @maple-dev/effect-sdk@0.13.1
+
 ## 0.3.0
 
 ### Minor Changes

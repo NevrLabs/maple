@@ -8,11 +8,10 @@ import {
 import { Duration, Effect, Schema } from "effect"
 import { Command } from "foldkit"
 import { defineMessageUnion } from "foldkit/message"
-import { KeyedSchema } from "../../../data/keyed"
-import { LoadFailure } from "../../../data/load-failure"
+import { KeyedSchema } from "@maple/views/data/keyed"
+import { LoadFailure } from "@maple/views/data/load-failure"
 import { CodeReviewIssuesSearch } from "../../../route/search"
-import * as Select from "../../../ui/select"
-import * as Tooltip from "../../../ui/tooltip"
+import * as Select from "@maple/views/ui/select"
 import { getAnalytics, listFindings } from "../kit/api"
 import { Frame, FrameMessage } from "../kit/frame"
 import { ResponseCache } from "../kit/page-steps"
@@ -38,8 +37,6 @@ export const Model = Schema.Struct({
 	/** The search box's input and its debounce generation. */
 	searchDraft: Schema.String,
 	searchGeneration: Schema.Number,
-	/** One Tooltip for every row's relative time (the absolute time). */
-	timeTooltip: Tooltip.Model,
 	sheet: ReviewSheet,
 })
 export type Model = typeof Model.Type
@@ -58,7 +55,6 @@ export const Message = defineMessageUnion({
 	ClickedFinding: { reviewId: PrReviewId },
 	ClickedLoadMore: {},
 	GotFilterSelectMessage: { filter: FilterKey, message: Select.Message },
-	GotTimeTooltipMessage: { message: Tooltip.Message },
 	ChangedSearchDraft: { value: Schema.String },
 	ElapsedSearchDebounce: { generation: Schema.Number },
 	GotSheetMessage: { message: SheetMessage },

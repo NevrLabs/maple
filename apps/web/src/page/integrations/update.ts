@@ -1,10 +1,11 @@
-import { Option, Result } from "effect"
+import * as Policy from "@maple/domain/policy"
+import { Option, Result, Array as Arr, String as Str } from "effect"
 import { Command as FoldkitCommand } from "foldkit"
-import * as Keyed from "../../data/keyed"
-import { requestKey } from "../../data/request-key"
+import * as Keyed from "@maple/views/data/keyed"
+import { requestKey } from "@maple/views/data/request-key"
 import { AppRoute, hrefOf } from "../../route"
 import { type PageContext, PageOutMessage, type PageReturn } from "../contract"
-import * as Dialog from "../../ui/dialog"
+import * as Dialog from "@maple/views/ui/dialog"
 import { chatConnectorOf, integrationOfSearch } from "./catalog"
 import { chatCallbackOf } from "./chat-callback"
 import { initConnect } from "./connect"
@@ -27,7 +28,7 @@ import * as Configure from "./update-gcp-configure"
 import * as Planetscale from "./update-planetscale"
 import * as Railway from "./update-railway"
 import * as Prometheus from "./update-prometheus"
-import { ChartRuntime } from "../../charts/chart-runtime"
+import { ChartRuntime } from "@maple/views/charts/chart-runtime"
 import { isMultiAccount } from "./view-cloudflare"
 import * as Connect from "./update-connect"
 import { isClerkAuthEnabled } from "../../lib/services/common/auth-mode"
@@ -46,7 +47,10 @@ const requestCustomer = (model: Model, context: PageContext): Return => {
 	const key = customerKey(context)
 	return Option.match(Keyed.request(model.customer, key, "Load"), {
 		onNone: () => ({ model }),
-		onSome: (customer) => ({ model: { ...model, customer }, commands: [LoadCustomer({ key })] }),
+		onSome: (customer) => ({
+			model: { ...model, customer },
+			commands: [LoadCustomer({ key, orgId: context.orgId })],
+		}),
 	})
 }
 
@@ -102,7 +106,14 @@ const completedOAuthReturn = (
 			(next) => navigateTo(next, hrefOfSearch(chatSearchOf(outcome, chat)), true),
 		])
 	if (outcome.provider === null || (outcome.isHandedOff && outcome.status === "success")) return { model }
-	return Connect.receivedCallback(model, context, outcome.provider, outcome.status, outcome.message)
+	return Connect.receivedCallback(
+		model,
+		context,
+		outcome.provider,
+		outcome.status,
+		outcome.message,
+		outcome.github,
+	)
 }
 
 const navigateTo = (model: Model, url: string, isReplace: boolean): Return => ({
@@ -130,7 +141,7 @@ export const init = (route: { readonly search: Search }, context: PageContext): 
 			scrapeTargets: Keyed.idle(),
 		},
 		customer: Keyed.idle(),
-		isAdmin: !isClerkAuthEnabled,
+		grants: isClerkAuthEnabled ? [] : Policy.allPermissions,
 		connect: initConnect(),
 		disconnect: { dialog: Dialog.init("integration-disconnect", "alert-dialog"), isPending: false },
 		chatCard: { busy: null, confirmId: null, identityBusy: false },
@@ -144,7 +155,7 @@ export const init = (route: { readonly search: Search }, context: PageContext): 
 		supabaseCard: initSupabaseCard(),
 	}
 	const loaded = chain(model, [
-		...STATUS_NAMES.map((name) => (next: Model) => requestStatus(next, context, name, "Load")),
+		...Arr.map(STATUS_NAMES, (name) => (next: Model) => requestStatus(next, context, name, "Load")),
 		(next: Model) => requestCustomer(next, context),
 		(next: Model) => enterIntegration(next, context),
 		(next: Model) => handleChatCallback(next, false),
@@ -251,7 +262,7 @@ export const update = (model: Model, message: Message, context: PageContext): Re
 		CompletedLoadCustomer: ({ key, result }) => ({
 			model: { ...model, customer: Keyed.accept(model.customer, key, result) },
 		}),
-		CompletedLoadSession: ({ isAdmin }) => ({ model: { ...model, isAdmin } }),
+		CompletedLoadSession: ({ grants }) => ({ model: { ...model, grants } }),
 		CompletedTrackConnected: () => ({ model }),
 		ClickedIntegration: ({ integration }) =>
 			navigateTo(model, hrefOfSearch(integration === null ? {} : { integration }), false),
@@ -261,6 +272,11 @@ export const update = (model: Model, message: Message, context: PageContext): Re
 			return callback === null ? { model } : navigateTo(model, hrefOfSearch(callback.next), true)
 		},
 		ClickedConnect: () => Connect.clickedConnect(model),
+		ClickedOpenGithubInstallPage: () => Connect.clickedConnect(model, "install"),
+		ClickedSelectGithubInstallation: ({ installationId }) =>
+			Github.clickedInstallation(model, installationId),
+		CompletedSelectGithubInstallation: ({ state, installationId, failure }) =>
+			Github.completedInstallation(model, context, state, installationId, failure),
 		ClickedChatInstall: () => Chat.clickedInstall(model),
 		CompletedLoadCloudflareUsage: ({ key, result }) => ({
 			model: {
@@ -301,7 +317,6 @@ export const update = (model: Model, message: Message, context: PageContext): Re
 			CloudflareCard.updateBoard(model, { chartRuntime: ChartRuntime.Failed({ reason }) }),
 		GotSparklineMessage: () => ({ model }),
 		ClickedTarget: ({ id }) => Prometheus.clickedTarget(model, context, id),
-		ClickedTargetControls: () => ({ model }),
 		CompletedFetchChecks: ({ key, result }) => ({
 			model: {
 				...model,
@@ -370,8 +385,8 @@ export const update = (model: Model, message: Message, context: PageContext): Re
 		ToggledAwsRegion: ({ id, region }) => Aws.toggledRegion(model, id, region),
 		ToggledAwsNamespace: ({ id, namespace }) => Aws.toggledNamespace(model, id, namespace),
 		SubmittedAwsMetrics: ({ id }) => Aws.submittedMetrics(model, id),
-		CompletedAwsMetricStream: ({ connection, error }) =>
-			Aws.completedMetricStream(model, context, connection, error),
+		CompletedAwsMetricStream: ({ id, connection, error }) =>
+			Aws.completedMetricStream(model, context, id, connection, error),
 		// Advances the card's window and "Last data" ages; the fresh clock re-reads rows on a new key.
 		TickedSupabaseClock: () => ({ model, commands: [ReadClock()] }),
 		CompletedReadSupabaseClock: ({ nowMs }) => Supabase.completedReadClock(model, context, nowMs),
@@ -507,19 +522,22 @@ export const update = (model: Model, message: Message, context: PageContext): Re
 		PolledConnect: ({ attempt }) => Connect.polled(model, context, attempt),
 		ClosedConnectPopup: ({ attempt }) => Connect.closedPopup(model, context, attempt),
 		EndedConnectGrace: ({ attempt }) => Connect.endedGrace(model, attempt),
-		ReceivedConnectMessage: ({ provider, status, message: text }) =>
-			Connect.receivedCallback(model, context, provider, status, text),
-		ReceivedConnectRelay: ({ provider, status, message: text }) =>
-			Connect.receivedRelay(model, context, provider, status, text),
+		ReceivedConnectMessage: ({ provider, status, message: text, github }) =>
+			Connect.receivedCallback(model, context, provider, status, text, github),
+		ReceivedConnectRelay: ({ provider, status, message: text, github }) =>
+			Connect.receivedRelay(model, context, provider, status, text, github),
 		CompletedOAuthReturn: ({ outcome }) => completedOAuthReturn(model, context, outcome),
 		ClickedRetryStatus: ({ name }) => requestStatus(model, context, name, "Supersede"),
 		ClickedRetryFailedStatuses: () =>
 			chain(
 				model,
-				STATUS_NAMES.filter((name) => {
-					const tag = model.statuses[name].data._tag
-					return tag === "Failure" || tag === "Stale"
-				}).map((name) => (next: Model) => requestStatus(next, context, name, "Supersede")),
+				Arr.map(
+					Arr.filter(STATUS_NAMES, (name) => {
+						const tag = model.statuses[name].data._tag
+						return tag === "Failure" || tag === "Stale"
+					}),
+					(name) => (next: Model) => requestStatus(next, context, name, "Supersede"),
+				),
 			),
 		ClickedDisconnect: () => withDisconnectDialog(model, Dialog.open(model.disconnect.dialog)),
 		GotDisconnectDialogMessage: ({ message: child }) =>
@@ -532,12 +550,10 @@ export const update = (model: Model, message: Message, context: PageContext): Re
 			if (integration !== null && chatConnectorOf(integration) !== null)
 				return Chat.confirmedDisconnect(model)
 			if (integration === null || model.disconnect.isPending) return { model }
-			const closed = withDisconnectDialog(model, Dialog.close(model.disconnect.dialog))
+			// The dialog stays open, its confirm pending, until `CompletedDisconnect` closes it.
 			return {
-				...closed,
-				model: { ...closed.model, disconnect: { ...closed.model.disconnect, isPending: true } },
+				model: { ...model, disconnect: { ...model.disconnect, isPending: true } },
 				commands: [
-					...(closed.commands ?? []),
 					Disconnect({
 						integration:
 							integration === "cloudflare" && isMultiAccount(model)
@@ -549,20 +565,25 @@ export const update = (model: Model, message: Message, context: PageContext): Re
 		},
 		CompletedDisconnect: ({ integration, failure }) => {
 			const spec = DISCONNECTS.get(integration)
-			const settled = { ...model, disconnect: { ...model.disconnect, isPending: false } }
-			if (spec === undefined) return { model: settled }
+			const closed = withDisconnectDialog(
+				{ ...model, disconnect: { ...model.disconnect, isPending: false } },
+				Dialog.close(model.disconnect.dialog),
+			)
+			const settled = closed.model
+			if (spec === undefined) return closed
 			const toast = PageOutMessage.RequestedToast(
 				failure === null
 					? { type: "success", title: spec.success, description: "" }
 					: { type: "error", title: spec.error, description: failure.message },
 			)
 			return chain(settled, [
-				(next) => ({ model: next, outMessage: toast }),
-				...(failure === null ? spec.refresh : []).map(
+				(next) => ({ model: next, commands: closed.commands, outMessage: toast }),
+				...Arr.map(
+					failure === null ? spec.refresh : [],
 					(name) => (next: Model) => requestStatus(next, context, name, "Supersede"),
 				),
 				(next) =>
-					failure === null && integration.startsWith("cloudflare")
+					failure === null && Str.startsWith("cloudflare")(integration)
 						? CloudflareCard.requestUsage(next, context, "Refresh")
 						: { model: next },
 			])

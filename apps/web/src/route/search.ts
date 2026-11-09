@@ -1,5 +1,6 @@
 // The search schema of every route. Shapes match the URLs already in use, so existing links decode.
 import { Schema, SchemaGetter } from "effect"
+import { MCP_CLIENT_KINDS } from "@maple/domain/mcp-clients"
 import {
 	AiSessionSortDir,
 	AiSessionSortKey,
@@ -63,6 +64,10 @@ export const dashboardViewParamsSchema = {
 	tab: Schema.optional(Schema.String),
 	widget: Schema.optional(Schema.String),
 	refresh: Schema.optional(Schema.Union([Schema.Number, Schema.String])),
+	/** This viewer's time range; read leniently by `timeRangeFromSearch`, so a bad value is ignored. */
+	range: Schema.optional(Schema.Unknown),
+	from: Schema.optional(Schema.Unknown),
+	to: Schema.optional(Schema.Unknown),
 }
 
 // Agent tool analytics and search
@@ -129,6 +134,7 @@ const CodeReviewListSearchFields = {
 /** The Team scorecard's sort column; `person` is by login. */
 export const CodeReviewTeamSort = Schema.Literals([
 	"person",
+	"score",
 	"merged",
 	"mergeTime",
 	"fixRate",
@@ -360,6 +366,21 @@ export const AlertsUptimeNewSearch = Schema.Struct({
 
 export const AlertsUptimeMonitorSearch = Schema.Struct({})
 
+/** `/alerts/slos/new`: `sloId` edits that SLO; `serviceName` prefills a new one. */
+export const AlertsSloNewSearch = Schema.Struct({
+	sloId: Schema.optional(Schema.String),
+	serviceName: Schema.optional(Schema.String),
+})
+
+export const AlertsSloSearch = Schema.Struct({})
+
+/** `/alerts/schedules/new`: `scheduleId` edits that on-call schedule. */
+export const AlertsScheduleNewSearch = Schema.Struct({
+	scheduleId: Schema.optional(Schema.String),
+})
+
+export const AlertsScheduleSearch = Schema.Struct({})
+
 /** `/settings/ingestion/rules/new`: `template` prefills the editor from an empty-state template. */
 export const IngestRuleNewSearch = Schema.Struct({
 	template: Schema.optional(Schema.String),
@@ -418,7 +439,9 @@ export const InvestigationSearch = Schema.Struct({
 // sessionTimeRangeSearchMiddleware()
 export const MetricSearch = Schema.Struct({
 	type: Schema.optional(Schema.Literals(QUERY_BUILDER_METRIC_TYPES)),
-	agg: Schema.optional(Schema.Literals(["avg", "sum", "min", "max", "count", "rate", "increase"])),
+	agg: Schema.optional(
+		Schema.Literals(["avg", "sum", "min", "max", "count", "latest", "rate", "increase"]),
+	),
 	where: Schema.optional(Schema.String),
 	groupBy: Schema.optional(Schema.String),
 	step: Schema.optional(Schema.String),
@@ -453,6 +476,8 @@ export const ShareSearch = Schema.StructWithRest(
 		from: Schema.optional(Schema.String),
 		to: Schema.optional(Schema.String),
 		range: Schema.optional(Schema.String),
+		/** The link creator's IANA zone; a calendar range ("today", "7d") resolves in it. */
+		tz: Schema.optional(Schema.String),
 		refresh: Schema.optional(Schema.Union([Schema.Number, Schema.String])),
 	}),
 	[variableSearchRest],
@@ -494,6 +519,12 @@ export const AlertsSearch = Schema.Struct({
 	tab: Schema.optional(Schema.String),
 	serviceName: Schema.optional(Schema.String),
 	status: Schema.optional(Schema.String),
+	/** The Inbox narrowed to one kind of incident: "anomaly" lists anomalies alone. */
+	signal: Schema.optional(Schema.String),
+	/** The Anomalies view's incidents: open (the default), "resolved" or "all". */
+	anomalyStatus: Schema.optional(Schema.String),
+	/** The Silences tab narrowed to one maintenance window's occurrences (`mw_…`). */
+	window: Schema.optional(Schema.String),
 })
 
 // sessionTimeRangeSearchMiddleware()
@@ -503,26 +534,15 @@ export const AnalyticsSearch = Schema.Struct({
 	tab: Schema.optional(Schema.String),
 })
 
-const AnomalySeverityLiteral = Schema.Literals(["warning", "critical"])
-const AnomalySignalLiteral = Schema.Literals([
-	"error_rate",
-	"latency_p95",
-	"throughput",
-	"error_spike",
-	"log_volume",
-])
-
+/**
+ * `/anomalies`, retired: it only redirects to the Alerts Inbox's Anomalies view. Old links spelled
+ * the filters several ways (`services=["a"]`, `services=a`, `service=a`), so every value is read
+ * as given and the redirect keeps what it can understand; a malformed one is dropped, never a 404.
+ */
 export const AnomaliesSearch = Schema.Struct({
-	status: Schema.optional(Schema.Literals(["open", "resolved", "all"])),
-	severity: Schema.optional(Schema.Array(AnomalySeverityLiteral)),
-	signals: Schema.optional(Schema.Array(AnomalySignalLiteral)),
-	services: Schema.optional(Schema.Array(Schema.String)),
-	envs: Schema.optional(Schema.Array(Schema.String)),
-	excludedSeverity: Schema.optional(Schema.Array(AnomalySeverityLiteral)),
-	excludedSignals: Schema.optional(Schema.Array(AnomalySignalLiteral)),
-	excludedServices: Schema.optional(Schema.Array(Schema.String)),
-	excludedEnvs: Schema.optional(Schema.Array(Schema.String)),
-	live: Schema.optional(Schema.Boolean),
+	status: Schema.optional(Schema.Unknown),
+	services: Schema.optional(Schema.Unknown),
+	service: Schema.optional(Schema.Unknown),
 })
 
 export const CodeReviewSearch = Schema.Struct(CodeReviewSearchFields)
@@ -604,6 +624,7 @@ export const ReplaysSearch = Schema.Struct({
 	userId: Schema.optional(Schema.String),
 	user: Schema.optional(Schema.String),
 	group: Schema.optional(Schema.String),
+	groupId: Schema.optional(Schema.String),
 	visitorId: Schema.optional(Schema.String),
 	hasErrors: Schema.optional(Schema.Union([Schema.Boolean, BooleanFromStringParam])),
 	durationMin: Schema.optional(Schema.Union([Schema.Number, NumberFromStringParam])),
@@ -613,6 +634,29 @@ export const ReplaysSearch = Schema.Struct({
 	q: Schema.optional(Schema.String),
 	page: Schema.optional(Schema.String),
 	tags: OptionalStringArrayParam,
+	...TimeRangeSearchFields,
+})
+
+/** `/users`: the directory's search, toggles and facet picks (a pinned namespace overrides `namespaces`). */
+export const UsersSearch = Schema.Struct({
+	q: Schema.optional(Schema.String),
+	hasErrors: BooleanParam,
+	hasReplay: BooleanParam,
+	namespaces: OptionalStringArrayParam,
+	groups: OptionalStringArrayParam,
+	/** `group`: one row per `identify()` group instead of per user. */
+	groupBy: Schema.optional(Schema.Literal("group")),
+	...TimeRangeSearchFields,
+})
+
+/** `/users/$userId`'s tabs; absent in the URL is `activity`. */
+export const USER_DETAIL_TABS = ["activity", "sessions", "mcp", "errors", "traces", "logs", "events"] as const
+export type UserDetailTab = (typeof USER_DETAIL_TABS)[number]
+
+/** `/users/$userId`: the tab and a namespace picked on the page (the org pin overrides it). */
+export const UserDetailSearch = Schema.Struct({
+	tab: Schema.optional(Schema.Literals(USER_DETAIL_TABS)),
+	namespace: Schema.optional(Schema.String),
 	...TimeRangeSearchFields,
 })
 
@@ -732,6 +776,20 @@ export const InfraSupabaseProjectSearch = Schema.Struct({
 })
 
 // Nested list routes
+
+// sessionTimeRangeSearchMiddleware()
+/** `/mcp-servers`, a server, its tool page and its sessions share one search: the time range and the toolbar. */
+export const McpServersSearch = Schema.Struct({
+	...TimeRangeSearchFields,
+	client: Schema.optional(Schema.String),
+	kind: Schema.optional(Schema.Literals(MCP_CLIENT_KINDS)),
+	q: Schema.optional(Schema.String),
+	failing: Schema.optional(Schema.Boolean),
+	metric: Schema.optional(Schema.Literals(["calls", "error_rate", "duration", "clients"])),
+	percentile: Schema.optional(Schema.Literals(["p50", "p90", "p95"])),
+	identity: Schema.optional(Schema.Literals(["ua", "info"])),
+	calls: Schema.optional(Schema.Literals(["slowest", "failed", "recent"])),
+})
 
 // sessionTimeRangeSearchMiddleware()
 export const AgentSessionToolsSearch = Schema.Struct({
@@ -962,5 +1020,13 @@ export const SecurityFindingsSearch = Schema.Struct({
 export const SecurityRunsSearch = Schema.Struct({
 	target: Schema.optional(Schema.String),
 })
+/** One repository's breakdown on the Dependencies tab; absent shows them all. */
+export const SecurityDependenciesSearch = Schema.Struct({
+	repo: Schema.optional(Schema.String),
+	/** The repositories or advisories table; absent shows the matrix, or a repository's upgrade plan. */
+	view: Schema.optional(Schema.Literals(["repositories", "advisories"])),
+})
+
 export type SecurityFindingsSearch = typeof SecurityFindingsSearch.Type
 export type SecurityRunsSearch = typeof SecurityRunsSearch.Type
+export type SecurityDependenciesSearch = typeof SecurityDependenciesSearch.Type

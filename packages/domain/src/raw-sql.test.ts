@@ -1,4 +1,4 @@
-import { Schema } from "effect"
+import { Schema, Array as Arr, String as Str } from "effect"
 import { describe, expect, it } from "vitest"
 import { rawAlertPerformanceHints, rawAlertSampleCountWarning, RawSqlText, rawSqlIssue } from "./raw-sql"
 
@@ -30,9 +30,29 @@ describe("rawSqlIssue", () => {
 		expect(rawSqlIssue(sql, { workload: "alert" })?.code).toBe("InvalidMacro")
 	})
 
+	it.each([
+		"SELECT count() FROM logs WHERE $__orgFilter AND $__timeFilter(Timestamp)",
+		"SELECT count() FROM logs WHERE $__orgFilter AND Timestamp >= $__startTime",
+		"SELECT count() FROM logs WHERE $__orgFilter AND Timestamp BETWEEN $__startTime AND $__endTime",
+	])("accepts a time-bounded dashboard widget: %s", (sql) => {
+		expect(rawSqlIssue(sql, { workload: "dashboard" })).toBeNull()
+	})
+
+	it.each([
+		"SELECT count() FROM logs WHERE $__orgFilter",
+		"SELECT count() FROM logs WHERE $__orgFilter AND Timestamp <= $__endTime",
+		"SELECT count() FROM logs WHERE $__orgFilter -- $__timeFilter(Timestamp)",
+		"SELECT $__startTime AS since, count() FROM logs WHERE $__orgFilter",
+	])("rejects a dashboard widget that reads outside the range: %s", (sql) => {
+		expect(rawSqlIssue(sql, { workload: "dashboard" })?.code).toBe("InvalidMacro")
+		expect(rawSqlIssue(sql)).toBeNull()
+	})
+
 	it("rejects an empty or oversized query", () => {
 		expect(rawSqlIssue("")?.code).toBe("ResourceLimit")
-		expect(rawSqlIssue(`SELECT '${"x".repeat(32_768)}' WHERE $__orgFilter`)?.code).toBe("ResourceLimit")
+		expect(rawSqlIssue(`SELECT '${Str.repeat(32_768)("x")}' WHERE $__orgFilter`)?.code).toBe(
+			"ResourceLimit",
+		)
 	})
 
 	it("rejects a non-identifier macro argument", () => {
@@ -242,7 +262,7 @@ describe("rawAlertSampleCountWarning", () => {
 	it("ignores samples mentioned only in a comment or string", () => {
 		expect(rawAlertSampleCountWarning(`${noSamples} -- samples`, 10)).not.toBeNull()
 		expect(
-			rawAlertSampleCountWarning(noSamples.replace("count()", "countIf(x = 'samples')"), 10),
+			rawAlertSampleCountWarning(Str.replace("count()", "countIf(x = 'samples')")(noSamples), 10),
 		).not.toBeNull()
 	})
 })
@@ -341,7 +361,7 @@ describe("rawSqlIssue org filter review follow-ups", () => {
 })
 
 describe("rawAlertPerformanceHints", () => {
-	const codes = (sql: string) => rawAlertPerformanceHints(sql).map((hint) => [hint.code, hint.line])
+	const codes = (sql: string) => Arr.map(rawAlertPerformanceHints(sql), (hint) => [hint.code, hint.line])
 
 	it("asks for a service filter on logs and traces, at the FROM line", () => {
 		expect(
@@ -353,11 +373,14 @@ describe("rawAlertPerformanceHints", () => {
 	})
 
 	it("flags a Body match that starts with a wildcard", () => {
-		const sql = [
-			"SELECT count() AS value FROM logs",
-			"WHERE $__orgFilter AND ServiceName = 'api'",
-			"  AND Body ILIKE '%webhook%failed%'",
-		].join("\n")
+		const sql = Arr.join(
+			[
+				"SELECT count() AS value FROM logs",
+				"WHERE $__orgFilter AND ServiceName = 'api'",
+				"  AND Body ILIKE '%webhook%failed%'",
+			],
+			"\n",
+		)
 		expect(codes(sql)).toEqual([["body_wildcard_match", 3]])
 	})
 

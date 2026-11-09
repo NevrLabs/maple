@@ -3,12 +3,12 @@ import { collectV2Pages } from "@maple/web-data/lib/v2-pagination"
 import { Clock, Effect, Schema } from "effect"
 import { Command } from "foldkit"
 import { IntegrationStatuses } from "../../data/integration-statuses"
-import { toLoadFailure } from "../../data/load-failure"
+import { toLoadFailure } from "@maple/views/data/load-failure"
 import { MapleApiV2Client, MapleInternalApiClient } from "../../platform/api-clients"
 import { Message } from "./message"
 import { completeOAuthReturn } from "./oauth-return"
 import { BillingCustomerCache } from "../../data/billing-customer"
-import { readIsOrgAdmin } from "../../data/session-tenant"
+import { readGrants } from "../../data/session-tenant"
 import { trackProduct } from "../../data/analytics"
 
 const settle = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
@@ -206,19 +206,19 @@ export const TrackConnected = Command.define("TrackIntegrationConnected", {
 		),
 })
 
-/** `useIsOrgAdmin()`: the session the shell already read (`SessionTenant`), for the settings rail. */
+/** The session the shell already read (`SessionTenant`): the settings rail and connecting read its grants. */
 export const LoadSession = Command.define("LoadIntegrationsSession", {
 	messages: [Message.CompletedLoadSession],
-	execute: Effect.map(readIsOrgAdmin, (isAdmin) => Message.CompletedLoadSession({ isAdmin })),
+	execute: Effect.map(readGrants, (grants) => Message.CompletedLoadSession({ grants })),
 })
 
 /** `useMapleCustomer` (`billingCustomerAtom`). */
 export const LoadCustomer = Command.define("LoadIntegrationsCustomer", {
-	args: Args,
+	args: { key: Schema.String, orgId: Schema.String },
 	messages: [Message.CompletedLoadCustomer],
-	execute: ({ key }) =>
+	execute: ({ key, orgId }) =>
 		Effect.gen(function* () {
-			return yield* (yield* BillingCustomerCache).get()
+			return yield* (yield* BillingCustomerCache).get({ orgId })
 		}).pipe(
 			settle,
 			Effect.map((result) => Message.CompletedLoadCustomer({ key, result })),

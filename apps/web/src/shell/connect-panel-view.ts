@@ -11,19 +11,25 @@ import { ONBOARD_SKILL_COMMAND } from "../components/ingest/onboard-skill"
 import { Submodel } from "foldkit"
 import type { Html, HtmlBuilder } from "foldkit/html"
 import { AppRoute, hrefOf } from "../route"
-import { button, linkButton } from "../ui/button"
-import * as CopyButton from "../ui/copy-button"
-import { copyableField } from "../ui/copyable-field"
-import { badge, separator } from "../ui/display"
-import { eyebrow } from "../ui/eyebrow"
-import { icon } from "../ui/icon"
-import type { IconName } from "../ui/icons.generated"
-import { inlineCode } from "../ui/inline-code"
-import { panel } from "../ui/panel"
-import * as PopoverView from "../ui/popover"
-import { skeleton } from "../ui/skeleton"
-import { statusDot } from "../ui/status-dot"
+import { button, linkButton } from "@maple/views/ui/button"
+import * as CopyButton from "@maple/views/ui/copy-button"
+import { copyableField } from "@maple/views/ui/copyable-field"
+import { badge, separator } from "@maple/views/ui/display"
+import { eyebrow } from "@maple/views/ui/eyebrow"
+import { icon } from "@maple/views/ui/icon"
+import type { IconName } from "@maple/views/ui/icons.generated"
+import { inlineCode } from "@maple/views/ui/inline-code"
+import { panel } from "@maple/views/ui/panel"
+import * as PopoverView from "@maple/views/ui/popover"
+import { skeleton } from "@maple/views/ui/skeleton"
+import { statusDot } from "@maple/views/ui/status-dot"
+import { toneBoxClass } from "@maple/views/ui/tone-box"
 import { type CopyField, Message, type Model, POPOVER_ID, realServices } from "./connect-panel"
+import { typography } from "@maple/views/ui/typography"
+import { hstack } from "@maple/views/ui/stack"
+import { Array as Arr, Option, String as Str } from "effect"
+import { textLink } from "@maple/views/ui/text-link"
+import { dividedList } from "@maple/views/ui/rule"
 
 type H = HtmlBuilder<Message>
 
@@ -52,9 +58,7 @@ const statusPill = (h: H, model: Model): Html => {
 			pill: true,
 			className: cn(
 				"gap-1.5 text-2xs transition-colors sm:text-2xs",
-				isConnected
-					? "border-severity-info-a3 bg-severity-info-a2 text-severity-info"
-					: "border-primary-a3 bg-primary-a2 text-primary",
+				toneBoxClass(isConnected ? "info" : "primary"),
 			),
 		},
 		isConnected
@@ -67,7 +71,7 @@ const statusPill = (h: H, model: Model): Html => {
 const fieldSkeleton = (h: H, label: string): Html =>
 	h.div(
 		[h.Class("space-y-1")],
-		[h.span([h.Class("text-xs text-muted-foreground")], [label]), skeleton(h, "h-8 w-full")],
+		[typography(h, { size: "xs", tone: "muted" }, [label]), skeleton(h, "h-8 w-full")],
 	)
 
 /** `IngestKeysUnavailableNote`: members cannot read the org's ingest keys. */
@@ -80,14 +84,14 @@ const keysUnavailable = (h: H): Html =>
 		],
 		[
 			"Ask an org admin for your ingest keys, or open ",
-			h.a(
-				[
-					h.Href(hrefOf(AppRoute.Settings({ search: { tab: "ingestion" } }))),
-					h.AriaLabel("Ingestion settings"),
-					h.Class(
-						"inline-flex items-center gap-1 font-medium text-foreground underline underline-offset-2 hover:no-underline active:no-underline",
-					),
-				],
+			textLink(
+				h,
+				{
+					href: hrefOf(AppRoute.Settings({ search: { tab: "ingestion" } })),
+					tone: "inherit",
+					className: "font-medium text-foreground underline hover:no-underline active:no-underline",
+					attributes: [h.AriaLabel("Ingestion settings")],
+				},
 				[
 					"Settings",
 					icon(h, "ArrowRightIcon", { size: 12, attributes: [h.AriaHidden(true)] }),
@@ -147,44 +151,44 @@ type ClientMark = Readonly<{ name: IconName; className: string }>
 
 /** A client's brand mark on a tile, as the setup pages show agents. */
 const clientMark = (h: H, mark: ClientMark): Html =>
-	h.span(
-		[h.Class("flex size-6 shrink-0 items-center justify-center rounded-md border bg-background")],
+	hstack(
+		h,
+		{
+			align: "center",
+			justify: "center",
+			as: "span",
+			className: "size-6 shrink-0 rounded-md border bg-background",
+		},
 		[icon(h, mark.name, { size: 14, className: mark.className })],
 	)
 
 /** `McpClientRow`: a client's mark and name, then its one way in. */
 const clientRow = (h: H, mark: ClientMark, label: string, action: Html): Html =>
-	h.li(
-		[h.Class("flex min-h-10 items-center gap-2.5 px-3 py-1.5")],
-		[
-			clientMark(h, mark),
-			h.span([h.Class("shrink-0 font-prose text-xs font-medium text-foreground")], [label]),
-			h.div([h.Class("flex min-w-0 flex-1 items-center justify-end gap-1")], [action]),
-		],
-	)
+	hstack(h, { gap: "2.5", align: "center", as: "li", className: "min-h-10 px-3 py-1.5" }, [
+		clientMark(h, mark),
+		h.span([h.Class("shrink-0 font-prose text-xs font-medium text-foreground")], [label]),
+		hstack(h, { gap: "1", align: "center", justify: "end", shrink: true, grow: true }, [action]),
+	])
 
 /** A copyable value at the end of a client row. */
 const copyAction = (h: H, model: Model, value: string, field: CopyField, label: string): Html =>
-	h.div(
-		[h.Class("flex min-w-0 items-center gap-1")],
-		[
-			h.code(
-				[
-					h.Class(
-						"min-w-0 overflow-x-auto whitespace-nowrap font-mono text-2xs text-muted-foreground scroll-fade-x [scrollbar-width:none]",
-					),
-				],
-				[value],
-			),
-			CopyButton.view(h, {
-				model: model.copies[field],
-				toParentMessage: toCopy(field),
-				value,
-				label,
-				className: COPY_CLASS,
-			}),
-		],
-	)
+	hstack(h, { gap: "1", align: "center", shrink: true }, [
+		h.code(
+			[
+				h.Class(
+					"min-w-0 overflow-x-auto whitespace-nowrap font-mono text-2xs text-muted-foreground scroll-fade-x [scrollbar-width:none]",
+				),
+			],
+			[value],
+		),
+		CopyButton.view(h, {
+			model: model.copies[field],
+			toParentMessage: toCopy(field),
+			value,
+			label,
+			className: COPY_CLASS,
+		}),
+	])
 
 /** A one-click install that hands the server entry to the editor. */
 const installAction = (h: H, href: string, label: string): Html =>
@@ -198,83 +202,79 @@ const mcpCard = (h: H, model: Model): Html =>
 	h.div(
 		[h.Class("space-y-2")],
 		[
-			h.div(
-				[h.Class("flex items-baseline justify-between gap-2")],
-				[
-					eyebrow(h, { variant: "label" }, ["Connect your own agent · MCP"]),
-					h.a(
-						[
-							h.Href(settingsHref("mcp")),
-							h.Class(
-								"inline-flex shrink-0 items-center gap-1 text-xs text-muted-foreground hover:text-foreground active:text-foreground",
-							),
-						],
-						["All clients", icon(h, "ArrowRightIcon", { size: 12 })],
-					),
-				],
-			),
-			panel(h, { tone: "muted" }, [
-				h.ul(
-					[h.Class("divide-y")],
-					[
-						clientRow(
-							h,
-							{ name: "ClaudeIcon", className: "text-[#D97757]" },
-							"Claude Code",
-							copyAction(h, model, MCP_COMMAND, "mcpCommand", "Claude Code command"),
-						),
-						clientRow(
-							h,
-							{ name: "CursorIcon", className: "text-foreground" },
-							"Cursor",
-							installAction(h, cursorInstallUrl(MCP_ENDPOINT), "Add to Cursor"),
-						),
-						clientRow(
-							h,
-							{ name: "VsCodeIcon", className: "text-[#2B9FEF]" },
-							"VS Code",
-							installAction(h, vscodeInstallUrl(MCP_ENDPOINT), "Add to VS Code"),
-						),
-						clientRow(
-							h,
-							{ name: "ConnectionIcon", className: "text-primary" },
-							"Any client",
-							copyAction(h, model, MCP_ENDPOINT, "mcp", "MCP endpoint"),
-						),
-					],
-				),
+			hstack(h, { gap: "2", align: "baseline", justify: "between" }, [
+				eyebrow(h, { variant: "label" }, ["Connect your own agent · MCP"]),
+				textLink(h, { href: settingsHref("mcp"), tone: "muted", className: "shrink-0 text-xs" }, [
+					"All clients",
+					icon(h, "ArrowRightIcon", { size: 12 }),
+				]),
 			]),
-			h.p(
-				[h.Class("font-prose text-xs text-muted-foreground")],
-				["Your client opens Maple in the browser to approve access."],
-			),
+			panel(h, { tone: "muted" }, [
+				dividedList(h, { as: "ul", bordered: false }, [
+					clientRow(
+						h,
+						{ name: "ClaudeIcon", className: "text-brand-claude" },
+						"Claude Code",
+						copyAction(h, model, MCP_COMMAND, "mcpCommand", "Claude Code command"),
+					),
+					clientRow(
+						h,
+						{ name: "CursorIcon", className: "text-foreground" },
+						"Cursor",
+						installAction(h, cursorInstallUrl(MCP_ENDPOINT), "Add to Cursor"),
+					),
+					clientRow(
+						h,
+						{ name: "VsCodeIcon", className: "text-brand-vscode" },
+						"VS Code",
+						installAction(h, vscodeInstallUrl(MCP_ENDPOINT), "Add to VS Code"),
+					),
+					clientRow(
+						h,
+						{ name: "ConnectionIcon", className: "text-primary" },
+						"Any client",
+						copyAction(h, model, MCP_ENDPOINT, "mcp", "MCP endpoint"),
+					),
+				]),
+			]),
+			typography(h, { size: "xs", tone: "muted", as: "p", className: "font-prose" }, [
+				"Your client opens Maple in the browser to approve access.",
+			]),
 		],
 	)
 
 /** The command split before its first flag: each half stays on one line, so a wrap breaks only there. */
 const commandParts = (command: string): ReadonlyArray<string> => {
-	const flag = command.indexOf(" --")
-	return flag === -1 ? [command] : [command.slice(0, flag), command.slice(flag + 1)]
+	return Option.match(Str.indexOf(" --")(command), {
+		onNone: () => [command],
+		onSome: (flag) => [Str.slice(0, flag)(command), Str.slice(flag + 1)(command)],
+	})
 }
 
 /** The onboarding command, wrapping before `--skill` so no part hides under the copy button. */
 const commandBlock = (h: H, model: Model): Html =>
-	h.div(
+	hstack(
+		h,
+		{
+			gap: "2",
+			align: "start",
+			className: "rounded-lg border border-input bg-background py-1.5 pl-3 pr-1.5 dark:bg-input/32",
+		},
 		[
-			h.Class(
-				"flex items-start gap-2 rounded-lg border border-input bg-background py-1.5 pl-3 pr-1.5 dark:bg-input/32",
-			),
-		],
-		[
-			h.code(
+			h.div(
+				[h.Class("min-w-0 flex-1 py-0.5")],
 				[
-					h.Id("connect-skill-command"),
-					h.Class("min-w-0 flex-1 select-all py-0.5 font-mono text-xs leading-5 break-words"),
+					h.code(
+						[
+							h.Id("connect-skill-command"),
+							h.Class("select-all font-mono text-xs leading-5 break-words"),
+						],
+						Arr.flatMap(commandParts(ONBOARD_SKILL_COMMAND), (part, index) => [
+							...(index > 0 ? [" "] : []),
+							h.span([h.Class("inline-block whitespace-nowrap")], [part]),
+						]),
+					),
 				],
-				commandParts(ONBOARD_SKILL_COMMAND).flatMap((part, index) => [
-					...(index > 0 ? [" "] : []),
-					h.span([h.Class("inline-block whitespace-nowrap")], [part]),
-				]),
 			),
 			CopyButton.view(h, {
 				model: model.copies.skill,
@@ -287,7 +287,8 @@ const commandBlock = (h: H, model: Model): Html =>
 	)
 
 /** The footer's two links share one style. */
-const LINK_CLASS = "font-prose text-muted-foreground underline underline-offset-2 hover:text-foreground active:text-foreground"
+const LINK_CLASS =
+	"font-prose text-muted-foreground underline underline-offset-2 hover:text-foreground active:text-foreground"
 
 /** `ConnectPanel`. */
 const connectPanel = (h: H, model: Model): ReadonlyArray<Html> => [
@@ -297,13 +298,10 @@ const connectPanel = (h: H, model: Model): ReadonlyArray<Html> => [
 			h.div(
 				[h.Class("space-y-1.5")],
 				[
-					h.div(
-						[h.Class("flex items-start justify-between gap-2")],
-						[
-							PopoverView.popoverTitle(h, POPOVER_ID, "Connect your app", "text-base"),
-							statusPill(h, model),
-						],
-					),
+					hstack(h, { gap: "2", align: "start", justify: "between" }, [
+						PopoverView.popoverTitle(h, POPOVER_ID, "Connect your app", "text-base"),
+						statusPill(h, model),
+					]),
 					PopoverView.popoverDescription(
 						h,
 						POPOVER_ID,
@@ -319,32 +317,26 @@ const connectPanel = (h: H, model: Model): ReadonlyArray<Html> => [
 				[
 					eyebrow(h, { variant: "label" }, ["Fastest path · Claude Code"]),
 					commandBlock(h, model),
-					h.p(
-						[h.Class("font-prose text-xs text-muted-foreground")],
-						[
-							"The ",
-							inlineCode(h, {}, ["maple-onboard"]),
-							" skill installs OpenTelemetry and wires traces, logs, and metrics end-to-end.",
-						],
-					),
+					typography(h, { size: "xs", tone: "muted", as: "p", className: "font-prose" }, [
+						"The ",
+						inlineCode(h, {}, ["maple-onboard"]),
+						" skill installs OpenTelemetry and wires traces, logs, and metrics end-to-end.",
+					]),
 				],
 			),
 			mcpCard(h, model),
-			h.div(
-				[h.Class("flex items-center justify-between text-xs")],
-				[
-					h.a([h.Href(settingsHref("ingestion")), h.Class(LINK_CLASS)], ["Open setup guide"]),
-					h.a(
-						[
-							h.Href("https://maple.dev/docs"),
-							h.Target("_blank"),
-							h.Rel("noopener noreferrer"),
-							h.Class(LINK_CLASS),
-						],
-						["Documentation"],
-					),
-				],
-			),
+			hstack(h, { align: "center", justify: "between", className: "text-xs" }, [
+				h.a([h.Href(settingsHref("ingestion")), h.Class(LINK_CLASS)], ["Open setup guide"]),
+				h.a(
+					[
+						h.Href("https://maple.dev/docs"),
+						h.Target("_blank"),
+						h.Rel("noopener noreferrer"),
+						h.Class(LINK_CLASS),
+					],
+					["Documentation"],
+				),
+			]),
 		],
 	),
 ]

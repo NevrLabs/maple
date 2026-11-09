@@ -1,5 +1,9 @@
-import { encodeOAuthReturnHash, type OAuthCompleteRequest } from "@maple/domain/http"
-import { Effect, Option } from "effect"
+import {
+	encodeOAuthReturnHash,
+	GithubInstallationSelection,
+	type OAuthCompleteRequest,
+} from "@maple/domain/http"
+import { Effect, Option, Array as Arr } from "effect"
 import { describe, expect, test } from "vitest"
 import { completeOAuthReturnWith } from "../page/integrations/oauth-return"
 import { captureOAuthReturn, peekOAuthReturn, type ReturnStorage } from "./oauth-return-stash"
@@ -36,6 +40,7 @@ const finish = (storage: ReturnStorage, now: number) => {
 			storage,
 			now,
 			handOff: () => Effect.succeed(false),
+			redirect: () => Effect.void,
 			complete: (request) =>
 				Effect.sync(() => {
 					posted.push(request)
@@ -57,10 +62,102 @@ describe("an OAuth return captured at boot", () => {
 		// `/integrations?integration=cloudflare` is replaced by `/sources/new?...`, which drops the
 		// fragment; the Sources step embeds the integrations module, which finishes the return.
 		const { posted, outcome } = finish(storage, BOOT_AT + 500)
-		expect(posted.map((request) => [request.flow, request.query])).toEqual([
+		expect(Arr.map(posted, (request) => [request.flow, request.query])).toEqual([
 			["cloudflare", "code=c-1&state=s-1"],
 		])
 		expect(outcome?.provider).toBe("cloudflare")
+	})
+
+	test("an existing GitHub installation's account choices reach the opener and the full-page return", () => {
+		const github = new GithubInstallationSelection({
+			state: "verified-choice",
+			needsApproval: [],
+			unavailable: 0,
+			installUrl: "https://github.test/apps/maple/installations/new?state=install-1",
+			installations: [
+				{
+					id: "101",
+					accountLogin: "acme",
+					accountType: "organization",
+					repositorySelection: "selected",
+				},
+			],
+		})
+		const forwarded: Array<GithubInstallationSelection | undefined> = []
+		for (const hasOpener of [true, false]) {
+			const storage = memoryStorage()
+			boot(storage, encodeOAuthReturnHash({ flow: "github", query: "code=c-1&state=s-1" }))
+			const outcome = Effect.runSync(
+				completeOAuthReturnWith({
+					storage,
+					now: BOOT_AT + 500,
+					complete: () =>
+						Effect.succeed({
+							status: "success",
+							message: "Choose an account",
+							chat: null,
+							github,
+						}),
+					handOff: (_provider, _status, _message, selection) =>
+						Effect.sync(() => {
+							forwarded.push(selection)
+							return hasOpener
+						}),
+					redirect: () => Effect.die("an account choice is not redirected"),
+				}),
+			)
+			expect(outcome?.github).toEqual(github)
+			expect(outcome?.isHandedOff).toBe(hasOpener)
+		}
+		expect(forwarded).toEqual([github, github])
+	})
+
+	test("a GitHub authorization with nothing to choose sends the window on to install", () => {
+		const github = new GithubInstallationSelection({
+			state: "empty-choice",
+			needsApproval: [],
+			unavailable: 0,
+			installUrl: "https://github.test/apps/maple/installations/new?state=install-1",
+			installations: [],
+		})
+		const storage = memoryStorage()
+		boot(storage, encodeOAuthReturnHash({ flow: "github", query: "code=c-1&state=s-1" }))
+		const redirected: Array<string> = []
+		const handedOff: Array<string> = []
+		const outcome = Effect.runSync(
+			completeOAuthReturnWith({
+				storage,
+				now: BOOT_AT + 500,
+				complete: () => Effect.succeed({ status: "success", message: "ok", chat: null, github }),
+				handOff: (provider) => Effect.sync(() => (handedOff.push(provider), true)),
+				redirect: (url) => Effect.sync(() => void redirected.push(url)),
+			}),
+		)
+		expect(redirected).toEqual([github.installUrl])
+		expect(handedOff).toEqual([])
+		expect(outcome?.isHandedOff).toBe(true)
+	})
+
+	test("installations it could not connect stay on the page instead of redirecting to install", () => {
+		const github = new GithubInstallationSelection({
+			state: "unavailable-choice",
+			needsApproval: [],
+			unavailable: 1,
+			installUrl: "https://github.test/apps/maple/installations/new?state=install-1",
+			installations: [],
+		})
+		const storage = memoryStorage()
+		boot(storage, encodeOAuthReturnHash({ flow: "github", query: "code=c-1&state=s-1" }))
+		const outcome = Effect.runSync(
+			completeOAuthReturnWith({
+				storage,
+				now: BOOT_AT + 500,
+				complete: () => Effect.succeed({ status: "success", message: "ok", chat: null, github }),
+				handOff: () => Effect.succeed(false),
+				redirect: () => Effect.die("an account it could not connect is not redirected"),
+			}),
+		)
+		expect(outcome?.github).toEqual(github)
 	})
 
 	test("completes after a sign-in round trip, and only once", () => {

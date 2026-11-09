@@ -28,6 +28,7 @@ import {
 	type GcpView,
 	type GcpWorkload,
 } from "./tabs"
+import { Array as Arr, Option, Order, String as Str } from "effect"
 
 /** One service of the fleet read: see `getGcpInfraFleet`. */
 export interface GcpFleetRead {
@@ -54,7 +55,7 @@ export const NO_GCP_SPARKS: GcpSparks = new Map()
 /** About 24 buckets over the window, in whole minutes: the poller stores one point per minute. */
 export const GCP_SPARKLINE_BUCKETS = 24
 
-const utcMs = (time: string) => Date.parse(time.includes("T") ? time : `${time.replace(" ", "T")}Z`)
+const utcMs = (time: string) => Date.parse(Str.includes("T")(time) ? time : `${Str.replace(" ", "T")(time)}Z`)
 
 export const gcpWindowSeconds = (startTime: string, endTime: string): number =>
 	(utcMs(endTime) - utcMs(startTime)) / 1000
@@ -81,29 +82,33 @@ export function gcpSparks(
 	const sparks = new Map<string, Map<string, Array<number>>>()
 	for (const { service, points } of reads) {
 		const counters = new Set(
-			gcpInfraMetrics(service)
-				.filter((metric) => metric.kind === "sum")
-				.map((metric) => metric.name),
+			Arr.map(
+				Arr.filter(gcpInfraMetrics(service), (metric) => metric.kind === "sum"),
+				(metric) => metric.name,
+			),
 		)
 		for (const workload of gcpWorkloadPoints(points)) {
 			const id = gcpWorkloadId(workload.keys)
 			const series = sparks.get(id) ?? new Map<string, Array<number>>()
 			sparks.set(id, series)
-			for (const metric of new Set(workload.points.map((point) => point.metric))) {
-				const ofMetric = workload.points
-					.filter((point) => point.metric === metric)
-					.toSorted((a, b) => utcMs(a.bucket) - utcMs(b.bucket))
+			for (const metric of new Set(Arr.map(workload.points, (point) => point.metric))) {
+				const ofMetric = Arr.sort(
+					Arr.filter(workload.points, (point) => point.metric === metric),
+					Order.mapInput(Order.Number, (point: (typeof workload.points)[number]) =>
+						utcMs(point.bucket),
+					),
+				)
 				if (counters.has(metric)) {
 					const values = Array.from({ length: buckets }, () => 0)
 					for (const point of ofMetric) {
 						const index = Math.round((utcMs(point.bucket) - first) / step)
-						if (index >= 0 && index < buckets) values[index] += point.total
+						if (index >= 0 && index < buckets) values[index] = (values[index] ?? 0) + point.total
 					}
 					series.set(metric, values)
 				} else {
 					series.set(
 						metric,
-						ofMetric.map((point) => point.total / point.samples),
+						Arr.map(ofMetric, (point) => point.total / point.samples),
 					)
 				}
 			}
@@ -117,7 +122,7 @@ export function gcpSparks(
 /** `?view=`, else a link from before the views: `?tab=` named a service. */
 export function gcpRequestedView(view: string | undefined, tab: string | undefined): GcpView | undefined {
 	const wanted = view ?? (tab === "cloudRun" || tab === "cloudFunctions" ? "services" : tab)
-	return GCP_VIEWS.find((candidate) => candidate === wanted)
+	return Option.getOrUndefined(Arr.findFirst(GCP_VIEWS, (candidate) => candidate === wanted))
 }
 
 /**
@@ -132,12 +137,15 @@ export function gcpViews(
 	requested: GcpView | undefined,
 	collecting: boolean,
 ): { readonly views: ReadonlyArray<GcpView>; readonly view: GcpView } {
-	const views = GCP_VIEWS.filter((view) =>
+	const views = Arr.filter(GCP_VIEWS, (view) =>
 		view === requested
 			? view !== GCP_RESOURCES_TAB || collecting
 			: counts !== null && (view === GCP_RESOURCES_TAB ? collecting : counts[view] > 0),
 	)
-	const view = views.find((candidate) => candidate === requested) ?? views[0] ?? "services"
+	const view = Option.getOrElse(
+		Arr.findFirst(views, (candidate) => candidate === requested),
+		(): GcpView => views[0] ?? "services",
+	)
 	return { views, view }
 }
 
@@ -160,7 +168,12 @@ const rowBase = (service: GcpInfraServiceId, keys: ReadonlyArray<string>): GcpRo
 })
 
 const workloadsOf = (fleet: ReadonlyArray<GcpFleetRead>, service: GcpInfraServiceId) =>
-	gcpWorkloadPoints(fleet.find((entry) => entry.service === service)?.points ?? [])
+	gcpWorkloadPoints(
+		Option.match(
+			Arr.findFirst(fleet, (entry) => entry.service === service),
+			{ onNone: () => [], onSome: (entry) => entry.points },
+		),
+	)
 
 const spark = (sparks: GcpSparks, keys: ReadonlyArray<string>, metric: string) =>
 	sparks.get(gcpWorkloadId(keys))?.get(metric)
@@ -177,7 +190,10 @@ export interface RowRules<R, S extends string> {
 }
 
 export const rowHealth = <R, S extends string>(rules: RowRules<R, S>, row: R): S | "ok" =>
-	rules.worst.find((scope) => rules.inScope(row, scope)) ?? "ok"
+	Option.getOrElse(
+		Arr.findFirst(rules.worst, (scope) => rules.inScope(row, scope)),
+		(): S | "ok" => "ok",
+	)
 
 /** Problems first, the worst signal first, then by volume. */
 export function sortByAttention<R, S extends string>(
@@ -188,7 +204,13 @@ export function sortByAttention<R, S extends string>(
 		const health = rowHealth(rules, row)
 		return health === "ok" ? rules.worst.length : rules.worst.indexOf(health)
 	}
-	return rows.toSorted((a, b) => rank(a) - rank(b) || rules.volume(b) - rules.volume(a))
+	return Arr.sort(
+		rows,
+		Order.combine(
+			Order.mapInput(Order.Number, rank),
+			Order.flip(Order.mapInput(Order.Number, rules.volume)),
+		),
+	)
 }
 
 // Cloud Run services and Cloud Functions -------------------------------------------------------
@@ -228,7 +250,7 @@ export function gcpServiceRows(
 	sparks: GcpSparks,
 	windowSeconds: number,
 ): ReadonlyArray<GcpServiceRow> {
-	const run = workloadsOf(fleet, "cloudRun").map(({ keys, points }): GcpServiceRow => {
+	const run = Arr.map(workloadsOf(fleet, "cloudRun"), ({ keys, points }): GcpServiceRow => {
 		const read = gcpMetricReader(points)
 		return {
 			...rowBase("cloudRun", keys),
@@ -244,7 +266,7 @@ export function gcpServiceRows(
 			volume: spark(sparks, keys, `${RUN}.requests`),
 		}
 	})
-	const functions = workloadsOf(fleet, "cloudFunctions").map(({ keys, points }): GcpServiceRow => {
+	const functions = Arr.map(workloadsOf(fleet, "cloudFunctions"), ({ keys, points }): GcpServiceRow => {
 		const read = gcpMetricReader(points)
 		return {
 			...rowBase("cloudFunctions", keys),
@@ -309,7 +331,7 @@ export function gcpSubscriptionRows(
 	fleet: ReadonlyArray<GcpFleetRead>,
 	sparks: GcpSparks,
 ): ReadonlyArray<GcpSubscriptionRow> {
-	return workloadsOf(fleet, "pubsub").map(({ keys, points }) => {
+	return Arr.map(workloadsOf(fleet, "pubsub"), ({ keys, points }) => {
 		const read = gcpMetricReader(points)
 		return {
 			...rowBase("pubsub", keys),
@@ -328,8 +350,11 @@ export function gcpSubscriptionRows(
 /** How much the backlog rose across the window: its last bucket less its first. */
 export const gcpBacklogGrowth = (row: GcpSubscriptionRow): number | undefined => {
 	const series = row.backlogSpark
-	if (series === undefined || series.length < 2) return undefined
-	return series[series.length - 1] - series[0]
+	const first = series?.[0]
+	const last = series?.at(-1)
+	if (series === undefined || series.length < 2 || first === undefined || last === undefined)
+		return undefined
+	return last - first
 }
 
 /** Rising by at least 100 messages and half of where it started: a batch consumer's steady backlog is not. */
@@ -408,9 +433,9 @@ export interface GcpDatabaseRow extends GcpRowBase {
  * inventory has no settings for it. SQL Server reports no engine metrics of its own.
  */
 export const gcpSqlEngineOf = (points: ReadonlyArray<{ readonly metric: string }>): string | undefined =>
-	points.some((point) => point.metric.startsWith(`${DATABASE}.postgresql.`))
+	Arr.some(points, (point) => Str.startsWith(`${DATABASE}.postgresql.`)(point.metric))
 		? "POSTGRES"
-		: points.some((point) => point.metric.startsWith(`${DATABASE}.mysql.`))
+		: Arr.some(points, (point) => Str.startsWith(`${DATABASE}.mysql.`)(point.metric))
 			? "MYSQL"
 			: undefined
 
@@ -423,15 +448,15 @@ export function gcpDatabaseRows(
 	sparks: GcpSparks,
 	instances: ReadonlyArray<GcpCloudSqlInstance> = [],
 ): ReadonlyArray<GcpDatabaseRow> {
-	const byId = new Map(instances.map((instance) => [instance.id, instance]))
-	const rows = workloadsOf(fleet, "cloudSql").map(({ keys, points }): GcpDatabaseRow => {
+	const byId = new Map(Arr.map(instances, (instance) => [instance.id, instance]))
+	const rows = Arr.map(workloadsOf(fleet, "cloudSql"), ({ keys, points }): GcpDatabaseRow => {
 		const read = gcpMetricReader(points)
 		const queryP95 = read.mean(`${DATABASE}.query.duration`, "0.95")
 		const queries = read.total(`${DATABASE}.queries`)
 		return {
 			...rowBase("cloudSql", keys),
-			instance: byId.get(keys[0]),
-			engine: byId.get(keys[0])?.databaseVersion ?? gcpSqlEngineOf(points),
+			instance: byId.get(keys[0] ?? ""),
+			engine: byId.get(keys[0] ?? "")?.databaseVersion ?? gcpSqlEngineOf(points),
 			cpu: read.mean(`${DATABASE}.cpu.utilization`),
 			memory: read.mean(`${DATABASE}.memory.utilization`),
 			disk: read.mean(`${DATABASE}.disk.utilization`),
@@ -447,16 +472,17 @@ export function gcpDatabaseRows(
 			queriesSpark: spark(sparks, keys, `${DATABASE}.queries`),
 		}
 	})
-	const ids = new Set(rows.map((row) => row.keys[0]))
+	const ids = new Set(Arr.map(rows, (row) => row.keys[0]))
 	const primaryOf = (row: GcpDatabaseRow) => {
 		const primary = row.instance?.primary ?? null
 		return primary !== null && ids.has(primary) ? primary : undefined
 	}
-	return rows.flatMap((row) => {
+	return Arr.flatMap(rows, (row) => {
 		if (primaryOf(row) !== undefined) return []
-		const replicas = rows
-			.filter((candidate) => primaryOf(candidate) === row.keys[0])
-			.map((replica) => ({ name: replica.name, lagSeconds: replica.replicaLagSeconds }))
+		const replicas = Arr.map(
+			Arr.filter(rows, (candidate) => primaryOf(candidate) === row.keys[0]),
+			(replica) => ({ name: replica.name, lagSeconds: replica.replicaLagSeconds }),
+		)
 		return [replicas.length === 0 ? row : { ...row, replicas }]
 	})
 }
@@ -473,12 +499,13 @@ export const gcpDatabasePeak = (row: GcpDatabaseRow): number =>
 
 /** The most a row's replica, or the row itself when it is an unfolded replica, lags. */
 const worstLag = (row: GcpDatabaseRow): number =>
-	Math.max(row.replicaLagSeconds ?? 0, ...row.replicas.map((replica) => replica.lagSeconds ?? 0))
+	Math.max(row.replicaLagSeconds ?? 0, ...Arr.map(row.replicas, (replica) => replica.lagSeconds ?? 0))
 
 /** Query Insights is off on a PostgreSQL instance: its query columns are dashes. */
 export const gcpQueryInsightsOff = (row: GcpDatabaseRow): boolean =>
 	row.instance !== undefined &&
-	row.instance.databaseVersion?.startsWith("POSTGRES") === true &&
+	typeof row.instance.databaseVersion === "string" &&
+	Str.startsWith("POSTGRES")(row.instance.databaseVersion) &&
 	!row.instance.queryInsightsEnabled
 
 /** The band's cells first; the last two only rate a row. */
@@ -520,7 +547,7 @@ export const gcpWorkloadRows = (
 	fleet: ReadonlyArray<GcpFleetRead>,
 	service: GcpGenericView,
 ): ReadonlyArray<GcpWorkloadRow> =>
-	workloadsOf(fleet, service).map(({ keys, points }) => ({
+	Arr.map(workloadsOf(fleet, service), ({ keys, points }) => ({
 		...rowBase(service, keys),
 		workload: gcpWorkload(service, keys, points),
 	}))
@@ -585,12 +612,12 @@ export function gcpRowsIn(
 		(place.project === undefined || row.project === place.project) &&
 		(place.region === undefined || row.region === place.region)
 	return {
-		services: rows.services.filter(keep),
-		pubsub: rows.pubsub.filter(keep),
-		cloudSql: rows.cloudSql.filter(keep),
-		gke: rows.gke.filter(keep),
-		computeEngine: rows.computeEngine.filter(keep),
-		loadBalancing: rows.loadBalancing.filter(keep),
+		services: Arr.filter(rows.services, keep),
+		pubsub: Arr.filter(rows.pubsub, keep),
+		cloudSql: Arr.filter(rows.cloudSql, keep),
+		gke: Arr.filter(rows.gke, keep),
+		computeEngine: Arr.filter(rows.computeEngine, keep),
+		loadBalancing: Arr.filter(rows.loadBalancing, keep),
 	}
 }
 
@@ -605,8 +632,9 @@ export const gcpViewCounts = (rows: GcpListRows): Record<GcpServiceView, number>
 
 /** Whether the query of a service of the view failed: its rows are unknown, not absent. */
 export const gcpViewFailed = (fleet: ReadonlyArray<GcpFleetRead>, view: GcpServiceView): boolean =>
-	fleet.some(
-		(entry) => entry.failed && GCP_VIEW_SERVICES[view].some((service) => service === entry.service),
+	Arr.some(
+		fleet,
+		(entry) => entry.failed && Arr.some(GCP_VIEW_SERVICES[view], (service) => service === entry.service),
 	)
 
 /** A view's rows as what every row has. */
@@ -634,7 +662,7 @@ export function gcpListScope(
 	const projects = gcpProjects(allRows ?? NO_ROWS)
 	// An empty param in a hand-edited address is no filter.
 	const region = state.region || undefined
-	const project = projects.find((candidate) => candidate === state.project)
+	const project = Option.getOrUndefined(Arr.findFirst(projects, (candidate) => candidate === state.project))
 	const inRegion = gcpRowsIn(allRows ?? NO_ROWS, { region })
 	const rows = gcpRowsIn(inRegion, { project })
 	const counts = allRows === null ? null : gcpViewCounts(rows)
@@ -655,23 +683,35 @@ export function gcpProjects(rows: GcpListRows): ReadonlyArray<string> {
 			if (row.project !== undefined) counts.set(row.project, (counts.get(row.project) ?? 0) + 1)
 		}
 	}
-	return [...counts].toSorted((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([project]) => project)
+	return Arr.map(
+		Arr.sort(
+			[...counts],
+			Order.combine(
+				Order.flip(Order.mapInput(Order.Number, ([, count]: readonly [string, number]) => count)),
+				Order.mapInput(
+					Order.make<string>((a, b) => Str.localeCompare(b)(a)),
+					([project]: readonly [string, number]) => project,
+				),
+			),
+		),
+		([project]) => project,
+	)
 }
 
 /** Each project's share of a view: requests, delivered messages, or else its number of rows. */
 export function gcpProjectShares(rows: GcpListRows, view: GcpServiceView): ReadonlyMap<string, number> {
 	const volume: ReadonlyArray<{ readonly project: string | undefined; readonly volume: number }> =
 		view === "services"
-			? rows.services.map((row) => ({ project: row.project, volume: row.requests }))
+			? Arr.map(rows.services, (row) => ({ project: row.project, volume: row.requests }))
 			: view === "pubsub"
-				? rows.pubsub.map((row) => ({ project: row.project, volume: row.delivered }))
-				: listed(rows, view).map((row) => ({ project: row.project, volume: 1 }))
+				? Arr.map(rows.pubsub, (row) => ({ project: row.project, volume: row.delivered }))
+				: Arr.map(listed(rows, view), (row) => ({ project: row.project, volume: 1 }))
 	const totals = new Map<string, number>()
 	for (const row of volume) {
 		if (row.project !== undefined) totals.set(row.project, (totals.get(row.project) ?? 0) + row.volume)
 	}
-	const sum = [...totals.values()].reduce((a, b) => a + b, 0)
-	return new Map([...totals].map(([project, n]) => [project, sum > 0 ? n / sum : 0]))
+	const sum = Arr.reduce([...totals.values()], 0, (a, b) => a + b)
+	return new Map(Arr.map([...totals], ([project, n]) => [project, sum > 0 ? n / sum : 0]))
 }
 
 /** What one row of a view is, singular and plural. */
@@ -686,14 +726,20 @@ export const GCP_VIEW_NOUN = {
 
 /** "9 services · 2 databases": the current view first, then every other view with rows. */
 export function gcpProjectCounts(rows: GcpListRows, project: string, view: GcpView): string {
-	const views = VIEW_ROW_KEYS.toSorted((a, b) => Number(b === view) - Number(a === view))
-	return views
-		.flatMap((key) => {
-			const count = listed(rows, key).filter((row) => row.project === project).length
+	const views = Arr.sort(
+		VIEW_ROW_KEYS,
+		Order.flip(
+			Order.mapInput(Order.Number, (key: (typeof VIEW_ROW_KEYS)[number]) => Number(key === view)),
+		),
+	)
+	return Arr.join(
+		Arr.flatMap(views, (key) => {
+			const count = Arr.filter(listed(rows, key), (row) => row.project === project).length
 			const [one, many] = GCP_VIEW_NOUN[key]
 			return count > 0 || key === view ? [`${count} ${count === 1 ? one : many}`] : []
-		})
-		.join(" · ")
+		}),
+		" · ",
+	)
 }
 
 export interface GcpProjectHealth {
@@ -717,7 +763,7 @@ export function gcpProjectHealth(
 		const status = GCP_METRICS_STATUS[state.kind]
 		health.set(connector.scope_id, {
 			tone: status.tone,
-			message: `metrics ${status.label.toLowerCase()}`,
+			message: `metrics ${Str.toLowerCase(status.label)}`,
 		})
 	}
 	return health

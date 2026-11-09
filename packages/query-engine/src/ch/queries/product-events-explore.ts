@@ -16,6 +16,7 @@ import { finalizeTimeseries } from "./series-cap"
 import { soleValue, timeseriesBucket, wholeRangeEnd } from "./query-helpers"
 import { replaysWhere, needsSessionSemiJoin, type WebAnalyticsFilters } from "./web-analytics"
 import { WEB_ANALYTICS_UNSET } from "@maple/domain/query-engine"
+import { Array as Arr } from "effect"
 
 type EventsAccessor = ColumnAccessor<typeof ProductEvents.columns>
 
@@ -156,7 +157,7 @@ function eventConditions($: EventsAccessor, opts: ProductEventsQueryOpts): Array
 		notInListOpt($.Host, opts.excludedHosts),
 		notInListOpt($.PagePath, opts.excludedPagePaths),
 		notInListOpt($.ServiceName, opts.excludedServiceNames),
-		...(opts.attributeFilters ?? []).map((filter) => buildAttrFilterCondition(filter, "Attributes")),
+		...Arr.map(opts.attributeFilters ?? [], (filter) => buildAttrFilterCondition(filter, "Attributes")),
 		sessionSemiJoin($, opts),
 	]
 }
@@ -207,9 +208,9 @@ function dimensionColumn(
 // Every dimension keeps its position, an empty one shown as `(none)`, so
 // `browser · (none)` and `(none) · browser` stay two groups.
 function groupNameExpr($: EventsAccessor, opts: ProductEventsTimeseriesOpts): CH.Expr<string> {
-	const keys = (opts.groupBy ?? []).filter((key): key is ProductEventsGroupBy => key !== "none")
+	const keys = Arr.filter(opts.groupBy ?? [], (key): key is ProductEventsGroupBy => key !== "none")
 	if (keys.length === 0) return CH.lit("all")
-	const parts = keys.map((key) =>
+	const parts = Arr.map(keys, (key) =>
 		CH.coalesce(
 			CH.nullIf(dimensionColumn($, key, opts.groupByAttributeKey), ""),
 			CH.lit(WEB_ANALYTICS_UNSET),
@@ -229,7 +230,7 @@ const TS_COLUMNS: ColumnDefs = {
 
 export function productEventsTimeseriesQuery(
 	opts: ProductEventsTimeseriesOpts,
-): CHQuery<ColumnDefs, ProductEventsTimeseriesOutput, {}> {
+): CHQuery<ColumnDefs, ProductEventsTimeseriesOutput> {
 	const inner = from(ProductEvents)
 		.select(($) => ({
 			bucket: timeseriesBucket($.Timestamp, opts.wholeRange),
@@ -240,16 +241,12 @@ export function productEventsTimeseriesQuery(
 		.where(($) => [...eventConditions($, opts), wholeRangeEnd($.Timestamp, opts.wholeRange)])
 		.groupBy("bucket", "groupName")
 		.orderBy(["bucket", "asc"], ["groupName", "asc"])
-	return finalizeTimeseries(inner, TS_COLUMNS, "value", opts) as CHQuery<
-		ColumnDefs,
-		ProductEventsTimeseriesOutput,
-		{}
-	>
+	return finalizeTimeseries(inner, TS_COLUMNS, "value", opts)
 }
 
 export function productEventsBreakdownQuery(
 	opts: ProductEventsBreakdownOpts,
-): CHQuery<any, ProductEventsBreakdownOutput, any> {
+): CHQuery<ColumnDefs, ProductEventsBreakdownOutput> {
 	return from(ProductEvents)
 		.select(($) => ({
 			name: dimensionColumn($, opts.groupBy, opts.groupByAttributeKey),
@@ -264,7 +261,7 @@ export function productEventsBreakdownQuery(
 
 export function productEventsListQuery(
 	opts: ProductEventsListOpts,
-): CHQuery<any, ProductEventsListOutput, any> {
+): CHQuery<ColumnDefs, ProductEventsListOutput> {
 	return from(ProductEvents)
 		.select(($) => ({
 			timestamp: $.Timestamp,
@@ -302,7 +299,7 @@ export interface ProductEventAttributeKeysOutput {
 /** The `track()` prop keys in use, most common first. No rollup exists; this scans the window. */
 export function productEventAttributeKeysQuery(
 	opts: ProductEventAttributeKeysOpts = {},
-): CHQuery<any, ProductEventAttributeKeysOutput, any> {
+): CHQuery<ColumnDefs, ProductEventAttributeKeysOutput> {
 	return from(ProductEvents)
 		.select(($) => ({
 			attributeKey: CH.arrayJoin(CH.mapKeys($.Attributes)),
@@ -327,7 +324,7 @@ export interface ProductEventAttributeValuesOutput {
 
 export function productEventAttributeValuesQuery(
 	opts: ProductEventAttributeValuesOpts,
-): CHQuery<any, ProductEventAttributeValuesOutput, any> {
+): CHQuery<ColumnDefs, ProductEventAttributeValuesOutput> {
 	return from(ProductEvents)
 		.select(($) => ({
 			attributeValue: $.Attributes.get(opts.attributeKey),

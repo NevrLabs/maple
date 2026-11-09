@@ -1,7 +1,7 @@
 import { FetchHttpClient } from "effect/http"
 import { SupabaseOAuthService } from "@maple/backend/services/auth/SupabaseOAuthService"
 import { afterEach, assert, beforeEach, describe, it } from "@effect/vitest"
-import { ConfigProvider, Effect, Layer, Schema } from "effect"
+import { ConfigProvider, Effect, Layer, Schema, Array as Arr, String as Str, DateTime, Option } from "effect"
 import { TestClock } from "effect/testing"
 import {
 	CreateScrapeTargetRequest,
@@ -22,7 +22,11 @@ import {
 } from "@maple/backend/platform/test-pglite"
 import { PlanetScaleDiscoveryService } from "./PlanetScaleDiscoveryService"
 import { PlanetScaleOAuthService } from "@maple/backend/services/auth/PlanetScaleOAuthService"
-import { ScrapeTargetsService, summarizeScrapeResults } from "./ScrapeTargetsService"
+import {
+	MAX_SCRAPE_TARGETS_PER_ORG,
+	ScrapeTargetsService,
+	summarizeScrapeResults,
+} from "./ScrapeTargetsService"
 
 const trackedDbs: TestDb[] = []
 const originalFetch = globalThis.fetch
@@ -93,9 +97,9 @@ describe("ScrapeTargetsService", () => {
 					authCredentials: JSON.stringify({ token: "stored-token" }),
 				}),
 			)
-			const row = (yield* service.listAllEnabled()).find((candidate) => candidate.id === target.id)
-			assert.isDefined(row)
-			if (!row) return
+			const row = Option.getOrThrow(
+				Arr.findFirst(yield* service.listAllEnabled(), (candidate) => candidate.id === target.id),
+			)
 
 			const headers = yield* service.authHeaders(row)
 			assert.deepStrictEqual(headers, { Authorization: "Bearer stored-token" })
@@ -131,7 +135,7 @@ describe("ScrapeTargetsService", () => {
 					),
 				)
 			assert.deepStrictEqual(
-				(yield* sources()).rows.map((row) => [
+				Arr.map((yield* sources()).rows, (row) => [
 					row.org_id,
 					row.kind,
 					row.platform,
@@ -149,8 +153,57 @@ describe("ScrapeTargetsService", () => {
 				testDb.pglite.query<{ org_id: string }>("SELECT org_id FROM sources"),
 			)
 			assert.deepStrictEqual(
-				left.rows.map((row) => row.org_id),
+				Arr.map(left.rows, (row) => row.org_id),
 				["org_2"],
+			)
+		}).pipe(Effect.provide(makeLayer(testDb)))
+	})
+
+	it.effect("refuses an org's target past the per-org limit, and no other org's", () => {
+		const testDb = createTestDb(trackedDbs)
+		return Effect.gen(function* () {
+			const service = yield* ScrapeTargetsService
+			const create = (orgId: string, name: string) =>
+				service.create(
+					asOrgId(orgId),
+					new CreateScrapeTargetRequest({
+						name,
+						url: `https://${name}.example.com/metrics`,
+						// Disabled targets count too, or create-disabled-then-enable would skip the limit.
+						enabled: false,
+					}),
+				)
+			const full = yield* Effect.forEach(Arr.range(1, MAX_SCRAPE_TARGETS_PER_ORG), (n) =>
+				create("org_full", `node-${n}`),
+			)
+
+			const refused = yield* create("org_full", "one-more").pipe(Effect.flip)
+			assert.strictEqual(refused._tag, "@maple/http/errors/ScrapeTargetLimitReachedError")
+			assert.include(refused.message, `${MAX_SCRAPE_TARGETS_PER_ORG} scrape targets`)
+
+			yield* create("org_other", "node")
+			yield* service.delete(asOrgId("org_full"), full[0].id)
+			yield* create("org_full", "replacement")
+
+			// Integration-owned rows are bounded by their integration: not counted, not refused.
+			yield* Effect.promise(() =>
+				executeSql(
+					testDb,
+					"UPDATE scrape_targets SET managed_by = 'planetscale:conn_1' WHERE id = $1",
+					[full[1].id],
+				),
+			)
+			yield* create("org_full", "after-managed")
+			yield* service.create(
+				asOrgId("org_full"),
+				new CreateScrapeTargetRequest({
+					name: "PlanetScale (acme)",
+					targetType: "planetscale",
+					organization: "acme",
+					authType: "planetscale_oauth",
+					enabled: false,
+				}),
+				{ allowManaged: true },
 			)
 		}).pipe(Effect.provide(makeLayer(testDb)))
 	})
@@ -178,7 +231,7 @@ describe("ScrapeTargetsService", () => {
 				),
 			)
 			assert.deepStrictEqual(
-				(yield* service.listAllEnabled()).map((row) => row.id),
+				Arr.map(yield* service.listAllEnabled(), (row) => row.id),
 				[live.id],
 			)
 		}).pipe(Effect.provide(makeLayer(testDb)))
@@ -204,7 +257,7 @@ describe("ScrapeTargetsService", () => {
 			)
 			const rows = yield* service.listAllEnabled()
 			assert.deepStrictEqual(
-				rows.map((row) => [row.id, row.labelsJson]),
+				Arr.map(rows, (row) => [row.id, row.labelsJson]),
 				[[target.id, { team: 7 }]],
 			)
 		}).pipe(Effect.provide(makeLayer(testDb)))
@@ -228,7 +281,7 @@ describe("ScrapeTargetsService", () => {
 			yield* service.recordScrapeResults([{ targetId: target.id, scrapedAt, error: null }])
 
 			const updated = yield* service.get(orgId, target.id)
-			assert.strictEqual(updated.lastScrapeAt, new Date(scrapedAt).toISOString())
+			assert.strictEqual(updated.lastScrapeAt, DateTime.formatIso(DateTime.makeUnsafe(scrapedAt)))
 			assert.isNull(updated.lastScrapeError)
 		}).pipe(Effect.provide(makeLayer(testDb)))
 	})
@@ -256,7 +309,7 @@ describe("ScrapeTargetsService", () => {
 			])
 
 			const updated = yield* service.get(orgId, target.id)
-			assert.strictEqual(updated.lastScrapeAt, new Date(goodScrapeAt).toISOString())
+			assert.strictEqual(updated.lastScrapeAt, DateTime.formatIso(DateTime.makeUnsafe(goodScrapeAt)))
 			assert.strictEqual(updated.lastScrapeError, "HTTP 503")
 
 			// A later success clears the error again.
@@ -264,7 +317,10 @@ describe("ScrapeTargetsService", () => {
 				{ targetId: target.id, scrapedAt: goodScrapeAt + 30_000, error: null },
 			])
 			const recovered = yield* service.get(orgId, target.id)
-			assert.strictEqual(recovered.lastScrapeAt, new Date(goodScrapeAt + 30_000).toISOString())
+			assert.strictEqual(
+				recovered.lastScrapeAt,
+				DateTime.formatIso(DateTime.makeUnsafe(goodScrapeAt + 30_000)),
+			)
 			assert.isNull(recovered.lastScrapeError)
 		}).pipe(Effect.provide(makeLayer(testDb)))
 	})
@@ -299,14 +355,14 @@ describe("ScrapeTargetsService", () => {
 
 			yield* service.recordScrapeResults([{ targetId: api.id, scrapedAt: 1750000000000, error: null }])
 			const healthy = yield* readSource()
-			assert.isNotNull(healthy!.last_poll_ok_at)
-			assert.isNull(healthy!.last_poll_error)
-			assert.isNull(healthy!.poll_resources)
+			assert.isNotNull(healthy.last_poll_ok_at)
+			assert.isNull(healthy.last_poll_error)
+			assert.isNull(healthy.poll_resources)
 
 			yield* service.recordScrapeResults([
 				{ targetId: api.id, scrapedAt: 1750000015000, error: "HTTP 503" },
 			])
-			assert.strictEqual((yield* readSource())!.last_poll_error, "HTTP 503")
+			assert.strictEqual((yield* readSource()).last_poll_error, "HTTP 503")
 
 			// Two targets on one source: the failure names its target and counts it unhealthy.
 			yield* Effect.promise(() =>
@@ -320,15 +376,15 @@ describe("ScrapeTargetsService", () => {
 				{ targetId: worker.id, scrapedAt: 1750000030000, error: "HTTP 401" },
 			])
 			const shared = yield* readSource()
-			assert.strictEqual(shared!.last_poll_error, "worker: HTTP 401")
-			assert.deepStrictEqual(shared!.poll_resources, { total: 2, unhealthy: 1 })
+			assert.strictEqual(shared.last_poll_error, "worker: HTTP 401")
+			assert.deepStrictEqual(shared.poll_resources, { total: 2, unhealthy: 1 })
 
 			yield* service.recordScrapeResults([
 				{ targetId: worker.id, scrapedAt: 1750000045000, error: null },
 			])
 			const recovered = yield* readSource()
-			assert.isNull(recovered!.last_poll_error)
-			assert.deepStrictEqual(recovered!.poll_resources, { total: 2, unhealthy: 0 })
+			assert.isNull(recovered.last_poll_error)
+			assert.deepStrictEqual(recovered.poll_resources, { total: 2, unhealthy: 0 })
 
 			// A PlanetScale connection's target leaves its source to the connection's own poller.
 			yield* Effect.promise(() =>
@@ -340,7 +396,7 @@ describe("ScrapeTargetsService", () => {
 			yield* service.recordScrapeResults([
 				{ targetId: worker.id, scrapedAt: 1750000200000, error: "HTTP 500" },
 			])
-			assert.isNull((yield* readSource())!.last_poll_error)
+			assert.isNull((yield* readSource()).last_poll_error)
 
 			// A probe of a switched-off target says nothing about its source.
 			yield* Effect.promise(() =>
@@ -370,7 +426,7 @@ describe("ScrapeTargetsService", () => {
 				}),
 			)
 
-			const unknownId = Schema.decodeUnknownSync(ScrapeTargetId)("99999999-9999-4999-8999-999999999999")
+			const unknownId = Schema.decodeSync(ScrapeTargetId)("99999999-9999-4999-8999-999999999999")
 			const scrapedAt = 1750000000000
 			yield* service.recordScrapeResults([
 				{ targetId: unknownId, scrapedAt, error: null },
@@ -378,7 +434,7 @@ describe("ScrapeTargetsService", () => {
 			])
 
 			const updated = yield* service.get(orgId, target.id)
-			assert.strictEqual(updated.lastScrapeAt, new Date(scrapedAt).toISOString())
+			assert.strictEqual(updated.lastScrapeAt, DateTime.formatIso(DateTime.makeUnsafe(scrapedAt)))
 		}).pipe(Effect.provide(makeLayer(testDb)))
 	})
 
@@ -408,7 +464,7 @@ describe("ScrapeTargetsService", () => {
 									orgId,
 									name,
 									`https://${name}.example.com/metrics`,
-									new Date(0).toISOString(),
+									DateTime.formatIso(DateTime.makeUnsafe(0)),
 									sourceId,
 								],
 							),
@@ -421,7 +477,7 @@ describe("ScrapeTargetsService", () => {
 			// A newer write already landed on `stale`; the late batch must not touch it.
 			yield* Effect.promise(() =>
 				executeSql(testDb, "UPDATE scrape_targets SET updated_at = $1 WHERE id = $2", [
-					new Date(scrapedAt + 60_000).toISOString(),
+					DateTime.formatIso(DateTime.makeUnsafe(scrapedAt + 60_000)),
 					stale.id,
 				]),
 			)
@@ -432,7 +488,7 @@ describe("ScrapeTargetsService", () => {
 					{ targetId: failing.id, scrapedAt, error: null },
 					{ targetId: failing.id, scrapedAt: scrapedAt + 15_000, error: "HTTP 503" },
 					{ targetId: stale.id, scrapedAt, error: "HTTP 500" },
-					...rest.map((target) => ({ targetId: target.id, scrapedAt, error: null })),
+					...Arr.map(rest, (target) => ({ targetId: target.id, scrapedAt, error: null })),
 				])
 				.pipe(Effect.withTracer(recorder.tracer))
 			// 6 targets of one source: 1 UPDATE, 1 SELECT (org and source ids), the source's targets and
@@ -447,10 +503,10 @@ describe("ScrapeTargetsService", () => {
 			])
 
 			const okRow = yield* service.get(orgId, ok.id)
-			assert.strictEqual(okRow.lastScrapeAt, new Date(scrapedAt).toISOString())
+			assert.strictEqual(okRow.lastScrapeAt, DateTime.formatIso(DateTime.makeUnsafe(scrapedAt)))
 			assert.isNull(okRow.lastScrapeError)
 			const failingRow = yield* service.get(orgId, failing.id)
-			assert.strictEqual(failingRow.lastScrapeAt, new Date(scrapedAt).toISOString())
+			assert.strictEqual(failingRow.lastScrapeAt, DateTime.formatIso(DateTime.makeUnsafe(scrapedAt)))
 			assert.strictEqual(failingRow.lastScrapeError, "HTTP 503")
 			const staleRow = yield* service.get(orgId, stale.id)
 			assert.isNull(staleRow.lastScrapeAt)
@@ -730,7 +786,7 @@ describe("ScrapeTargetsService", () => {
 
 			const pulled = { count: 0 }
 			// 7 bytes per line, so chunk boundaries cut lines and the cap lands mid-line.
-			const chunk = new TextEncoder().encode("up 1.5\n".repeat(10_000))
+			const chunk = new TextEncoder().encode(Str.repeat(10_000)("up 1.5\n"))
 			const fetchStub = (async () =>
 				new Response(
 					new ReadableStream<Uint8Array>({
@@ -780,7 +836,7 @@ describe("ScrapeTargetsService", () => {
 			assert.lengthOf(pruned, 1)
 			assert.strictEqual(pruned[0]?.checkedAt, now - 60 * 60 * 1000)
 			// `makeLayer` consumes the db layer; the retention job needs `Database` directly.
-		}).pipe(Effect.provide(Layer.mergeAll(makeLayer(testDb), testDb.layer)))
+		}).pipe(Effect.provide([makeLayer(testDb), testDb.layer]))
 	})
 
 	it.effect("folds a batch of results per target into one final row state", () => {
@@ -811,7 +867,9 @@ describe("ScrapeTargetsService", () => {
 			const after = yield* service.get(orgId, target.id)
 			assert.strictEqual(after.lastScrapeError, "later boom")
 			assert.strictEqual(
-				after.lastScrapeAt === null ? null : new Date(after.lastScrapeAt).getTime(),
+				after.lastScrapeAt === null
+					? null
+					: DateTime.toEpochMillis(DateTime.makeUnsafe(after.lastScrapeAt)),
 				now - 2000,
 			)
 			// Every result still gets its own check row.
@@ -912,9 +970,13 @@ describe("ScrapeTargetsService", () => {
 				}),
 			)
 			assert.isTrue(tokenTarget.hasCredentials)
-			const switched = yield* service.update(asOrgId("org_1"), tokenTarget.id, {
-				authType: "planetscale_oauth",
-			})
+			const switched = yield* service.update(
+				asOrgId("org_1"),
+				tokenTarget.id,
+				new UpdateScrapeTargetRequest({
+					authType: "planetscale_oauth",
+				}),
+			)
 			assert.strictEqual(switched.authType, "planetscale_oauth")
 			assert.isFalse(switched.hasCredentials)
 		}).pipe(Effect.provide(makeLayer(testDb)))

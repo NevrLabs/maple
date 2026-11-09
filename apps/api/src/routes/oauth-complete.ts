@@ -4,7 +4,7 @@ import {
 	type OAuthCompleteRequest,
 	type OAuthReturnFlow,
 } from "@maple/domain/http"
-import { Effect } from "effect"
+import { Effect, String as Str } from "effect"
 import { summarizeCause } from "@maple/backend/platform/describe-cause"
 import type { OAuthFlowInitiator } from "@maple/backend/services/auth/oauth/oauth-state"
 import { CloudflareOAuthService } from "@maple/backend/services/auth/CloudflareOAuthService"
@@ -134,7 +134,7 @@ export const makeOAuthCompleter = Effect.gen(function* () {
 	const completeSupabase = (params: URLSearchParams, initiator: OAuthFlowInitiator) => {
 		// RFC 9207 mix-up defense: Supabase names itself in `iss`; a different issuer is refused.
 		const issuer = params.get("iss")
-		if (issuer !== null && issuer.replace(/\/$/, "") !== supabaseOAuth.apiBaseUrl) {
+		if (issuer !== null && Str.replace(/\/$/, "")(issuer) !== supabaseOAuth.apiBaseUrl) {
 			return Effect.succeed(
 				failure("The authorization came from an unexpected issuer. Restart the connect flow."),
 			)
@@ -157,8 +157,23 @@ export const makeOAuthCompleter = Effect.gen(function* () {
 	const completeGithub = (params: URLSearchParams, initiator: OAuthFlowInitiator) => {
 		const installationId = params.get("installation_id")
 		const state = params.get("state")
-		// Present only with OAuth-on-install enabled; proves the user owns the install.
+		// From user authorization or OAuth-on-install; proves who the GitHub user is.
 		const code = params.get("code") ?? undefined
+		// Authorization alone (no installation yet): list what this user can connect.
+		if (!installationId && code && state && params.get("setup_action") !== "request") {
+			return github.discoverInstallations(code, state, initiator).pipe(
+				Effect.map(
+					(selection) =>
+						new OAuthCompleteResponse({
+							status: "success",
+							message:
+								"Choose the installed GitHub account to connect to this Maple organization.",
+							chat: null,
+							github: selection,
+						}),
+				),
+			)
+		}
 		if (installationId === null || installationId === "") {
 			return Effect.succeed(
 				failure(
@@ -227,7 +242,7 @@ export const makeOAuthCompleter = Effect.gen(function* () {
 		const label = LABELS[request.flow]
 		const params = new URLSearchParams(request.query)
 		// A chat connector reads the whole query, its platform's error included.
-		const oauthError = request.flow.startsWith("chat_") ? null : params.get("error")
+		const oauthError = Str.startsWith("chat_")(request.flow) ? null : params.get("error")
 		if (oauthError !== null) {
 			yield* annotateFailure("provider_error")
 			return failure(params.get("error_description") || oauthError || `${label} returned an error`)

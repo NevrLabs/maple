@@ -1,5 +1,6 @@
 import { MapleRegion } from "@maple/domain/organization-regions"
-import { Effect, Option, Schema } from "effect"
+import { UnauthorizedError } from "@maple/domain/http"
+import { Cause, Effect, Option, Schema, String as Str } from "effect"
 import { Command, Mount, type Update } from "foldkit"
 import { defineMessageUnion } from "foldkit/message"
 import { suggestOrganizationName } from "../../lib/onboarding-org-name"
@@ -12,8 +13,13 @@ import {
 	UserInvitation,
 } from "../../platform/clerk"
 import type { Resources } from "../../platform/resources"
-import { createdTargetOf, createOrganization, openOrganization } from "../../shell/clerk-org-switcher"
-import { startDitherField } from "../../ui/dither-field"
+import {
+	createdTargetOf,
+	createOrganization,
+	openOrganization,
+	type OrganizationCreateError,
+} from "../../shell/clerk-org-switcher"
+import { startDitherField } from "@maple/views/ui/dither-field"
 
 // `/org-required`: a signed-in user with no organization names their first one (the name guessed from
 // their email), picks its region, or joins an organization that already invited them.
@@ -68,13 +74,25 @@ export const LoadInvitations = Command.define("LoadUserInvitations", {
 	),
 })
 
+export const SIGN_IN_EXPIRED_MESSAGE =
+	"Your sign-in expired before the organization was created. Reload the page to sign in again."
+
+/** A 401 that a fresh token did not fix: another click cannot help, signing in again can. */
+export const createFailureMessage = (error: OrganizationCreateError): string =>
+	Cause.isCause(error.cause) &&
+	Option.exists(Cause.findErrorOption(error.cause), Schema.is(UnauthorizedError))
+		? SIGN_IN_EXPIRED_MESSAGE
+		: error.message
+
 export const CreateOrganization = Command.define("CreateFirstOrganization", {
 	args: { name: Schema.String, region: MapleRegion },
 	messages: [Message.SucceededCreate, Message.FailedCreate],
 	execute: ({ name, region }) =>
 		createOrganization(name, region).pipe(
 			Effect.map((orgId) => Message.SucceededCreate({ orgId })),
-			Effect.catch((error) => Effect.succeed(Message.FailedCreate({ message: error.message }))),
+			Effect.catch((error) =>
+				Effect.succeed(Message.FailedCreate({ message: createFailureMessage(error) })),
+			),
 		),
 })
 
@@ -150,7 +168,7 @@ export const update = (model: Model, message: Message): Result =>
 		ChangedName: ({ value }) => ({ model: { ...model, name: value, errorMessage: null } }),
 		PickedRegion: ({ region }) => (isBusy(model) ? { model } : { model: { ...model, region } }),
 		SubmittedCreate: () =>
-			isBusy(model) || model.name.trim() === ""
+			isBusy(model) || Str.trim(model.name) === ""
 				? { model }
 				: {
 						model: { ...model, isCreating: true, errorMessage: null },
@@ -171,14 +189,18 @@ export const update = (model: Model, message: Message): Result =>
 			model: {
 				...model,
 				isCreating: false,
-				errorMessage: failure.trim() || "Couldn't create your organization. Try again.",
+				errorMessage: Str.trim(failure) || "Couldn't create your organization. Try again.",
 			},
 		}),
 		LoadedInvitations: ({ invitations }) => ({
 			model: { ...model, invitations, invitationsError: null },
 		}),
 		FailedLoadInvitations: ({ message: failure }) => ({
-			model: { ...model, invitations: [], invitationsError: failure.trim() || "Clerk did not answer." },
+			model: {
+				...model,
+				invitations: [],
+				invitationsError: Str.trim(failure) || "Clerk did not answer.",
+			},
 		}),
 		ClickedJoin: ({ invitationId }) =>
 			isBusy(model)
@@ -193,7 +215,7 @@ export const update = (model: Model, message: Message): Result =>
 			model: {
 				...model,
 				joiningId: null,
-				errorMessage: failure.trim() || "Couldn't join that organization. Try again.",
+				errorMessage: Str.trim(failure) || "Couldn't join that organization. Try again.",
 			},
 			// Accepted in another tab: the re-read drops the row, and the org shows up among the user's own.
 			commands: [LoadInvitations()],

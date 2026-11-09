@@ -1,4 +1,4 @@
-import { DateTime } from "effect"
+import { DateTime, Array as Arr, String as Str, Option } from "effect"
 import { describe, expect, it } from "vitest"
 import { compileUnsafe } from "@maple-dev/effect-orm/clickhouse"
 import {
@@ -201,9 +201,9 @@ describe("tracesListQuery", () => {
 		const { sql } = compileUnsafe(q, baseParams)
 
 		// Cutoff subquery reads only Timestamp — no Map columns, no Duration math.
-		const cutoffMatch = sql.match(/SELECT min\(ts\) FROM \(([\s\S]*?)\)\)/)
+		const cutoffMatch = Option.getOrThrow(Str.match(/SELECT min\(ts\) FROM \(([\s\S]*?)\)\)/)(sql))
 		expect(cutoffMatch).not.toBeNull()
-		const inner = cutoffMatch![1]!
+		const inner = cutoffMatch[1]
 		expect(inner).toContain("Timestamp AS ts")
 		expect(inner).not.toContain("SpanAttributes")
 		expect(inner).not.toContain("ResourceAttributes")
@@ -218,9 +218,9 @@ describe("tracesListQuery", () => {
 	it("extends the cutoff limit by offset so the cutoff covers all skipped rows", () => {
 		const q = tracesListQuery({ limit: 25, offset: 100 })
 		const { sql } = compileUnsafe(q, baseParams)
-		const cutoffMatch = sql.match(/SELECT min\(ts\) FROM \(([\s\S]*?)\)\)/)
+		const cutoffMatch = Option.getOrThrow(Str.match(/SELECT min\(ts\) FROM \(([\s\S]*?)\)\)/)(sql))
 		expect(cutoffMatch).not.toBeNull()
-		const inner = cutoffMatch![1]!
+		const inner = cutoffMatch[1]
 		// Stage 1 must look at limit+offset rows so the cutoff isn't above the
 		// rows the outer OFFSET will skip past.
 		expect(inner).toContain("LIMIT 125")
@@ -230,18 +230,18 @@ describe("tracesListQuery", () => {
 		const q = tracesListQuery({ serviceName: "api", errorsOnly: true })
 		const { sql } = compileUnsafe(q, baseParams)
 		// Each filter appears twice — once per stage.
-		expect(sql.match(/ServiceName = 'api'/g)).toHaveLength(2)
-		expect(sql.match(/OrgId = 'org_1'/g)).toHaveLength(2)
+		expect(Arr.fromIterable(Str.matchAll(/ServiceName = 'api'/g)(sql))).toHaveLength(2)
+		expect(Arr.fromIterable(Str.matchAll(/OrgId = 'org_1'/g)(sql))).toHaveLength(2)
 		// `StatusCode = 'Error'` shows up in the WHERE of both stages (errorsOnly)
 		// plus once in the outer SELECT's `hasError` expression — 3 total.
-		expect(sql.match(/StatusCode = 'Error'/g)).toHaveLength(3)
+		expect(Arr.fromIterable(Str.matchAll(/StatusCode = 'Error'/g)(sql))).toHaveLength(3)
 	})
 
 	it("includes the cursor in the cutoff subquery so pagination narrows the cheap scan too", () => {
 		const q = tracesListQuery({ cursor: DateTime.makeUnsafe("2024-01-01T12:00:00Z") })
 		const { sql } = compileUnsafe(q, baseParams)
 		// Cursor predicate applies in both stages.
-		expect(sql.match(/Timestamp < '2024-01-01 12:00:00'/g)).toHaveLength(2)
+		expect(Arr.fromIterable(Str.matchAll(/Timestamp < '2024-01-01 12:00:00'/g)(sql))).toHaveLength(2)
 	})
 })
 
@@ -303,9 +303,9 @@ describe("tracesRootListQuery", () => {
 		const { sql } = compileUnsafe(q, baseParams)
 
 		// Cutoff subquery reads only Timestamp.
-		const cutoffMatch = sql.match(/SELECT min\(ts\) FROM \(([\s\S]*?)\)\)/)
+		const cutoffMatch = Option.getOrThrow(Str.match(/SELECT min\(ts\) FROM \(([\s\S]*?)\)\)/)(sql))
 		expect(cutoffMatch).not.toBeNull()
-		const inner = cutoffMatch![1]!
+		const inner = cutoffMatch[1]
 		expect(inner).toContain("Timestamp AS ts")
 		expect(inner).not.toContain("SpanAttributes")
 		expect(inner).not.toContain("Duration")
@@ -323,20 +323,20 @@ describe("tracesRootListQuery", () => {
 	it("extends the cutoff limit by offset", () => {
 		const q = tracesRootListQuery({ limit: 25, offset: 75 })
 		const { sql } = compileUnsafe(q, baseParams)
-		const cutoffMatch = sql.match(/SELECT min\(ts\) FROM \(([\s\S]*?)\)\)/)
+		const cutoffMatch = Option.getOrThrow(Str.match(/SELECT min\(ts\) FROM \(([\s\S]*?)\)\)/)(sql))
 		expect(cutoffMatch).not.toBeNull()
-		const inner = cutoffMatch![1]!
+		const inner = cutoffMatch[1]
 		expect(inner).toContain("LIMIT 100")
 	})
 
 	it("applies the same filters to both stages", () => {
 		const q = tracesRootListQuery({ serviceName: "api", errorsOnly: true })
 		const { sql } = compileUnsafe(q, baseParams)
-		expect(sql.match(/ServiceName = 'api'/g)).toHaveLength(2)
-		expect(sql.match(/OrgId = 'org_1'/g)).toHaveLength(2)
+		expect(Arr.fromIterable(Str.matchAll(/ServiceName = 'api'/g)(sql))).toHaveLength(2)
+		expect(Arr.fromIterable(Str.matchAll(/OrgId = 'org_1'/g)(sql))).toHaveLength(2)
 		// `StatusCode = 'Error'` shows up in the WHERE of both stages (errorsOnly)
 		// plus once in the outer SELECT's `hasError` expression — 3 total.
-		expect(sql.match(/StatusCode = 'Error'/g)).toHaveLength(3)
+		expect(Arr.fromIterable(Str.matchAll(/StatusCode = 'Error'/g)(sql))).toHaveLength(3)
 	})
 })
 
@@ -349,13 +349,13 @@ describe("tracesRootListQuery", () => {
  */
 function pageSubquery(sql: string): string {
 	const marker = "TraceId IN (SELECT traceId FROM ("
-	const start = sql.indexOf(marker)
+	const start = Option.getOrThrow(Str.indexOf(marker)(sql))
 	expect(start).toBeGreaterThan(-1)
 
 	let depth = 1
 	for (let i = start + marker.length; i < sql.length; i++) {
 		if (sql[i] === "(") depth++
-		else if (sql[i] === ")" && --depth === 0) return sql.slice(start + marker.length, i)
+		else if (sql[i] === ")" && --depth === 0) return Str.slice(start + marker.length, i)(sql)
 	}
 	throw new Error("unbalanced page subquery")
 }
@@ -400,24 +400,24 @@ describe("traceListQuery", () => {
 		type Cursor = { timestamp: DateTime.Utc; traceId: string }
 		const second = (ts: DateTime.Utc) => Math.floor(DateTime.toEpochMillis(ts) / 1000) * 1000
 		const desc = (key: (r: Root) => number) => (a: Root, b: Root) =>
-			key(b) - key(a) || b.traceId.localeCompare(a.traceId)
+			key(b) !== key(a) ? key(b) - key(a) : Str.localeCompare(a.traceId)(b.traceId)
 
 		/** Evaluates one page the way ClickHouse would, reading stage 2's order off the SQL. */
 		const page = (cursor: Cursor | undefined): Root[] => {
 			const { sql } = compileUnsafe(traceListQuery({ limit: 2, cursor }), baseParams)
 			expect(pageSubquery(sql)).toContain("FROM trace_list_mv")
-			const outerOrder = sql.slice(sql.lastIndexOf("ORDER BY "))
+			const outerOrder = Str.slice(Option.getOrThrow(Str.lastIndexOf("ORDER BY ")(sql)))(sql)
 			const cut = cursor && { ts: second(cursor.timestamp), traceId: cursor.traceId }
-			const stage1 = roots
-				.filter(
-					(r) =>
-						!cut ||
-						second(r.startTime) < cut.ts ||
-						(second(r.startTime) === cut.ts && r.traceId < cut.traceId),
-				)
+			const stage1 = Arr.filter(
+				roots,
+				(r) =>
+					!cut ||
+					second(r.startTime) < cut.ts ||
+					(second(r.startTime) === cut.ts && r.traceId < cut.traceId),
+			)
 				.sort(desc((r) => second(r.startTime)))
 				.slice(0, 2)
-			const stage2Key = outerOrder.startsWith("ORDER BY startSecond")
+			const stage2Key = Str.startsWith("ORDER BY startSecond")(outerOrder)
 				? (r: Root) => second(r.startTime)
 				: (r: Root) => DateTime.toEpochMillis(r.startTime)
 			return stage1.sort(desc(stage2Key))
@@ -428,7 +428,7 @@ describe("traceListQuery", () => {
 			let cursor: Cursor | undefined
 			for (let i = 0; i < 5; i++) {
 				const rows = page(cursor)
-				seen.push(...rows.map((r) => r.traceId))
+				seen.push(...Arr.map(rows, (r) => r.traceId))
 				const last = rows.at(-1)
 				if (!last) break
 				cursor = { timestamp: last.startTime, traceId: last.traceId }
@@ -556,7 +556,9 @@ describe("traceListQuery", () => {
 		expect(inner).toContain("OFFSET 20")
 		// The outer aggregate re-caps at `limit` but must never re-apply the
 		// offset — that would skip the first 20 traces of the page.
-		expect(sql.slice(sql.indexOf("GROUP BY traceId"))).not.toContain("OFFSET")
+		expect(Str.slice(Option.getOrThrow(Str.indexOf("GROUP BY traceId")(sql)))(sql)).not.toContain(
+			"OFFSET",
+		)
 	})
 
 	it("filters traces in the paging stage, and never re-filters the aggregate", () => {
@@ -577,7 +579,10 @@ describe("traceListQuery", () => {
 		// count, and an exact time bound would clip children that outlive the
 		// window — but a completely unbounded aggregate defeats partition pruning
 		// and times out on prod retention, hence the ±1h pad.
-		const outer = sql.slice(sql.indexOf("FROM traces")).replace(inner, "")
+		const outer = Str.replace(
+			inner,
+			"",
+		)(Str.slice(Option.getOrThrow(Str.indexOf("FROM traces")(sql)))(sql))
 		expect(outer).toContain("OrgId = 'org_1'")
 		expect(outer).not.toContain("ServiceName = 'api'")
 		expect(outer).toContain("Timestamp >= subtractHours(toDateTime('2024-01-01 00:00:00'), 1)")

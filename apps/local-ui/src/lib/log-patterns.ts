@@ -3,6 +3,7 @@
 // such as `<uuid>`, `<ip>`, `<hex>` or `<email>`.
 
 import { compareSeverity } from "./log-shape"
+import { Array as Arr, Record as Rec, String as Str } from "effect"
 
 export interface TemplateSegment {
 	readonly text: string
@@ -15,13 +16,13 @@ const VARIABLE = /<\*>|<(?:uuid|ip|hex|email)>/g
 export function splitTemplate(template: string): ReadonlyArray<TemplateSegment> {
 	const segments: TemplateSegment[] = []
 	let last = 0
-	for (const match of template.matchAll(VARIABLE)) {
+	for (const match of Str.matchAll(VARIABLE)(template)) {
 		const index = match.index ?? 0
-		if (index > last) segments.push({ text: template.slice(last, index), variable: false })
+		if (index > last) segments.push({ text: Str.slice(last, index)(template), variable: false })
 		segments.push({ text: match[0], variable: true })
 		last = index + match[0].length
 	}
-	if (last < template.length) segments.push({ text: template.slice(last), variable: false })
+	if (last < template.length) segments.push({ text: Str.slice(last)(template), variable: false })
 	return segments
 }
 
@@ -30,10 +31,14 @@ export function splitTemplate(template: string): ReadonlyArray<TemplateSegment> 
  * single spaces, so only one token is a substring of every matching body.
  */
 export function patternSearchTerm(template: string): string {
-	return splitTemplate(template)
-		.filter((segment) => !segment.variable)
-		.flatMap((segment) => segment.text.split(/\s+/))
-		.reduce((best, token) => (token.length > best.length ? token : best), "")
+	return Arr.reduce(
+		Arr.flatMap(
+			Arr.filter(splitTemplate(template), (segment) => !segment.variable),
+			(segment: TemplateSegment) => Str.split(/\s+/)(segment.text),
+		),
+		"",
+		(best, token) => (token.length > best.length ? token : best),
+	)
 }
 
 export interface CountEntry {
@@ -43,14 +48,14 @@ export interface CountEntry {
 
 /** Count map entries, largest first, ties by name. */
 export function rankCounts(counts: Readonly<Record<string, number>>): ReadonlyArray<CountEntry> {
-	return Object.entries(counts)
-		.map(([name, count]) => ({ name, count }))
-		.sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
+	return Arr.map(Rec.toEntries(counts), ([name, count]) => ({ name, count })).sort((a, b) =>
+		b.count !== a.count ? b.count - a.count : Str.localeCompare(b.name)(a.name),
+	)
 }
 
 /** Severity entries ordered by level (most severe first), not by count. */
 export function severityBreakdown(counts: Readonly<Record<string, number>>): ReadonlyArray<CountEntry> {
-	return Object.entries(counts)
-		.map(([name, count]) => ({ name, count }))
-		.sort((a, b) => compareSeverity(a.name, b.name))
+	return Arr.map(Rec.toEntries(counts), ([name, count]) => ({ name, count })).sort((a, b) =>
+		compareSeverity(a.name, b.name),
+	)
 }

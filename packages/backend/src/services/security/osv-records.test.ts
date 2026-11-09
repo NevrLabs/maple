@@ -1,18 +1,22 @@
 import type { PackageRef } from "@maple/domain/package-advisories"
-import { Schema } from "effect"
+import { Option, Schema, Array as Arr } from "effect"
 import { describe, expect, it } from "vitest"
 import fixture from "./__fixtures__/osv.json"
 import { advisoriesOf, type OsvRecord, OsvVulnResponse, toOsvRecord } from "./osv-records"
 
 // `fixture` is a real OSV answer, captured by scripts/capture-osv-fixtures.ts.
-const records = fixture.vulns.map((vuln) => toOsvRecord(Schema.decodeUnknownSync(OsvVulnResponse)(vuln)))
+const records = Arr.map(fixture.vulns, (vuln) => toOsvRecord(Schema.decodeSync(OsvVulnResponse)(vuln)))
 
 const recordsFor = (ref: PackageRef): ReadonlyArray<OsvRecord> => {
-	const index = fixture.queries.findIndex(
-		(query) => query.package.name === ref.name && query.version === ref.version,
+	const index = Option.getOrElse(
+		Arr.findFirstIndex(
+			fixture.queries,
+			(query) => query.package.name === ref.name && query.version === ref.version,
+		),
+		() => -1,
 	)
-	const ids = new Set((fixture.batch.results[index]?.vulns ?? []).map((vuln) => vuln.id))
-	return records.filter((record) => ids.has(record.id))
+	const ids = new Set(Arr.map(fixture.batch.results[index]?.vulns ?? [], (vuln) => vuln.id))
+	return Arr.filter(records, (record) => ids.has(record.id))
 }
 
 const advisoriesFor = (ref: PackageRef) => advisoriesOf(recordsFor(ref), ref)
@@ -36,7 +40,7 @@ const GO_REF: PackageRef = { ecosystem: "Go", name: "example.com/mod", version: 
 describe("advisoriesOf", () => {
 	it("merges a Go vulnerability's GO- and GHSA- records into one advisory under the GHSA id", () => {
 		const advisories = advisoriesFor({ ecosystem: "Go", name: "golang.org/x/net", version: "v0.7.0" })
-		const xss = advisories.filter((advisory) => advisory.aliases.includes("CVE-2023-3978"))
+		const xss = Arr.filter(advisories, (advisory) => advisory.aliases.includes("CVE-2023-3978"))
 		expect(xss).toHaveLength(1)
 		expect(xss[0]).toMatchObject({
 			id: "GHSA-2wrh-6pvc-2jm9",
@@ -44,16 +48,24 @@ describe("advisoriesOf", () => {
 			fixedIn: "v0.13.0",
 		})
 		expect(xss[0]?.aliases).toContain("GO-2023-1988")
-		expect(new Set(advisories.map((advisory) => advisory.id)).size).toBe(advisories.length)
+		expect(new Set(Arr.map(advisories, (advisory) => advisory.id)).size).toBe(advisories.length)
 	})
 
 	it("reads GitHub's MODERATE as medium and picks the fix of the locked version's range", () => {
 		const advisories = advisoriesFor({ ecosystem: "npm", name: "lodash", version: "4.17.15" })
-		expect(advisories.find((advisory) => advisory.id === "GHSA-p6mc-m468-83gw")).toMatchObject({
+		expect(
+			Option.getOrUndefined(
+				Arr.findFirst(advisories, (advisory) => advisory.id === "GHSA-p6mc-m468-83gw"),
+			),
+		).toMatchObject({
 			severity: "high",
 			fixedIn: "4.17.19",
 		})
-		expect(advisories.find((advisory) => advisory.id === "GHSA-29mw-wpgm-hmr9")?.severity).toBe("medium")
+		expect(
+			Option.getOrUndefined(
+				Arr.findFirst(advisories, (advisory) => advisory.id === "GHSA-29mw-wpgm-hmr9"),
+			)?.severity,
+		).toBe("medium")
 	})
 
 	it("merges a RUSTSEC record with its GHSA twin", () => {

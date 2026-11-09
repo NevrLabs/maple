@@ -9,20 +9,25 @@ import { EMPTY_VALUE, formatLatency, formatNumber, formatPercent } from "@maple/
 import { latencyToneClass } from "@maple/ui/lib/latency-tone"
 import { TONE_TEXT } from "@maple/ui/lib/tone"
 import { cn } from "@maple/ui/lib/utils"
-import { rowSelectedClass } from "@maple/ui/styles/ui/list-row"
 import { AsyncData } from "foldkit"
 import type { Html, HtmlBuilder } from "foldkit/html"
-import type { LoadFailure } from "../../../../data/load-failure"
+import type { LoadFailure } from "@maple/views/data/load-failure"
 import { AppRoute, hrefOf } from "../../../../route"
-import { emptyMessage } from "../../../../ui/empty"
-import { icon } from "../../../../ui/icon"
-import { errorState } from "../../../../ui/error-state"
-import { meter } from "../../../../ui/meter"
-import { skeletonList } from "../../../../ui/skeleton"
+import { emptyMessage } from "@maple/views/ui/empty"
+import { icon } from "@maple/views/ui/icon"
+import { errorState } from "@maple/views/ui/error-state"
+import { meter } from "@maple/views/ui/meter"
+import { skeletonList } from "@maple/views/ui/skeleton"
+import { pressable } from "@maple/views/ui/pressable"
+import { textLink, textLinkClass } from "@maple/views/ui/text-link"
 import { columnHead, dataTable } from "../../../infra/kit/data-table"
 import { sectionHeading } from "../../../kit/section-heading"
 import type { Statement } from "../data"
 import { Message } from "./model"
+import { typography, typographyClass } from "@maple/views/ui/typography"
+import { columnClass } from "@maple/views/ui/column"
+import { Array as Arr } from "effect"
+import { hstack, vstack } from "@maple/views/ui/stack"
 
 // `GcpCloudSqlTopQueries` and the workload page's `GcpAppWaitCallout`.
 
@@ -30,9 +35,9 @@ type H = HtmlBuilder<Message>
 type TimeSearch = Readonly<{ startTime?: string; endTime?: string; timePreset?: string }>
 
 const SHOWN = 5
-const STATEMENT = "w-0 min-w-64 flex-1"
-const NUMBER = "text-right font-mono text-xs tabular-nums"
-const SUB = "truncate font-mono text-3xs text-muted-foreground"
+const STATEMENT = columnClass({ min: "64" })
+const NUMBER = typographyClass({ size: "xs", mono: true, numeric: true, className: "text-right" })
+const SUB = typographyClass({ size: "3xs", tone: "muted", mono: true, truncate: true })
 const MANY_ROWS = 10_000
 const LOCK_WARN = 0.2
 const LOCK_CRIT = 0.5
@@ -59,7 +64,7 @@ const callers = (h: H, traced: GcpTracedStatement | undefined): Html => {
 	const more = traced.serviceCount - traced.services.length
 	return h.div(
 		[h.Class(SUB)],
-		["called by ", traced.services.join(" · "), ...(more > 0 ? [` +${more}`] : [])],
+		["called by ", Arr.join(traced.services, " · "), ...(more > 0 ? [` +${more}`] : [])],
 	)
 }
 
@@ -72,25 +77,30 @@ const statementRow = (
 	const rowsPerCall = row.calls > 0 ? row.rows / row.calls : undefined
 	const db = row.p95LatencyMillis
 	const app = traced?.appP95Ms
-	return h.button(
-		[
-			h.Type("button"),
-			h.OnClick(Message.ClickedStatement({ queryHash: row.queryHash })),
-			h.AriaLabel(`Open statement: ${row.querystring}`),
-			...(isPeeked ? [h.AriaCurrent("true")] : []),
-			h.Class(
-				cn(
-					"flex w-full cursor-pointer items-center gap-4 border-b border-border-subtle px-4 py-2.5 text-left last:border-0 hover:bg-surface-sunken active:bg-surface-sunken focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset focus-visible:outline-none",
-					rowSelectedClass(isPeeked),
-				),
-			),
-		],
+	return pressable(
+		h,
+		{
+			onClick: Message.ClickedStatement({ queryHash: row.queryHash }),
+			label: `Open statement: ${row.querystring}`,
+			selectedLane: isPeeked,
+			className:
+				"flex w-full items-center gap-4 border-b border-border-subtle px-4 py-2.5 text-left last:border-0 hover:bg-surface-sunken active:bg-surface-sunken focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset focus-visible:outline-none",
+			attributes: isPeeked ? [h.AriaCurrent("true")] : [],
+		},
 		[
 			h.div(
 				[h.Class(cn(STATEMENT, "space-y-0.5"))],
 				[
-					h.div(
-						[h.Class("truncate font-mono text-xs text-foreground"), h.Title(row.querystring)],
+					typography(
+						h,
+						{
+							size: "xs",
+							tone: "foreground",
+							mono: true,
+							truncate: true,
+							as: "div",
+							attributes: [h.Title(row.querystring)],
+						},
 						[row.querystring],
 					),
 					callers(h, traced),
@@ -98,11 +108,7 @@ const statementRow = (
 			),
 			h.div([h.Class(cn("w-16 text-foreground-soft", NUMBER))], [formatNumber(row.calls)]),
 			h.div(
-				[
-					h.Class(
-						cn("w-20", NUMBER, db === null ? "text-muted-foreground" : latencyToneClass(db)),
-					),
-				],
+				[h.Class(cn("w-20", NUMBER, db === null ? "text-muted-foreground" : latencyToneClass(db)))],
 				[db === null ? EMPTY_VALUE : formatLatency(db)],
 			),
 			h.div(
@@ -126,10 +132,9 @@ const statementRow = (
 				[h.Class("hidden w-28 items-center gap-2 md:flex")],
 				[
 					meter(h, { value: row.executionShare, tone: "neutral", className: "w-14" }),
-					h.span(
-						[h.Class("font-mono text-2xs tabular-nums text-foreground-soft")],
-						[formatPercent(row.executionShare)],
-					),
+					typography(h, { size: "2xs", tone: "soft", mono: true, numeric: true }, [
+						formatPercent(row.executionShare),
+					]),
 				],
 			),
 			h.span(
@@ -144,7 +149,7 @@ const statementRow = (
 }
 
 const notice = (h: H, text: string): Html =>
-	emptyMessage(h, { dashed: true, className: "bg-card/50 px-3 py-4 text-xs" }, [text])
+	emptyMessage(h, { dashed: true, className: "bg-surface-faint px-3 py-4 text-xs" }, [text])
 
 export type TopQueriesInputs = Readonly<{
 	slot: AsyncData.AsyncData<ReadonlyArray<Statement>, LoadFailure>
@@ -176,15 +181,17 @@ export const topQueries = (h: H, inputs: TopQueriesInputs): Html => {
 				h.span([h.Class(CHEVRON)], []),
 			],
 			[
-				...shown.map((row) =>
+				...Arr.map(shown, (row) =>
 					statementRow(h, row, inputs.traced.get(row.queryHash), row.queryHash === inputs.peekHash),
 				),
-				h.div(
-					[
-						h.Class(
-							"flex items-center justify-between gap-4 px-4 py-2.5 font-mono text-2xs text-muted-foreground",
-						),
-					],
+				hstack(
+					h,
+					{
+						gap: "4",
+						align: "center",
+						justify: "between",
+						className: "px-4 py-2.5 font-mono text-2xs text-muted-foreground",
+					},
 					[
 						h.span(
 							[],
@@ -195,12 +202,9 @@ export const topQueries = (h: H, inputs: TopQueriesInputs): Html => {
 						),
 						...(rows.length > SHOWN
 							? [
-									h.button(
-										[
-											h.Type("button"),
-											h.OnClick(Message.ClickedShowAllQueries()),
-											h.Class("shrink-0 text-primary hover:text-primary/80 active:text-primary/80"),
-										],
+									textLink(
+										h,
+										{ onClick: Message.ClickedShowAllQueries(), className: "shrink-0" },
 										[inputs.showAll ? "Show fewer" : `Show all ${rows.length}`],
 									),
 								]
@@ -231,16 +235,26 @@ export const topQueries = (h: H, inputs: TopQueriesInputs): Html => {
 }
 
 export const figure = (h: H, value: string, caption: string, className?: string): Html =>
-	h.div(
-		[h.Class("flex flex-col items-start @2xl:items-end")],
-		[
-			h.span(
-				[h.Class(cn("font-mono text-sm font-semibold tabular-nums text-foreground", className))],
-				[value],
-			),
-			h.span([h.Class("font-mono text-3xs text-muted-foreground")], [caption]),
-		],
-	)
+	vstack(h, { align: "start", className: "@2xl:items-end" }, [
+		h.span(
+			[
+				h.Class(
+					cn(
+						typographyClass({
+							size: "sm",
+							tone: "foreground",
+							weight: "semibold",
+							mono: true,
+							numeric: true,
+						}),
+						className,
+					),
+				),
+			],
+			[value],
+		),
+		typography(h, { size: "3xs", tone: "muted", mono: true }, [caption]),
+	])
 
 /** `GcpAppWaitCallout`: a statement's app-side p95 far over its database-side p95. */
 export const appWaitCallout = (
@@ -264,22 +278,24 @@ export const appWaitCallout = (
 					h.div(
 						[h.Class("min-w-0 flex-1 space-y-1 px-4 py-3")],
 						[
-							h.p(
-								[h.Class("text-sm font-medium text-foreground")],
-								[
-									wait.service,
-									" waits ",
-									formatLatency(wait.appP95Ms),
-									" for a query the database runs in",
-									" ",
-									formatLatency(wait.dbP95Ms),
-								],
-							),
-							h.p(
-								[
-									h.Class("truncate font-mono text-2xs text-muted-foreground"),
-									h.Title(wait.statement),
-								],
+							typography(h, { size: "sm", tone: "foreground", weight: "medium", as: "p" }, [
+								wait.service,
+								" waits ",
+								formatLatency(wait.appP95Ms),
+								" for a query the database runs in",
+								" ",
+								formatLatency(wait.dbP95Ms),
+							]),
+							typography(
+								h,
+								{
+									size: "2xs",
+									tone: "muted",
+									mono: true,
+									truncate: true,
+									as: "p",
+									attributes: [h.Title(wait.statement)],
+								},
 								[wait.statement],
 							),
 							h.p(
@@ -288,20 +304,20 @@ export const appWaitCallout = (
 							),
 						],
 					),
-					h.div(
-						[
-							h.Class(
-								"flex items-center gap-6 border-t px-4 py-3 @2xl:self-stretch @2xl:border-t-0 @2xl:border-l @2xl:px-5",
-							),
-						],
+					hstack(
+						h,
+						{
+							gap: "6",
+							align: "center",
+							className:
+								"border-t px-4 py-3 @2xl:self-stretch @2xl:border-t-0 @2xl:border-l @2xl:px-5",
+						},
 						[
 							figure(h, formatLatency(wait.appP95Ms), "app p95", "text-severity-error"),
 							figure(h, formatLatency(wait.dbP95Ms), "database"),
 							h.a(
 								[
-									h.Class(
-										"ml-auto font-mono text-xs text-primary hover:text-primary/80 active:text-primary/80 @2xl:ml-0",
-									),
+									h.Class(textLinkClass("primary", true, "ml-auto text-xs @2xl:ml-0")),
 									h.Href(
 										hrefOf(
 											AppRoute.Traces({

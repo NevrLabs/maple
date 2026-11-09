@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { assert, describe, it } from "@effect/vitest"
-import { Schema } from "effect"
+import { Schema, Array as Arr } from "effect"
 import { InternalScrapeTarget } from "@maple/domain/http"
 import {
 	convertFamiliesToOtlp,
@@ -17,7 +17,7 @@ import { otlpContext } from "./Scraper"
 const body = readFileSync(join(import.meta.dirname, "__fixtures__", "supabase-metrics.txt"), "utf8")
 const REF = "abcdefghijklmnopqrst"
 
-const TARGET = Schema.decodeUnknownSync(InternalScrapeTarget)({
+const TARGET = Schema.decodeSync(InternalScrapeTarget)({
 	id: "22222222-2222-4222-8222-222222222222",
 	orgId: "org_test",
 	name: "Supabase app",
@@ -64,12 +64,12 @@ describe("a Supabase project's metrics payload", () => {
 
 	it("keeps the project ref, service type and target labels on every data point", () => {
 		const metrics = converted.request?.resourceMetrics[0]?.scopeMetrics[0]?.metrics ?? []
-		const points = metrics.flatMap(dataPointsOf)
+		const points = Arr.flatMap(metrics, dataPointsOf)
 		assert.strictEqual(points.length, 469)
 		const serviceTypes = new Set<string>()
-		points.forEach((point) => {
+		Arr.forEach(points, (point) => {
 			const attributes = new Map(
-				point.attributes.map((attribute) => [attribute.key, attribute.value.stringValue]),
+				Arr.map(point.attributes, (attribute) => [attribute.key, attribute.value.stringValue]),
 			)
 			assert.strictEqual(attributes.get("supabase_project_ref"), REF)
 			assert.strictEqual(attributes.get("supabase.project.ref"), REF)

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto"
 import { OrgId, UserId } from "@maple/domain/http"
-import { Effect, Schema } from "effect"
+import { Effect, Schema, Array as Arr, String as Str } from "effect"
 import type { TestDb } from "./test-pglite"
 
 /**
@@ -8,10 +8,10 @@ import type { TestDb } from "./test-pglite"
  * rows for both, acts as one, and asserts the other's rows are untouched: the
  * predicate that scopes a query to its org is only proven by a second org.
  */
-export const ORG_A = Schema.decodeUnknownSync(OrgId)("org_tenant_a")
-export const ORG_B = Schema.decodeUnknownSync(OrgId)("org_tenant_b")
-export const USER_A = Schema.decodeUnknownSync(UserId)("user_tenant_a")
-export const USER_B = Schema.decodeUnknownSync(UserId)("user_tenant_b")
+export const ORG_A = Schema.decodeSync(OrgId)("org_tenant_a")
+export const ORG_B = Schema.decodeSync(OrgId)("org_tenant_b")
+export const USER_A = Schema.decodeSync(UserId)("user_tenant_a")
+export const USER_B = Schema.decodeSync(UserId)("user_tenant_b")
 
 const ColumnInfo = Schema.Struct({
 	column_name: Schema.String,
@@ -28,7 +28,7 @@ const CountRow = Schema.Struct({ n: Schema.Number })
 /** Raw SQL against the test instance; `rows` decodes what comes back, so nothing is assumed. */
 const query = <S extends Schema.Top>(db: TestDb, rows: S, sql: string, params: ReadonlyArray<unknown> = []) =>
 	Effect.promise(() => db.pglite.query(sql, [...params])).pipe(
-		Effect.flatMap((result) => Schema.decodeUnknownEffect(Schema.Array(rows))(result.rows)),
+		Effect.flatMap((result) => Schema.decodeEffect(Schema.Array(rows))(result.rows)),
 	)
 
 const NoRows = Schema.Struct({})
@@ -38,7 +38,7 @@ type SeedValue = string | number | boolean | Uint8Array
 /** A value for a required column, unique per (table, column, org) so keys never collide. */
 const valueFor = (column: ColumnInfo, tag: string): SeedValue => {
 	const type = column.udt_name
-	if (type.startsWith("_")) return "{}"
+	if (Str.startsWith("_")(type)) return "{}"
 	if (type === "bool") return false
 	if (type === "jsonb" || type === "json") return "{}"
 	if (type === "uuid") return randomUUID()
@@ -65,7 +65,8 @@ export const seedOrgRow = (db: TestDb, tableName: string, orgColumn: string, org
 			 ORDER BY ordinal_position`,
 			[tableName],
 		)
-		const required = columns.filter(
+		const required = Arr.filter(
+			columns,
 			(column) =>
 				column.column_name === orgColumn ||
 				(column.is_nullable === "NO" &&
@@ -73,11 +74,17 @@ export const seedOrgRow = (db: TestDb, tableName: string, orgColumn: string, org
 					column.is_identity === "NO" &&
 					column.is_generated === "NEVER"),
 		)
-		const values = required.map((column): SeedValue =>
+		const values = Arr.map(required, (column): SeedValue =>
 			column.column_name === orgColumn ? orgId : valueFor(column, `${tableName}:${orgId}`),
 		)
-		const names = required.map((column) => `"${column.column_name}"`).join(", ")
-		const placeholders = required.map((_, index) => `$${index + 1}`).join(", ")
+		const names = Arr.join(
+			Arr.map(required, (column) => `"${column.column_name}"`),
+			", ",
+		)
+		const placeholders = Arr.join(
+			Arr.map(required, (_, index) => `$${index + 1}`),
+			", ",
+		)
 		yield* Effect.acquireUseRelease(
 			query(db, NoRows, "SET session_replication_role = replica"),
 			() => query(db, NoRows, `INSERT INTO "${tableName}" (${names}) VALUES (${placeholders})`, values),

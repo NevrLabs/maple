@@ -1,22 +1,21 @@
+import { formatNumber } from "@maple/ui/lib/format"
 import { formatErrorRate } from "@maple/ui/lib/error-rate"
 import { cn } from "@maple/ui/lib/utils"
 import {
 	breakdownKeyLabel,
 	errorRate,
 	formatDurationNs,
-	formatToolCount,
 	toolsTableFooter,
 } from "@maple/web-data/lib/tool-analytics"
 import type { Html, HtmlBuilder } from "foldkit/html"
-import * as Chart from "../../../charts/chart"
-import * as Sparkline from "../../../charts/sparkline"
-import type { LoadFailure } from "../../../data/load-failure"
+import type { LoadFailure } from "@maple/views/data/load-failure"
 import { AppRoute, hrefOf } from "../../../route"
-import { emptyMessage } from "../../../ui/empty"
-import { errorState } from "../../../ui/error-state"
-import { icon } from "../../../ui/icon"
-import { skeletonList } from "../../../ui/skeleton"
+import { emptyMessage } from "@maple/views/ui/empty"
+import { errorState } from "@maple/views/ui/error-state"
+import { icon } from "@maple/views/ui/icon"
+import { skeletonList } from "@maple/views/ui/skeleton"
 import type { ToolBreakdownRow, ToolPercentile, ToolSearch } from "../tools-kit/model"
+import { volumeSparkCell } from "../tools-kit/spark"
 import { toolDetailLinkSearch } from "../tools-kit/model"
 import {
 	errorTone,
@@ -24,7 +23,7 @@ import {
 	type SortState,
 	sortRows,
 	th,
-	toolRowClass,
+	toolTableRow,
 	toolTable,
 	toolTableBody,
 	toolTableFooter,
@@ -32,6 +31,11 @@ import {
 } from "../tools-kit/table"
 import { relativeTime } from "../../kit/relative-time"
 import { Message } from "./message"
+import { typography, typographyClass } from "@maple/views/ui/typography"
+import { hstack } from "@maple/views/ui/stack"
+import { columnClass } from "@maple/views/ui/column"
+import { swatch } from "@maple/views/ui/swatch"
+import { Array as Arr } from "effect"
 
 type H = HtmlBuilder<Message>
 
@@ -51,9 +55,6 @@ export type ToolsTableInputs = Readonly<{
 	timeZone: string
 }>
 
-/** Sparks draw no focus or tooltip, so they share one constant chart Model. */
-const SPARK_CHART = Chart.init()
-
 const head = (h: H, sort: SortState): Html => {
 	const sortable = (label: string, width: string, key: string, align?: "right", hidden?: string) =>
 		th(h, {
@@ -66,13 +67,13 @@ const head = (h: H, sort: SortState): Html => {
 			hidden,
 		})
 	return toolTableHead(h, [
-		sortable("Tool", "w-0 flex-1 min-w-0", "key"),
+		sortable("Tool", columnClass({ min: "0" }), "key"),
 		th(h, { label: "Volume", width: "w-28 shrink-0", hidden: "hidden @min-[720px]/panel:flex" }),
 		sortable("Calls", "w-20 shrink-0", "calls", "right"),
 		sortable("P50", "w-20 shrink-0", "p50", "right", "hidden @min-[900px]/panel:flex"),
 		sortable("P90", "w-20 shrink-0", "p90", "right"),
 		sortable("P95", "w-20 shrink-0", "p95", "right", "hidden @min-[900px]/panel:flex"),
-		sortable("Error rate", "w-36 shrink-0 pl-6", "errorRate"),
+		sortable("Error rate", columnClass({ width: "36", shrink: false, inset: "6" }), "errorRate"),
 		sortable("Errors", "w-20 shrink-0", "errors", "right", "hidden @min-[640px]/panel:flex"),
 		sortable("Sessions", "w-20 shrink-0", "sessions", "right", "hidden @min-[640px]/panel:flex"),
 		sortable("Last call", "w-24 shrink-0", "lastSeen", "right", "hidden @min-[800px]/panel:flex"),
@@ -111,57 +112,35 @@ const duration = (h: H, value: number, isDriving: boolean, hidden?: string): Htm
 const cells = (h: H, row: Prepared, inputs: ToolsTableInputs, maxErrorRate: number): ReadonlyArray<Html> => {
 	const color = inputs.colorFor(row.key)
 	return [
-		h.span(
-			[h.Class("flex w-0 min-w-0 flex-1 items-center gap-2")],
-			[
-				h.span(
-					[
-						h.AriaHidden(true),
-						h.Class(
-							cn("size-2 shrink-0 rounded-xs", color === undefined && "bg-foreground-subtle"),
+		hstack(h, { gap: "2", shrink: true, grow: true, as: "span", className: "w-0" }, [
+			swatch(h, {
+				ariaHidden: true,
+				color,
+				className: color === undefined ? "bg-foreground-subtle" : undefined,
+			}),
+			h.span(
+				[
+					h.Class(
+						cn(
+							"block min-w-0 truncate font-mono",
+							typographyClass({ size: "xs", tone: "foreground" }),
+							row.key === inputs.search.tool && "font-medium",
 						),
-						...(color === undefined ? [] : [h.Style({ "background-color": color })]),
-					],
-					[],
-				),
-				h.span(
-					[
-						h.Class(
-							cn(
-								"block min-w-0 truncate font-mono",
-								"text-xs text-foreground",
-								row.key === inputs.search.tool && "font-medium",
-							),
-						),
-						h.Title(breakdownKeyLabel(row.key)),
-					],
-					[breakdownKeyLabel(row.key)],
-				),
-			],
-		),
-		h.span(
-			[h.Class("hidden h-[22px] w-28 shrink-0 @min-[720px]/panel:block")],
-			[
-				h.submodel({
-					slotId: `tool-spark-${row.key}`,
-					model: SPARK_CHART,
-					view: Sparkline.view,
-					toParentMessage: (message) => Message.GotSparkMessage({ message }),
-					viewInputs: {
-						chartId: `tool-spark-${row.key}`,
-						values: inputs.sparkFor(row.key).slice(-24),
-						color: inputs.sparkColor,
-						className: "size-full",
-						revision: 0,
-						fillOpacity: [0.35, 0],
-						isFramedWhenEmpty: true,
-					},
-				}),
-			],
-		),
+					),
+					h.Title(breakdownKeyLabel(row.key)),
+				],
+				[breakdownKeyLabel(row.key)],
+			),
+		]),
+		volumeSparkCell(h, {
+			chartId: `tool-spark-${row.key}`,
+			values: inputs.sparkFor(row.key),
+			color: inputs.sparkColor,
+			toMessage: (message) => Message.GotSparkMessage({ message }),
+		}),
 		h.span(
 			[h.Class("w-20 shrink-0 text-right font-mono text-xs tabular-nums text-foreground")],
-			[formatToolCount(row.calls)],
+			[formatNumber(row.calls)],
 		),
 		duration(h, row.p50, inputs.percentile === "p50", "hidden @min-[900px]/panel:block"),
 		duration(h, row.p90, inputs.percentile === "p90"),
@@ -182,7 +161,7 @@ const cells = (h: H, row: Prepared, inputs: ToolsTableInputs, maxErrorRate: numb
 					),
 				),
 			],
-			[formatToolCount(row.errors)],
+			[formatNumber(row.errors)],
 		),
 		h.span(
 			[
@@ -190,19 +169,23 @@ const cells = (h: H, row: Prepared, inputs: ToolsTableInputs, maxErrorRate: numb
 					"hidden w-20 shrink-0 text-right font-mono text-xs tabular-nums text-muted-foreground @min-[640px]/panel:block",
 				),
 			],
-			[formatToolCount(row.sessions)],
+			[formatNumber(row.sessions)],
 		),
 		relativeTime(h, {
 			value: row.lastSeen,
 			variant: "orDate",
-			tooltip: "title",
 			nowMs: inputs.nowMs,
 			timeZone: inputs.timeZone,
 			className:
 				"hidden w-24 shrink-0 text-right font-mono text-2xs tabular-nums text-foreground-subtle @min-[800px]/panel:block",
 		}),
-		h.span(
-			[h.Class("flex w-3.5 shrink-0 items-center justify-end text-foreground-subtle")],
+		hstack(
+			h,
+			{
+				justify: "end",
+				as: "span",
+				className: typographyClass({ tone: "subtle", className: "w-3.5 shrink-0" }),
+			},
 			row.key === ""
 				? []
 				: [icon(h, "ChevronRightIcon", { size: 14, attributes: [h.AriaHidden(true)] })],
@@ -216,24 +199,29 @@ const body = (h: H, inputs: ToolsTableInputs): ReadonlyArray<Html> => {
 	if (inputs.isLoading)
 		return [skeletonList(h, { rows: 3, rowClassName: "h-[38px]", className: "gap-1.5 px-2.5 py-3" })]
 	if (inputs.rows.length === 0)
-		return [emptyMessage(h, { className: "py-12 font-mono" }, ["No tool calls in the selected window."])]
-	const prepared: ReadonlyArray<Prepared> = inputs.rows.map((row) => ({
+		return [emptyMessage(h, { className: "py-12 font-mono" }, ["No tool calls in this window"])]
+	const prepared: ReadonlyArray<Prepared> = Arr.map(inputs.rows, (row) => ({
 		...row,
 		errorRate: errorRate(row),
 	}))
-	const maxErrorRate = prepared.reduce((max, row) => Math.max(max, row.errorRate), 0)
+	const maxErrorRate = Arr.reduce(prepared, 0, (max, row) => Math.max(max, row.errorRate))
 	const linkSearch = toolDetailLinkSearch(inputs.search)
-	return sortRows(prepared, inputs.sort, (row, key) => SORT_FIELDS.get(key)?.(row)).map((row) =>
-		row.key === ""
-			? h.div([h.Key(row.key), h.Class(toolRowClass(false))], cells(h, row, inputs, maxErrorRate))
-			: h.a(
-					[
-						h.Key(row.key),
-						h.Class(toolRowClass(row.key === inputs.search.tool)),
-						h.Href(hrefOf(AppRoute.AgentSessionTool({ toolName: row.key, search: linkSearch }))),
-					],
-					cells(h, row, inputs, maxErrorRate),
-				),
+	return Arr.map(
+		sortRows(prepared, inputs.sort, (row, key) => SORT_FIELDS.get(key)?.(row)),
+		(row) =>
+			row.key === ""
+				? toolTableRow(h, { attributes: [h.Key(row.key)] }, cells(h, row, inputs, maxErrorRate))
+				: toolTableRow(
+						h,
+						{
+							isSelected: row.key === inputs.search.tool,
+							href: hrefOf(
+								AppRoute.AgentSessionTool({ toolName: row.key, search: linkSearch }),
+							),
+							attributes: [h.Key(row.key)],
+						},
+						cells(h, row, inputs, maxErrorRate),
+					),
 	)
 }
 
@@ -248,16 +236,12 @@ export const toolsTable = (h: H, inputs: ToolsTableInputs): Html =>
 	h.section(
 		[h.AriaLabel("Tools"), h.Class("@container/panel min-w-0 px-6 pt-5 pb-6")],
 		[
-			h.div(
-				[h.Class("flex items-baseline gap-2.5 pb-3 font-mono")],
-				[
-					h.span([h.Class("text-xs font-medium text-foreground")], ["Tools"]),
-					h.span(
-						[h.Class("text-2xs leading-3.5 tabular-nums text-foreground-subtle")],
-						[formatToolCount(inputs.rows.length)],
-					),
-				],
-			),
+			hstack(h, { gap: "2.5", align: "baseline", className: "pb-3 font-mono" }, [
+				typography(h, { size: "xs", tone: "foreground", weight: "medium" }, ["Tools"]),
+				typography(h, { size: "2xs", tone: "subtle", numeric: true, className: "leading-3.5" }, [
+					formatNumber(inputs.rows.length),
+				]),
+			]),
 			toolTable(h, [
 				head(h, inputs.sort),
 				toolTableBody(h, body(h, inputs), { isWaiting: inputs.isWaiting }),

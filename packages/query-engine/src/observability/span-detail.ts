@@ -1,17 +1,18 @@
-import { Array as Arr, DateTime, Effect, Option, Schema, pipe } from "effect"
+import { Array as Arr, Clock, DateTime, Effect, Option, Schema, pipe, Record as Rec } from "effect"
 import * as CH from "../ch"
 import { WarehouseExecutor } from "./WarehouseExecutor"
+import { TRACE_RETENTION_HOURS, locateTrace } from "./locate-trace"
 
 import { formatWarehouseDateTime, formatWarehouseDateTimeMs } from "../datetime"
 const StringRecordFromJson = Schema.fromJsonString(Schema.Record(Schema.String, Schema.String))
 
 const parseAttributes = (raw: string): Effect.Effect<Record<string, string>> =>
-	Schema.decodeUnknownEffect(StringRecordFromJson)(raw).pipe(
+	Schema.decodeEffect(StringRecordFromJson)(raw).pipe(
 		Effect.map((parsed) =>
 			pipe(
-				Object.entries(parsed),
+				Rec.toEntries(parsed),
 				Arr.filter(([, v]) => v !== ""),
-				Object.fromEntries,
+				Rec.fromEntries,
 			),
 		),
 		Effect.orElseSucceed(() => ({})),
@@ -59,6 +60,24 @@ export interface SpanDetailSpan {
 	readonly statusMessage: string
 }
 
+/** Slack around the located trace bounds: span starts are rounded to the second in the window. */
+const PROBE_PAD_MS = 1_000
+
+const probedTraceRange = Effect.fnUntraced(function* (traceId: string) {
+	const nowMs = yield* Clock.currentTimeMillis
+	const found = yield* locateTrace(traceId, {
+		nowMs,
+		oldestMs: nowMs - TRACE_RETENTION_HOURS * 60 * 60 * 1000,
+	})
+	return Option.match(found, {
+		onNone: () => undefined,
+		onSome: (bounds) => ({
+			startTime: formatWarehouseDateTime(bounds.startMs - PROBE_PAD_MS),
+			endTime: formatWarehouseDateTime(bounds.endMs + PROBE_PAD_MS),
+		}),
+	})
+})
+
 /**
  * Fetch the full attribute set for one span. Complements `inspectTrace`, whose
  * tree view intentionally projects only a trimmed set of attributes per span.
@@ -71,8 +90,7 @@ export const spanDetail = Effect.fn("Observability.spanDetail")(function* (input
 		"maple.span.id": input.spanId,
 	})
 
-	const narrowByTime = input.timestampHint != null
-	const range = input.timestampHint
+	const hintedRange = input.timestampHint
 		? (() => {
 				const halfWidthMs = (input.rangeHours ?? DEFAULT_RANGE_HOURS) * 60 * 60 * 1000
 				return {
@@ -81,20 +99,34 @@ export const spanDetail = Effect.fn("Observability.spanDetail")(function* (input
 				}
 			})()
 		: undefined
+	// Without a hint, the trace's own bounds from `trace_index`, newest days first: an unbounded
+	// probe seeks every retained partition and ran past its 5s limit on large orgs.
+	const probed = hintedRange === undefined
+	const range = hintedRange ?? (yield* probedTraceRange(input.traceId))
+	yield* Effect.annotateCurrentSpan("maple.query.trace_probed", probed)
+	if (range === undefined) {
+		return {
+			found: false,
+			traceId: input.traceId,
+			spanId: input.spanId,
+			spanAttributes: {},
+			resourceAttributes: {},
+		} satisfies SpanDetailResult
+	}
 
 	const lookup = (bounded: boolean) =>
 		executor.compiledQueryFirst(
 			CH.compile(
 				CH.spanDetailQuery({ traceId: input.traceId, spanId: input.spanId, narrowByTime: bounded }),
-				bounded && range
+				bounded
 					? { orgId: executor.orgId, startTime: range.startTime, endTime: range.endTime }
 					: { orgId: executor.orgId },
 			),
 			{ profile: "discovery", context: "spanDetail" },
 		)
-	const firstRow = yield* lookup(narrowByTime)
-	// A wrong hint should not hide the span: retry once without the time bound.
-	const widened = Option.isNone(firstRow) && narrowByTime
+	const firstRow = yield* lookup(true)
+	// A wrong hint should not hide the span: retry once unbounded. Probed bounds are the trace's own.
+	const widened = Option.isNone(firstRow) && !probed
 	const maybeRow = widened ? yield* lookup(false) : firstRow
 	yield* Effect.annotateCurrentSpan("maple.query.widened", widened)
 

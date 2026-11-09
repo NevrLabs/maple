@@ -8,9 +8,7 @@ import {
 	formatPercent,
 	pluralize,
 } from "@maple/ui/lib/format"
-import { formatRelativeTimeOrDate } from "@maple/ui/lib/time-format"
 import { cn } from "@maple/ui/lib/utils"
-import { eyebrowVariants } from "@maple/ui/styles/ui/eyebrow"
 import {
 	ROLLOUT_COMPLETE_SHARE,
 	shortReleaseLabel,
@@ -20,16 +18,20 @@ import {
 import type { Html, HtmlBuilder } from "foldkit/html"
 import { AppRoute, hrefOf } from "../../../route"
 import { severityBadge } from "../../errors/kit/severity"
-import { emptyMessage } from "../../../ui/empty"
-import { listRow } from "../../../ui/list-row"
-import { panel, panelBody, panelHeader } from "../../../ui/panel"
-import { skeleton } from "../../../ui/skeleton"
-import { table, tableBody, tableCell, tableHead, tableHeader, tableRow } from "../../../ui/table"
-import { truncatedText } from "../../../ui/truncated-text"
-import { serviceDot } from "../../../ui/values"
+import { emptyMessage } from "@maple/views/ui/empty"
+import { listRow } from "@maple/views/ui/list-row"
+import { panel, panelBody, panelHeader } from "@maple/views/ui/panel"
+import { skeleton } from "@maple/views/ui/skeleton"
+import { table, tableBody, tableCell, tableHead, tableHeader, tableRow } from "@maple/views/ui/table"
+import { truncatedText } from "@maple/views/ui/truncated-text"
+import { serviceDot } from "@maple/views/ui/values"
 import { relativeTime } from "../../kit/relative-time"
 import { commitAvatar, firstLine, releaseHealthFigure, releaseHref } from "../kit"
 import { type Overlays, releaseHealthPill } from "../overlays-view"
+import { textLink } from "@maple/views/ui/text-link"
+import { typography, typographyClass } from "@maple/views/ui/typography"
+import { hstack, vstack } from "@maple/views/ui/stack"
+import { Array as Arr, String as Str, Option, Order } from "effect"
 
 // `ReleaseDeployOverview`'s sections, `ReleaseChangeset` and `IssueList` + `IssueLine`.
 
@@ -48,10 +50,11 @@ export const sectionCard = <M>(
 	])
 
 export const deploySummary = <M>(h: HtmlBuilder<M>, group: ReleaseGroup, clock: Clock): Html => {
-	const services = new Set(group.services.map((impact) => impact.serviceName)).size
-	const flagged = group.services.filter((impact) => impact.health !== "healthy").length
-	return h.div(
-		[h.Class("flex flex-wrap items-center gap-x-3 gap-y-1 px-0.5 text-xs text-muted-foreground")],
+	const services = new Set(Arr.map(group.services, (impact) => impact.serviceName)).size
+	const flagged = Arr.filter(group.services, (impact) => impact.health !== "healthy").length
+	return hstack(
+		h,
+		{ align: "center", wrap: true, className: "gap-x-3 gap-y-1 px-0.5 text-xs text-muted-foreground" },
 		[
 			h.span(
 				[],
@@ -63,7 +66,6 @@ export const deploySummary = <M>(h: HtmlBuilder<M>, group: ReleaseGroup, clock: 
 						nowMs: clock.nowMs,
 						timeZone: clock.timeZone,
 						variant: "orDate",
-						tooltip: "title",
 						className: "text-foreground",
 					}),
 				],
@@ -71,7 +73,9 @@ export const deploySummary = <M>(h: HtmlBuilder<M>, group: ReleaseGroup, clock: 
 			h.span(
 				[],
 				[
-					h.span([h.Class("font-medium tabular-nums text-foreground")], [String(services)]),
+					typography(h, { tone: "foreground", weight: "medium", numeric: true }, [
+						String(services),
+					]),
 					" ",
 					pluralize(services, "service"),
 				],
@@ -79,16 +83,15 @@ export const deploySummary = <M>(h: HtmlBuilder<M>, group: ReleaseGroup, clock: 
 			h.span(
 				[],
 				[
-					h.span(
-						[h.Class("font-medium tabular-nums text-foreground")],
-						[formatNumber(group.spanCount)],
-					),
+					typography(h, { tone: "foreground", weight: "medium", numeric: true }, [
+						formatNumber(group.spanCount),
+					]),
 					" ",
 					"requests",
 				],
 			),
 			...(flagged > 0
-				? [h.span([h.Class("text-severity-warn")], [countLabel(flagged, "service"), " flagged"])]
+				? [typography(h, { tone: "warning" }, [countLabel(flagged, "service"), " flagged"])]
 				: []),
 		],
 	)
@@ -101,12 +104,19 @@ const beforeAfter = <M>(
 	format: (value: number) => string,
 	tone?: "error" | "warn",
 ): Html =>
-	h.span(
-		[h.Class("inline-flex items-baseline gap-1 font-mono text-xs tabular-nums")],
+	hstack(
+		h,
+		{
+			gap: "1",
+			align: "baseline",
+			inline: true,
+			as: "span",
+			className: typographyClass({ mono: true, size: "xs", numeric: true }),
+		},
 		[
 			...(before === undefined
 				? []
-				: [h.span([h.Class("text-3xs text-foreground-subtle")], [format(before), " →"])]),
+				: [typography(h, { size: "3xs", tone: "subtle" }, [format(before), " →"])]),
 			h.span(
 				[
 					h.Class(
@@ -134,24 +144,24 @@ const serviceRow = <M>(
 			tableCell(
 				h,
 				[
-					h.a(
-						[
-							h.Href(
-								releaseHref(impact.commitSha, {
-									...timeSearch,
-									service: impact.serviceName,
-									environments:
-										environments ??
-										(impact.environment ? [impact.environment] : undefined),
-								}),
-							),
-							h.Class("inline-flex items-center gap-2 hover:underline active:underline"),
-						],
+					textLink(
+						h,
+						{
+							href: releaseHref(impact.commitSha, {
+								...timeSearch,
+								service: impact.serviceName,
+								environments:
+									environments ?? (impact.environment ? [impact.environment] : undefined),
+							}),
+							tone: "inherit",
+							className: "gap-2",
+						},
 						[
 							serviceDot(h, { serviceName: impact.serviceName }),
 							impact.serviceName,
-							...(impact.environment && !environments?.length
-								? [h.span([h.Class("text-foreground-subtle")], [impact.environment])]
+							...(impact.environment &&
+							(environments === undefined || environments.length === 0)
+								? [typography(h, { tone: "subtle" }, [impact.environment])]
 								: []),
 							...(impact.health === "healthy"
 								? []
@@ -159,7 +169,7 @@ const serviceRow = <M>(
 										releaseHealthPill(
 											h,
 											overlays,
-											`release-pill-${`${impact.serviceName}-${impact.environment}`.replace(/[^A-Za-z0-9_-]/g, "_")}`,
+											`release-pill-${Str.replace(/[^A-Za-z0-9_-]/g, "_")(`${impact.serviceName}-${impact.environment}`)}`,
 											impact.health,
 											releaseHealthFigure(impact),
 										),
@@ -172,9 +182,13 @@ const serviceRow = <M>(
 			tableCell(
 				h,
 				[impact.baseline ? shortReleaseLabel(impact.baseline.commitSha) : EMPTY_VALUE],
-				"font-mono text-2xs text-muted-foreground",
+				typographyClass({ size: "2xs", tone: "muted", mono: true }),
 			),
-			tableCell(h, [formatNumber(impact.spanCount)], "text-right font-mono tabular-nums"),
+			tableCell(
+				h,
+				[formatNumber(impact.spanCount)],
+				typographyClass({ mono: true, numeric: true, className: "text-right" }),
+			),
 			tableCell(h, [
 				beforeAfter(
 					h,
@@ -215,38 +229,36 @@ export const deployServices = <M>(
 	timeSearch: TimeSearch,
 	overlays: Overlays<M>,
 ): Html => {
-	const rows = group.services.toSorted(
-		(a, b) =>
-			Number(a.health === "healthy") - Number(b.health === "healthy") || b.spanCount - a.spanCount,
+	const rows = Arr.sort(
+		group.services,
+		Order.combine(
+			Order.mapInput(Order.Number, (impact: ReleaseServiceImpact) =>
+				Number(impact.health === "healthy"),
+			),
+			Order.flip(Order.mapInput(Order.Number, (impact: ReleaseServiceImpact) => impact.spanCount)),
+		),
 	)
 	return sectionCard(
 		h,
 		{
 			title: "Services",
-			action: h.span(
-				[h.Class("text-2xs text-foreground-subtle")],
-				["against the version each replaced"],
-			),
+			action: typography(h, { size: "2xs", tone: "subtle" }, ["against the version each replaced"]),
 		},
 		[
 			table(h, { size: "sm" }, [
 				tableHeader(h, [
-					tableRow(
-						h,
-						[
-							tableHead(h, ["Service"], "pl-4"),
-							tableHead(h, ["Replaced"]),
-							tableHead(h, ["Requests"], "text-right"),
-							tableHead(h, ["Error rate"]),
-							tableHead(h, ["p95"]),
-							tableHead(h, ["Live share"], "pr-4 text-right"),
-						],
-						eyebrowVariants(),
-					),
+					tableRow(h, [
+						tableHead(h, ["Service"], "pl-4"),
+						tableHead(h, ["Replaced"]),
+						tableHead(h, ["Requests"], "text-right"),
+						tableHead(h, ["Error rate"]),
+						tableHead(h, ["p95"]),
+						tableHead(h, ["Live share"], "pr-4 text-right"),
+					]),
 				]),
 				tableBody(
 					h,
-					rows.map((impact) => serviceRow(h, impact, environments, timeSearch, overlays)),
+					Arr.map(rows, (impact) => serviceRow(h, impact, environments, timeSearch, overlays)),
 				),
 			]),
 		],
@@ -255,10 +267,10 @@ export const deployServices = <M>(
 
 /** `(#1083)` at the end of a squash-merge subject, linked to the pull request. */
 const pullRequestUrl = (subject: string, commitUrl: string): { number: string; url: string } | undefined => {
-	const match = subject.match(/\(#(\d+)\)\s*$/)
-	const repoUrl = commitUrl.match(/^(.*)\/commit\/[0-9a-f]+$/i)?.[1]
-	if (match?.[1] === undefined || repoUrl === undefined) return undefined
-	return { number: match[1], url: `${repoUrl}/pull/${match[1]}` }
+	const number = Option.getOrUndefined(Str.match(/\(#(\d+)\)\s*$/)(subject))?.[1]
+	const repoUrl = Option.getOrUndefined(Str.match(/^(.*)\/commit\/[0-9a-f]+$/i)(commitUrl))?.[1]
+	if (number === undefined || repoUrl === undefined) return undefined
+	return { number, url: `${repoUrl}/pull/${number}` }
 }
 
 export type ChangesetState =
@@ -272,7 +284,7 @@ export type ChangesetState =
 export const releaseChangeset = <M>(h: HtmlBuilder<M>, state: ChangesetState, clock: Clock): Html => {
 	if (state._tag === "NoBase")
 		return sectionCard(h, { title: "What shipped" }, [
-			emptyMessage(h, {}, ["No earlier version in this window to compare against."]),
+			emptyMessage(h, {}, ["No earlier version in this window to compare against"]),
 		])
 	if (state._tag === "NotShas")
 		return sectionCard(h, { title: "What shipped" }, [
@@ -280,10 +292,10 @@ export const releaseChangeset = <M>(h: HtmlBuilder<M>, state: ChangesetState, cl
 				"These versions are not commit shas, so the commits between them are unknown.",
 			]),
 		])
-	const action = h.span(
-		[h.Class("text-2xs text-foreground-subtle")],
-		["since ", h.span([h.Class("font-mono")], [shortReleaseLabel(state.base)])],
-	)
+	const action = typography(h, { size: "2xs", tone: "subtle" }, [
+		"since ",
+		typography(h, { mono: true }, [shortReleaseLabel(state.base)]),
+	])
 	if (state._tag === "Loading")
 		return sectionCard(h, { title: "What shipped", action }, [
 			h.div([h.Class("space-y-2 p-3")], [skeleton(h, "h-4 w-3/4"), skeleton(h, "h-4 w-1/2")]),
@@ -306,65 +318,63 @@ export const releaseChangeset = <M>(h: HtmlBuilder<M>, state: ChangesetState, cl
 			h.div(
 				[h.Class("max-h-80 overflow-y-auto")],
 				[
-					...range.commits.map((commit) => {
+					...Arr.map(range.commits, (commit) => {
 						const subject = firstLine(commit.message)
 						const pr = pullRequestUrl(subject, commit.htmlUrl)
 						const author = commit.authorLogin ?? commit.authorName ?? "Unknown author"
-						return h.div(
-							[
-								h.Key(commit.sha),
-								h.Class(
-									"flex items-start gap-2.5 border-t border-border-subtle px-4 py-2 text-xs first:border-t-0",
-								),
-							],
+						return hstack(
+							h,
+							{
+								gap: "2.5",
+								align: "start",
+								className: "border-t border-border-subtle px-4 py-2 text-xs first:border-t-0",
+								attributes: [h.Key(commit.sha)],
+							},
 							[
 								h.div(
 									[h.Class("mt-px shrink-0")],
 									[commitAvatar(h, commit.authorAvatarUrl, author)],
 								),
-								h.div(
-									[h.Class("flex min-w-0 flex-1 flex-col gap-0.5")],
-									[
-										h.a(
-											[
-												h.Href(pr?.url ?? commit.htmlUrl),
+								vstack(h, { gap: "0.5", shrink: true, grow: true }, [
+									textLink(
+										h,
+										{
+											href: pr?.url ?? commit.htmlUrl,
+											tone: "inherit",
+											className: "block truncate text-foreground",
+											attributes: [
 												h.Target("_blank"),
 												h.Rel("noreferrer"),
-												h.Class("truncate text-foreground hover:underline active:underline"),
 												h.Title(subject),
 											],
-											[subject],
-										),
-										h.span(
-											[
-												h.Class(
-													"flex items-center gap-1.5 text-2xs text-muted-foreground",
-												),
-											],
-											[
-												h.span(
-													[h.Class("font-mono")],
-													[shortReleaseLabel(commit.sha)],
-												),
-												h.span([h.Class("truncate")], [author]),
-											],
-										),
-									],
-								),
-								h.span(
-									[
-										h.Class(
-											"shrink-0 font-mono text-2xs tabular-nums text-foreground-subtle",
-										),
-									],
-									[
-										formatRelativeTimeOrDate(
-											new Date(commit.committedAt).toISOString(),
-											clock.nowMs,
-											clock.timeZone,
-										),
-									],
-								),
+										},
+										[subject],
+									),
+									hstack(
+										h,
+										{
+											gap: "1.5",
+											align: "center",
+											as: "span",
+											className: typographyClass({ size: "2xs", tone: "muted" }),
+										},
+										[
+											typography(h, { mono: true }, [shortReleaseLabel(commit.sha)]),
+											typography(h, { truncate: true }, [author]),
+										],
+									),
+								]),
+								relativeTime(h, {
+									value: commit.committedAt,
+									...clock,
+									variant: "orDate",
+									mono: true,
+									className: typographyClass({
+										size: "2xs",
+										tone: "subtle",
+										className: "shrink-0",
+									}),
+								}),
 							],
 						)
 					}),
@@ -403,8 +413,15 @@ const issueLine = <M>(
 					[h.Class("contents")],
 					[
 						severityBadge(h, issue.severity, "w-[60px] justify-center"),
-						h.span(
-							[h.Class("ml-2.5 inline-flex"), h.Title(issue.serviceName)],
+						hstack(
+							h,
+							{
+								align: "stretch",
+								inline: true,
+								as: "span",
+								className: "ml-2.5",
+								attributes: [h.Title(issue.serviceName)],
+							},
 							[serviceDot(h, { serviceName: issue.serviceName })],
 						),
 					],
@@ -414,11 +431,15 @@ const issueLine = <M>(
 		trailing: h.span(
 			[h.Class("contents")],
 			[
-				h.span(
-					[
-						h.Class("font-mono text-xs tabular-nums text-muted-foreground"),
-						h.Title("Occurrences on this version in the window"),
-					],
+				typography(
+					h,
+					{
+						size: "xs",
+						tone: "muted",
+						mono: true,
+						numeric: true,
+						attributes: [h.Title("Occurrences on this version in the window")],
+					},
 					[formatNumber(occurrences ?? issue.occurrenceCount), "×"],
 				),
 				relativeTime(h, {
@@ -427,7 +448,6 @@ const issueLine = <M>(
 					timeZone: clock.timeZone,
 					variant: "orDate",
 					mono: true,
-					tooltip: "title",
 					className: "w-14 text-right text-xs text-foreground-subtle",
 				}),
 			],
@@ -457,12 +477,12 @@ export const issueList = <M>(
 				[
 					h.Class(
 						options.issues.length === 0
-							? "text-2xs text-foreground-subtle"
+							? typographyClass({ size: "2xs", tone: "subtle" })
 							: options.tone === "error"
 								? "text-2xs font-medium text-severity-error"
 								: options.tone === "warn"
 									? "text-2xs font-medium text-severity-warn"
-									: "text-2xs text-muted-foreground",
+									: typographyClass({ size: "2xs", tone: "muted" }),
 					),
 				],
 				[String(options.issues.length)],
@@ -473,7 +493,7 @@ export const issueList = <M>(
 				? emptyMessage(h, {}, [options.empty])
 				: h.div(
 						[h.Class("space-y-px p-2")],
-						options.issues.map((issue) =>
+						Arr.map(options.issues, (issue) =>
 							issueLine(
 								h,
 								issue,

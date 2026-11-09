@@ -2,10 +2,10 @@ import { muteColor } from "@maple/ui/components/plot/color-scale"
 import { type ChartPoint, type ChartValue, defineChart } from "@tanstack/charts"
 import { type TreemapNode, treemap } from "@tanstack/charts/hierarchy/treemap"
 import { tooltip } from "@tanstack/charts/tooltip"
-import { Option } from "effect"
-import { ChartTooltip } from "../../charts/chart-spec"
-import type { BuiltChart } from "../../charts/definitions/built-chart"
-import { MUTED_COLOR_AMOUNT } from "../../charts/definitions/plot-constants"
+import { Option, Array as Arr } from "effect"
+import { ChartTooltip } from "@maple/views/charts/chart-spec"
+import type { BuiltChart } from "@maple/views/charts/definitions/built-chart"
+import { MUTED_COLOR_AMOUNT } from "@maple/views/charts/definitions/plot-constants"
 import type { SpikeSpec } from "./spike-spec"
 import { serviceToken, TREEMAP_ROWS, type TreemapRow } from "./spike-treemap-data"
 
@@ -35,7 +35,7 @@ export const buildTreemapSpike = (spec: SpikeSpec): BuiltChart<Node, ChartValue,
 		highlighted === null || service === highlighted
 			? background
 			: muteColor(baseColor(service), background, MUTED_LABEL_AMOUNT)
-	const total = TREEMAP_ROWS.reduce((sum, row) => sum + row.spanCount, 0)
+	const total = Arr.reduce(TREEMAP_ROWS, 0, (sum, row) => sum + row.spanCount)
 	const definition = defineChart({
 		marks: [
 			treemap(TREEMAP_ROWS, {
@@ -71,7 +71,7 @@ export const buildTreemapSpike = (spec: SpikeSpec): BuiltChart<Node, ChartValue,
 		definition,
 		focusKeyOf: (point) => point.datum.name,
 		// Packed for the lab's body: the service, then the operation with its spans and share.
-		tooltipOf: (points: ReadonlyArray<ChartPoint<Node, ChartValue, ChartValue>>) =>
+		tooltipOf: (points: ReadonlyArray<ChartPoint<Node>>) =>
 			Option.map(Option.fromNullishOr(points[0]?.datum), (node) => {
 				const service = node.data?.service ?? node.name
 				const share = total === 0 ? 0 : node.value / total

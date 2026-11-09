@@ -2,20 +2,23 @@ import { MAPLE_REGION_LABELS } from "@maple/domain/organization-regions"
 import { initialsFrom } from "@maple/ui/lib/initials"
 import { AsyncData, Submodel } from "foldkit"
 import type { Html, HtmlBuilder } from "foldkit/html"
-import { button } from "../../../ui/button"
-import { confirmDialog } from "../../../ui/confirm-dialog"
-import { warmAvatarTone } from "../../../ui/avatar-tone"
-import { avatarFallback } from "../../../ui/display"
-import { input } from "../../../ui/input"
-import { settingRow } from "../../../ui/setting-row"
-import { panel } from "../../../ui/panel"
+import { button } from "@maple/views/ui/button"
+import { confirmDialog } from "@maple/views/ui/confirm-dialog"
+import { warmAvatarTone } from "@maple/views/ui/avatar-tone"
+import { avatarFallback } from "@maple/views/ui/display"
+import { input } from "@maple/views/ui/input"
+import { settingRow } from "@maple/views/ui/setting-row"
 import { accountSectionSkeleton, noOrganization } from "../kit/account-skeleton"
 import { imageDropzone, typeToConfirmField } from "../kit/image-dropzone"
 import { adminOnlyNotice } from "../kit/members"
+import { dangerRow, dangerZone } from "../kit/danger-zone"
 import { saveBar } from "../kit/save-bar"
 import { settingsSection, settingsSections } from "../kit/section"
-import { Message, type Model, type OrgInfo } from "./model"
+import { canManage, Message, type Model, type OrgInfo } from "./model"
 import { isNameDirty, LOGO_INPUT_ID, leaveEligibilityOf, nameDraftOf } from "./update"
+import { typography } from "@maple/views/ui/typography"
+import { Array as Arr, String as Str } from "effect"
+import { hstack } from "@maple/views/ui/stack"
 
 type H = HtmlBuilder<Message>
 
@@ -39,23 +42,20 @@ const DELETION_FACTS = [
 const deletionFacts = (h: H): Html =>
 	h.dl(
 		[h.Class("flex flex-col gap-1 text-xs")],
-		DELETION_FACTS.map((fact) =>
-			h.div(
-				[h.Key(fact.key), h.Class("flex gap-2")],
-				[
-					h.dt(
-						[
-							h.Class(
-								fact.isDestructive
-									? "w-16 shrink-0 text-destructive"
-									: "w-16 shrink-0 text-muted-foreground",
-							),
-						],
-						[fact.key],
-					),
-					h.dd([h.Class("font-prose text-foreground")], [fact.value]),
-				],
-			),
+		Arr.map(DELETION_FACTS, (fact) =>
+			hstack(h, { gap: "2", align: "stretch", attributes: [h.Key(fact.key)] }, [
+				h.dt(
+					[
+						h.Class(
+							fact.isDestructive
+								? "w-16 shrink-0 text-destructive"
+								: "w-16 shrink-0 text-muted-foreground",
+						),
+					],
+					[fact.key],
+				),
+				h.dd([h.Class("font-prose text-foreground")], [fact.value]),
+			]),
 		),
 	)
 
@@ -97,7 +97,7 @@ const organizationSection = (h: H, model: Model, org: OrgInfo): Html =>
 						h,
 						LOGO_INPUT_ID,
 						"Logo",
-						model.isAdmin
+						canManage(model)
 							? "Saved as soon as you upload. PNG, JPG, WEBP or GIF, up to 10 MB."
 							: "Shown beside the name in the organization switcher.",
 						[
@@ -107,7 +107,7 @@ const organizationSection = (h: H, model: Model, org: OrgInfo): Html =>
 								preview: orgAvatar(h, org.name),
 								isUploading: model.isSavingLogo,
 								isDragging: model.isDragging,
-								isReadOnly: !model.isAdmin,
+								isReadOnly: !canManage(model),
 								targetLabel: "Change organization logo",
 								changeLabel: "Change logo",
 								onPick: Message.ClickedPickLogo(),
@@ -119,7 +119,7 @@ const organizationSection = (h: H, model: Model, org: OrgInfo): Html =>
 						],
 					),
 					row(h, "org-name", "Name", "Shown in the organization switcher.", [
-						model.isAdmin
+						canManage(model)
 							? input(h, {
 									id: "org-name",
 									className: "w-72",
@@ -131,7 +131,16 @@ const organizationSection = (h: H, model: Model, org: OrgInfo): Html =>
 										h.Placeholder("Organization name"),
 									],
 								})
-							: h.p([h.Id("org-name"), h.Class("text-sm text-foreground")], [org.name]),
+							: typography(
+									h,
+									{
+										size: "sm",
+										tone: "foreground",
+										as: "p",
+										attributes: [h.Id("org-name")],
+									},
+									[org.name],
+								),
 					]),
 				],
 			),
@@ -151,8 +160,9 @@ const dataRegionSection = (h: H, org: OrgInfo): Html => {
 		[
 			row(h, "org-region", "Region", "Set when the organization was created. It cannot be changed.", [
 				// The full name alone: a short code chip before it repeated the name at low contrast.
-				h.span(
-					[h.Id("org-region"), h.Class("text-sm"), h.Title(`Data region: ${region.name}`)],
+				typography(
+					h,
+					{ size: "sm", attributes: [h.Id("org-region"), h.Title(`Data region: ${region.name}`)] },
 					[region.name],
 				),
 			]),
@@ -160,81 +170,53 @@ const dataRegionSection = (h: H, org: OrgInfo): Html => {
 	)
 }
 
-const dangerZone = (h: H, model: Model, org: OrgInfo): Html => {
+const dangerZoneSection = (h: H, model: Model, org: OrgInfo): Html => {
 	const leave = leaveEligibilityOf(model)
-	return settingsSection(h, { id: "settings-general-danger", title: "Danger zone", framed: false }, [
-		panel(h, { className: "divide-y border-destructive-a4" }, [
-			h.div(
-				// Top-aligned like the delete row below, whose consequence list runs longer.
-				[h.Class("flex items-start justify-between gap-6 p-4")],
-				[
-					h.div(
-						[h.Class("space-y-1")],
-						[
-							h.p([h.Class("text-sm font-medium text-foreground")], ["Leave organization"]),
-							h.p(
-								[h.Class("font-prose text-xs text-muted-foreground")],
-								[
-									leave === "last-admin"
-										? "You are the only admin. Make another member an admin before you leave."
-										: "You lose access until someone invites you again.",
-								],
-							),
+	return dangerZone(h, { id: "settings-general-danger" }, [
+		dangerRow(h, {
+			title: "Leave organization",
+			description: [
+				leave === "last-admin"
+					? "You are the only admin. Make another member an admin before you leave."
+					: "You lose access until someone invites you again.",
+			],
+			// A disabled button fires no hover, so its wrapper carries the reason as a tooltip.
+			action: h.span(leave === "last-admin" ? [h.Title("Make another member an admin first")] : [], [
+				button(
+					h,
+					{
+						// Disabled reads neutral, so dim red text never passes for an active action.
+						variant: leave === "allowed" ? "destructive-outline" : "outline",
+						size: "sm",
+						isDisabled: leave !== "allowed",
+						attributes: [h.OnClick(Message.ClickedLeave())],
+					},
+					["Leave organization"],
+				),
+			]),
+		}),
+		...(canManage(model)
+			? [
+					dangerRow(h, {
+						title: "Delete organization",
+						description: [
+							'Permanently deletes "',
+							org.name,
+							`" and removes every member's access. This cannot be undone.`,
 						],
-					),
-					// A disabled button fires no hover, so its wrapper carries the reason as a tooltip.
-					h.span(leave === "last-admin" ? [h.Title("Make another member an admin first")] : [], [
-						button(
+						details: deletionFacts(h),
+						action: button(
 							h,
 							{
-								// Disabled reads neutral, so dim red text never passes for an active action.
-								variant: leave === "allowed" ? "destructive-outline" : "outline",
+								variant: "destructive",
 								size: "sm",
-								isDisabled: leave !== "allowed",
-								attributes: [h.OnClick(Message.ClickedLeave())],
+								attributes: [h.OnClick(Message.ClickedDelete())],
 							},
-							["Leave organization"],
+							["Delete organization"],
 						),
-					]),
-				],
-			),
-			...(model.isAdmin
-				? [
-						h.div(
-							[h.Class("flex items-start justify-between gap-6 p-4")],
-							[
-								h.div(
-									[h.Class("flex flex-1 flex-col gap-2")],
-									[
-										h.p(
-											[h.Class("text-sm font-medium text-foreground")],
-											["Delete organization"],
-										),
-										h.p(
-											[h.Class("font-prose text-xs text-muted-foreground")],
-											[
-												'Permanently deletes "',
-												org.name,
-												`" and removes every member's access. This cannot be undone.`,
-											],
-										),
-										deletionFacts(h),
-									],
-								),
-								button(
-									h,
-									{
-										variant: "destructive",
-										size: "sm",
-										attributes: [h.OnClick(Message.ClickedDelete())],
-									},
-									["Delete organization"],
-								),
-							],
-						),
-					]
-				: []),
-		]),
+					}),
+				]
+			: []),
 	])
 }
 
@@ -258,7 +240,7 @@ const dialogs = (h: H, model: Model, org: OrgInfo): ReadonlyArray<Html> => [
 		description: `Permanently deletes "${org.name}" and removes every member's access. This cannot be undone.`,
 		confirmLabel: "Delete organization",
 		isPending: model.isDeleting,
-		isConfirmDisabled: model.confirmText.trim() !== org.name,
+		isConfirmDisabled: Str.trim(model.confirmText) !== org.name,
 		onConfirm: Message.ClickedConfirmDelete(),
 		children: [
 			h.div(
@@ -280,7 +262,7 @@ const dialogs = (h: H, model: Model, org: OrgInfo): ReadonlyArray<Html> => [
 const loaded = (h: H, model: Model, org: OrgInfo, isKnownMember: boolean): Html =>
 	settingsSections(h, [
 		...adminOnlyNotice(h, {
-			isKnownMember: isKnownMember && !model.isAdmin,
+			isKnownMember: isKnownMember && !canManage(model),
 			subject: "organization settings",
 			adminName: AsyncData.getOrElse(
 				AsyncData.map(model.admins, (admins) => admins.firstAdminName),
@@ -289,11 +271,11 @@ const loaded = (h: H, model: Model, org: OrgInfo, isKnownMember: boolean): Html 
 		}),
 		organizationSection(h, model, org),
 		dataRegionSection(h, org),
-		dangerZone(h, model, org),
+		dangerZoneSection(h, model, org),
 		...saveBar(h, {
 			isDirty: isNameDirty(model),
 			isPending: model.isSavingName,
-			isSaveDisabled: nameDraftOf(model).trim().length === 0,
+			isSaveDisabled: Str.trim(nameDraftOf(model)).length === 0,
 			onDiscard: Message.ClickedDiscardName(),
 			onSave: Message.ClickedSaveName(),
 		}),

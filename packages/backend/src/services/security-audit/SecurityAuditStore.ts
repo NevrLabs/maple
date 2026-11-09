@@ -52,7 +52,19 @@ import {
 } from "@maple/security-audit/schema"
 import { ExecutionProfile } from "@maple/security-audit/ecosystems"
 import * as PG from "@maple-dev/effect-orm/postgres"
-import { Array as Arr, Clock, Context, Effect, Layer, Option, Schema } from "effect"
+import {
+	Array as Arr,
+	Clock,
+	Context,
+	Effect,
+	Layer,
+	Option,
+	Order,
+	Schema,
+	Record as Rec,
+	String as Str,
+} from "effect"
+import * as SecureRandom from "effect/crypto/SecureRandom"
 import { Database } from "@maple/backend/platform/DatabaseLive"
 import { makeDbExecute, makePersistenceErrorMapper } from "@maple/backend/platform/db-execute"
 
@@ -125,7 +137,7 @@ export interface SecurityAuditOrgStore extends AuditStoreApi {
 	readonly findConnectedRepository: (
 		repository: string,
 	) => Effect.Effect<Option.Option<ConnectedRepository>, AuditStoreError>
-	readonly listTargets: () => Effect.Effect<ReadonlyArray<SecurityAuditTargetRow>, AuditStoreError>
+	readonly listTargets: Effect.Effect<ReadonlyArray<SecurityAuditTargetRow>, AuditStoreError>
 	readonly getTarget: (
 		targetId: SecurityAuditTargetId,
 	) => Effect.Effect<Option.Option<SecurityAuditTargetRow>, AuditStoreError>
@@ -230,7 +242,7 @@ export interface SecurityAuditOrgStore extends AuditStoreApi {
 	) => Effect.Effect<void, AuditStoreError>
 	/** What the org's agents cost since `since` (epoch ms), billed as AI credits, in US dollars. */
 	readonly orgSpendUsd: (since: number) => Effect.Effect<number, AuditStoreError>
-	readonly getSettings: () => Effect.Effect<Option.Option<SecurityAuditOrgSettingsRow>, AuditStoreError>
+	readonly getSettings: Effect.Effect<Option.Option<SecurityAuditOrgSettingsRow>, AuditStoreError>
 	readonly saveSettings: (
 		input: SaveSettingsInput,
 	) => Effect.Effect<SecurityAuditOrgSettingsRow, AuditStoreError>
@@ -302,9 +314,10 @@ export type UnitSummaryFields = typeof UnitSummaryFields.Type
  * attempts. Absent keys are stripped, which is what the optional fields expect. A constant: no input.
  */
 const UNIT_SUMMARY_EXPR = PG.rawExpr(
-	`jsonb_strip_nulls(jsonb_build_object(${Object.keys(UnitSummaryFields.fields)
-		.map((key) => `'${key}', "unit"->'${key}'`)
-		.join(", ")}))`,
+	`jsonb_strip_nulls(jsonb_build_object(${Arr.join(
+		Arr.map(Rec.keys(UnitSummaryFields.fields), (key) => `'${key}', "unit"->'${key}'`),
+		", ",
+	)}))`,
 	PG.jsonb(),
 )
 
@@ -374,7 +387,7 @@ type RawRunRow = Omit<SecurityAuditRunRow, "metadata" | "reports" | "executionPr
 /** Runs with `metadata` and `reports` read leniently: an old shape becomes null, not a failure. */
 const lenientRuns = (rows: ReadonlyArray<RawRunRow>) =>
 	Effect.gen(function* () {
-		const decoded = rows.map((row) => {
+		const decoded = Arr.map(rows, (row) => {
 			const metadata = lenient({
 				isNull: row.metadata === null,
 				decoded: decodeRunMetadata(row.metadata),
@@ -394,8 +407,8 @@ const lenientRuns = (rows: ReadonlyArray<RawRunRow>) =>
 				stale: metadata.stale || reports.stale || executionProfile.stale,
 			}
 		})
-		yield* warnStale("run metadata or reports", decoded.filter((d) => d.stale).length, rows.length)
-		return decoded.map((d): SecurityAuditRunRow => d.row)
+		yield* warnStale("run metadata or reports", Arr.filter(decoded, (d) => d.stale).length, rows.length)
+		return Arr.map(decoded, (d): SecurityAuditRunRow => d.row)
 	})
 
 const selectRuns = () =>
@@ -416,7 +429,7 @@ const keepDecodable = <Raw, A>(
 	what: string,
 ) =>
 	Effect.gen(function* () {
-		const decoded = Arr.getSomes(rows.map(decode))
+		const decoded = Arr.getSomes(Arr.map(rows, decode))
 		const skipped = rows.length - decoded.length
 		if (skipped > 0) {
 			yield* Effect.logWarning(`Skipped stored ${what} that no longer decode`).pipe(
@@ -426,18 +439,18 @@ const keepDecodable = <Raw, A>(
 		return decoded
 	})
 
-const newTargetId = () => Schema.decodeSync(SecurityAuditTargetId)(crypto.randomUUID())
-const newRunId = () => Schema.decodeSync(SecurityAuditRunId)(crypto.randomUUID())
-
 const firstOrFail = <A>(rows: ReadonlyArray<A>, message: string) =>
 	rows[0] === undefined ? Effect.fail(new AuditStoreError({ message })) : Effect.succeed(rows[0])
 
 const toStoreError = makePersistenceErrorMapper(AuditStoreError, "Security audit store operation failed")
 
+const quoteJson = Schema.encodeSync(Schema.fromJsonString(Schema.String))
+const toTargetId = Schema.decodeSync(SecurityAuditTargetId)
+
 const decodeRunId = (raw: string) =>
-	Schema.decodeUnknownEffect(SecurityAuditRunId)(raw).pipe(
+	Schema.decodeEffect(SecurityAuditRunId)(raw).pipe(
 		Effect.mapError(
-			() => new AuditStoreError({ message: `Invalid security audit run id: ${JSON.stringify(raw)}` }),
+			() => new AuditStoreError({ message: `Invalid security audit run id: ${quoteJson(raw)}` }),
 		),
 	)
 
@@ -445,7 +458,10 @@ const decodeRunId = (raw: string) =>
 const sha256Hex = (text: string) =>
 	Effect.promise(() => crypto.subtle.digest("SHA-256", new TextEncoder().encode(text))).pipe(
 		Effect.map((digest) =>
-			Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join(""),
+			Arr.join(
+				Array.from(new Uint8Array(digest), (byte) => Str.padStart(2, "0")(byte.toString(16))),
+				"",
+			),
 		),
 	)
 
@@ -460,7 +476,7 @@ const eventId = (runId: SecurityAuditRunId, event: AuditEvent) =>
 				? `agent:${event.agentId}:${event.outcome}`
 				: event._tag === "Phase"
 					? `phase:${event.phase}`
-					: `note:${(yield* sha256Hex(event.message)).slice(0, 32)}`
+					: yield* Effect.map(sha256Hex(event.message), (hex) => `note:${Str.slice(0, 32)(hex)}`)
 		return yield* sha256Hex(`${runId}:${key}`)
 	})
 
@@ -582,7 +598,7 @@ const lockOpenRun = (db: MapleDb, orgId: OrgId, runId: SecurityAuditRunId, write
 			Effect.flatMap((rows) => {
 				const row = rows[0]
 				if (row === undefined) return Effect.fail(runNotFound(runId))
-				if (row.finishedAt === null) return Effect.succeed(Option.some(row))
+				if (row.finishedAt === null) return Effect.succeedSome(row)
 				return Effect.logInfo("Skipped a write to a finished security audit run").pipe(
 					Effect.annotateLogs({ runId, write }),
 					Effect.as(Option.none<typeof row>()),
@@ -646,6 +662,9 @@ export class SecurityAuditStore extends Context.Service<SecurityAuditStore, Secu
 		make: Effect.gen(function* () {
 			const database = yield* Database
 			const dbExecute = makeDbExecute(database, "SecurityAuditStore", toStoreError)
+			const random = yield* SecureRandom.SecureRandom
+			const newTargetId = Effect.map(random.uuidV4(), toTargetId)
+			const newRunId = Effect.flatMap(random.uuidV4(), decodeRunId)
 
 			const forOrg = (orgId: OrgId): SecurityAuditOrgStore => {
 				/** Updates the org's run while it is unfinished; fails when no such run exists. */
@@ -778,9 +797,9 @@ export class SecurityAuditStore extends Context.Service<SecurityAuditStore, Secu
 					const now = yield* Clock.currentTimeMillis
 					// One row per fingerprint; a repeated one keeps its last record.
 					const unique = Array.from(
-						new Map(findings.map((f): [string, Finding] => [f.fingerprint, f])).values(),
+						new Map(Arr.map(findings, (f): [string, Finding] => [f.fingerprint, f])).values(),
 					)
-					const fingerprints = unique.map((f) => f.fingerprint)
+					const fingerprints = Arr.map(unique, (f) => f.fingerprint)
 					yield* dbExecute((db) =>
 						db.transaction(
 							Effect.gen(function* () {
@@ -818,28 +837,29 @@ export class SecurityAuditStore extends Context.Service<SecurityAuditStore, Secu
 										})),
 									),
 								)
+								const findingRows = yield* Effect.forEach(unique, (finding) =>
+									Effect.map(random.uuidV4(), (id) => ({
+										id,
+										orgId,
+										targetId: run.targetId,
+										fingerprint: finding.fingerprint,
+										verdict: finding.verdict,
+										overallSeverity: overallSeverity(finding),
+										estimatedSeverity: estimatedSeverity(finding, estimates),
+										record: finding,
+										status: "open" as const,
+										firstSeenRunId: runId,
+										lastSeenRunId: runId,
+										firstSeenRef: run.sourceRef,
+										lastSeenRef: run.sourceRef,
+										fixedRunId: null,
+										createdAt: now,
+										updatedAt: now,
+									})),
+								)
 								yield* db.run(
 									PG.insertInto(SecurityAuditFindings)
-										.values(
-											Arr.map(unique, (finding) => ({
-												id: crypto.randomUUID(),
-												orgId,
-												targetId: run.targetId,
-												fingerprint: finding.fingerprint,
-												verdict: finding.verdict,
-												overallSeverity: overallSeverity(finding),
-												estimatedSeverity: estimatedSeverity(finding, estimates),
-												record: finding,
-												status: "open" as const,
-												firstSeenRunId: runId,
-												lastSeenRunId: runId,
-												firstSeenRef: run.sourceRef,
-												lastSeenRef: run.sourceRef,
-												fixedRunId: null,
-												createdAt: now,
-												updatedAt: now,
-											})),
-										)
+										.values(findingRows)
 										.onConflictDoUpdate({
 											target: ["targetId", "fingerprint"],
 											set: ($, excluded) => ({
@@ -903,7 +923,7 @@ export class SecurityAuditStore extends Context.Service<SecurityAuditStore, Secu
 					"SecurityAuditStore.createTarget",
 				)(function* (input) {
 					const now = yield* Clock.currentTimeMillis
-					const id = newTargetId()
+					const id = yield* newTargetId
 					// A repository reference must be this org's: never another tenant's connected repository.
 					const repositoryId = input.vcsRepositoryId
 					if (repositoryId !== undefined) {
@@ -969,7 +989,7 @@ export class SecurityAuditStore extends Context.Service<SecurityAuditStore, Secu
 									// The sandbox clones through the GitHub App: no other provider can be audited.
 									$.provider.eq("github"),
 									$.status.eq("active"),
-									PG.lower($.fullName).eq(repository.toLowerCase()),
+									PG.lower($.fullName).eq(Str.toLowerCase(repository)),
 								])
 								.limit(1),
 						),
@@ -980,7 +1000,7 @@ export class SecurityAuditStore extends Context.Service<SecurityAuditStore, Secu
 				const startRun: SecurityAuditOrgStore["startRun"] = Effect.fn("SecurityAuditStore.startRun")(
 					function* (input) {
 						const now = yield* Clock.currentTimeMillis
-						const runId = input.runId ?? newRunId()
+						const runId = input.runId ?? (yield* newRunId)
 						const inProgress = new SecurityAuditRunInProgress({
 							message: `Security audit target ${input.targetId} already has a run in progress`,
 							targetId: input.targetId,
@@ -1232,7 +1252,7 @@ export class SecurityAuditStore extends Context.Service<SecurityAuditStore, Secu
 										]),
 								)
 								const costs = Arr.getSomes(
-									agents.map((a) =>
+									Arr.map(agents, (a) =>
 										Option.flatMapNullishOr(
 											decodeEventDetail(a.detail),
 											(d) => d.costUsd,
@@ -1243,15 +1263,20 @@ export class SecurityAuditStore extends Context.Service<SecurityAuditStore, Secu
 									PG.update(SecurityAuditRuns)
 										.set({
 											invocationsSpent: reserved.length,
-											inputTokens: agents.reduce((n, a) => n + (a.inputTokens ?? 0), 0),
-											outputTokens: agents.reduce(
-												(n, a) => n + (a.outputTokens ?? 0),
+											inputTokens: Arr.reduce(
+												agents,
 												0,
+												(n, a) => n + (a.inputTokens ?? 0),
+											),
+											outputTokens: Arr.reduce(
+												agents,
+												0,
+												(n, a) => n + (a.outputTokens ?? 0),
 											),
 											costUsd:
 												costs.length === 0
 													? undefined
-													: costs.reduce((n, c) => n + c, 0),
+													: Arr.reduce(costs, 0, (n, c) => n + c),
 										})
 										.where(($) => [$.orgId.eq(orgId), $.id.eq(runId)]),
 								)
@@ -1358,7 +1383,7 @@ export class SecurityAuditStore extends Context.Service<SecurityAuditStore, Secu
 								.orderBy(($) => [[$.coverageId, "asc"]]),
 						),
 					)
-					const summaries = rows.map((row) => ({
+					const summaries = Arr.map(rows, (row) => ({
 						status: decodeUnitStatus(row.status),
 						summary: {
 							coverageId: row.coverageId,
@@ -1369,7 +1394,7 @@ export class SecurityAuditStore extends Context.Service<SecurityAuditStore, Secu
 					}))
 					yield* warnStale(
 						"ledger unit fields",
-						summaries.filter((s) => s.summary.fields === null).length,
+						Arr.filter(summaries, (s) => s.summary.fields === null).length,
 						rows.length,
 					)
 					// The status column is written from the typed ledger; a row without one cannot be shown.
@@ -1415,7 +1440,7 @@ export class SecurityAuditStore extends Context.Service<SecurityAuditStore, Secu
 						),
 					)
 					return new Map(
-						rows.flatMap((row) =>
+						Arr.flatMap(rows, (row) =>
 							row.estimatedSeverity === null
 								? []
 								: [[row.fingerprint, row.estimatedSeverity] as const],
@@ -1459,7 +1484,7 @@ export class SecurityAuditStore extends Context.Service<SecurityAuditStore, Secu
 						(row) => Option.map(decodeFinding(row.record), (record) => ({ ...row, record })),
 						"run findings",
 					)
-					const fingerprints = reported.map((row) => row.fingerprint)
+					const fingerprints = Arr.map(reported, (row) => row.fingerprint)
 					// The lifecycle columns only: the target's record is the latest run's, not this one's.
 					const tracked = Arr.isReadonlyArrayNonEmpty(fingerprints)
 						? yield* dbExecute((db) =>
@@ -1487,36 +1512,41 @@ export class SecurityAuditStore extends Context.Service<SecurityAuditStore, Secu
 								),
 							)
 						: []
-					const byFingerprint = new Map(tracked.map((row) => [row.fingerprint, row]))
-					return reported
-						.map((row): SecurityAuditRunFindingView => {
-							const lifecycle = byFingerprint.get(row.fingerprint) ?? {
-								status: "open" as const,
-								statusReason: null,
-								statusChangedBy: null,
-								statusChangedAt: null,
-								firstSeenRunId: runId,
-								lastSeenRunId: runId,
-								firstSeenRef: run.sourceRef,
-								lastSeenRef: run.sourceRef,
-								fixedRunId: null,
-								createdAt: run.startedAt,
-								updatedAt: run.startedAt,
-							}
-							return { ...lifecycle, ...row, orgId, targetId: run.targetId }
-						})
-						.toSorted(
-							(a, b) =>
-								findingRank(a.verdict, a.overallSeverity, a.estimatedSeverity) -
-									findingRank(b.verdict, b.overallSeverity, b.estimatedSeverity) ||
-								(a.fingerprint < b.fingerprint ? -1 : a.fingerprint > b.fingerprint ? 1 : 0),
-						)
+					const byFingerprint = new Map(Arr.map(tracked, (row) => [row.fingerprint, row]))
+					const views = Arr.map(reported, (row): SecurityAuditRunFindingView => {
+						const lifecycle = byFingerprint.get(row.fingerprint) ?? {
+							status: "open" as const,
+							statusReason: null,
+							statusChangedBy: null,
+							statusChangedAt: null,
+							firstSeenRunId: runId,
+							lastSeenRunId: runId,
+							firstSeenRef: run.sourceRef,
+							lastSeenRef: run.sourceRef,
+							fixedRunId: null,
+							createdAt: run.startedAt,
+							updatedAt: run.startedAt,
+						}
+						return { ...lifecycle, ...row, orgId, targetId: run.targetId }
+					})
+					return Arr.sort(
+						views,
+						Order.combine(
+							Order.mapInput(Order.Number, (view: SecurityAuditRunFindingView) =>
+								findingRank(view.verdict, view.overallSeverity, view.estimatedSeverity),
+							),
+							Order.mapInput(
+								Order.String,
+								(view: SecurityAuditRunFindingView) => view.fingerprint,
+							),
+						),
+					)
 				})
 
 				const countRunFindings: SecurityAuditOrgStore["countRunFindings"] = Effect.fn(
 					"SecurityAuditStore.countRunFindings",
 				)(function* (runIds) {
-					const zeros = Object.fromEntries(runIds.map((id) => [id, NO_RUN_FINDINGS]))
+					const zeros = Rec.fromEntries(Arr.map(runIds, (id) => [id, NO_RUN_FINDINGS]))
 					if (!Arr.isReadonlyArrayNonEmpty(runIds)) return zeros
 					const rows = yield* dbExecute((db) =>
 						db.run(
@@ -1532,15 +1562,19 @@ export class SecurityAuditStore extends Context.Service<SecurityAuditStore, Secu
 								.groupBy("runId", "verdict", "overallSeverity", "estimatedSeverity"),
 						),
 					)
-					return rows.reduce<Record<string, SecurityAuditRunFindingCounts>>((counts, row) => {
-						const keys = countKeys(row.verdict, row.overallSeverity, row.estimatedSeverity)
-						const current = counts[row.runId] ?? NO_RUN_FINDINGS
-						const next = keys.reduce(
-							(acc, key) => ({ ...acc, [key]: acc[key] + row.count }),
-							current,
-						)
-						return { ...counts, [row.runId]: next }
-					}, zeros)
+					return Arr.reduce<(typeof rows)[number], Record<string, SecurityAuditRunFindingCounts>>(
+						rows,
+						zeros,
+						(counts, row) => {
+							const keys = countKeys(row.verdict, row.overallSeverity, row.estimatedSeverity)
+							const current = counts[row.runId] ?? NO_RUN_FINDINGS
+							const next = Arr.reduce(keys, current, (acc, key) => ({
+								...acc,
+								[key]: acc[key] + row.count,
+							}))
+							return { ...counts, [row.runId]: next }
+						},
+					)
 				})
 
 				const listEvents: SecurityAuditOrgStore["listEvents"] = Effect.fn(
@@ -1578,9 +1612,9 @@ export class SecurityAuditStore extends Context.Service<SecurityAuditStore, Secu
 											])
 											.limit(limit),
 									)
-									.pipe(Effect.map((page) => page.toReversed())),
+									.pipe(Effect.map((page) => Arr.reverse(page))),
 					)
-					const decoded = rows.map((row) => ({
+					const decoded = Arr.map(rows, (row) => ({
 						row,
 						detail: lenient({
 							isNull: row.detail === null,
@@ -1589,10 +1623,10 @@ export class SecurityAuditStore extends Context.Service<SecurityAuditStore, Secu
 					}))
 					yield* warnStale(
 						"event details",
-						decoded.filter((d) => d.detail.stale).length,
+						Arr.filter(decoded, (d) => d.detail.stale).length,
 						rows.length,
 					)
-					return decoded.map(({ row, detail }): SecurityAuditEventRecord => ({
+					return Arr.map(decoded, ({ row, detail }): SecurityAuditEventRecord => ({
 						...row,
 						detail: detail.value,
 					}))
@@ -1610,7 +1644,7 @@ export class SecurityAuditStore extends Context.Service<SecurityAuditStore, Secu
 								.groupBy("status"),
 						),
 					)
-					return Object.fromEntries(rows.map((row) => [String(row.status), row.count]))
+					return Rec.fromEntries(Arr.map(rows, (row) => [String(row.status), row.count]))
 				})
 
 				const listFindings: SecurityAuditOrgStore["listFindings"] = Effect.fn(
@@ -1648,18 +1682,14 @@ export class SecurityAuditStore extends Context.Service<SecurityAuditStore, Secu
 					)
 				})
 
-				const listTargets: SecurityAuditOrgStore["listTargets"] = Effect.fn(
-					"SecurityAuditStore.listTargets",
-				)(function* () {
-					return yield* dbExecute((db) =>
-						db.run(
-							PG.from(SecurityAuditTargets)
-								.select()
-								.where(($) => [$.orgId.eq(orgId)])
-								.orderBy(($) => [[$.createdAt, "asc"]]),
-						),
-					)
-				})
+				const listTargets: SecurityAuditOrgStore["listTargets"] = dbExecute((db) =>
+					db.run(
+						PG.from(SecurityAuditTargets)
+							.select()
+							.where(($) => [$.orgId.eq(orgId)])
+							.orderBy(($) => [[$.createdAt, "asc"]]),
+					),
+				).pipe(Effect.withSpan("SecurityAuditStore.listTargets"))
 
 				const getTarget: SecurityAuditOrgStore["getTarget"] = Effect.fn(
 					"SecurityAuditStore.getTarget",
@@ -1783,9 +1813,7 @@ export class SecurityAuditStore extends Context.Service<SecurityAuditStore, Secu
 					return yield* dbExecute((db) => sumSpend(db, orgId, since))
 				})
 
-				const getSettings: SecurityAuditOrgStore["getSettings"] = Effect.fn(
-					"SecurityAuditStore.getSettings",
-				)(function* () {
+				const getSettings: SecurityAuditOrgStore["getSettings"] = Effect.gen(function* () {
 					const rows = yield* dbExecute((db) =>
 						db.run(
 							PG.from(SecurityAuditOrgSettings)
@@ -1795,7 +1823,7 @@ export class SecurityAuditStore extends Context.Service<SecurityAuditStore, Secu
 						),
 					)
 					return Option.fromUndefinedOr(rows[0])
-				})
+				}).pipe(Effect.withSpan("SecurityAuditStore.getSettings"))
 
 				const saveSettings: SecurityAuditOrgStore["saveSettings"] = Effect.fn(
 					"SecurityAuditStore.saveSettings",
@@ -1861,7 +1889,7 @@ export class SecurityAuditStore extends Context.Service<SecurityAuditStore, Secu
 		}),
 	},
 ) {
-	static readonly layer = Layer.effect(this, this.make)
+	static readonly layer = Layer.effect(this, this.make).pipe(Layer.provide(SecureRandom.layerWebCrypto))
 
 	/** The engine's `AuditStore` for one org, for the run that org started. */
 	static readonly auditStoreFor = (orgId: OrgId): Layer.Layer<AuditStore, never, SecurityAuditStore> =>

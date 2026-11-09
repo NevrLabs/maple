@@ -1,3 +1,4 @@
+import { Array as Arr, Option } from "effect"
 // Catalog for the Security Center's Exposure tab: request paths that only scanners ask for, and
 // the user agents of named scanning tools. Pure data, so the web bundle can import it; the SQL
 // built from it lives in `tinybird/security-telemetry-columns.ts`.
@@ -120,18 +121,27 @@ export const SCANNER_AGENTS: ReadonlyArray<ScannerAgent> = [
 	{ token: "internetmeasurement", name: "Driftnet" },
 ]
 
-const CATEGORY_BY_TOKEN = new Map(PROBE_SIGNATURES.map((signature) => [signature.token, signature.category]))
+const CATEGORY_BY_TOKEN = new Map(
+	Arr.map(PROBE_SIGNATURES, (signature) => [signature.token, signature.category]),
+)
 
 /** The category of a stored `Signature`, undefined for `''` (a scanner request on an ordinary path). */
 export const probeCategoryOf = (signature: string): ProbeCategory | undefined =>
 	CATEGORY_BY_TOKEN.get(signature)
 
 const isCritical = (signature: ProbeSignature) =>
-	PROBE_CATEGORIES.find((category) => category.id === signature.category)?.critical === true
+	Option.exists(
+		Arr.findFirst(PROBE_CATEGORIES, (category) => category.id === signature.category),
+		(category) => category.critical === true,
+	)
 
 /** Critical signatures, matched first so a WordPress token earlier in a path cannot hide one. */
-export const CRITICAL_PROBE_SIGNATURES: ReadonlyArray<ProbeSignature> = PROBE_SIGNATURES.filter(isCritical)
+export const CRITICAL_PROBE_SIGNATURES: ReadonlyArray<ProbeSignature> = Arr.filter(
+	PROBE_SIGNATURES,
+	isCritical,
+)
 
-export const OTHER_PROBE_SIGNATURES: ReadonlyArray<ProbeSignature> = PROBE_SIGNATURES.filter(
+export const OTHER_PROBE_SIGNATURES: ReadonlyArray<ProbeSignature> = Arr.filter(
+	PROBE_SIGNATURES,
 	(signature) => !isCritical(signature),
 )

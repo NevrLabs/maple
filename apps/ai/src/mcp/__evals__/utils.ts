@@ -1,4 +1,4 @@
-import { Schema } from "effect"
+import { Schema, Array as Arr, Record as Rec } from "effect"
 import { OrgId, UserId } from "@maple/domain/http"
 import type { TenantContext } from "@maple/backend/services/auth/tenant-context"
 
@@ -28,14 +28,12 @@ export const EVAL_TENANT: TenantContext = {
 
 /** How many arrays/objects deep a JSON value nests; scalars are 0. */
 export const jsonDepth = (value: unknown): number => {
-	const children = Array.isArray(value)
+	const children = Arr.isArray(value)
 		? value
 		: typeof value === "object" && value !== null
-			? Object.values(value)
+			? Rec.values(value)
 			: undefined
-	return children === undefined
-		? 0
-		: 1 + children.reduce<number>((max, v) => Math.max(max, jsonDepth(v)), 0)
+	return children === undefined ? 0 : 1 + Arr.reduce(children, 0, (max, v) => Math.max(max, jsonDepth(v)))
 }
 
 /**

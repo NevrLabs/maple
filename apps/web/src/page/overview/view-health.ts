@@ -8,17 +8,17 @@ import { cn } from "@maple/ui/lib/utils"
 import { AsyncData } from "foldkit"
 import type { Html, HtmlBuilder } from "foldkit/html"
 import { emptyOnFailure } from "../../data/enrichment"
-import type { LoadFailure } from "../../data/load-failure"
+import type { LoadFailure } from "@maple/views/data/load-failure"
 import { AppRoute, hrefOf } from "../../route"
-import { card } from "../../ui/card"
-import { badge } from "../../ui/display"
-import { errorState } from "../../ui/error-state"
-import { eyebrow } from "../../ui/eyebrow"
-import { icon } from "../../ui/icon"
-import { listRow } from "../../ui/list-row"
-import { skeletonList } from "../../ui/skeleton"
-import { statusDot } from "../../ui/status-dot"
-import { serviceDot } from "../../ui/values"
+import { card } from "@maple/views/ui/card"
+import { badge } from "@maple/views/ui/display"
+import { errorState } from "@maple/views/ui/error-state"
+import { eyebrow } from "@maple/views/ui/eyebrow"
+import { icon } from "@maple/views/ui/icon"
+import { listRow } from "@maple/views/ui/list-row"
+import { skeletonList } from "@maple/views/ui/skeleton"
+import { statusDot } from "@maple/views/ui/status-dot"
+import { serviceDot } from "@maple/views/ui/values"
 import {
 	countByHealth,
 	type EnrichedService,
@@ -27,8 +27,13 @@ import {
 	type ServiceHealthCause,
 } from "./derive"
 import type { HealthSnapshot, Incident, Model } from "./model"
-import { alertFiringHero } from "./view-hero"
+import { alertFiringHero, heroCountsOf } from "./view-hero"
 import { statRail, statRailItem, statRailLoading } from "../kit/stat-rail"
+import { hstack, vstack } from "@maple/views/ui/stack"
+import { Array as Arr, Option } from "effect"
+import { typography, typographyClass } from "@maple/views/ui/typography"
+import { textLink } from "@maple/views/ui/text-link"
+import { dividedList } from "@maple/views/ui/rule"
 
 // The service health overview: the alerts banner and
 // the health summary rail above the usage cards.
@@ -69,12 +74,14 @@ export const servicesHref = (slice: SliceSearch, health?: ServiceHealth): string
 	)
 
 const railAction = <M>(h: HtmlBuilder<M>, slice: SliceSearch, health?: ServiceHealth): Html =>
-	h.a(
-		[
-			h.Href(servicesHref(slice, health)),
-			h.AriaLabel(health === undefined ? "View all services" : `View ${health} services`),
-			h.Class("text-foreground-faint hover:text-foreground active:text-foreground"),
-		],
+	textLink(
+		h,
+		{
+			href: servicesHref(slice, health),
+			tone: "muted",
+			className: "text-foreground-faint",
+			attributes: [h.AriaLabel(health === undefined ? "View all services" : `View ${health} services`)],
+		},
 		[icon(h, "ArrowRightIcon", { className: "size-3" })],
 	)
 
@@ -98,35 +105,20 @@ export type HealthOverviewInputs = Readonly<{
 /** `ServiceHealthOverview`: the banner once alerts are known; the rail loading, absent on error, counted on success. */
 export const healthOverview = <M>(h: HtmlBuilder<M>, { model, slice, nowMs }: HealthOverviewInputs): Html => {
 	const incidents = AsyncData.getOrElse(model.incidents, () => [])
-	const open = incidents.filter((incident) => incident.status === "open")
 	const rules = AsyncData.getOrElse(model.rules, () => [])
-	// "All clear" claims to know: without live alerts (loading or sync down) the banner stays out.
+	// Without live alerts (loading or sync down) the strip stays out.
 	const isAlertsKnown = AsyncData.isSuccess(model.incidents) && AsyncData.isSuccess(model.rules)
-	const banner = !isAlertsKnown
-		? []
-		: [
-				alertFiringHero(h, {
-					openCount: open.length,
-					criticalCount: open.filter((incident) => incident.severity === "critical").length,
-					warningCount: open.filter((incident) => incident.severity === "warning").length,
-					rulesEnabled: rules.filter((enabled) => enabled).length,
-					rulesTotal: rules.length,
-				}),
-			]
+	const banner = !isAlertsKnown ? [] : alertFiringHero(h, heroCountsOf(incidents, rules))
 	const data = healthData(model)
 	return AsyncData.matchData(data, {
-		onEmpty: () =>
-			section(h, "mb-4 space-y-3", false, [
-				...banner,
-				statRailLoading(h, 4),
-			]),
+		onEmpty: () => section(h, "mb-4 space-y-3", false, [...banner, statRailLoading(h, 4)]),
 		// An empty section keeps no margin, or the page strip's gap above the usage rail doubles.
 		onFailure: () => section(h, banner.length > 0 ? "mb-4 space-y-3" : "space-y-3", false, banner),
 		onData: ([snapshot, anomalies, alerts]) => {
 			const counts = countByHealth(
 				enrichServices(
 					snapshot,
-					alerts.filter((incident) => incident.status === "open"),
+					Arr.filter(alerts, (incident) => incident.status === "open"),
 					anomalies,
 					nowMs,
 				),
@@ -146,21 +138,18 @@ export const healthOverview = <M>(h: HtmlBuilder<M>, { model, slice, nowMs }: He
 						value: String(counts.healthy),
 						tone: tone("healthy", "ok"),
 						action: railAction(h, slice, "healthy"),
-						delay: 60,
 					}),
 					statRailItem(h, {
 						eyebrow: "Degraded",
 						value: String(counts.degraded),
 						tone: tone("degraded", "warn"),
 						action: railAction(h, slice, "degraded"),
-						delay: 120,
 					}),
 					statRailItem(h, {
 						eyebrow: "Unhealthy",
 						value: String(counts.unhealthy),
 						tone: tone("unhealthy", "crit"),
 						action: railAction(h, slice, "unhealthy"),
-						delay: 180,
 					}),
 				]),
 			])
@@ -169,30 +158,27 @@ export const healthOverview = <M>(h: HtmlBuilder<M>, { model, slice, nowMs }: He
 }
 
 const listHeader = <M>(h: HtmlBuilder<M>, slice: SliceSearch): Html =>
-	h.div(
-		[h.Class("flex items-center justify-between")],
-		[
-			h.div(
-				[],
-				[
-					eyebrow(h, { variant: "label", as: "h2" }, ["Services"]),
-					h.p(
-						[h.Class("mt-0.5 font-prose text-2xs text-foreground-subtle")],
-						["Status reflects active alerts and baseline anomalies."],
-					),
-				],
-			),
-			h.a(
-				[
-					h.Href(servicesHref(slice)),
-					h.Class(
-						"text-xs font-medium text-muted-foreground hover:text-foreground active:text-foreground",
-					),
-				],
-				["View all services →"],
-			),
-		],
-	)
+	hstack(h, { justify: "between" }, [
+		h.div(
+			[],
+			[
+				eyebrow(h, { variant: "label", as: "h2" }, ["Services"]),
+				h.p(
+					[h.Class("mt-0.5 font-prose text-2xs text-foreground-subtle")],
+					["Status reflects active alerts and baseline anomalies."],
+				),
+			],
+		),
+		textLink(
+			h,
+			{
+				href: servicesHref(slice),
+				tone: "muted",
+				className: typographyClass({ size: "xs", weight: "medium" }),
+			},
+			["View all services →"],
+		),
+	])
 
 const MAX_ROWS = 7
 
@@ -230,7 +216,7 @@ export const healthList = <M>(
 		onData: ([snapshot, anomalies, alerts]) => {
 			const rows = enrichServices(
 				snapshot,
-				alerts.filter((incident) => incident.status === "open"),
+				Arr.filter(alerts, (incident) => incident.status === "open"),
 				anomalies,
 				nowMs,
 			).slice(0, MAX_ROWS)
@@ -241,9 +227,10 @@ export const healthList = <M>(
 					[
 						rows.length === 0
 							? emptyState
-							: h.ul(
-									[h.Class("divide-y divide-border")],
-									rows.map((row) => serviceRow(h, row, slice)),
+							: dividedList(
+									h,
+									{ as: "ul", bordered: false },
+									Arr.map(rows, (row) => serviceRow(h, row, slice)),
 								),
 					],
 					"overflow-hidden p-0",
@@ -266,13 +253,10 @@ const metric = <M>(
 	tone: MetricTone,
 	valueClassName?: string,
 ): Html =>
-	h.div(
-		[h.Class("flex w-16 flex-col items-end gap-0.5")],
-		[
-			h.span([h.Class(cn("leading-none", TONE_TEXT[tone], valueClassName))], [value]),
-			eyebrow(h, {}, [label]),
-		],
-	)
+	vstack(h, { gap: "0.5", align: "end", className: "w-16" }, [
+		h.span([h.Class(cn("leading-none", TONE_TEXT[tone], valueClassName))], [value]),
+		eyebrow(h, {}, [label]),
+	])
 
 const causeBadge = <M>(h: HtmlBuilder<M>, cause: ServiceHealthCause): Html => {
 	const direction = cause.direction
@@ -325,36 +309,28 @@ const serviceRow = <M>(
 	slice: SliceSearch,
 ): Html => {
 	const primary = primaryServiceHealthCause(causes)
-	const latencyCause = causes.find((cause) => cause.metric === "latency")
+	const causeOf = (kind: ServiceHealthCause["metric"]) =>
+		Option.getOrUndefined(Arr.findFirst(causes, (cause) => cause.metric === kind))
+	const latencyCause = causeOf("latency")
 	return h.li(
 		[h.Key(`${service.serviceName}:${service.environment}`)],
 		[
 			listRow(h, {
 				href: serviceHref(slice, service),
 				leading: statusDot(h, { tone: HEALTH_TONE[health], size: "lg" }),
-				title: h.span(
-					[h.Class("flex min-w-0 items-center gap-2")],
+				title: hstack(h, { gap: "2", shrink: true, as: "span" }, [
+					serviceDot(h, { serviceName: service.serviceName, size: "sm" }),
+					typography(h, { size: "sm", tone: "foreground", weight: "medium", truncate: true }, [
+						service.serviceName,
+					]),
+					badge(h, { variant: "muted", size: "xs", className: "shrink-0" }, [service.environment]),
+					...(primary === undefined ? [] : [causeBadge(h, primary)]),
+				]),
+				trailing: hstack(
+					h,
+					{ gap: "5", align: "center", className: "shrink-0 font-mono text-xs tabular-nums" },
 					[
-						serviceDot(h, { serviceName: service.serviceName, size: "sm" }),
-						h.span(
-							[h.Class("truncate text-sm font-medium text-foreground")],
-							[service.serviceName],
-						),
-						badge(h, { variant: "muted", size: "xs", className: "shrink-0" }, [
-							service.environment,
-						]),
-						...(primary === undefined ? [] : [causeBadge(h, primary)]),
-					],
-				),
-				trailing: h.div(
-					[h.Class("flex shrink-0 items-center gap-5 font-mono text-xs tabular-nums")],
-					[
-						metric(
-							h,
-							"err",
-							formatErrorRate(service.errorRate),
-							metricTone(causes.find((cause) => cause.metric === "error")),
-						),
+						metric(h, "err", formatErrorRate(service.errorRate), metricTone(causeOf("error"))),
 						metric(
 							h,
 							"p95",
@@ -368,7 +344,7 @@ const serviceRow = <M>(
 							h,
 							"rps",
 							formatThroughput(service.throughput, "/s"),
-							metricTone(causes.find((cause) => cause.metric === "traffic")),
+							metricTone(causeOf("traffic")),
 						),
 					],
 				),

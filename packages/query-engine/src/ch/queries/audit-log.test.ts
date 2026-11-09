@@ -1,4 +1,4 @@
-import { describe, expect, it } from "@effect/vitest"
+import { assert, describe, expect, it } from "@effect/vitest"
 import { DateTime, Effect } from "effect"
 import { compile } from "@maple-dev/effect-orm/clickhouse"
 import { OrgId } from "@maple/domain"
@@ -44,8 +44,25 @@ describe("auditLogEntriesQuery", () => {
 					originCountry: "",
 				},
 			])
-			expect(DateTime.formatIso(row!.occurredAt)).toBe("2026-10-01T10:00:00.041Z")
-			expect(DateTime.formatIso(row!.recordedAt)).toBe("2026-10-01T10:00:01.500Z")
+			assert.isDefined(row)
+			expect(DateTime.formatIso(row.occurredAt)).toBe("2026-10-01T10:00:00.041Z")
+			expect(DateTime.formatIso(row.recordedAt)).toBe("2026-10-01T10:00:01.500Z")
+		}),
+	)
+
+	it.effect("leaves out actions by suffix before the limit", () =>
+		Effect.gen(function* () {
+			const compiled = yield* compile(
+				auditLogEntriesQuery({ excludeActionSuffixes: [".read", ".called"], limit: 40, offset: 0 }),
+				{ orgId: OrgId.make("org_1") },
+			)
+			expect(compiled.sql).toContain(
+				"NOT ((endsWith(audit_log.Action, '.read') OR endsWith(audit_log.Action, '.called')))",
+			)
+			const plain = yield* compile(auditLogEntriesQuery({ limit: 40, offset: 0 }), {
+				orgId: OrgId.make("org_1"),
+			})
+			expect(plain.sql).not.toContain("endsWith")
 		}),
 	)
 })

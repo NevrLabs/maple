@@ -1,3 +1,4 @@
+import { Array as Arr } from "effect"
 import * as CH from "@maple/query-engine/ch"
 import * as Integrations from "@maple/query-engine-integrations"
 import { defineQuery } from "@maple/query-engine/registry"
@@ -85,10 +86,7 @@ const cloudflareInfraZoneLatency = defineQuery({
 			startTime: payload.startTime,
 			endTime: payload.endTime,
 		}
-		// Counters (metrics_sum) + percentiles (metrics_gauge) run
-		// concurrently, then merge by ServiceName — same shape as
-		// serviceCloudflareStats above.
-		const filters = toCloudflareFilters(payload)
+		// Zone-wide by design; the handler reports the filters as `ignoredFilters`.
 		return CH.compile(Integrations.cloudflareZoneLatencySQL(), params)
 	},
 })
@@ -747,9 +745,10 @@ const cloudflareInfraZoneFacets = defineQuery({
 		}),
 })
 
-// Network reads a counter family, everything else a gauge family, so they are
-// separate defs rather than one def with a branch — the row shapes differ and
-// the handler maps them differently. Both keep the id "hostInfraTimeseries",
+// Network reads a counter rate, everything else gauge-style averages (filesystem
+// a used fraction per mount, same row shape), so they are separate defs rather
+// than one def with a branch — the row shapes differ and the handler maps them
+// differently. Both keep the id "hostInfraTimeseries",
 // which is what their spans already report; renaming would break continuity of
 // existing telemetry for no gain.
 
@@ -772,21 +771,22 @@ const hostInfraGaugeTimeseries = defineQuery({
 	cache: 15,
 	compile: (payload: HostInfraTimeseriesRequest, orgId: OrgId) => {
 		const spec = hostMetricSpec(payload.metric)
-		return CH.compile(
-			CH.hostGaugeTimeseriesQuery({
-				hostName: payload.hostName,
-				metricName: spec.metricName,
-				groupByAttributeKey: spec.groupByAttributeKey,
-				attributeIn: spec.attributeIn,
-				attributeNotIn: spec.attributeNotIn,
-			}),
-			{
-				orgId,
-				startTime: payload.startTime,
-				endTime: payload.endTime,
-				bucketSeconds: payload.bucketSeconds ?? 60,
-			},
-		)
+		const params = {
+			orgId,
+			startTime: payload.startTime,
+			endTime: payload.endTime,
+			bucketSeconds: payload.bucketSeconds ?? 60,
+		}
+		return spec.family === "filesystem"
+			? CH.compile(CH.hostFilesystemTimeseriesQuery({ hostName: payload.hostName }), params)
+			: CH.compile(
+					CH.hostGaugeTimeseriesQuery({
+						hostName: payload.hostName,
+						metricName: spec.metricName,
+						groupByAttributeKey: spec.groupByAttributeKey,
+					}),
+					params,
+				)
 	},
 })
 
@@ -829,7 +829,7 @@ const containerInfraGaugeTimeseries = defineQuery({
 			CH.containerGaugeTimeseriesQuery({
 				containerName: payload.containerName,
 				hostName: payload.hostName,
-				metricName: spec.metricNames[0]!,
+				metricName: Arr.headNonEmpty(spec.metricNames),
 				divideBy: spec.divideBy,
 			}),
 			{

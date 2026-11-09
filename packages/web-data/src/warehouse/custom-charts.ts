@@ -7,7 +7,7 @@ import {
 	formatWarehouseDateTime,
 	resolveThroughput,
 } from "@maple/query-engine"
-import { Clock, Effect, Schema } from "effect"
+import { Clock, Effect, Option, Order, Schema, Array as Arr, Record as Rec, String as Str } from "effect"
 
 import {
 	buildBucketTimeline,
@@ -54,7 +54,9 @@ const asDeploymentEnv = Schema.decodeUnknownSync(DeploymentEnvironment)
 export const toEnvFilter = (
 	environments: ReadonlyArray<DeploymentEnvironment> | undefined,
 ): ReadonlyArray<DeploymentEnvironment> | undefined =>
-	environments?.map((e) => (e === "unknown" ? asDeploymentEnv("") : e))
+	environments === undefined
+		? undefined
+		: Arr.map(environments, (e) => (e === "unknown" ? asDeploymentEnv("") : e))
 
 // SpanMetrics connector metric names — namespaced first, then default. Both are
 // matched in a single `MetricName IN (...)` query (see `querySpanMetricsCalls`),
@@ -95,7 +97,7 @@ function querySpanMetricsCalls(params: {
 						// `metricName` is the required canonical; `metricNames` drives the
 						// actual `IN (...)` filter so whichever spelling the org emits matches.
 						metricName: asMetricName(SPANMETRICS_CALLS_CANDIDATES[0]),
-						metricNames: SPANMETRICS_CALLS_CANDIDATES.map((name) => asMetricName(name)),
+						metricNames: Arr.map(SPANMETRICS_CALLS_CANDIDATES, (name) => asMetricName(name)),
 						metricType: "sum",
 						serviceName: params.service ? asServiceName(params.service) : undefined,
 						attributeFilters: [{ key: "span.kind", value: "SPAN_KIND_SERVER", mode: "equals" }],
@@ -112,7 +114,7 @@ function querySpanMetricsCalls(params: {
 		// Transform grouped timeseries back to flat rows for compatibility
 		const data: Array<Record<string, unknown>> = []
 		for (const point of response.result.data) {
-			for (const [serviceName, value] of Object.entries(point.series)) {
+			for (const [serviceName, value] of Rec.toEntries(point.series)) {
 				data.push({
 					bucket: point.bucket,
 					serviceName,
@@ -125,7 +127,7 @@ function querySpanMetricsCalls(params: {
 }
 
 function sortByBucket<T extends { bucket: string }>(rows: T[]): T[] {
-	return rows.toSorted((left, right) => left.bucket.localeCompare(right.bucket))
+	return Arr.sort(rows, (left: T, right: T) => Str.localeCompare(right.bucket)(left.bucket))
 }
 
 /**
@@ -155,7 +157,7 @@ export function fillServiceDetailPoints(
 	const timeline = buildBucketTimeline(startTime, endTime, bucketSeconds)
 	if (timeline.length === 0) {
 		return sortByBucket(
-			points.map((point) => ({ ...point, partial: isPartial(toIsoBucket(point.bucket)) })),
+			Arr.map(points, (point) => ({ ...point, partial: isPartial(toIsoBucket(point.bucket)) })),
 		)
 	}
 
@@ -164,7 +166,7 @@ export function fillServiceDetailPoints(
 		byBucket.set(toIsoBucket(point.bucket), point)
 	}
 
-	const filled = timeline.map((bucket): ServiceDetailTimeSeriesPoint => {
+	const filled = Arr.map(timeline, (bucket): ServiceDetailTimeSeriesPoint => {
 		const existing = byBucket.get(bucket)
 		if (existing) {
 			return { ...existing, partial: isPartial(bucket) }
@@ -205,7 +207,7 @@ function fillServiceSparklinePoints(
 		byBucket.set(toIsoBucket(point.bucket), point)
 	}
 
-	return timeline.map((bucket) => {
+	return Arr.map(timeline, (bucket) => {
 		const existing = byBucket.get(bucket)
 		if (existing) {
 			return existing
@@ -311,8 +313,29 @@ const tracesMetrics = new Set<TracesMetric>([
 	"error_rate",
 	"apdex",
 ])
-const metricsMetrics = new Set<MetricsMetric>(["avg", "sum", "min", "max", "count", "rate", "increase"])
+const metricsMetrics = new Set<MetricsMetric>([
+	"avg",
+	"sum",
+	"min",
+	"max",
+	"count",
+	"latest",
+	"rate",
+	"increase",
+])
 const metricsBreakdownMetrics = new Set<"avg" | "sum" | "count">(["avg", "sum", "count"])
+
+const TRACES_TIMESERIES_GROUP_BY = [
+	"service",
+	"span_name",
+	"status_code",
+	"http_method",
+	"attribute",
+	"none",
+] as const
+const LOGS_TIMESERIES_GROUP_BY = ["service", "severity", "none"] as const
+const isOneOf = <const L extends ReadonlyArray<string>>(literals: L, value: string): value is L[number] =>
+	Arr.some(literals, (literal) => literal === value)
 
 function buildTimeseriesQuerySpec(data: CustomChartTimeSeriesDecoded): QuerySpec | string {
 	// The legacy chart route predates the query set; product events only lower through it.
@@ -323,13 +346,9 @@ function buildTimeseriesQuerySpec(data: CustomChartTimeSeriesDecoded): QuerySpec
 		if (!tracesMetrics.has(data.metric as TracesMetric)) {
 			return `Unknown trace metric: ${data.metric}`
 		}
-		if (
-			data.groupBy &&
-			!["service", "span_name", "status_code", "http_method", "attribute", "none"].includes(
-				data.groupBy,
-			)
-		) {
-			return `Unsupported traces groupBy: ${data.groupBy}`
+		const groupBy = data.groupBy
+		if (groupBy !== undefined && !isOneOf(TRACES_TIMESERIES_GROUP_BY, groupBy)) {
+			return `Unsupported traces groupBy: ${groupBy}`
 		}
 
 		return {
@@ -337,7 +356,7 @@ function buildTimeseriesQuerySpec(data: CustomChartTimeSeriesDecoded): QuerySpec
 			source: "traces",
 			metric: data.metric as TracesMetric,
 			apdexThresholdMs: data.apdexThresholdMs,
-			groupBy: data.groupBy ? ([data.groupBy] as any) : undefined,
+			groupBy: groupBy === undefined ? undefined : [groupBy],
 			filters: {
 				serviceName: data.filters?.serviceName,
 				spanName: data.filters?.spanName,
@@ -357,15 +376,16 @@ function buildTimeseriesQuerySpec(data: CustomChartTimeSeriesDecoded): QuerySpec
 		if (data.metric !== "count") {
 			return `Unknown logs metric: ${data.metric}`
 		}
-		if (data.groupBy && !["service", "severity", "none"].includes(data.groupBy)) {
-			return `Unsupported logs groupBy: ${data.groupBy}`
+		const groupBy = data.groupBy
+		if (groupBy !== undefined && !isOneOf(LOGS_TIMESERIES_GROUP_BY, groupBy)) {
+			return `Unsupported logs groupBy: ${groupBy}`
 		}
 
 		return {
 			kind: "timeseries",
 			source: "logs",
 			metric: "count",
-			groupBy: data.groupBy ? ([data.groupBy] as any) : undefined,
+			groupBy: groupBy === undefined ? undefined : [groupBy],
 			filters: {
 				serviceName: data.filters?.serviceName,
 				severity: data.filters?.severity,
@@ -390,6 +410,12 @@ function buildTimeseriesQuerySpec(data: CustomChartTimeSeriesDecoded): QuerySpec
 	}
 	if (!data.filters?.metricName || !data.filters.metricType) {
 		return "metricName and metricType are required for metrics source"
+	}
+	if (
+		data.metric === "latest" &&
+		(data.filters.metricType === "histogram" || data.filters.metricType === "exponential_histogram")
+	) {
+		return "Histogram metrics do not support latest; use avg, sum, min, max or count"
 	}
 	if (data.groupBy && !["service", "attribute", "none"].includes(data.groupBy)) {
 		return `Unsupported metrics groupBy: ${data.groupBy}`
@@ -457,18 +483,22 @@ const getCustomChartTimeSeriesEffect = Effect.fn("QueryEngine.getCustomChartTime
 	const bucketSeconds = input.bucketSeconds ?? computeBucketSeconds(input.startTime, input.endTime)
 	const firstIso = firstFullBucketIso(input.startTime, bucketSeconds)
 
-	const filtered = response.result.data
-		.filter((point) => firstIso == null || toIsoBucket(point.bucket) >= firstIso)
-		.map((point) => ({
+	const filtered = Arr.map(
+		Arr.filter(
+			response.result.data,
+			(point) => firstIso == null || toIsoBucket(point.bucket) >= firstIso,
+		),
+		(point) => ({
 			bucket: point.bucket,
 			series: { ...point.series },
-		}))
+		}),
+	)
 
 	// Also trim leading buckets whose total volume is a tiny fraction of the next.
 	// Covers the case where the first full bucket of the window happens to fall in
 	// an ingestion ramp-up — the row exists but contains only a few stray events.
 	const sumSeries = (p: { series: Record<string, number> }) =>
-		Object.values(p.series).reduce((s, v) => s + (typeof v === "number" ? v : 0), 0)
+		Arr.reduce(Rec.values(p.series), 0, (s, v) => s + (typeof v === "number" ? v : 0))
 	return { data: trimSparseLeadingBuckets(filtered, sumSeries) }
 })
 
@@ -592,7 +622,7 @@ const getCustomChartBreakdownEffect = Effect.fn("QueryEngine.getCustomChartBreak
 	}
 
 	return {
-		data: response.result.data.map((item) => ({
+		data: Arr.map(response.result.data, (item) => ({
 			name: item.name,
 			value: item.value,
 		})),
@@ -627,7 +657,7 @@ export function makeAllMetricsTimeseriesRequest(opts: {
 	excludedEnvironments?: ReadonlyArray<DeploymentEnvironment>
 	excludedNamespaces?: ReadonlyArray<ServiceNamespace>
 	excludedCommitShas?: ReadonlyArray<CommitSha>
-	groupBy?: string[]
+	groupBy?: Extract<QuerySpec, { kind: "timeseries"; source: "traces" }>["groupBy"]
 }) {
 	return new QueryEngineExecuteRequest({
 		startTime: opts.startTime ?? "2020-01-01 00:00:00",
@@ -637,7 +667,7 @@ export function makeAllMetricsTimeseriesRequest(opts: {
 			source: "traces" as const,
 			metric: "count" as const,
 			allMetrics: true,
-			groupBy: opts.groupBy as any,
+			groupBy: opts.groupBy,
 			filters: {
 				serviceName: opts.serviceName,
 				rootSpansOnly: opts.rootSpansOnly ?? true,
@@ -746,11 +776,14 @@ function extractGroupedAllMetricsSeries(
 
 	for (const bucketPoint of response.result.data) {
 		const bucket = toIsoBucket(bucketPoint.bucket)
-		for (const [seriesKey, rawValue] of Object.entries(bucketPoint.series)) {
-			const metric = GROUPED_ALL_METRICS_KEYS.find((key) => seriesKey.startsWith(`${key}::`))
-			if (!metric) continue
+		for (const [seriesKey, rawValue] of Rec.toEntries(bucketPoint.series)) {
+			const found = Arr.findFirst(GROUPED_ALL_METRICS_KEYS, (key) =>
+				Str.startsWith(`${key}::`)(seriesKey),
+			)
+			if (Option.isNone(found)) continue
+			const metric = found.value
 
-			const service = seriesKey.slice(metric.length + 2)
+			const service = Str.slice(metric.length + 2)(seriesKey)
 			let buckets = services.get(service)
 			if (!buckets) {
 				buckets = new Map()
@@ -782,9 +815,9 @@ export function buildServiceDetailPoints(
 ): ServiceDetailTimeSeriesPoint[] {
 	const allMetrics = extractAllMetricsSeries(allMetricsRes)
 
-	const points = Array.from(allMetrics.keys())
-		.toSorted()
-		.map((bucket): ServiceDetailTimeSeriesPoint => {
+	const points = Arr.map(
+		Arr.sort(allMetrics.keys(), Order.String),
+		(bucket): ServiceDetailTimeSeriesPoint => {
 			const m = allMetrics.get(bucket)
 			const rawCount = m?.count ?? 0
 			const throughput = resolveThroughput(rawCount, m?.estimatedSpanCount ?? 0, undefined)
@@ -805,7 +838,8 @@ export function buildServiceDetailPoints(
 				totalCount: rawCount,
 				partial: false,
 			}
-		})
+		},
+	)
 
 	return fillServiceDetailPoints(points, startTime, endTime, bucketSeconds, nowMs)
 }
@@ -903,7 +937,7 @@ const getServiceDetailOverviewEffect = Effect.fn("QueryEngine.getServiceDetailOv
 
 	return {
 		data: buildServiceDetailPoints(result.timeseries, startTime, endTime, bucketSeconds, nowMs),
-		releases: result.releases.map((r) => ({
+		releases: Arr.map(result.releases, (r) => ({
 			bucket: toIsoBucket(r.bucket),
 			commitSha: r.commitSha,
 			count: r.count,
@@ -954,9 +988,9 @@ const getOverviewTimeSeriesEffect = Effect.fn("QueryEngine.getOverviewTimeSeries
 
 	const allMetrics = extractAllMetricsSeries(allMetricsRes)
 
-	const points = Array.from(allMetrics.keys())
-		.toSorted()
-		.map((bucket): ServiceDetailTimeSeriesPoint => {
+	const points = Arr.map(
+		Arr.sort(allMetrics.keys(), Order.String),
+		(bucket): ServiceDetailTimeSeriesPoint => {
 			const m = allMetrics.get(bucket)
 			const rawCount = m?.count ?? 0
 			const throughput = resolveThroughput(rawCount, m?.estimatedSpanCount ?? 0, undefined)
@@ -977,7 +1011,8 @@ const getOverviewTimeSeriesEffect = Effect.fn("QueryEngine.getOverviewTimeSeries
 				totalCount: rawCount,
 				partial: false,
 			}
-		})
+		},
+	)
 
 	const nowMs = yield* Clock.currentTimeMillis
 	return {
@@ -1032,7 +1067,7 @@ const getCustomChartServiceSparklinesEffect = Effect.fn("QueryEngine.getCustomCh
 			excludedEnvironments: input.excludedEnvironments,
 			excludedNamespaces: input.excludedNamespaces,
 			excludedCommitShas: input.excludedCommitShas,
-			groupBy: ["service"] as string[],
+			groupBy: ["service" as const],
 		}
 
 		// The services-list sparkline shape uses the sampling-aware
@@ -1070,8 +1105,8 @@ const getCustomChartServiceSparklinesEffect = Effect.fn("QueryEngine.getCustomCh
 			grouped[service] = points
 		}
 
-		const filledGrouped = Object.fromEntries(
-			Object.entries(grouped).map(([service, points]) => [
+		const filledGrouped = Rec.fromEntries(
+			Arr.map(Rec.toEntries(grouped), ([service, points]) => [
 				service,
 				fillServiceSparklinePoints(points, timeline),
 			]),
@@ -1108,7 +1143,7 @@ export function mergeExactThroughput(
 	exactByBucket: ReadonlyMap<string, number>,
 ): ServiceDetailTimeSeriesPoint[] {
 	if (exactByBucket.size === 0) return points as ServiceDetailTimeSeriesPoint[]
-	return points.map((point) => {
+	return Arr.map(points, (point) => {
 		const exact = exactByBucket.get(point.bucket)
 		if (exact == null || exact <= 0) return point
 		const samplingWeight = point.tracedThroughput > 0 ? exact / point.tracedThroughput : 1

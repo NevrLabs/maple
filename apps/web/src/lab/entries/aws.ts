@@ -2,12 +2,12 @@ import { OrgId } from "@maple/domain"
 import { AwsMetricStream } from "@maple/domain/aws"
 import { Timestamp, type V2AwsConnection, type V2AwsIntegration } from "@maple/domain/http/v2"
 import { AwsAccountId, AwsConnectionId } from "@maple/domain/primitives"
-import { Effect, Option, Result, Schema } from "effect"
+import { Effect, Option, Record as Rec, Result, Schema, Array as Arr, String as Str } from "effect"
 import { AsyncData, Command, type Update } from "foldkit"
 import type { HtmlBuilder } from "foldkit/html"
 import { defineMessageUnion } from "foldkit/message"
 import { fromString as urlFromString } from "foldkit/url"
-import { chartBucketSeconds } from "../../charts/infra-metric-series"
+import { chartBucketSeconds } from "@maple/views/charts/infra-metric-series"
 import type { PageContext, PageReturn } from "../../page/contract"
 import type { FleetRead, SparkRead } from "../../page/infra-integrations/aws/data"
 import { Message as PageMessage } from "../../page/infra-integrations/aws/list/message"
@@ -129,6 +129,8 @@ const RESOURCES = {
 	],
 } satisfies Record<"ecs" | "ec2" | "loadBalancers", ReadonlyArray<Resource>>
 
+const resourcesOf = (kind: "ecs" | "ec2" | "loadBalancers"): ReadonlyArray<Resource> => RESOURCES[kind]
+
 const SPARK_METRIC = {
 	ecs: "aws.ecs.cpu_utilization",
 	ec2: "aws.ec2.cpu_utilization",
@@ -137,11 +139,11 @@ const SPARK_METRIC = {
 
 const keysOf = (resource: Resource) => [...resource.identity, REGION, ACCOUNT]
 
-const FLEET: ReadonlyArray<FleetRead> = (["ecs", "ec2", "loadBalancers"] as const).map((kind) => ({
+const FLEET: ReadonlyArray<FleetRead> = Arr.map(["ecs", "ec2", "loadBalancers"] as const, (kind) => ({
 	kind,
 	failed: false,
-	points: RESOURCES[kind].flatMap((resource) =>
-		Object.entries(resource.values).map(([metric, value]) => ({
+	points: Arr.flatMap(resourcesOf(kind), (resource) =>
+		Arr.map(Rec.toEntries(resource.values), ([metric, value]) => ({
 			keys: keysOf(resource),
 			metric,
 			total: value,
@@ -159,7 +161,7 @@ const BUCKET_COUNT = Math.floor((WINDOW_END_MS - WINDOW_START_MS) / (BUCKET_SECO
 const sparkFor = (kind: keyof typeof SPARK_METRIC, resource: Resource, seed: number): SparkRead["points"] => {
 	const metric = SPARK_METRIC[kind]
 	const base = resource.values[metric] ?? 0
-	const perBucket = metric.endsWith(".sum") ? base / BUCKET_COUNT : base
+	const perBucket = Str.endsWith(".sum")(metric) ? base / BUCKET_COUNT : base
 	return Array.from({ length: BUCKET_COUNT }, (_, index) => ({
 		keys: keysOf(resource),
 		bucket: new Date(WINDOW_START_MS + index * BUCKET_SECONDS * 1000).toISOString(),
@@ -177,7 +179,7 @@ const sparksOf = (kind: FleetRead["kind"]): ReadonlyArray<SparkRead> =>
 		? [
 				{
 					kind,
-					points: RESOURCES[kind].flatMap((resource, index) =>
+					points: Arr.flatMap(resourcesOf(kind), (resource, index) =>
 						sparkFor(kind, resource, index * 2.3),
 					),
 				},
@@ -233,14 +235,14 @@ const settle = (
 ): PageReturn<PageModel, PageMessage> => {
 	const pending = answers(result.model)
 	if (pending.length === 0 || depth > 6) return result
-	const next = pending.reduce<PageReturn<PageModel, PageMessage>>((acc, message) => {
+	const next = Arr.reduce(pending, result, (acc, message): PageReturn<PageModel, PageMessage> => {
 		const answered = AwsUpdate.update(acc.model, message, CONTEXT)
 		return {
 			model: answered.model,
 			commands: [...(acc.commands ?? []), ...(answered.commands ?? [])],
 			outMessage: acc.outMessage ?? answered.outMessage,
 		}
-	}, result)
+	})
 	return settle(next, depth + 1)
 }
 
@@ -254,7 +256,7 @@ const step = (result: PageReturn<PageModel, PageMessage>): Return => {
 	return {
 		model: { page: settled.model },
 		commands: Command.mapMessages(
-			(settled.commands ?? []).filter((command) => !isRead(command.name)),
+			Arr.filter(settled.commands ?? [], (command) => !isRead(command.name)),
 			(message) => Message.GotPageMessage({ message }),
 		),
 	}

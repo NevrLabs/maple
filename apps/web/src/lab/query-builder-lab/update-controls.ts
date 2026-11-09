@@ -3,10 +3,11 @@ import { Command, type Update } from "foldkit"
 import { applyQueryChange, QueryChange } from "../../page/kit/query-builder/change"
 import type { QueryDraft } from "../../page/kit/query-builder/draft"
 import type { Resources } from "../../platform/resources"
-import * as Combobox from "../../ui/combobox"
-import * as Select from "../../ui/select"
+import * as Combobox from "@maple/views/ui/combobox"
+import * as Select from "@maple/views/ui/select"
 import { parseMetricSelection } from "./derive"
 import { Message, type Model } from "./model"
+import { Array as Arr, Option, String as Str } from "effect"
 
 // The lab's selects (`<field>:<query id>`) and group-by comboboxes, each kept by id.
 
@@ -18,7 +19,7 @@ export const updateQuery = (
 	updater: (query: QueryDraft) => QueryDraft,
 ): Model => ({
 	...model,
-	queries: model.queries.map((query) => (query.id === queryId ? updater(query) : query)),
+	queries: Arr.map(model.queries, (query) => (query.id === queryId ? updater(query) : query)),
 })
 
 /** A select's value as the edit its `onValueChange` makes. */
@@ -59,7 +60,7 @@ export const selectStep = (model: Model, id: string, message: Select.Message): R
 		Message.GotSelectMessage({ id, message: inner }),
 	)
 	if (next.outMessage === undefined) return { model: lifted, commands }
-	const [field = "", queryId = ""] = id.split(":")
+	const [field, queryId = ""] = Str.split(":")(id)
 	const edit = selectEdit(field, next.outMessage.value)
 	return { model: edit === null ? lifted : updateQuery(lifted, queryId, edit), commands }
 }
@@ -70,8 +71,9 @@ export const groupByModelOf = (model: Model, query: QueryDraft): Combobox.Model 
 	Combobox.init(`group-by-${query.id}`, "single", { selected: query.groupBy.slice(0, 1) })
 
 export const groupByStep = (model: Model, queryId: string, message: Combobox.Message): Return => {
-	const query = model.queries.find((candidate) => candidate.id === queryId)
-	if (query === undefined) return { model }
+	const found = Arr.findFirst(model.queries, (candidate) => candidate.id === queryId)
+	if (Option.isNone(found)) return { model }
+	const query = found.value
 	const next = Combobox.update(groupByModelOf(model, query), message)
 	const lifted: Model = { ...model, groupBys: { ...model.groupBys, [queryId]: next.model } }
 	const commands = Command.mapMessages(next.commands ?? [], (inner) =>

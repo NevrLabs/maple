@@ -2,11 +2,14 @@ import { WIDGET_TYPES } from "@maple/domain/http"
 import { EMPTY_VALUE, countLabel } from "@maple/ui/lib/format"
 import { asArray, asRecord, asString, safeParseJson } from "./approval-parse"
 import type { Html, HtmlBuilder } from "foldkit/html"
-import { badge } from "../../../../ui/display"
-import { eyebrow } from "../../../../ui/eyebrow"
-import { icon, type IconName } from "../../../../ui/icon"
-import { inlineCode } from "../../../../ui/inline-code"
-import { panel } from "../../../../ui/panel"
+import { badge } from "@maple/views/ui/display"
+import { eyebrow } from "@maple/views/ui/eyebrow"
+import { icon, type IconName } from "@maple/views/ui/icon"
+import { inlineCode } from "@maple/views/ui/inline-code"
+import { panel } from "@maple/views/ui/panel"
+import { typography, typographyClass } from "@maple/views/ui/typography"
+import { hstack } from "@maple/views/ui/stack"
+import { Array as Arr, Record as Rec } from "effect"
 
 // The dashboard tools' approval summaries.
 // Icons and labels follow the widget-type registry (`widgetTypeFor`): `chart` and unknown kinds read as a line.
@@ -28,7 +31,9 @@ const ICONS = new Map<string, IconName>([
 	["stat", "CirclePercentageIcon"],
 ])
 
-const LABELS = new Map<string, string>(Object.entries(WIDGET_TYPES).map(([type, meta]) => [type, meta.label]))
+const LABELS = new Map<string, string>(
+	Arr.map(Rec.toEntries(WIDGET_TYPES), ([type, meta]) => [type, meta.label]),
+)
 
 const panelTypeOf = (visualization: string): string => (ICONS.has(visualization) ? visualization : "line")
 const vizIcon = (visualization: string): IconName => ICONS.get(panelTypeOf(visualization)) ?? "ChartLineIcon"
@@ -66,14 +71,21 @@ const parsedArray = (value: unknown): ReadonlyArray<unknown> | undefined => {
 }
 
 const widgetRow = <M>(h: HtmlBuilder<M>, widget: Widget): Html =>
-	h.div(
-		[h.Class("flex items-center gap-2 rounded-md border border-border-subtle bg-background/60 px-2 py-1.5")],
+	hstack(
+		h,
+		{
+			gap: "2",
+			align: "center",
+			className: "rounded-md border border-border-subtle bg-background/60 px-2 py-1.5",
+		},
 		[
-			icon(h, vizIcon(widget.visualization), { className: "size-3.5 shrink-0 text-muted-foreground" }),
-			h.span([h.Class("truncate text-xs font-medium")], [widget.title]),
+			icon(h, vizIcon(widget.visualization), {
+				className: typographyClass({ tone: "muted", className: "size-3.5 shrink-0" }),
+			}),
+			typography(h, { size: "xs", weight: "medium", truncate: true }, [widget.title]),
 			...(widget.source === undefined
 				? []
-				: [h.span([h.Class("truncate text-2xs text-muted-foreground")], [widget.source])]),
+				: [typography(h, { size: "2xs", tone: "muted", truncate: true }, [widget.source])]),
 			...(widget.groupBy === undefined
 				? []
 				: [
@@ -91,7 +103,7 @@ const widgetList = <M>(h: HtmlBuilder<M>, widgets: ReadonlyArray<Widget>, max = 
 		h.div(
 			[h.Class("space-y-1")],
 			[
-				...widgets.slice(0, max).map((widget) => widgetRow(h, widget)),
+				...Arr.map(widgets.slice(0, max), (widget) => widgetRow(h, widget)),
 				...(overflow > 0
 					? [
 							h.div(
@@ -110,8 +122,8 @@ const section = <M>(h: HtmlBuilder<M>, title: string, children: ReadonlyArray<Ht
 
 const fieldChip = <M>(h: HtmlBuilder<M>, label: string, value: string): Html =>
 	badge(h, { variant: "outline", className: "gap-1 font-normal" }, [
-		h.span([h.Class("text-muted-foreground")], [label]),
-		h.span([h.Class("font-mono")], [value]),
+		typography(h, { tone: "muted" }, [label]),
+		typography(h, { mono: true }, [value]),
 	])
 
 const heading = <M>(
@@ -120,27 +132,24 @@ const heading = <M>(
 	title: ReadonlyArray<string>,
 	dashboardId: string | null,
 ): Html =>
-	h.div(
-		[h.Class("flex items-center gap-2")],
-		[
-			icon(h, glyph, { className: "size-3.5 shrink-0 text-muted-foreground" }),
-			h.span([h.Class("text-sm font-semibold")], title),
-			...(dashboardId === null
-				? []
-				: [
-						badge(h, { variant: "outline", size: "xs", mono: true, className: "ml-auto" }, [
-							dashboardId,
-						]),
+	hstack(h, { gap: "2" }, [
+		icon(h, glyph, { className: typographyClass({ tone: "muted", className: "size-3.5 shrink-0" }) }),
+		typography(h, { size: "sm", weight: "semibold" }, title),
+		...(dashboardId === null
+			? []
+			: [
+					badge(h, { variant: "outline", size: "xs", mono: true, className: "ml-auto" }, [
+						dashboardId,
 					]),
-		],
-	)
+				]),
+	])
 
 /** `deriveWidgetsFromCreate`: the widgets of a `dashboard_json`, else of a `widgets` list. */
 const widgetsOf = (input: Readonly<Record<string, unknown>>): ReadonlyArray<Widget> => {
 	const dashboard = safeParseJson(input.dashboard_json)
-	if (dashboard.ok) return (asArray(asRecord(dashboard.value)?.widgets) ?? []).flatMap(normalizeWidget)
+	if (dashboard.ok) return Arr.flatMap(asArray(asRecord(dashboard.value)?.widgets) ?? [], normalizeWidget)
 	const simple = safeParseJson(input.widgets)
-	return simple.ok ? (asArray(simple.value) ?? []).flatMap(normalizeWidget) : []
+	return simple.ok ? Arr.flatMap(asArray(simple.value) ?? [], normalizeWidget) : []
 }
 
 type Input = Readonly<Record<string, unknown>>
@@ -156,41 +165,33 @@ const createDashboard = <M>(h: HtmlBuilder<M>, obj: Input): Html => {
 	return h.div(
 		[h.Class("space-y-3")],
 		[
-			h.div(
-				[h.Class("flex items-center gap-2")],
-				[
-					icon(h, "PlusIcon", { className: "size-3.5 shrink-0 text-muted-foreground" }),
-					h.div(
-						[h.Class("min-w-0 flex-1")],
-						[
-							h.div([h.Class("truncate text-sm font-semibold")], [name]),
-							...(innerName !== undefined && innerName !== name
-								? [
-										h.div(
-											[h.Class("truncate text-2xs text-muted-foreground")],
-											["Inner title: ", innerName],
-										),
-									]
-								: []),
-						],
-					),
-				],
-			),
+			hstack(h, { gap: "2" }, [
+				icon(h, "PlusIcon", {
+					className: typographyClass({ tone: "muted", className: "size-3.5 shrink-0" }),
+				}),
+				h.div(
+					[h.Class("min-w-0 flex-1")],
+					[
+						typography(h, { size: "sm", weight: "semibold", truncate: true, as: "div" }, [name]),
+						...(innerName !== undefined && innerName !== name
+							? [
+									typography(h, { size: "2xs", tone: "muted", truncate: true, as: "div" }, [
+										"Inner title: ",
+										innerName,
+									]),
+								]
+							: []),
+					],
+				),
+			]),
 			...(description === undefined
 				? []
-				: [h.div([h.Class("text-xs text-muted-foreground")], [description])]),
-			h.div(
-				[h.Class("flex flex-wrap gap-1.5")],
-				[
-					fieldChip(
-						h,
-						"template",
-						asString(obj.template) ?? (isCustom ? "Custom" : "service-health"),
-					),
-					...(serviceName === undefined ? [] : [fieldChip(h, "service", serviceName)]),
-					fieldChip(h, "time", asString(obj.time_range) ?? "1h"),
-				],
-			),
+				: [typography(h, { size: "xs", tone: "muted", as: "div" }, [description])]),
+			hstack(h, { gap: "1.5", align: "stretch", wrap: true }, [
+				fieldChip(h, "template", asString(obj.template) ?? (isCustom ? "Custom" : "service-health")),
+				...(serviceName === undefined ? [] : [fieldChip(h, "service", serviceName)]),
+				fieldChip(h, "time", asString(obj.time_range) ?? "1h"),
+			]),
 			...(widgets.length > 0
 				? [section(h, `Widgets (${widgets.length})`, widgetList(h, widgets))]
 				: !isCustom
@@ -210,13 +211,10 @@ const createDashboard = <M>(h: HtmlBuilder<M>, obj: Input): Html => {
 }
 
 const changeLine = <M>(h: HtmlBuilder<M>, label: string, value: string, valueClass?: string): Html =>
-	h.div(
-		[h.Class("text-xs")],
-		[
-			h.span([h.Class("text-muted-foreground")], [label]),
-			h.span(valueClass === undefined ? [] : [h.Class(valueClass)], [value]),
-		],
-	)
+	typography(h, { size: "xs", as: "div" }, [
+		typography(h, { tone: "muted" }, [label]),
+		h.span(valueClass === undefined ? [] : [h.Class(valueClass)], [value]),
+	])
 
 const updateDashboard = <M>(h: HtmlBuilder<M>, obj: Input): Html => {
 	const name = asString(obj.name)
@@ -240,7 +238,7 @@ const updateDashboard = <M>(h: HtmlBuilder<M>, obj: Input): Html => {
 					description === undefined &&
 					timeRange === undefined &&
 					!isReplacement
-						? [h.div([h.Class("text-xs text-muted-foreground")], ["No metadata changes"])]
+						? [typography(h, { size: "xs", tone: "muted", as: "div" }, ["No metadata changes"])]
 						: []),
 				],
 			),
@@ -289,40 +287,34 @@ const addWidget = <M>(h: HtmlBuilder<M>, obj: Input): Html => {
 		[
 			heading(h, "PlusIcon", ["Add widget"], asString(obj.dashboard_id) ?? EMPTY_VALUE),
 			panel(h, { tone: "background", className: "border-border-subtle bg-background/60 p-2" }, [
-				h.div(
-					[h.Class("flex items-center gap-2")],
-					[
-						icon(h, vizIcon(visualization), {
-							className: "size-4 shrink-0 text-muted-foreground",
-						}),
-						h.div(
-							[h.Class("min-w-0 flex-1")],
-							[
-								h.div(
-									[h.Class("truncate text-xs font-medium")],
-									[asString(display?.title) ?? "Untitled widget"],
-								),
-								...(endpoint === undefined
-									? []
-									: [
-											h.div(
-												[h.Class("truncate text-2xs text-muted-foreground")],
-												[endpoint],
-											),
-										]),
-							],
-						),
-					],
-				),
+				hstack(h, { gap: "2" }, [
+					icon(h, vizIcon(visualization), {
+						className: "size-4 shrink-0 text-muted-foreground",
+					}),
+					h.div(
+						[h.Class("min-w-0 flex-1")],
+						[
+							typography(h, { size: "xs", weight: "medium", truncate: true, as: "div" }, [
+								asString(display?.title) ?? "Untitled widget",
+							]),
+							...(endpoint === undefined
+								? []
+								: [
+										typography(
+											h,
+											{ size: "2xs", tone: "muted", truncate: true, as: "div" },
+											[endpoint],
+										),
+									]),
+						],
+					),
+				]),
 			]),
-			h.div(
-				[h.Class("flex flex-wrap gap-1.5")],
-				[
-					fieldChip(h, "viz", vizLabel(visualization)),
-					...(serviceName === undefined ? [] : [fieldChip(h, "service", serviceName)]),
-					fieldChip(h, "layout", layoutLabel(parsedRecord(obj.layout_json))),
-				],
-			),
+			hstack(h, { gap: "1.5", align: "stretch", wrap: true }, [
+				fieldChip(h, "viz", vizLabel(visualization)),
+				...(serviceName === undefined ? [] : [fieldChip(h, "service", serviceName)]),
+				fieldChip(h, "layout", layoutLabel(parsedRecord(obj.layout_json))),
+			]),
 		],
 	)
 }
@@ -353,33 +345,22 @@ const updateWidget = <M>(h: HtmlBuilder<M>, obj: Input): Html => {
 		[h.Class("space-y-3")],
 		[
 			heading(h, "PencilIcon", ["Update widget"], null),
-			h.div(
-				[h.Class("flex flex-wrap gap-1.5")],
-				[
-					fieldChip(h, "dashboard", asString(obj.dashboard_id) ?? EMPTY_VALUE),
-					fieldChip(h, "widget", asString(obj.widget_id) ?? EMPTY_VALUE),
-				],
-			),
+			hstack(h, { gap: "1.5", align: "stretch", wrap: true }, [
+				fieldChip(h, "dashboard", asString(obj.dashboard_id) ?? EMPTY_VALUE),
+				fieldChip(h, "widget", asString(obj.widget_id) ?? EMPTY_VALUE),
+			]),
 			section(h, `Changes (${changes.length})`, [
 				changes.length === 0
-					? h.div([h.Class("text-xs text-muted-foreground")], ["No changes"])
+					? typography(h, { size: "xs", tone: "muted", as: "div" }, ["No changes"])
 					: h.ul(
 							[h.Class("space-y-1 text-xs")],
-							changes.map(({ label, detail }) =>
-								h.li(
-									[h.Class("flex gap-2")],
-									[
-										h.span([h.Class("font-medium")], [label]),
-										...(detail === undefined
-											? []
-											: [
-													h.span(
-														[h.Class("truncate text-muted-foreground")],
-														[detail],
-													),
-												]),
-									],
-								),
+							Arr.map(changes, ({ label, detail }) =>
+								hstack(h, { gap: "2", align: "stretch", as: "li" }, [
+									typography(h, { weight: "medium" }, [label]),
+									...(detail === undefined
+										? []
+										: [typography(h, { tone: "muted", truncate: true }, [detail])]),
+								]),
 							),
 						),
 			]),
@@ -388,26 +369,20 @@ const updateWidget = <M>(h: HtmlBuilder<M>, obj: Input): Html => {
 }
 
 const removeWidget = <M>(h: HtmlBuilder<M>, obj: Input): Html =>
-	h.div(
-		[h.Class("flex items-start gap-2")],
-		[
-			icon(h, "TrashIcon", { className: "mt-0.5 size-3.5 shrink-0 text-destructive" }),
-			h.div(
-				[h.Class("text-xs leading-relaxed")],
-				[
-					"Remove widget ",
-					inlineCode(h, {}, [asString(obj.widget_id) ?? EMPTY_VALUE]),
-					" from dashboard",
-					" ",
-					inlineCode(h, {}, [asString(obj.dashboard_id) ?? EMPTY_VALUE]),
-					".",
-				],
-			),
-		],
-	)
+	hstack(h, { gap: "2", align: "start" }, [
+		icon(h, "TrashIcon", { className: "mt-0.5 size-3.5 shrink-0 text-destructive" }),
+		typography(h, { size: "xs", as: "div", className: "leading-relaxed" }, [
+			"Remove widget ",
+			inlineCode(h, {}, [asString(obj.widget_id) ?? EMPTY_VALUE]),
+			" from dashboard",
+			" ",
+			inlineCode(h, {}, [asString(obj.dashboard_id) ?? EMPTY_VALUE]),
+			".",
+		]),
+	])
 
 const reorderWidgets = <M>(h: HtmlBuilder<M>, obj: Input): Html => {
-	const ids = (parsedArray(obj.layouts_json) ?? []).flatMap((entry) => {
+	const ids = Arr.flatMap(parsedArray(obj.layouts_json) ?? [], (entry) => {
 		const id = asString(asRecord(entry)?.id)
 		return id === undefined ? [] : [id]
 	})
@@ -425,26 +400,22 @@ const reorderWidgets = <M>(h: HtmlBuilder<M>, obj: Input): Html => {
 			...(preview.length === 0
 				? []
 				: [
-						h.div(
-							[h.Class("flex flex-wrap gap-1")],
-							[
-								...preview.map((id) =>
-									inlineCode(
-										h,
-										{ className: "px-1.5 py-0.5 text-3xs text-muted-foreground" },
-										[id],
-									),
-								),
-								...(overflow > 0
-									? [
-											h.span(
-												[h.Class("text-3xs text-muted-foreground")],
-												["+ ", String(overflow), " more"],
-											),
-										]
-									: []),
-							],
-						),
+						hstack(h, { gap: "1", align: "stretch", wrap: true }, [
+							...Arr.map(preview, (id) =>
+								inlineCode(h, { className: "px-1.5 py-0.5 text-3xs text-muted-foreground" }, [
+									id,
+								]),
+							),
+							...(overflow > 0
+								? [
+										typography(h, { size: "3xs", tone: "muted" }, [
+											"+ ",
+											String(overflow),
+											" more",
+										]),
+									]
+								: []),
+						]),
 					]),
 		],
 	)

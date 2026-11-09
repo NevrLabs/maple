@@ -10,19 +10,20 @@ import type { V2AlertRulePreviewParams } from "@maple/domain/http/v2"
 import { ruleToFormState } from "@maple/web-data/alerts/form-utils"
 import {
 	buildRuleStatesByRuleId,
-	rowToAlertDestinationDocument,
-	rowToAlertIncidentDocument,
+	rowsToAlertDestinationDocuments,
+	rowsToAlertIncidentDocuments,
 	rowToAlertRuleDocument,
 } from "@maple/web-data/collections/alerts"
 import { normalizeTimestampInput } from "@maple/web-data/lib/timezone-format"
-import { Option } from "effect"
+import { Option, Array as Arr } from "effect"
 import { AsyncData } from "foldkit"
-import { presetLabel } from "../../kit/time-controls"
+import { lastBy } from "../../kit/last-by"
+import { type PresetValue, presetLabel } from "../../kit/time-controls"
+import { summaryChecksOf } from "../shared/check-summary"
 import { previewPayload } from "../shared/preview"
-import { isoMs } from "../shared/time"
 import type { ChecksResponse, Model } from "./model"
 
-export const DEFAULT_PRESET = "24h"
+export const DEFAULT_PRESET: PresetValue = "24h"
 
 /** `formatBucketSpan`. */
 export const formatBucketSpan = (seconds: number): string => {
@@ -36,28 +37,49 @@ export const formatBucketSpan = (seconds: number): string => {
 export const isoOf = (warehouseTime: string): IsoDateTimeString =>
 	IsoDateTimeString.make(new Date(normalizeTimestampInput(warehouseTime)).toISOString())
 
-export const ruleOf = (model: Model): AlertRuleDocument | null => {
-	const statesByRule = buildRuleStatesByRuleId(model.states ?? [])
-	const row = (model.rules ?? []).find((candidate) => candidate.id === model.ruleId)
-	return row === undefined ? null : rowToAlertRuleDocument(row, statesByRule)
-}
+const ruleFor = lastBy(
+	([rules, states, id]: readonly [
+		Model["rules"],
+		Model["states"],
+		Model["ruleId"],
+	]): AlertRuleDocument | null => {
+		const row = Arr.findFirst(rules ?? [], (candidate) => candidate.id === id)
+		if (Option.isNone(row)) return null
+		const own = Arr.filter(states ?? [], (state) => state.rule_id === id)
+		return Option.getOrNull(rowToAlertRuleDocument(row.value, buildRuleStatesByRuleId(own)))
+	},
+)
 
-/** Every incident of this rule, latest trigger first. */
+/** This rule's document; recomputed only when the synced rules or states change. */
+export const ruleOf = (model: Model): AlertRuleDocument | null =>
+	ruleFor([model.rules, model.states, model.ruleId])
+
+const ruleIncidentsFor = lastBy(
+	([incidents, id]: readonly [Model["incidents"], Model["ruleId"]]): ReadonlyArray<AlertIncidentDocument> =>
+		[...rowsToAlertIncidentDocuments(Arr.filter(incidents ?? [], (row) => row.rule_id === id))].sort(
+			(a, b) => isoTime(b.lastTriggeredAt) - isoTime(a.lastTriggeredAt),
+		),
+)
+
+const isoTime = (iso: string | null): number => (iso ? new Date(iso).getTime() : 0)
+
+/** Every incident of this rule, latest trigger first. Only this rule's rows are decoded. */
 export const ruleIncidentsOf = (model: Model): ReadonlyArray<AlertIncidentDocument> =>
-	(model.incidents ?? [])
-		.map(rowToAlertIncidentDocument)
-		.filter((incident) => incident.ruleId === model.ruleId)
-		.sort((a, b) => {
-			const dateA = a.lastTriggeredAt ? new Date(a.lastTriggeredAt).getTime() : 0
-			const dateB = b.lastTriggeredAt ? new Date(b.lastTriggeredAt).getTime() : 0
-			return dateB - dateA
-		})
+	ruleIncidentsFor([model.incidents, model.ruleId])
+
+const destinationsFor = lastBy(
+	([rows]: readonly [Model["destinations"]]): ReadonlyArray<AlertDestinationDocument> =>
+		rowsToAlertDestinationDocuments(rows ?? []),
+)
 
 export const destinationsOf = (model: Model): ReadonlyArray<AlertDestinationDocument> =>
-	(model.destinations ?? []).map(rowToAlertDestinationDocument)
+	destinationsFor([model.destinations])
 
 export const ruleDeliveriesOf = (model: Model): ReadonlyArray<AlertDeliveryEventDocument> =>
-	AsyncData.getOrElse(model.deliveries.data, () => []).filter((event) => event.ruleId === model.ruleId)
+	Arr.filter(
+		AsyncData.getOrElse(model.deliveries.data, () => []),
+		(event) => event.ruleId === model.ruleId,
+	)
 
 export const checksPageOf = (model: Model): ChecksResponse | null =>
 	Option.getOrNull(AsyncData.getData(model.checks.data))
@@ -68,48 +90,16 @@ export const chartChecksOf = (
 	page: ChecksResponse | null,
 ): ReadonlyArray<AlertCheckDocument> => {
 	if (page === null) return []
-	if (page.summary.points.length === 0) return page.checks
-	return page.summary.points.map((point) => {
-		const status: AlertCheckDocument["status"] =
-			point.errorCount > 0
-				? "error"
-				: point.breachedCount > 0
-					? "breached"
-					: point.healthyCount > 0
-						? "healthy"
-						: "skipped"
-		const bucketStart = IsoDateTimeString.make(point.bucket)
-		const bucketEnd = IsoDateTimeString.make(
-			new Date(isoMs(point.bucket) + page.summary.bucketSeconds * 1000).toISOString(),
-		)
-		return new AlertCheckDocument({
-			timestamp: bucketStart,
-			groupKey: point.groupKey,
-			status,
-			skipReason: null,
-			signalType: rule.signalType,
-			comparator: rule.comparator,
-			threshold: point.threshold,
-			thresholdUpper: rule.thresholdUpper,
-			observedValue: point.observedValue,
-			sampleCount: point.totalCount,
-			windowMinutes: Math.max(1, Math.round(page.summary.bucketSeconds / 60)),
-			windowStart: bucketStart,
-			windowEnd: bucketEnd,
-			consecutiveBreaches: 0,
-			consecutiveHealthy: 0,
-			incidentId: null,
-			incidentTransition: point.transitionCount > 0 ? "continued" : "none",
-			level: null,
-			evaluationDurationMs: 0,
-			errorMessage: null,
-			errorCategory: null,
-		})
-	})
+	return page.summary.points.length === 0 ? page.checks : summaryChecksOf(rule, page.summary)
 }
 
-export const payloadOf = (model: Model, rule: AlertRuleDocument | null): Option.Option<V2AlertRulePreviewParams> =>
-	rule === null || model.window === null ? Option.none() : previewPayload(ruleToFormState(rule), model.window)
+export const payloadOf = (
+	model: Model,
+	rule: AlertRuleDocument | null,
+): Option.Option<V2AlertRulePreviewParams> =>
+	rule === null || model.window === null
+		? Option.none()
+		: previewPayload(ruleToFormState(rule), model.window)
 
 /** The picker's label: a preset's, else the range (not yet zone-aware). */
 export const rangeLabelOf = (model: Model): string =>

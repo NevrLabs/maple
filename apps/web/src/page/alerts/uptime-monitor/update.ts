@@ -1,11 +1,11 @@
 import { Option, Result } from "effect"
 import { AsyncData, Command as FoldkitCommand } from "foldkit"
-import * as Chart from "../../../charts/chart"
-import { LoadChartRuntime } from "../../../charts/chart-runtime"
-import * as Keyed from "../../../data/keyed"
-import { requestKey } from "../../../data/request-key"
+import * as Chart from "@maple/views/charts/chart"
+import { LoadChartRuntime } from "@maple/views/charts/chart-runtime"
+import * as Keyed from "@maple/views/data/keyed"
+import { requestKey } from "@maple/views/data/request-key"
 import type { AppRoute } from "../../../route"
-import * as CopyButton from "../../../ui/copy-button"
+import * as CopyButton from "@maple/views/ui/copy-button"
 import { type PageContext, PageOutMessage, type PageReturn } from "../../contract"
 import { monitorIdFromUrl } from "../shared/uptime-commands"
 import { formatMs } from "../shared/uptime-derive"
@@ -73,7 +73,7 @@ export const init = (route: MonitorRoute, context: PageContext): Return => {
 		monitor: Keyed.idle(),
 		destinations: null,
 		incidents: null,
-		isAdmin: false,
+		grants: [],
 		isToggling: false,
 		isChecking: false,
 		copies: {},
@@ -152,8 +152,8 @@ export const update = (model: Model, message: Message, context: PageContext): Re
 			orgId === context.orgId ? { model: { ...model, destinations: rows } } : { model },
 		UpdatedIncidents: ({ orgId, rows }) =>
 			orgId === context.orgId ? { model: { ...model, incidents: rows } } : { model },
-		CompletedFetchSession: ({ orgId, isAdmin }) =>
-			orgId === context.orgId ? { model: { ...model, isAdmin } } : { model },
+		CompletedFetchSession: ({ orgId, grants }) =>
+			orgId === context.orgId ? { model: { ...model, grants } } : { model },
 		ClickedToggle: () => toggle(model),
 		CompletedToggle: ({ result }) => {
 			const settled = { ...model, isToggling: false }

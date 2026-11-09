@@ -5,6 +5,7 @@ import { buildSessionChecks, type SessionCheck } from "./session-checks"
 import { buildSessionSummary } from "./session-summary"
 import { buildSessionTurns } from "./session-turns"
 import { agentSpan, llmSpan, makeSpan, toolSpan } from "./span-test-support"
+import { Array as Arr, Option } from "effect"
 
 const SECOND = 1000
 const MINUTE = 60 * SECOND
@@ -17,9 +18,10 @@ function checks(spans: Spans) {
 }
 
 function byId(report: ReturnType<typeof checks>, id: string): SessionCheck {
-	const found = report.checks.find((check) => check.id === id)
-	if (found === undefined) throw new Error(`no check ${id}`)
-	return found
+	return Option.getOrThrowWith(
+		Arr.findFirst(report.checks, (check) => check.id === id),
+		() => new Error(`no check ${id}`),
+	)
 }
 
 /** A clean opening turn, keyed by conversation id so a second turn can follow. */
@@ -34,8 +36,8 @@ function firstTurn(): Spans {
 			model: "claude-opus-5",
 			genAi: {
 				conversationId: "t1",
-				usageInputTokens: 1000,
-				usageOutputTokens: 100,
+				mapleInputTokens: 1000,
+				mapleOutputTokens: 100,
 				responseFinishReasons: ["stop"],
 			},
 		}),
@@ -68,7 +70,7 @@ describe("buildSessionChecks", () => {
 		expect(report.counts.failed).toBe(0)
 		expect(report.counts.warning).toBe(0)
 		expect(report.headline).toBe(`cleanly — ${report.counts.passed} checks passed across 2 turns`)
-		expect(report.checks.find((check) => check.id === "completion")).toBeUndefined()
+		expect(Option.isNone(Arr.findFirst(report.checks, (check) => check.id === "completion"))).toBe(true)
 		expect(byId(report, "context-window").headline).toBe("The prompt peaked at 1K tokens")
 		expect(byId(report, "tool-timeouts").headline).toBe(
 			"No tool call timed out; the slowest was `read_file` at 2s",
@@ -77,9 +79,9 @@ describe("buildSessionChecks", () => {
 		// Nothing reported cache usage, so the cache check says so rather than passing.
 		expect(byId(report, "prompt-cache").status).toBe("skipped")
 		// Passed and skipped rows carry no fix tag: there is nothing to fix.
-		expect(report.checks.every((check) => check.status !== "passed" || check.fixArea === undefined)).toBe(
-			true,
-		)
+		expect(
+			Arr.every(report.checks, (check) => check.status !== "passed" || check.fixArea === undefined),
+		).toBe(true)
 	})
 
 	it("names the cause of death in the headline, and the cause's own check carries the action", () => {
@@ -104,8 +106,8 @@ describe("buildSessionChecks", () => {
 				genAi: {
 					conversationId: "t2",
 					errorType: "context_length_exceeded",
-					usageInputTokens: 214832,
-					usageOutputTokens: 0,
+					mapleInputTokens: 214832,
+					mapleOutputTokens: 0,
 				},
 			}),
 		])
@@ -113,7 +115,7 @@ describe("buildSessionChecks", () => {
 		expect(report.verdict.status).toBe("failed")
 		expect(report.headline).toBe("the final turn died on the context window")
 		// The cause leads the list; the outcome is the headline, not a row.
-		expect(report.checks[0].id).toBe("context-window")
+		expect(Arr.getUnsafe(report.checks, 0).id).toBe("context-window")
 
 		const context = byId(report, "context-window")
 		expect(context.status).toBe("failed")
@@ -122,7 +124,7 @@ describe("buildSessionChecks", () => {
 		)
 		expect(context.action).toMatch(/^Compact or summarise/)
 		expect(context.fixArea).toBe("prompt")
-		expect(context.findings.map((finding) => finding.spanId)).toEqual(["l2"])
+		expect(Arr.map(context.findings, (finding) => finding.spanId)).toEqual(["l2"])
 		expect(report.counts.failed).toBe(1)
 	})
 
@@ -151,7 +153,7 @@ describe("buildSessionChecks", () => {
 				startMs: 5 * MINUTE + 3 * SECOND,
 				durationMs: SECOND,
 				model: "claude-opus-5",
-				genAi: { conversationId: "t2", usageInputTokens: 1200, usageOutputTokens: 80 },
+				genAi: { conversationId: "t2", mapleInputTokens: 1200, mapleOutputTokens: 80 },
 			}),
 		])
 
@@ -161,7 +163,7 @@ describe("buildSessionChecks", () => {
 		expect(limits.status).toBe("warning")
 		expect(limits.headline).toBe("1 model call was rate-limited on turn 2; the session carried on")
 		expect(limits.fixArea).toBe("provider")
-		expect(report.checks[0].id).toBe("rate-limits")
+		expect(Arr.getUnsafe(report.checks, 0).id).toBe("rate-limits")
 	})
 
 	// A tool that cannot run needs fixing whether or not the run survived it,
@@ -251,12 +253,12 @@ describe("buildSessionChecks", () => {
 				model: "claude-opus-5",
 				genAi: {
 					conversationId: "t1",
-					// Inclusive of the cache read, as the default convention counts it.
-					// No write reported: a Claude prompt this long that read nothing
-					// missed the cache, rather than being too short to cache.
-					usageInputTokens: 10_000,
+					// A 10K prompt. No write reported: a Claude prompt this long that
+					// read nothing missed the cache, rather than being too short to cache.
 					usageCacheReadInputTokens: cacheRead,
-					usageOutputTokens: 100,
+					mapleInputTokens: 10_000 - cacheRead,
+					mapleCacheReadTokens: cacheRead,
+					mapleOutputTokens: 100,
 				},
 			})
 		const cold = checks([
@@ -321,16 +323,16 @@ describe("buildSessionChecks", () => {
 				parentSpanId: "a1",
 				startMs,
 				durationMs: SECOND,
-				genAi: { conversationId: "t1", usageOutputTokens: 50, ...genAi },
+				genAi: { conversationId: "t1", mapleOutputTokens: 50, ...genAi },
 			})
 		const session = (genAi: (i: number) => AiSessionGenAiValues) =>
 			checks([
 				agentSpan({ spanId: "a1", startMs: 0, durationMs: MINUTE, genAi: { conversationId: "t1" } }),
-				...[0, 1, 2, 3, 4].map((i) => call(`c${i}`, (i + 1) * SECOND, genAi(i))),
+				...Arr.map([0, 1, 2, 3, 4], (i) => call(`c${i}`, (i + 1) * SECOND, genAi(i))),
 			])
 
 		const short = byId(
-			session((i) => ({ usageInputTokens: 700 + 40 * i, usageCacheReadInputTokens: 0 })),
+			session((i) => ({ mapleInputTokens: 700 + 40 * i, usageCacheReadInputTokens: 0 })),
 			"prompt-cache",
 		)
 		expect(short.status).toBe("skipped")
@@ -353,7 +355,7 @@ describe("buildSessionChecks", () => {
 			const neverWritten = byId(
 				session((i) => ({
 					...claude,
-					usageInputTokens: 1_227 + 200 * i,
+					mapleInputTokens: 1_227 + 200 * i,
 					usageCacheReadInputTokens: 0,
 				})),
 				"prompt-cache",
@@ -369,13 +371,13 @@ describe("buildSessionChecks", () => {
 					? {
 							providerName: "openai",
 							requestModel: "gpt-4o-mini",
-							usageInputTokens: 2_000,
+							mapleInputTokens: 2_000,
 							usageCacheReadInputTokens: 0,
 						}
 					: {
 							providerName: "openrouter",
 							requestModel: "anthropic/claude-haiku-4.5",
-							usageInputTokens: 1_300,
+							mapleInputTokens: 1_300,
 							usageCacheReadInputTokens: 0,
 							usageCacheCreationInputTokens: 0,
 						},
@@ -391,7 +393,7 @@ describe("buildSessionChecks", () => {
 			const missed = byId(
 				session(() => ({
 					providerName: "openai",
-					usageInputTokens: 2_000,
+					mapleInputTokens: 2_000,
 					usageCacheReadInputTokens: 0,
 					usageCacheCreationInputTokens: write,
 				})),
@@ -406,8 +408,14 @@ describe("buildSessionChecks", () => {
 		const shortFirst = byId(
 			session((i) =>
 				i === 0
-					? { usageInputTokens: 300, usageCacheReadInputTokens: 0 }
-					: { usageInputTokens: 2_000, usageCacheReadInputTokens: i === 1 ? 0 : 1_000 },
+					? { mapleInputTokens: 300, usageCacheReadInputTokens: 0 }
+					: i === 1
+						? { mapleInputTokens: 2_000, usageCacheReadInputTokens: 0 }
+						: {
+								mapleInputTokens: 1_000,
+								mapleCacheReadTokens: 1_000,
+								usageCacheReadInputTokens: 1_000,
+							},
 			),
 			"prompt-cache",
 		)
@@ -429,7 +437,7 @@ describe("buildSessionChecks", () => {
 					spanName: "LLM Generation",
 					startMs: at,
 					durationMs: 4_842,
-					genAi: { usageInputTokens: 58_797, usageOutputTokens: 220, responseId: `gen-${n}` },
+					genAi: { mapleInputTokens: 58_797, mapleOutputTokens: 220, responseId: `gen-${n}` },
 				}),
 				llmSpan({
 					spanId: `${root}-attempt`,
@@ -497,7 +505,7 @@ describe("buildSessionChecks", () => {
 	// once, and judged by the observation that measured the cache.
 	it("judges the prompt cache off a gateway mirror when the counted span has none", () => {
 		const report = checks(
-			[0, 1, 2, 3, 4].flatMap((i) => [
+			Arr.flatMap([0, 1, 2, 3, 4], (i) => [
 				llmSpan({
 					spanId: `app-${i}`,
 					traceId: `trace-app-${i}`,
@@ -505,8 +513,8 @@ describe("buildSessionChecks", () => {
 					durationMs: 2 * SECOND,
 					genAi: {
 						providerName: "openai",
-						usageInputTokens: 2_000,
-						usageOutputTokens: 50,
+						mapleInputTokens: 2_000,
+						mapleOutputTokens: 50,
 						responseId: `gen-${i}`,
 					},
 				}),
@@ -518,9 +526,10 @@ describe("buildSessionChecks", () => {
 					durationMs: 2 * SECOND,
 					genAi: {
 						providerName: "openai",
-						usageInputTokens: 2_000,
 						usageCacheReadInputTokens: i === 0 ? 0 : 1_500,
-						usageOutputTokens: 50,
+						mapleInputTokens: i === 0 ? 2_000 : 500,
+						mapleCacheReadTokens: i === 0 ? 0 : 1_500,
+						mapleOutputTokens: 50,
 						responseId: `gen-${i}`,
 					},
 				}),
@@ -533,22 +542,20 @@ describe("buildSessionChecks", () => {
 	// over `generate_content`, both with the same usage. The cache check read
 	// "over 15 calls" for a session of 8.
 	it("judges the prompt cache once per model call when a wrapper repeats the usage", () => {
-		const usage = (i: number): AiSessionGenAiValues => ({
+		const reported = (i: number): AiSessionGenAiValues => ({
 			requestModel: "openrouter/openai/gpt-4o-mini",
-			usageInputTokens: 2_000,
 			usageCacheReadInputTokens: i === 0 ? 0 : 1_536,
-			usageOutputTokens: 32,
 		})
 		const report = checks([
 			agentSpan({ spanId: "a1", startMs: 0, durationMs: MINUTE, agentName: "assistant" }),
-			...[0, 1, 2, 3, 4].flatMap((i) => [
+			...Arr.flatMap([0, 1, 2, 3, 4], (i) => [
 				makeSpan({
 					spanId: `call-${i}`,
 					parentSpanId: "a1",
 					spanName: "call_llm",
 					startMs: (i + 1) * SECOND,
 					durationMs: 2 * SECOND,
-					genAi: usage(i),
+					genAi: { ...reported(i), mapleLlmCall: 0 },
 				}),
 				llmSpan({
 					spanId: `gen-${i}`,
@@ -556,7 +563,13 @@ describe("buildSessionChecks", () => {
 					spanName: "generate_content",
 					startMs: (i + 1) * SECOND,
 					durationMs: 2 * SECOND,
-					genAi: { operationName: "generate_content", ...usage(i) },
+					genAi: {
+						operationName: "generate_content",
+						...reported(i),
+						mapleInputTokens: i === 0 ? 2_000 : 464,
+						mapleCacheReadTokens: i === 0 ? 0 : 1_536,
+						mapleOutputTokens: 32,
+					},
 				}),
 			]),
 		])
@@ -582,7 +595,7 @@ describe("buildSessionChecks", () => {
 				model: "claude-opus-5",
 				statusCode: "Error",
 				statusMessage,
-				genAi: { conversationId: "t2", errorType, usageInputTokens: 5000, usageOutputTokens: 0 },
+				genAi: { conversationId: "t2", errorType, mapleInputTokens: 5000, mapleOutputTokens: 0 },
 			}),
 			llmSpan({
 				spanId: `${spanId}-again`,
@@ -590,7 +603,7 @@ describe("buildSessionChecks", () => {
 				startMs: 5 * MINUTE + 3 * SECOND,
 				durationMs: SECOND,
 				model: "claude-opus-5",
-				genAi: { conversationId: "t2", usageInputTokens: 1200, usageOutputTokens: 80 },
+				genAi: { conversationId: "t2", mapleInputTokens: 1200, mapleOutputTokens: 80 },
 			}),
 		]
 
@@ -633,11 +646,11 @@ describe("buildSessionChecks", () => {
 
 		expect(report.verdict.status).toBe("failed")
 		expect(report.headline).toBe("the final turn died on `fetch_docs` timing out")
-		expect(report.checks[0].id).toBe("tool-timeouts")
-		expect(report.checks[0].headline).toBe(
+		expect(Arr.getUnsafe(report.checks, 0).id).toBe("tool-timeouts")
+		expect(Arr.getUnsafe(report.checks, 0).headline).toBe(
 			"`fetch_docs` timed out once on turn 2 (final): deadline exceeded after 8s",
 		)
-		expect(report.checks[0].fixArea).toBe("tool")
+		expect(Arr.getUnsafe(report.checks, 0).fixArea).toBe("tool")
 	})
 
 	it("names three findings and counts the rest", () => {
@@ -660,7 +673,7 @@ describe("buildSessionChecks", () => {
 				durationMs: 20 * SECOND,
 				genAi: { conversationId: "t2" },
 			}),
-			...["t_one", "t_two", "t_three", "t_four", "t_five"].map(failing),
+			...Arr.map(["t_one", "t_two", "t_three", "t_four", "t_five"], failing),
 			llmSpan({
 				spanId: "l2",
 				parentSpanId: "a2",

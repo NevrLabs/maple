@@ -1,12 +1,11 @@
 import { PrReviewCategory, PrReviewFindingStatus, PrReviewSeverity } from "@maple/domain/http"
 import { Command } from "foldkit"
-import * as Keyed from "../../../data/keyed"
-import { requestKey } from "../../../data/request-key"
+import * as Keyed from "@maple/views/data/keyed"
+import { requestKey } from "@maple/views/data/request-key"
 import type { TimeWindow } from "../../../data/time-range"
 import { AppRoute, hrefOf } from "../../../route"
 import type { CodeReviewIssuesSearch } from "../../../route/search"
-import * as Select from "../../../ui/select"
-import * as Tooltip from "../../../ui/tooltip"
+import * as Select from "@maple/views/ui/select"
 import { type PageContext, PageOutMessage, type PageReturn } from "../../contract"
 import { epochWindow } from "../kit/api"
 import { ALL, type FrameOut, type FrameReturn } from "../kit/frame"
@@ -31,11 +30,13 @@ import {
 	type Model,
 	WaitSearchDebounce,
 } from "./model"
+import type { PresetValue } from "../../kit/time-controls"
+import { Array as Arr, Record as Rec, Option } from "effect"
 
 export type Search = typeof CodeReviewIssuesSearch.Type
 type Return = PageReturn<Model, Message>
 
-export const DEFAULT_PRESET = "30d"
+export const DEFAULT_PRESET: PresetValue = "1mo"
 export const PAGE = 50
 export const MAX_ROWS = 200
 const FRAME_ID = "code-review-issues"
@@ -43,7 +44,7 @@ const FRAME_ID = "code-review-issues"
 const searchHref = (search: Search) => hrefOf(AppRoute.CodeReviewIssues({ search }))
 
 const navigate = (model: Model, patch: Partial<Search>): Return => {
-	const isFilter = Object.keys(patch).some((key) => key !== "review")
+	const isFilter = Arr.some(Rec.keys<string, unknown>(patch), (key) => key !== "review")
 	return {
 		model: isFilter ? { ...model, limit: PAGE } : model,
 		outMessage: PageOutMessage.RequestedNavigation({
@@ -146,11 +147,23 @@ const SELECT_FIELD = { severity: "severitySelect", category: "categorySelect", s
 const filterPatch = (filter: FilterKey, value: string): Partial<Search> => {
 	switch (filter) {
 		case "severity":
-			return { severity: PrReviewSeverity.literals.find((literal) => literal === value) }
+			return {
+				severity: Option.getOrUndefined(
+					Arr.findFirst(PrReviewSeverity.literals, (literal) => literal === value),
+				),
+			}
 		case "category":
-			return { category: PrReviewCategory.literals.find((literal) => literal === value) }
+			return {
+				category: Option.getOrUndefined(
+					Arr.findFirst(PrReviewCategory.literals, (literal) => literal === value),
+				),
+			}
 		case "state":
-			return { state: PrReviewFindingStatus.literals.find((literal) => literal === value) }
+			return {
+				state: Option.getOrUndefined(
+					Arr.findFirst(PrReviewFindingStatus.literals, (literal) => literal === value),
+				),
+			}
 	}
 }
 
@@ -185,7 +198,6 @@ export const init = (
 			stateSelect: select("state"),
 			searchDraft: route.search.q ?? "",
 			searchGeneration: 0,
-			timeTooltip: Tooltip.init(`${FRAME_ID}-time`),
 			sheet: {
 				...initSheet(`${FRAME_ID}-review`),
 				detailCache: carried.retained.details,
@@ -277,15 +289,6 @@ export const update = (model: Model, message: Message, context: PageContext): Re
 			return picked === undefined
 				? lifted
 				: combine(lifted, (current) => navigate(current, filterPatch(filter, picked.value)))
-		},
-		GotTimeTooltipMessage: ({ message: inner }) => {
-			const next = Tooltip.update(model.timeTooltip, inner)
-			return {
-				model: { ...model, timeTooltip: next.model },
-				commands: Command.mapMessages(next.commands ?? [], (m) =>
-					Message.GotTimeTooltipMessage({ message: m }),
-				),
-			}
 		},
 		ChangedSearchDraft: ({ value }) => {
 			const searchGeneration = model.searchGeneration + 1

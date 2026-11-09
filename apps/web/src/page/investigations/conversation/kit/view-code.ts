@@ -1,7 +1,11 @@
 import { cn } from "@maple/ui/lib/utils"
 import type { Html, HtmlBuilder } from "foldkit/html"
+import { iconButton } from "@maple/views/ui/icon-button"
 import { COPY_PATH, DOWNLOAD_PATH, LINE_CLASS } from "../../../kit/message-response"
 import { type HighlightedCode, highlightKey } from "./code-highlight"
+import { typographyClass } from "@maple/views/ui/typography"
+import { Array as Arr, String as Str } from "effect"
+import { hstack, vstack } from "@maple/views/ui/stack"
 
 // Streamdown's full code block, its lines coloured by `code-highlight.ts`.
 
@@ -32,9 +36,6 @@ const glyph = <M>(h: HtmlBuilder<M>, d: string, size: string): Html =>
 		],
 	)
 
-const ACTION_CLASS =
-	"cursor-pointer p-1 text-muted-foreground hover:text-foreground active:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
-
 const action = <M>(
 	h: HtmlBuilder<M>,
 	label: string,
@@ -42,33 +43,39 @@ const action = <M>(
 	slot: string | null,
 	onClick: M | null,
 ): Html =>
-	h.button(
-		[
-			h.AriaLabel(label),
-			h.Class(ACTION_CLASS),
-			...(slot === null ? [] : [h.DataAttribute("streamdown", slot)]),
-			h.Title(label),
-			h.Type("button"),
-			...(onClick === null ? [] : [h.OnClick(onClick)]),
-		],
+	iconButton(
+		h,
+		{
+			label,
+			size: "icon-xs",
+			hasTooltip: false,
+			className: typographyClass({
+				tone: "muted",
+				hoverTone: "foreground",
+			}),
+			attributes: [
+				...(slot === null ? [] : [h.DataAttribute("streamdown", slot)]),
+				h.Title(label),
+				...(onClick === null ? [] : [h.OnClick(onClick)]),
+			],
+		},
 		[glyph(h, d, "14")],
 	)
 
 const actionsBar = <M>(h: HtmlBuilder<M>, slot: string, children: ReadonlyArray<Html>): Html =>
-	h.div(
-		[h.Class("pointer-events-none absolute top-2 right-2 z-10 flex items-center")],
-		[
-			h.div(
-				[
-					h.Class(
-						"pointer-events-auto flex shrink-0 items-center gap-2 rounded-md border border-sidebar bg-sidebar/80 px-1.5 py-1 supports-[backdrop-filter]:bg-sidebar/70 supports-[backdrop-filter]:backdrop-blur",
-					),
-					h.DataAttribute("streamdown", slot),
-				],
-				children,
-			),
-		],
-	)
+	hstack(h, { align: "center", className: "pointer-events-none absolute top-2 right-2 z-10" }, [
+		hstack(
+			h,
+			{
+				gap: "2",
+				align: "center",
+				className:
+					"pointer-events-auto shrink-0 rounded-md border border-sidebar bg-sidebar/80 px-1.5 py-1 supports-[backdrop-filter]:bg-sidebar/70 supports-[backdrop-filter]:backdrop-blur",
+				attributes: [h.DataAttribute("streamdown", slot)],
+			},
+			children,
+		),
+	])
 
 const codeLines = <M>(
 	h: HtmlBuilder<M>,
@@ -76,13 +83,13 @@ const codeLines = <M>(
 	highlighted: HighlightedCode | null,
 ): ReadonlyArray<Html> =>
 	highlighted === null
-		? code.split("\n").map((line) => h.span([h.Class(LINE_CLASS)], [line === "" ? "\n" : line]))
-		: highlighted.lines.map((line) =>
+		? Arr.map(Str.split("\n")(code), (line) => h.span([h.Class(LINE_CLASS)], [line === "" ? "\n" : line]))
+		: Arr.map(highlighted.lines, (line) =>
 				h.span(
 					[h.Class(LINE_CLASS)],
 					line.length === 0
 						? ["\n"]
-						: line.map((token) =>
+						: Arr.map(line, (token) =>
 								h.span([h.Style({ color: `var(--sh-${token.slot})` })], [token.content]),
 							),
 				),
@@ -90,26 +97,32 @@ const codeLines = <M>(
 
 /** A fenced block: the language header, Download and Copy, numbered lines coloured. */
 export const codeBlock = <M>(h: HtmlBuilder<M>, host: CodeHost<M>, value: string, language: string): Html => {
-	const code = value.replace(/\n+$/, "")
+	const code = Str.replace(/\n+$/, "")(value)
 	const highlighted = host.highlights[highlightKey(language, value)] ?? null
 	const languageClass = highlighted === null ? undefined : `language-${language}`
-	return h.div(
+	return vstack(
+		h,
+		{
+			gap: "2",
+			className: "relative my-4 w-full rounded-md border border-border bg-sidebar p-2",
+			attributes: [
+				h.DataAttribute("language", language),
+				h.DataAttribute("streamdown", "code-block"),
+				h.Attribute("dir", "ltr"),
+				h.Style({ "content-visibility": "auto", "contain-intrinsic-size": "auto 200px" }),
+			],
+		},
 		[
-			h.Class(
-				"relative my-4 flex w-full flex-col gap-2 rounded-md border border-border bg-sidebar p-2",
-			),
-			h.DataAttribute("language", language),
-			h.DataAttribute("streamdown", "code-block"),
-			h.Attribute("dir", "ltr"),
-			h.Style({ "content-visibility": "auto", "contain-intrinsic-size": "auto 200px" }),
-		],
-		[
-			h.div(
-				[
-					h.Class("flex h-8 items-center text-muted-foreground text-xs"),
-					h.DataAttribute("language", language),
-					h.DataAttribute("streamdown", "code-block-header"),
-				],
+			hstack(
+				h,
+				{
+					align: "center",
+					className: "h-8 text-muted-foreground text-xs",
+					attributes: [
+						h.DataAttribute("language", language),
+						h.DataAttribute("streamdown", "code-block-header"),
+					],
+				},
 				[h.span([h.Class("ml-1 font-mono lowercase")], [language])],
 			),
 			actionsBar(h, "code-block-actions", [

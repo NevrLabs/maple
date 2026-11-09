@@ -54,7 +54,7 @@ const handler = Effect.gen(function* () {
 	 * double-applying — which is what makes "fail loudly" the safe choice here
 	 * rather than a source of duplicate work.
 	 */
-	const revoke = Effect.fn("ClerkWebhook.revoke")(function* (run: Effect.Effect<unknown, unknown>) {
+	const revoke = Effect.fn("ClerkWebhook.revoke")(function* <E>(run: Effect.Effect<unknown, E>) {
 		const outcome = yield* run.pipe(Effect.option)
 		if (Option.isNone(outcome)) {
 			yield* Effect.annotateCurrentSpan({
@@ -211,7 +211,8 @@ const handler = Effect.gen(function* () {
  */
 export const ClerkWebhookRoute = HttpRouter.use((router) =>
 	Effect.gen(function* () {
-		yield* router.add("POST", ROUTE, yield* handler)
+		const routeHandler = yield* handler
+		yield* router.add("POST", ROUTE, routeHandler)
 	}),
 )
 

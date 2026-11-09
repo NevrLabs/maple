@@ -18,7 +18,7 @@ import {
 	worstStatus,
 } from "@maple/domain/status-page"
 import type { Tone } from "@maple/ui/lib/tone"
-import { Schema } from "effect"
+import { Schema, Array as Arr, Option } from "effect"
 
 // Pure reads of status pages shared by the hub's tab and the editor.
 
@@ -86,6 +86,16 @@ export const closingStatus = (kind: StatusPageIncidentKind): StatusPageIncidentS
 export const isOpenIncident = (incident: V2StatusPageIncident): boolean =>
 	incident.status !== "resolved" && incident.status !== "completed"
 
+/** The status of the component's monitor; null without one. */
+export const monitorStatusOf = (
+	monitors: ReadonlyArray<V2UptimeMonitor>,
+	monitorId: V2UptimeMonitor["id"] | null,
+): V2UptimeMonitor["state"]["status"] | null =>
+	Option.match(
+		Arr.findFirst(monitors, (monitor) => monitor.id === monitorId),
+		{ onNone: () => null, onSome: (monitor) => monitor.state.status ?? null },
+	)
+
 /** What a visitor sees for one component: monitor, override and published active incidents. */
 export const componentStatus = (
 	component: V2StatusPageComponent,
@@ -93,17 +103,19 @@ export const componentStatus = (
 	incidents: ReadonlyArray<V2StatusPageIncident>,
 ): StatusPageComponentStatus =>
 	deriveComponentStatus({
-		monitorStatus: monitors.find((monitor) => monitor.id === component.monitor_id)?.state.status ?? null,
+		monitorStatus: monitorStatusOf(monitors, component.monitor_id),
 		manualStatus: component.manual_status,
 		informational: isInformationalGroup(component.group),
-		incidentStatuses: incidents
-			.filter(
+		incidentStatuses: Arr.map(
+			Arr.filter(
+				incidents,
 				(incident) =>
 					incident.published &&
 					isActiveIncident(incident) &&
 					incident.component_ids.includes(component.id),
-			)
-			.map(incidentComponentStatus),
+			),
+			incidentComponentStatus,
+		),
 	})
 
 export const summarizePage = (input: {
@@ -114,10 +126,10 @@ export const summarizePage = (input: {
 }): StatusPageSummary => ({
 	page: input.page,
 	overall: worstStatus(
-		input.components.map((component) => componentStatus(component, input.monitors, input.incidents)),
+		Arr.map(Arr.filter(input.components, (component) => !isInformationalGroup(component.group)), (component) => componentStatus(component, input.monitors, input.incidents)),
 	),
 	componentCount: input.components.length,
-	openIncidents: input.incidents.filter(isOpenIncident).length,
+	openIncidents: Arr.filter(input.incidents, isOpenIncident).length,
 })
 
 /** Whether visitors see an older revision than the page has now. */

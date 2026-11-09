@@ -1,4 +1,4 @@
-import { Effect } from "effect"
+import { Effect, Array as Arr, Record as Rec, String as Str } from "effect"
 import { describe, expect, it } from "vitest"
 import * as Predicate from "effect/Predicate"
 import { warehouseQueries } from "@maple/domain"
@@ -25,6 +25,7 @@ import * as activityQueries from "../ch/queries/activity"
 import * as alertCheckQueries from "../ch/queries/alert-checks"
 import * as ciRunsQueries from "../ch/queries/ci-runs"
 import * as auditLogQueries from "../ch/queries/audit-log"
+import * as cancellationEvidenceQueries from "../ch/queries/cancellation-evidence"
 import * as anomalyQueries from "../ch/queries/anomaly"
 import * as attributeKeyQueries from "../ch/queries/attribute-keys"
 import * as awsIngestQueries from "../ch/queries/aws-ingest"
@@ -35,6 +36,8 @@ import * as livenessQueries from "../ch/queries/liveness"
 import * as signalPresenceQueries from "../ch/queries/signal-presence"
 import * as sourceUsageQueries from "../ch/queries/source-usage"
 import * as logQueries from "../ch/queries/logs"
+import * as mcpQueries from "../ch/queries/mcp"
+import * as userQueries from "../ch/queries/users"
 import * as metricQueries from "../ch/queries/metrics"
 import * as serviceInfraQueries from "../ch/queries/service-infra"
 import * as serviceMapRollupQueries from "../ch/queries/service-map-rollup"
@@ -45,12 +48,14 @@ import * as serviceEndpointDetailQueries from "../ch/queries/service-endpoint-de
 import * as serviceOperationQueries from "../ch/queries/service-operations"
 import * as prReviewQueries from "../ch/queries/pr-review"
 import * as serviceQueries from "../ch/queries/services"
+import * as sloQueries from "../ch/queries/slos"
 import * as releaseQueries from "../ch/queries/releases"
 import * as sessionEventQueries from "../ch/queries/session-events"
 import * as sessionReplayQueries from "../ch/queries/session-replays"
 import * as webAnalyticsQueries from "../ch/queries/web-analytics"
 import * as webAnalyticsAiQueries from "../ch/queries/web-analytics-ai"
 import * as securityTelemetryQueries from "../ch/queries/security-telemetry"
+import * as userActivityQueries from "../ch/queries/user-activity"
 import * as productEventQueries from "../ch/queries/product-events"
 import * as productEventPathQueries from "../ch/queries/product-events-paths"
 import * as productEventExploreQueries from "../ch/queries/product-events-explore"
@@ -73,12 +78,14 @@ const CROSS_ORG_BUILDERS: ReadonlySet<string> = new Set([
 describe("sql catalog", () => {
 	const pipeEntries = collectPipeCatalog()
 	const specEntries = collectQuerySpecCatalog()
-	const entries = Effect.runSync(collectQueryCatalog())
+	const entries = Effect.runSync(collectQueryCatalog)
 
 	it("exports the same compiled cases for replay without decoder internals", async () => {
 		const suite = await Effect.runPromise(suiteFromCatalog(entries))
-		expect(suite.samples.map((sample) => sample.id)).toEqual(entries.map((entry) => entry.id))
-		expect(suite.samples.map((sample) => sample.sampleSql)).toEqual(entries.map((entry) => entry.sql))
+		expect(Arr.map(suite.samples, (sample) => sample.id)).toEqual(Arr.map(entries, (entry) => entry.id))
+		expect(Arr.map(suite.samples, (sample) => sample.sampleSql)).toEqual(
+			Arr.map(entries, (entry) => entry.sql),
+		)
 		for (const sample of suite.samples) expect(sample).not.toHaveProperty("compiled")
 	})
 
@@ -93,7 +100,7 @@ describe("sql catalog", () => {
 		expect(specEntries.length).toBeGreaterThan(0)
 		for (const entry of entries) {
 			expect(entry.sql, entry.id).toBeTruthy()
-			expect(entry.sql.toUpperCase(), entry.id).toContain("SELECT")
+			expect(Str.toUpperCase(entry.sql), entry.id).toContain("SELECT")
 		}
 	})
 
@@ -127,9 +134,10 @@ describe("sql catalog", () => {
 	// only place the product can see which of its queries validate nothing.
 	it("decodes every query except the declared exceptions", () => {
 		const columns = undecodedColumns(entries)
-		const detail = [...columns]
-			.map(([name, cols]) => `  ${name} — untyped: ${cols.join(", ")}`)
-			.join("\n")
+		const detail = Arr.join(
+			Arr.map([...columns], ([name, cols]) => `  ${name} — untyped: ${Arr.join(cols, ", ")}`),
+			"\n",
+		)
 		expect(undecodedQueries(entries), `undecoded queries and the columns to type:\n${detail}`).toEqual(
 			[...UNDECODED_QUERIES].sort(),
 		)
@@ -142,16 +150,17 @@ describe("sql catalog", () => {
 	// the canonical export. The builder holds both shapes and compares their
 	// field names; this asserts the comparison is clean.
 	it("keeps every declared row schema in step with its SELECT", () => {
-		const drifted = entries
-			.filter((entry) => entry.compiled?.rowSchemaMismatch !== undefined)
-			.map((entry) => {
+		const drifted = Arr.map(
+			Arr.filter(entries, (entry) => entry.compiled?.rowSchemaMismatch !== undefined),
+			(entry) => {
 				const mismatch = entry.compiled!.rowSchemaMismatch!
-				return `  ${entry.source}:${entry.name} — undeclared: [${mismatch.undeclared.join(", ")}] unselected: [${mismatch.unselected.join(", ")}]`
-			})
+				return `  ${entry.source}:${entry.name} — undeclared: [${Arr.join(mismatch.undeclared, ", ")}] unselected: [${Arr.join(mismatch.unselected, ", ")}]`
+			},
+		)
 
 		expect(
 			drifted,
-			`declared row schemas that no longer match their query:\n${drifted.join("\n")}`,
+			`declared row schemas that no longer match their query:\n${Arr.join(drifted, "\n")}`,
 		).toEqual([])
 	})
 
@@ -201,7 +210,7 @@ describe("sql catalog", () => {
 	})
 
 	it("routes the annual QuerySpec fixtures to the rollup union", () => {
-		const annual = specEntries.filter((entry) => entry.route === "traces_timeseries:annual")
+		const annual = Arr.filter(specEntries, (entry) => entry.route === "traces_timeseries:annual")
 		expect(annual.length).toBeGreaterThan(0)
 		for (const entry of annual) {
 			// Always spliced, never a single-tier read.
@@ -216,12 +225,12 @@ describe("sql catalog", () => {
 			// Longest match: several labels are prefixes of each other
 			// (`traces-timeseries-annual` prefixes `…-annual-minutely-grouped`), and a
 			// first-match lookup silently reads the wrong fixture's bucket width.
-			const fixture = querySpecFixtures
-				.filter((candidate) => entry.id.startsWith(`spec:${candidate.label}`))
-				.sort((a, b) => b.label.length - a.label.length)[0]
+			const fixture = Arr.filter(querySpecFixtures, (candidate) =>
+				Str.startsWith(`spec:${candidate.label}`)(entry.id),
+			).sort((a, b) => b.label.length - a.label.length)[0]
 			const query = fixture?.query
 			const bucketSeconds =
-				query && "bucketSeconds" in query && typeof query.bucketSeconds === "number"
+				query !== undefined && "bucketSeconds" in query && typeof query.bucketSeconds === "number"
 					? query.bucketSeconds
 					: 0
 			expect(bucketSeconds, `${entry.id} has no bucketSeconds`).toBeGreaterThan(0)
@@ -268,6 +277,7 @@ const QUERY_MODULES: Record<string, Record<string, unknown>> = {
 	activity: activityQueries,
 	"alert-checks": alertCheckQueries,
 	"audit-log": auditLogQueries,
+	"cancellation-evidence": cancellationEvidenceQueries,
 	"ci-runs": ciRunsQueries,
 	anomaly: anomalyQueries,
 	"attribute-keys": attributeKeyQueries,
@@ -276,6 +286,7 @@ const QUERY_MODULES: Record<string, Record<string, unknown>> = {
 	infra: infraQueries,
 	liveness: livenessQueries,
 	logs: logQueries,
+	mcp: mcpQueries,
 	metrics: metricQueries,
 	"service-infra": serviceInfraQueries,
 	"service-map-rollup": serviceMapRollupQueries,
@@ -286,6 +297,7 @@ const QUERY_MODULES: Record<string, Record<string, unknown>> = {
 	"pr-review": prReviewQueries,
 	"service-operations": serviceOperationQueries,
 	services: serviceQueries,
+	slos: sloQueries,
 	"signal-presence": signalPresenceQueries,
 	"source-usage": sourceUsageQueries,
 	"aws-ingest": awsIngestQueries,
@@ -296,10 +308,12 @@ const QUERY_MODULES: Record<string, Record<string, unknown>> = {
 	"web-analytics": webAnalyticsQueries,
 	"web-analytics-ai": webAnalyticsAiQueries,
 	"security-telemetry": securityTelemetryQueries,
+	"user-activity": userActivityQueries,
 	"product-events": productEventQueries,
 	"product-events-paths": productEventPathQueries,
 	"product-events-explore": productEventExploreQueries,
 	traces: traceQueries,
+	users: userQueries,
 } satisfies Record<string, Record<string, unknown>>
 
 /**
@@ -341,6 +355,7 @@ const EXEMPT_BUILDERS: ReadonlySet<string> = new Set([
 	"services/serviceUsageQuery",
 	"services/servicesFacetsQuery",
 	"top-operations/topOperationsQuery",
+	"top-operations/topOperationsRollupQuery",
 	"traces/tracesTimeseriesQuery",
 	"traces/tracesBreakdownQuery",
 	"traces/tracesListQuery",
@@ -354,7 +369,7 @@ const EXEMPT_BUILDERS: ReadonlySet<string> = new Set([
 ])
 
 describe("builder coverage", () => {
-	const fixtured = new Set(builderFixtures.map((fixture) => `${fixture.module}/${fixture.name}`))
+	const fixtured = new Set(Arr.map(builderFixtures, (fixture) => `${fixture.module}/${fixture.name}`))
 
 	it("compiles every builder fixture into the catalog", () => {
 		const entries = collectBuilderCatalog()
@@ -368,28 +383,32 @@ describe("builder coverage", () => {
 	})
 
 	it("declares fixtures whose module/name actually exists", () => {
-		const unresolved = builderFixtures
-			.filter((fixture) => !(QUERY_MODULES[fixture.module]?.[fixture.name] instanceof Function))
-			.map((fixture) => `${fixture.module}.${fixture.name}`)
+		const unresolved = Arr.map(
+			Arr.filter(
+				builderFixtures,
+				(fixture) => !(QUERY_MODULES[fixture.module]?.[fixture.name] instanceof Function),
+			),
+			(fixture) => `${fixture.module}.${fixture.name}`,
+		)
 		expect(unresolved).toEqual([])
 	})
 
 	it("covers or exempts every exported builder", () => {
 		const missing: Array<string> = []
-		for (const [moduleName, module] of Object.entries(QUERY_MODULES)) {
-			for (const [exportName, value] of Object.entries(module)) {
+		for (const [moduleName, module] of Rec.toEntries(QUERY_MODULES)) {
+			for (const [exportName, value] of Rec.toEntries(module)) {
 				if (typeof value !== "function") continue
 				if (!/(Query|SQL)$/.test(exportName)) continue
 				const key = `${moduleName}/${exportName}`
 				if (!fixtured.has(key) && !EXEMPT_BUILDERS.has(key)) missing.push(key)
 			}
 		}
-		expect(missing, `builders with no fixture and no exemption:\n${missing.join("\n")}`).toEqual([])
+		expect(missing, `builders with no fixture and no exemption:\n${Arr.join(missing, "\n")}`).toEqual([])
 	})
 
 	it("keeps the exemption list free of stale entries", () => {
 		for (const key of EXEMPT_BUILDERS) {
-			const [moduleName, exportName] = key.split("/") as [string, string]
+			const [moduleName, exportName] = Str.split("/")(key) as [string, string]
 			expect(
 				Predicate.isFunction(QUERY_MODULES[moduleName]?.[exportName]),
 				`${key} is exempt but no longer exported`,

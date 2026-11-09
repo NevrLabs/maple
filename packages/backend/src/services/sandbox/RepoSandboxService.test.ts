@@ -3,12 +3,18 @@ import { execFileSync } from "node:child_process"
 import { existsSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { OrgId } from "@maple/domain/http"
-import { Sandbox, SandboxExited, SandboxOutput, SandboxStarted } from "@maple/backend/sandbox/contract"
-import { Duration, Effect, Layer, Schema, Stream } from "effect"
+import {
+	Sandbox,
+	SandboxExited,
+	SandboxOutput,
+	SandboxStarted,
+	SandboxResourceUse,
+} from "@maple/backend/sandbox/contract"
+import { Duration, Effect, Layer, Schema, Stream, String as Str } from "effect"
 import { gitPathspec, RepoSandboxService } from "./RepoSandboxService"
 import { IMPLEMENTATION } from "./CloudflareRepoSandbox"
 
-const ORG = Schema.decodeUnknownSync(OrgId)("org_git_test")
+const ORG = Schema.decodeSync(OrgId)("org_git_test")
 
 /** A file outside the checkout that no tool may ever return. */
 const SENTINEL = `${mkdtempSync(`${tmpdir()}/maple-outside-`)}/secret.txt`
@@ -54,7 +60,7 @@ const localSandbox = (repo: string, seen: string[][] = []): Layer.Layer<Sandbox>
 			Stream.unwrap(
 				Effect.sync(() => {
 					seen.push([request.command, ...request.args])
-					const cwd = request.cwd === "/workspace" ? repo : `${repo}/${request.cwd.slice(11)}`
+					const cwd = request.cwd === "/workspace" ? repo : `${repo}/${Str.slice(11)(request.cwd)}`
 					let stdout = ""
 					let exitCode = 0
 					try {
@@ -78,6 +84,7 @@ const localSandbox = (repo: string, seen: string[][] = []): Layer.Layer<Sandbox>
 										stream: "stdout" as const,
 										text: stdout,
 										bytes: Buffer.byteLength(stdout),
+										truncated: false,
 									}),
 								]
 							: []),
@@ -85,11 +92,11 @@ const localSandbox = (repo: string, seen: string[][] = []): Layer.Layer<Sandbox>
 							eventVersion: 1,
 							implementation: IMPLEMENTATION,
 							exitCode,
-							resourceUse: {
+							resourceUse: new SandboxResourceUse({
 								wallTime: Duration.millis(1),
 								stdoutBytes: Buffer.byteLength(stdout),
 								stderrBytes: 0,
-							} as ConstructorParameters<typeof SandboxExited>[0]["resourceUse"],
+							}),
 							artifacts: [],
 						}),
 					])
@@ -244,7 +251,7 @@ describe("the git commands the tools build, against a real repository", () => {
 				{ path: "escape.txt", startLine: 1, endLine: 10 },
 			)
 			assert.notStrictEqual(result.exitCode, 0)
-			assert.notInclude(result.stdout, SENTINEL_BODY.trim())
+			assert.notInclude(result.stdout, Str.trim(SENTINEL_BODY))
 		}).pipe(Effect.provide(overRepo())),
 	)
 
@@ -312,5 +319,75 @@ describe("the git commands the tools build, against a real repository", () => {
 				.pipe(Effect.flip)
 			assert.strictEqual(cwdFailure._tag, "@maple/backend/sandbox/SandboxUnsupportedRequestError")
 		}).pipe(Effect.provide(overRepo())),
+	)
+})
+
+/** A sandbox answering every command with one stdout fragment. */
+const answering = (output: { readonly text: string; readonly bytes: number; readonly truncated: boolean }) =>
+	Layer.succeed(Sandbox, {
+		execute: (request) =>
+			Stream.fromIterable([
+				new SandboxStarted({
+					eventVersion: 1,
+					implementation: IMPLEMENTATION,
+					runtime: request.runtime,
+				}),
+				new SandboxOutput({
+					eventVersion: 1,
+					implementation: IMPLEMENTATION,
+					stream: "stdout",
+					...output,
+				}),
+				new SandboxExited({
+					eventVersion: 1,
+					implementation: IMPLEMENTATION,
+					exitCode: 0,
+					resourceUse: new SandboxResourceUse({
+						wallTime: Duration.millis(1),
+						stdoutBytes: output.bytes,
+						stderrBytes: 0,
+					}),
+					artifacts: [],
+				}),
+			]),
+	})
+
+describe("output the sandbox cut", () => {
+	const exec = Effect.gen(function* () {
+		const service = yield* RepoSandboxService
+		return yield* service.exec(
+			ORG,
+			{ repository: "octo/shop", ref: "main" },
+			{ command: "cat", args: ["a.bin"] },
+		)
+	})
+
+	it.effect("is reported cut when the sandbox says so, though its lossy text re-encodes larger", () =>
+		Effect.gen(function* () {
+			// 100 invalid bytes kept of 200 decode to 100 U+FFFD, which re-encode to 300 bytes.
+			const result = yield* exec.pipe(
+				Effect.provide(
+					RepoSandboxService.layer.pipe(
+						Layer.provide(
+							answering({ text: Str.repeat(100)("\uFFFD"), bytes: 200, truncated: true }),
+						),
+					),
+				),
+			)
+			assert.isTrue(result.truncated)
+		}),
+	)
+
+	it.effect("is reported whole when the sandbox kept every byte", () =>
+		Effect.gen(function* () {
+			const result = yield* exec.pipe(
+				Effect.provide(
+					RepoSandboxService.layer.pipe(
+						Layer.provide(answering({ text: "abc", bytes: 3, truncated: false })),
+					),
+				),
+			)
+			assert.isFalse(result.truncated)
+		}),
 	)
 })

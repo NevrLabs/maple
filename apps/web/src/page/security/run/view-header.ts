@@ -4,11 +4,11 @@ import { executionModeLine } from "@maple/domain/security-audit"
 import { cn } from "@maple/ui/lib/utils"
 import { formatNumber } from "@maple/ui/lib/format"
 import type { Html, HtmlBuilder } from "foldkit/html"
-import { formatTimestampInTimezone } from "@maple/web-data/lib/timezone-format"
-import { alert, alertAction, alertDescription, alertTitle } from "../../../ui/alert"
+import { timestamp } from "@maple/views/ui/timestamp"
+import { alert, alertAction, alertDescription, alertTitle } from "@maple/views/ui/alert"
 import { AppRoute, hrefOf } from "../../../route"
-import { button, linkButton } from "../../../ui/button"
-import { icon } from "../../../ui/icon"
+import { button, linkButton } from "@maple/views/ui/button"
+import { icon } from "@maple/views/ui/icon"
 import { statRail, statRailItem } from "../../kit/stat-rail"
 import { detailTitle } from "../../kit/detail-header"
 import {
@@ -26,10 +26,13 @@ import {
 } from "../kit/format"
 import { leadsLine, type StopAction, stopNoteOf } from "../kit/outcome"
 import { iconTile, metaItem, placeholder, runStatusBadge } from "../kit/parts"
-import { meter } from "../../../ui/meter"
+import { meter } from "@maple/views/ui/meter"
 import { countOf, gapCount, type Phase, type PhaseState, type Verdicts } from "./derive"
-import { Message, type Model } from "./model"
-import { statusDot } from "../../../ui/status-dot"
+import { canRunAudits, Message, type Model } from "./model"
+import { statusDot } from "@maple/views/ui/status-dot"
+import { typography } from "@maple/views/ui/typography"
+import { hstack, vstack } from "@maple/views/ui/stack"
+import { Array as Arr } from "effect"
 
 // The run's title block, its stop banner, the phase strip and the four totals.
 
@@ -42,32 +45,42 @@ export const runTitle = (
 	nowMs: number,
 	timeZone: string,
 ): Html => {
-	const started = formatTimestampInTimezone(run.startedAt, { timeZone })
-	const time = isLive(run)
-		? `started ${formatElapsed(nowMs - run.startedAt)} ago`
-		: `${started} to ${formatTimestampInTimezone(run.finishedAt ?? run.startedAt, { timeZone })} · ${formatElapsed(runElapsed(run, nowMs))}`
+	const time: ReadonlyArray<Html | string> = isLive(run)
+		? [
+				timestamp(h, {
+					value: run.startedAt,
+					timeZone,
+					nowMs,
+					prefix: "started",
+					label: `${formatElapsed(nowMs - run.startedAt)} ago`,
+				}),
+			]
+		: [
+				timestamp(h, { value: run.startedAt, timeZone, nowMs }),
+				" to ",
+				timestamp(h, { value: run.finishedAt ?? run.startedAt, timeZone, nowMs }),
+				` · ${formatElapsed(runElapsed(run, nowMs))}`,
+			]
 	return detailTitle(h, {
 		kind: ["Audit run", RUN_KIND_LABEL[run.kind]],
 		title: [
-			h.span(
-				[h.Class("flex min-w-0 items-center gap-2.5")],
-				[
-					iconTile(h, "GithubIcon"),
-					h.span([h.Class("truncate")], [target?.repository ?? "Audit run"]),
-				],
-			),
+			hstack(h, { gap: "2.5", shrink: true, as: "span" }, [
+				iconTile(h, "GithubIcon"),
+				typography(h, { truncate: true }, [target?.repository ?? "Audit run"]),
+			]),
 		],
 		titleText: target?.repository ?? "Audit run",
 		adornment: runStatusBadge(h, run),
 		meta: [
-			h.div(
-				[h.Class("flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted-foreground")],
+			hstack(
+				h,
+				{ align: "center", wrap: true, className: "gap-x-4 gap-y-1 text-sm text-muted-foreground" },
 				[
 					metaItem(h, "BranchForkIcon", [
 						`${target?.branch ?? "branch"} @ ${refLabel(run.sourceRef)}`,
 					]),
 					metaItem(h, run.scopePaths.length === 0 ? null : "FolderIcon", [
-						h.span([h.Title(run.scopePaths.join("\n"))], [scopeLabel(run.scopePaths)]),
+						h.span([h.Title(Arr.join(run.scopePaths, "\n"))], [scopeLabel(run.scopePaths)]),
 					]),
 					metaItem(h, null, [PROFILE_LABEL[run.profile]]),
 					...(run.discoveryModel === null
@@ -79,7 +92,7 @@ export const runTitle = (
 										: `${modelLabel(run.discoveryModel)}, verified by ${modelLabel(run.validationModel)}`,
 								]),
 							]),
-					metaItem(h, "ClockIcon", [time]),
+					metaItem(h, "ClockIcon", time),
 				],
 			),
 			// Why execution-bound leads stay unvalidated: the run's own label, one quiet line.
@@ -96,51 +109,48 @@ export const runTitle = (
 }
 
 export const runActions = (h: H, model: Model, run: SecurityAuditRunDetail): Html =>
-	h.div(
-		[h.Class("flex items-center gap-2")],
-		[
-			...(run.reports === null
-				? []
+	hstack(h, { gap: "2" }, [
+		...(run.reports === null
+			? []
+			: [
+					button(
+						h,
+						{
+							size: "sm",
+							variant: "outline",
+							attributes: [h.OnClick(Message.ClickedReport({ report: "report" }))],
+						},
+						[icon(h, "FileIcon"), "Report"],
+					),
+				]),
+		...(!canRunAudits(model)
+			? []
+			: isLive(run)
+				? [
+						button(
+							h,
+							{
+								size: "sm",
+								variant: "destructive-outline",
+								isDisabled: model.busy !== null,
+								attributes: [h.OnClick(Message.ClickedCancel())],
+							},
+							["Cancel run"],
+						),
+					]
 				: [
 						button(
 							h,
 							{
 								size: "sm",
-								variant: "outline",
-								attributes: [h.OnClick(Message.ClickedReport({ report: "report" }))],
+								isLoading: model.busy === "start",
+								isDisabled: model.busy !== null,
+								attributes: [h.OnClick(Message.ClickedStartRun())],
 							},
-							[icon(h, "FileIcon"), "Report"],
+							[icon(h, "MediaPlayIcon"), "Start run"],
 						),
 					]),
-			...(!model.isAdmin
-				? []
-				: isLive(run)
-					? [
-							button(
-								h,
-								{
-									size: "sm",
-									variant: "destructive-outline",
-									isDisabled: model.busy !== null,
-									attributes: [h.OnClick(Message.ClickedCancel())],
-								},
-								["Cancel run"],
-							),
-						]
-					: [
-							button(
-								h,
-								{
-									size: "sm",
-									isLoading: model.busy === "start",
-									isDisabled: model.busy !== null,
-									attributes: [h.OnClick(Message.ClickedStartRun())],
-								},
-								[icon(h, "MediaPlayIcon"), "Start run"],
-							),
-						]),
-		],
-	)
+	])
 
 const startRunButton = (h: H, model: Model): Html =>
 	button(
@@ -156,11 +166,11 @@ const startRunButton = (h: H, model: Model): Html =>
 	)
 
 const stopAction = (h: H, model: Model, action: StopAction): ReadonlyArray<Html> => {
-	if (!model.isAdmin || action === null) return []
+	if (!canRunAudits(model) || action === null) return []
 	const control =
 		action === "start"
 			? startRunButton(h, model)
-			: linkButton(h, { size: "sm", variant: "outline", href: hrefOf(AppRoute.Security()) }, [
+			: linkButton(h, { size: "sm", variant: "outline", href: hrefOf(AppRoute.SecurityCode()) }, [
 					action === "limit" ? "Raise the limit" : "Spend & models",
 				])
 	return [alertAction(h, [control])]
@@ -214,13 +224,15 @@ const phaseMark = (h: H, state: PhaseState): Html => {
 		case "stopped":
 			return icon(h, "CircleXmarkIcon", { size: 16, className: "text-severity-error" })
 		case "active":
-			return h.span(
-				[
-					h.AriaHidden(true),
-					h.Class(
-						"flex size-4 items-center justify-center rounded-full border-2 border-severity-debug",
-					),
-				],
+			return hstack(
+				h,
+				{
+					align: "center",
+					justify: "center",
+					as: "span",
+					className: "size-4 rounded-full border-2 border-severity-debug",
+					attributes: [h.AriaHidden(true)],
+				},
 				[statusDot(h, { tone: "done" })],
 			)
 		case "pending":
@@ -249,7 +261,7 @@ export const phaseStrip = (h: H, phases: ReadonlyArray<Phase>): Html =>
 			// Phases wrap onto more rows as the column narrows; each row fills its width.
 			h.Class("flex flex-wrap gap-px overflow-hidden rounded-md border bg-border"),
 		],
-		phases.map((phase) =>
+		Arr.map(phases, (phase) =>
 			h.li(
 				[
 					h.Key(phase.name),
@@ -273,7 +285,7 @@ export const phaseStrip = (h: H, phases: ReadonlyArray<Phase>): Html =>
 								),
 							),
 						],
-						[phaseMark(h, phase.state), h.span([h.Class("truncate")], [phase.name])],
+						[phaseMark(h, phase.state), typography(h, { truncate: true }, [phase.name])],
 					),
 					h.span(
 						[h.AriaHidden(true), h.Class("h-1 w-full overflow-hidden rounded-full bg-muted")],
@@ -289,7 +301,7 @@ export const phaseStrip = (h: H, phases: ReadonlyArray<Phase>): Html =>
 							]),
 						],
 					),
-					h.span([h.Class("text-xs text-muted-foreground")], [phase.detail]),
+					typography(h, { size: "xs", tone: "muted" }, [phase.detail]),
 				],
 			),
 		),
@@ -318,10 +330,13 @@ export const runStats = (
 					? undefined
 					: live
 						? `${leadsLine(verdicts.confirmed, verdicts.needsValidation)} · ${waiting} ${waiting === 1 ? "candidate" : "candidates"} waiting`
-						: [
-								leadsLine(verdicts.confirmed, verdicts.needsValidation),
-								...(verdicts.rejected === 0 ? [] : [`${verdicts.rejected} disproved`]),
-							].join(" · "),
+						: Arr.join(
+								[
+									leadsLine(verdicts.confirmed, verdicts.needsValidation),
+									...(verdicts.rejected === 0 ? [] : [`${verdicts.rejected} disproved`]),
+								],
+								" · ",
+							),
 		}),
 		statRailItem(h, {
 			eyebrow: "Coverage",
@@ -333,15 +348,14 @@ export const runStats = (
 					? live
 						? "mapping the code"
 						: "no units were planned"
-					: h.span(
-							[h.Class("flex flex-col gap-1.5")],
-							[
-								meter(h, {
-									value: closed,
-									max: run.unitTotal,
-									tone: gaps > 0 && !live ? "warn" : undefined,
-									label: `${closed} of ${run.unitTotal} units closed`,
-								}),
+					: vstack(h, { gap: "1.5", as: "span" }, [
+							meter(h, {
+								value: closed,
+								max: run.unitTotal,
+								tone: gaps > 0 && !live ? "warn" : undefined,
+								label: `${closed} of ${run.unitTotal} units closed`,
+							}),
+							Arr.join(
 								[
 									...(areas === null || areas === 0
 										? []
@@ -349,9 +363,10 @@ export const runStats = (
 									gaps === 0
 										? "no gaps"
 										: `${gaps} ${live ? "still open" : gaps === 1 ? "gap" : "gaps"}`,
-								].join(" · "),
-							],
-						),
+								],
+								" · ",
+							),
+						]),
 		}),
 		statRailItem(h, {
 			eyebrow: live ? "Cost so far" : "Cost",

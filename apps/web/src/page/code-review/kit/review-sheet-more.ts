@@ -1,19 +1,21 @@
 import type { CodeReviewDetail, PrReviewPostMerge, PrReviewTelemetry } from "@maple/domain/http"
-import { formatCount, outcomeOf } from "../../../components/code-review/code-review-format"
-import { countLabel, formatDuration, formatErrorRate } from "@maple/ui/lib/format"
-import { formatRelativeFrom } from "@maple/ui/lib/time-format"
+import { outcomeOf } from "../../../components/code-review/code-review-format"
+import { countLabel, formatDuration, formatErrorRate, formatNumber } from "@maple/ui/lib/format"
 import { TONE_TEXT } from "@maple/ui/lib/tone"
 import { cn } from "@maple/ui/lib/utils"
-import { DateTime } from "effect"
+import { DateTime, Array as Arr } from "effect"
 import { AsyncData } from "foldkit"
 import type { Html, HtmlBuilder } from "foldkit/html"
-import { skeleton } from "../../../ui/skeleton"
-import { truncatedId } from "../../../ui/truncated-id"
+import { ciRunsSkeleton } from "./skeletons"
+import { pressable } from "@maple/views/ui/pressable"
+import { truncatedId } from "@maple/views/ui/truncated-id"
 import { relativeTime } from "../../kit/relative-time"
 import { bulletList, ciResultBadge, section, traceLink } from "./parts"
 import { type ReviewSheet, SheetMessage } from "./review-sheet"
 import { CI_RUNS_SHOWN } from "./review-sheet-update"
-import { emptyMessage } from "../../../ui/empty"
+import { emptyMessage } from "@maple/views/ui/empty"
+import { typography, typographyClass } from "@maple/views/ui/typography"
+import { hstack, vstack } from "@maple/views/ui/stack"
 
 // `ProductionSection`, `PostMergeSection`, `PullRequestCiRuns` and the review history.
 
@@ -29,29 +31,33 @@ export const productionSection = (h: H, telemetry: PrReviewTelemetry): ReadonlyA
 			...(breaks.length === 0
 				? []
 				: [
-						h.ul(
-							[h.Class("flex flex-col gap-1.5 text-sm")],
-							breaks.map((item) =>
-								h.li(
-									[...(item.dismissed ? [h.Class("text-muted-foreground")] : [])],
-									[
-										h.span(
-											[
-												h.Class(
-													cn(
-														"font-medium",
-														item.dismissed ? undefined : TONE_TEXT.crit,
-													),
+						vstack(
+							h,
+							{ gap: "1.5", as: "ul", className: typographyClass({ size: "sm" }) },
+							Arr.map(breaks, (item) =>
+								h.li(item.dismissed ? [h.Class("text-muted-foreground")] : [], [
+									h.span(
+										[
+											h.Class(
+												cn(
+													"font-medium",
+													item.dismissed ? undefined : TONE_TEXT.crit,
 												),
-											],
-											[item.dismissed ? "Still emitted elsewhere" : "Stops arriving"],
-										),
-										" ",
-										h.code([h.Class("font-mono text-xs")], [item.name]),
-										" · ",
-										item.references.map((ref) => `${ref.kind} “${ref.name}”`).join(", "),
-									],
-								),
+											),
+										],
+										[item.dismissed ? "Still emitted elsewhere" : "Stops arriving"],
+									),
+									" ",
+									h.code(
+										[h.Class(typographyClass({ size: "xs", mono: true }))],
+										[item.name],
+									),
+									" · ",
+									Arr.join(
+										Arr.map(item.references, (ref) => `${ref.kind} “${ref.name}”`),
+										", ",
+									),
+								]),
 							),
 						),
 					]),
@@ -60,9 +66,10 @@ export const productionSection = (h: H, telemetry: PrReviewTelemetry): ReadonlyA
 				: [
 						bulletList(
 							h,
-							telemetry.linkedIssues.map(
+							Arr.map(
+								telemetry.linkedIssues,
 								(issue) =>
-									`Open error in ${issue.path}: ${issue.title} (${formatCount(issue.occurrences)} occurrences)`,
+									`Open error in ${issue.path}: ${issue.title} (${formatNumber(issue.occurrences)} occurrences)`,
 							),
 						),
 					]),
@@ -71,12 +78,11 @@ export const productionSection = (h: H, telemetry: PrReviewTelemetry): ReadonlyA
 				: [
 						bulletList(
 							h,
-							telemetry.hotFiles
-								.slice(0, 5)
-								.map(
-									(file) =>
-										`${file.path}: ${formatCount(file.perDay)} calls/day (${file.operations[0]?.spanName ?? ""})`,
-								),
+							Arr.map(
+								telemetry.hotFiles.slice(0, 5),
+								(file) =>
+									`${file.path}: ${formatNumber(file.perDay)} calls/day (${file.operations[0]?.spanName ?? ""})`,
+							),
 						),
 					]),
 		]),
@@ -84,7 +90,12 @@ export const productionSection = (h: H, telemetry: PrReviewTelemetry): ReadonlyA
 }
 
 /** How the operations the change touched behaved the hour before and after it deployed. */
-export const postMergeSection = (h: H, postMerge: PrReviewPostMerge, nowMs: number): Html => {
+export const postMergeSection = (
+	h: H,
+	postMerge: PrReviewPostMerge,
+	nowMs: number,
+	timeZone: string,
+): Html => {
 	const regressed = postMerge.verdict === "regressed"
 	return section(h, "After it shipped", [
 		h.p(
@@ -96,21 +107,25 @@ export const postMergeSection = (h: H, postMerge: PrReviewPostMerge, nowMs: numb
 				" ",
 				truncatedId(h, { value: postMerge.deploy.commitSha, kind: "sha", className: "text-xs" }),
 				" ",
-				formatRelativeFrom(DateTime.toEpochMillis(postMerge.deploy.firstSeen), nowMs),
+				relativeTime(h, {
+					value: DateTime.toEpochMillis(postMerge.deploy.firstSeen),
+					nowMs,
+					timeZone,
+				}),
 			],
 		),
 		bulletList(h, [
-			...postMerge.missing.map((name) => `${name} stopped arriving`),
-			...postMerge.newIssues.map((issue) => `New error: ${issue.title} (${issue.afterPerHour}/h)`),
-			...postMerge.linkedIssues.map(
+			...Arr.map(postMerge.missing, (name) => `${name} stopped arriving`),
+			...Arr.map(postMerge.newIssues, (issue) => `New error: ${issue.title} (${issue.afterPerHour}/h)`),
+			...Arr.map(
+				postMerge.linkedIssues,
 				(issue) => `${issue.title}: ${issue.beforePerHour}/h → ${issue.afterPerHour}/h`,
 			),
-			...postMerge.operations
-				.filter((operation) => operation.regressed)
-				.map(
-					(operation) =>
-						`${operation.spanName}: errors ${formatErrorRate(operation.before.errorRate)} → ${formatErrorRate(operation.after.errorRate)}, p95 ${operation.before.p95Ms} → ${operation.after.p95Ms} ms`,
-				),
+			...Arr.map(
+				Arr.filter(postMerge.operations, (operation) => operation.regressed),
+				(operation) =>
+					`${operation.spanName}: errors ${formatErrorRate(operation.before.errorRate)} → ${formatErrorRate(operation.after.errorRate)}, p95 ${operation.before.p95Ms} → ${operation.after.p95Ms} ms`,
+			),
 		]),
 	])
 }
@@ -120,33 +135,42 @@ const ciSection = (h: H, children: ReadonlyArray<Html>): Html => section(h, "CI 
 /** `PullRequestCiRuns`: the pull request's runs over the last 90 days. */
 export const ciRunsSection = (h: H, sheet: ReviewSheet): Html =>
 	AsyncData.matchData(sheet.ciRuns.data, {
-		onEmpty: () => ciSection(h, [skeleton(h, "h-16 w-full")]),
+		onEmpty: () => ciSection(h, [ciRunsSkeleton(h)]),
 		onFailure: () =>
-			ciSection(h, [h.p([h.Class("text-sm text-muted-foreground")], ["Couldn't load cI runs"])]),
+			ciSection(h, [typography(h, { size: "sm", tone: "muted", as: "p" }, ["Couldn't load CI runs"])]),
 		onData: (response) =>
 			response.runs.length === 0
 				? ciSection(h, [emptyMessage(h, {}, ["No CI runs in the last 90 days"])])
 				: ciSection(h, [
-						h.ul(
-							[h.Class("-mx-2 flex flex-col")],
-							response.runs.map((run) =>
-								h.li(
-									[
-										h.Key(run.traceId),
-										h.Class(
-											"flex items-center gap-3 rounded-md px-2 py-1 text-sm hover:bg-surface-sunken active:bg-surface-sunken",
-										),
-									],
+						vstack(
+							h,
+							{ as: "ul", className: "-mx-2" },
+							Arr.map(response.runs, (run) =>
+								hstack(
+									h,
+									{
+										gap: "3",
+										align: "center",
+										as: "li",
+										className:
+											"rounded-md px-2 py-1 text-sm hover:bg-surface-sunken active:bg-surface-sunken",
+										attributes: [h.Key(run.traceId)],
+									},
 									[
 										ciResultBadge(h, run.result, run.attempt, "w-32 shrink-0"),
-										h.span(
-											[h.Class("min-w-0 flex-1 truncate"), h.Title(run.pipeline)],
+										typography(
+											h,
+											{
+												truncate: true,
+												className: "min-w-0 flex-1",
+												attributes: [h.Title(run.pipeline)],
+											},
 											[run.pipeline],
 										),
 										truncatedId(h, {
 											value: run.revision,
 											kind: "sha",
-											className: "text-xs text-muted-foreground",
+											className: typographyClass({ size: "xs", tone: "muted" }),
 										}),
 										h.span(
 											[
@@ -164,49 +188,48 @@ export const ciRunsSection = (h: H, sheet: ReviewSheet): Html =>
 						...(response.nextCursor === null
 							? []
 							: [
-									h.p(
-										[h.Class("text-xs text-muted-foreground")],
-										[`Latest ${CI_RUNS_SHOWN} runs`],
-									),
+									typography(h, { size: "xs", tone: "muted", as: "p" }, [
+										`Latest ${CI_RUNS_SHOWN} runs`,
+									]),
 								]),
 					]),
 	})
 
 export const historySection = (h: H, sheet: ReviewSheet, detail: CodeReviewDetail, timeZone: string): Html =>
 	section(h, "Reviews of this pull request", [
-		h.ul(
-			[h.Class("-mx-2 flex flex-col")],
-			detail.history.map((entry) => {
+		vstack(
+			h,
+			{ as: "ul", className: "-mx-2" },
+			Arr.map(detail.history, (entry) => {
 				const outcome = outcomeOf(entry)
 				const isCurrent = entry.id === detail.review.id
 				return h.li(
 					[h.Key(entry.id)],
 					[
-						h.button(
-							[
-								h.Class(
-									cn(
-										"flex w-full items-center gap-3 rounded-md px-2 py-1.5 text-left text-sm transition-colors",
-										isCurrent ? "bg-muted" : "hover:bg-surface-sunken active:bg-surface-sunken",
-									),
+						pressable(
+							h,
+							{
+								onClick: SheetMessage.ClickedHistoryEntry({ reviewId: entry.id }),
+								// The current review is marked by its tint, not dimmed like a disabled control.
+								isDisabled: isCurrent,
+								className: cn(
+									"flex w-full items-center gap-3 rounded-md px-2 py-1.5 text-left text-sm transition-colors disabled:cursor-default disabled:opacity-100",
+									isCurrent
+										? "bg-muted"
+										: "hover:bg-surface-sunken active:bg-surface-sunken",
 								),
-								...(isCurrent ? [h.Disabled(true)] : []),
-								h.Type("button"),
-								h.OnClick(SheetMessage.ClickedHistoryEntry({ reviewId: entry.id })),
-							],
+							},
 							[
 								truncatedId(h, {
 									value: entry.headSha,
 									kind: "sha",
-									className: "text-xs text-muted-foreground",
+									className: typographyClass({ size: "xs", tone: "muted" }),
 								}),
 								h.span([h.Class(cn("flex-1", outcome.tone))], [outcome.label]),
-								h.span(
-									[h.Class("tabular-nums text-muted-foreground")],
-									[countLabel(entry.findings, "issue")],
-								),
+								typography(h, { tone: "muted", numeric: true }, [
+									countLabel(entry.findings, "issue"),
+								]),
 								relativeTime(h, {
-									tooltip: "title",
 									value: entry.createdAt,
 									nowMs: sheet.nowMs,
 									timeZone,

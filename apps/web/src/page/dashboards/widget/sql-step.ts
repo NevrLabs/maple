@@ -1,9 +1,9 @@
-import { Effect, Schema } from "effect"
+import { Effect, Schema, String as Str } from "effect"
 import { Command } from "foldkit"
 import type { PageContext } from "../../contract"
 import { Message } from "./message"
 import type { Model } from "./model"
-import type { RawSqlState } from "./raw-sql"
+import { isRunnableSql, type RawSqlState } from "./raw-sql"
 import { planPreview, type Return } from "./update"
 
 // `RawSqlEditorPanel`'s steps: typing, the bucket, the chips inserted at the caret, Run preview.
@@ -21,7 +21,7 @@ export const InsertSqlToken = Command.define("InsertWidgetSqlToken", {
 			const start = textarea?.selectionStart ?? sql.length
 			const end = textarea?.selectionEnd ?? start
 			return Message.CompletedInsertSqlToken({
-				sql: sql.slice(0, start) + token + sql.slice(end),
+				sql: Str.slice(0, start)(sql) + token + Str.slice(end)(sql),
 				caret: start + token.length,
 			})
 		}),
@@ -65,15 +65,29 @@ export const sqlStep = (model: Model, message: SqlMessage): Return => {
 	const rawSql = model.rawSql
 	switch (message._tag) {
 		case "ChangedSql":
-			return { model: withSql(model, (sql) => ({ ...sql, draft: { ...sql.draft, sql: message.value } })) }
+			return {
+				model: withSql(model, (sql) => ({ ...sql, draft: { ...sql.draft, sql: message.value } })),
+			}
 		case "ChangedSqlBucket":
 			return {
-				model: withSql(model, (sql) => ({ ...sql, draft: { ...sql.draft, granularitySeconds: bucketOf(message.value) } })),
+				model: withSql(model, (sql) => ({
+					...sql,
+					draft: { ...sql.draft, granularitySeconds: bucketOf(message.value) },
+				})),
 			}
 		case "ClickedSqlToken":
 			return rawSql === null
 				? { model }
-				: { model, commands: [InsertSqlToken({ id: SQL_TEXTAREA_ID, sql: rawSql.draft.sql, token: message.token })] }
+				: {
+						model,
+						commands: [
+							InsertSqlToken({
+								id: SQL_TEXTAREA_ID,
+								sql: rawSql.draft.sql,
+								token: message.token,
+							}),
+						],
+					}
 		case "CompletedInsertSqlToken":
 			return {
 				model: withSql(model, (sql) => ({ ...sql, draft: { ...sql.draft, sql: message.sql } })),
@@ -86,9 +100,11 @@ export const sqlStep = (model: Model, message: SqlMessage): Return => {
 	}
 }
 
-/** Run preview in Raw SQL: the draft is staged and the preview re-planned. */
+/** Run preview in Raw SQL: the draft is staged and the preview re-planned, unless Apply would refuse it. */
 export const runSqlPreview = (model: Model, context: PageContext): Return =>
-	planPreview(
-		withSql(model, (sql) => ({ ...sql, staged: sql.draft })),
-		context,
-	)
+	model.rawSql === null || !isRunnableSql(model.rawSql)
+		? { model }
+		: planPreview(
+				withSql(model, (sql) => ({ ...sql, staged: sql.draft })),
+				context,
+			)

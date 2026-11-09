@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest"
-import { Effect, Option, Redacted } from "effect"
+import { Effect, Option, Redacted, Array as Arr, Record as Rec } from "effect"
 import {
 	makePreviewSignIn,
 	PREVIEW_REVIEWER_EMAIL,
@@ -28,7 +28,7 @@ const fakeClerk = (users: Record<string, { id: string; orgs: Array<string> }> = 
 			}),
 		isMemberOf: (userId, name) =>
 			Effect.succeed(
-				Object.values(users).some((user) => user.id === userId && user.orgs.includes(name)),
+				Arr.some(Rec.values(users), (user) => user.id === userId && user.orgs.includes(name)),
 			),
 		createOrganization: (userId, name) =>
 			Effect.sync(() => void writes.push(`createOrg ${userId} ${name}`)),
@@ -58,7 +58,7 @@ describe("makePreviewSignIn", () => {
 	it.effect("reports disabled and refuses sign-in outside previews", () =>
 		Effect.gen(function* () {
 			const service = makePreviewSignIn(Option.none())
-			expect((yield* service.status()).enabled).toBe(false)
+			expect((yield* service.status).enabled).toBe(false)
 			const error = yield* Effect.flip(service.signIn("shared-key"))
 			expect(error._tag).toBe("@maple/http/errors/PreviewSignInDisabledError")
 		}),
@@ -78,7 +78,7 @@ describe("makePreviewSignIn", () => {
 		Effect.gen(function* () {
 			const { clerk, writes } = fakeClerk()
 			const service = makePreviewSignIn(Option.some({ key: "shared-key", clerk }))
-			expect((yield* service.status()).enabled).toBe(true)
+			expect((yield* service.status).enabled).toBe(true)
 			const { ticket } = yield* service.signIn("shared-key")
 			expect(ticket).toBe("ticket:user_new:120")
 			expect(writes).toEqual([

@@ -11,6 +11,7 @@ import {
 	recentTraceTimeProbeQuery,
 } from "./queries/errors"
 import { OrgId } from "@maple/domain"
+import { String as Str, Array as Arr, Option } from "effect"
 
 // Traces timeseries query — parity with buildTracesTimeseriesSQL
 
@@ -790,9 +791,13 @@ describe("converted queries", () => {
 		const { sql } = compileUnionUnsafe(q, baseParams)
 		// The browser branch must still see every browser (no BrowserName = 'Chrome'
 		// constraint), but other branches keep it so their counts respect the filter.
-		const branches = sql.split("UNION ALL")
-		const browserBranch = branches.find((b) => b.includes("'browser' AS facetType"))!
-		const serviceBranch = branches.find((b) => b.includes("'service' AS facetType"))!
+		const branches = Str.split("UNION ALL")(sql)
+		const browserBranch = Option.getOrThrow(
+			Arr.findFirst(branches, (b) => Str.includes("'browser' AS facetType")(b)),
+		)
+		const serviceBranch = Option.getOrThrow(
+			Arr.findFirst(branches, (b) => Str.includes("'service' AS facetType")(b)),
+		)
 		expect(browserBranch).not.toContain("BrowserName = 'Chrome'")
 		expect(serviceBranch).toContain("BrowserName = 'Chrome'")
 		expect(serviceBranch).toContain("DeviceType = 'mobile'")
@@ -814,7 +819,9 @@ describe("converted queries", () => {
 		})
 		const { sql } = compileUnsafe(q, baseParams)
 		// On both tiers: the trace_list_mv edges and the hourly interior.
-		expect(sql.match(/positionCaseInsensitive\((\w+\.)?ServiceName, 'api'\) > 0/g)).toHaveLength(2)
+		expect(
+			Arr.fromIterable(Str.matchAll(/positionCaseInsensitive\((\w+\.)?ServiceName, 'api'\) > 0/g)(sql)),
+		).toHaveLength(2)
 	})
 
 	it("spanHierarchyQuery never projects the full attribute maps and caps the row count", () => {

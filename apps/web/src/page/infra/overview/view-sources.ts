@@ -3,10 +3,10 @@ import { formatNumber } from "@maple/ui/lib/format"
 import { TONE_FILL } from "@maple/ui/lib/tone"
 import { cn } from "@maple/ui/lib/utils"
 import type { Html, HtmlBuilder } from "foldkit/html"
-import { icon } from "../../../ui/icon"
-import { segmentedBar } from "../../../ui/meter"
-import { panel } from "../../../ui/panel"
-import { skeleton } from "../../../ui/skeleton"
+import { icon } from "@maple/views/ui/icon"
+import { segmentedBar } from "@maple/views/ui/meter"
+import { panel } from "@maple/views/ui/panel"
+import { skeleton, skeletonMeter } from "@maple/views/ui/skeleton"
 import { sectionHeading } from "../../kit/section-heading"
 import type { TimeSearch } from "../kit/view-tabs"
 import { sourceHref } from "./links"
@@ -14,6 +14,9 @@ import type { HealthSegment, SourceId } from "./model"
 import { sourceMark, SOURCE_TITLE } from "./source-mark"
 import type { SourceState } from "./state"
 import { ROW_CLASS, sectionCaption } from "./view-findings"
+import { typography } from "@maple/views/ui/typography"
+import { hstack, vstack } from "@maple/views/ui/stack"
+import { Array as Arr } from "effect"
 
 // `SourcesTable`, `SourceRowBody` and `HealthBar`.
 
@@ -37,45 +40,42 @@ const SEGMENT_LABEL = {
 } satisfies Record<HealthSegment["key"], string>
 
 const healthBar = <M>(h: HtmlBuilder<M>, segments: ReadonlyArray<HealthSegment>): Html => {
-	const drawn = segments.filter((segment) => segment.count > 0)
-	return h.div(
-		[h.Class("flex flex-col gap-1.5")],
-		[
-			segmentedBar(h, {
-				className: "w-full gap-px bg-muted",
-				minVisible: 2,
-				segments: drawn.map((segment) => ({
-					key: segment.key,
-					value: segment.count,
-					className: SEGMENT_CLASS[segment.key],
-				})),
-			}),
-			h.span(
-				[h.Class("flex gap-3 text-2xs text-muted-foreground tabular-nums")],
-				drawn.map((segment) =>
-					h.span([], [formatNumber(segment.count), " ", SEGMENT_LABEL[segment.key]]),
-				),
+	const drawn = Arr.filter(segments, (segment) => segment.count > 0)
+	return vstack(h, { gap: "1.5" }, [
+		segmentedBar(h, {
+			className: "w-full gap-px bg-muted",
+			minVisible: 2,
+			segments: Arr.map(drawn, (segment) => ({
+				key: segment.key,
+				value: segment.count,
+				className: SEGMENT_CLASS[segment.key],
+			})),
+		}),
+		hstack(
+			h,
+			{
+				gap: "3",
+				align: "stretch",
+				as: "span",
+				className: "text-2xs text-muted-foreground tabular-nums",
+			},
+			Arr.map(drawn, (segment) =>
+				h.span([], [formatNumber(segment.count), " ", SEGMENT_LABEL[segment.key]]),
 			),
-		],
-	)
+		),
+	])
 }
 
 /** `healthBar` for a source we couldn't check: an empty track, so the row is not blank. */
 const healthBarUnavailable = <M>(h: HtmlBuilder<M>): Html =>
-	h.div(
-		[h.Class("flex flex-col gap-1.5")],
-		[
-			h.span([h.Class("h-1.5 w-full rounded-full border border-dashed")], []),
-			h.span([h.Class("text-2xs")], ["\u00a0"]),
-		],
-	)
+	vstack(h, { gap: "1.5" }, [
+		h.span([h.Class("h-1.5 w-full rounded-full border border-dashed")], []),
+		typography(h, { size: "2xs" }, ["\u00a0"]),
+	])
 
 /** `healthBar`'s shape while loading: the bar and an empty legend line, so the row keeps its height. */
 const healthBarLoading = <M>(h: HtmlBuilder<M>): Html =>
-	h.div(
-		[h.Class("flex flex-col gap-1.5")],
-		[skeleton(h, "h-1.5 w-full rounded-full"), h.span([h.Class("text-2xs")], ["\u00a0"])],
-	)
+	vstack(h, { gap: "1.5" }, [skeletonMeter(h), typography(h, { size: "2xs" }, ["\u00a0"])])
 
 /** `isFailureExplained`: the page already shows the one failure every source shares. */
 export const sourceRow = <M>(
@@ -89,35 +89,23 @@ export const sourceRow = <M>(
 	return h.a(
 		[h.Class(cn(ROW_CLASS, "py-3.5")), h.Href(sourceHref(id, time))],
 		[
-			h.span(
-				[h.Class("flex w-52 shrink-0 items-center gap-3")],
-				[
-					sourceMark(h, id, 18),
-					h.span(
-						[h.Class("flex min-w-0 flex-col gap-0.5")],
-						[
-							h.span(
-								[h.Class("text-sm text-foreground group-hover:text-primary")],
-								[SOURCE_TITLE[id]],
-							),
-							...(isQuietFailure
-								? []
-								: [
-										state.status === "loading"
-											? skeleton(h, "my-0.5 h-3 w-16")
-											: h.span(
-													[h.Class("text-xs text-muted-foreground")],
-													[
-														state.status === "ready"
-															? state.summary.resources
-															: "Couldn't load",
-													],
-												),
-									]),
-						],
-					),
-				],
-			),
+			hstack(h, { gap: "3", align: "center", as: "span", className: "w-52 shrink-0" }, [
+				sourceMark(h, id, 18),
+				vstack(h, { gap: "0.5", shrink: true, as: "span" }, [
+					h.span([h.Class("text-sm text-foreground group-hover:text-primary")], [SOURCE_TITLE[id]]),
+					...(isQuietFailure
+						? []
+						: [
+								state.status === "loading"
+									? skeleton(h, "my-0.5 h-3 w-16")
+									: typography(h, { size: "xs", tone: "muted" }, [
+											state.status === "ready"
+												? state.summary.resources
+												: "Couldn't load",
+										]),
+							]),
+				]),
+			]),
 			h.span(
 				[h.Class("hidden min-w-0 flex-1 pr-6 md:block")],
 				state.status === "ready"
@@ -127,8 +115,15 @@ export const sourceRow = <M>(
 						: [healthBarUnavailable(h)],
 			),
 			state.status === "loading"
-				? h.span(
-						[h.Class("flex min-w-0 flex-1 md:w-64 md:flex-none")],
+				? hstack(
+						h,
+						{
+							align: "stretch",
+							shrink: true,
+							grow: true,
+							as: "span",
+							className: "md:w-64 md:flex-none",
+						},
 						[skeleton(h, "my-0.5 h-3 w-40 max-w-full")],
 					)
 				: h.span(
@@ -152,26 +147,21 @@ export const sourceRow = <M>(
 
 /** A source row before the org's sources are known: same height, no name yet. */
 const sourceRowPending = <M>(h: HtmlBuilder<M>): Html =>
-	h.div(
-		[h.Class("flex items-center gap-4 px-4 py-3.5")],
-		[
-			h.span(
-				[h.Class("flex w-52 shrink-0 items-center gap-3")],
-				[
-					skeleton(h, "size-[18px] shrink-0 rounded-sm"),
-					h.span(
-						[h.Class("flex min-w-0 flex-col gap-0.5")],
-						[skeleton(h, "my-0.5 h-4 w-24"), skeleton(h, "my-0.5 h-3 w-16")],
-					),
-				],
-			),
-			h.span([h.Class("hidden min-w-0 flex-1 pr-6 md:block")], [healthBarLoading(h)]),
-			h.span(
-				[h.Class("flex min-w-0 flex-1 md:w-64 md:flex-none")],
-				[skeleton(h, "my-0.5 h-3 w-40 max-w-full")],
-			),
-		],
-	)
+	hstack(h, { gap: "4", align: "center", className: "px-4 py-3.5" }, [
+		hstack(h, { gap: "3", align: "center", as: "span", className: "w-52 shrink-0" }, [
+			skeleton(h, "size-[18px] shrink-0 rounded-sm"),
+			vstack(h, { gap: "0.5", shrink: true, as: "span" }, [
+				skeleton(h, "my-0.5 h-4 w-24"),
+				skeleton(h, "my-0.5 h-3 w-16"),
+			]),
+		]),
+		h.span([h.Class("hidden min-w-0 flex-1 pr-6 md:block")], [healthBarLoading(h)]),
+		hstack(
+			h,
+			{ align: "stretch", shrink: true, grow: true, as: "span", className: "md:w-64 md:flex-none" },
+			[skeleton(h, "my-0.5 h-3 w-40 max-w-full")],
+		),
+	])
 
 /** Rows the pending table holds: a typical org's count, so the real table mostly lands in place. */
 const PENDING_ROWS = 3
@@ -194,7 +184,7 @@ export const sourcesTable = <M>(
 				{ tone: "background", className: "divide-y" },
 				sources === null
 					? Array.from({ length: PENDING_ROWS }, () => sourceRowPending(h))
-					: sources.map(({ id, state }) => sourceRow(h, id, state, time, isFailureExplained)),
+					: Arr.map(sources, ({ id, state }) => sourceRow(h, id, state, time, isFailureExplained)),
 			),
 		],
 	)

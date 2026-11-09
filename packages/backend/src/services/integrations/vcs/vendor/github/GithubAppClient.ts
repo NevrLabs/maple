@@ -8,13 +8,17 @@ import {
 	Layer,
 	Option,
 	Redacted,
+	Ref,
 	Schedule,
+	Semaphore,
 	Schema,
 	Stream,
+	String as Str,
 } from "effect"
 import { constTrue } from "effect/Function"
 import { FetchHttpClient, HttpBody, HttpClient, HttpClientRequest } from "effect/http"
 import type { HttpClientResponse } from "effect/http"
+import { readTextWithin } from "@maple/safe-fetch"
 import { Env } from "@maple/backend/platform/Env"
 import { githubWebBaseUrl } from "./github-hosts"
 import { timestampMs } from "@maple/backend/platform/time"
@@ -42,6 +46,15 @@ export class GithubAppError extends Schema.TaggedError<GithubAppError>()(
 		cause: Schema.optionalKey(Schema.Defect()),
 	},
 ) {}
+
+const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))
+
+const encodeJsonBody = (value: unknown, context: string) =>
+	encodeJson(value).pipe(
+		Effect.mapError(
+			(cause) => new GithubAppError({ message: `${context}: body is not JSON-encodable`, cause }),
+		),
+	)
 
 /** GitHub's answer for a resource that is gone or that this installation can no longer see. */
 export const isGoneStatus = (status?: number) => status === 404 || status === 410
@@ -86,6 +99,9 @@ const MAX_ANNOTATION_PAGES = 3
  */
 const JOB_LOG_NOT_READY_RETRIES = 3
 const JOB_LOG_NOT_READY_BACKOFF = Duration.seconds(2)
+/** The log store's 503 (`ServerBusy`) passes; three retries from one second wait about seven. */
+const JOB_LOG_BUSY_RETRIES = 3
+const JOB_LOG_BUSY_BACKOFF = Duration.seconds(1)
 /** GitHub lists at most 3,000 files for one pull request. */
 const MAX_PR_FILE_PAGES = 30
 
@@ -110,7 +126,7 @@ const collectPages = <A, E, R>(
 	).pipe(
 		Stream.runCollect,
 		Effect.map((pages) => ({
-			items: pages.flatMap((page) => page.items),
+			items: Arr.flatMap(pages, (page) => page.items),
 			truncated: pages.at(-1)?.full === true,
 		})),
 	)
@@ -219,7 +235,6 @@ const GithubApiRepoSchema = Schema.Struct({
 	html_url: Schema.String,
 	owner: Schema.Struct({ login: Schema.String }),
 })
-type GithubApiRepo = Schema.Schema.Type<typeof GithubApiRepoSchema>
 
 const GithubInstallationReposResponse = Schema.Struct({
 	total_count: Schema.Number,
@@ -237,6 +252,12 @@ const GithubApiUser = Schema.Struct({
 	avatar_url: Schema.optionalKey(Schema.String),
 })
 
+// A commit's `author` is a user, null, or `{}` when its email maps to no account.
+const GithubApiCommitUser = Schema.Struct({
+	login: Schema.optionalKey(Schema.String),
+	avatar_url: Schema.optionalKey(Schema.String),
+})
+
 const GithubApiCommitSchema = Schema.Struct({
 	sha: GitCommitSha, // validated at decode — the 40-hex shape lives in the brand
 	html_url: Schema.String,
@@ -245,7 +266,7 @@ const GithubApiCommitSchema = Schema.Struct({
 		author: Schema.NullOr(GithubApiCommitAuthor),
 		committer: Schema.optionalKey(Schema.NullOr(GithubApiCommitAuthor)),
 	}),
-	author: Schema.NullOr(GithubApiUser),
+	author: Schema.NullOr(GithubApiCommitUser),
 })
 export type GithubApiCommit = Schema.Schema.Type<typeof GithubApiCommitSchema>
 
@@ -270,7 +291,6 @@ const GithubApiBranchSchema = Schema.Struct({
 	name: Schema.String,
 	commit: Schema.Struct({ sha: GitCommitSha }), // 40-hex validated by the brand
 })
-type GithubApiBranch = Schema.Schema.Type<typeof GithubApiBranchSchema>
 const GithubApiBranchList = Schema.Array(GithubApiBranchSchema)
 
 // A pull request as the REST API reports it, list and detail alike (the detail
@@ -358,6 +378,16 @@ const GithubApiGitTreeListing = Schema.Struct({
 	),
 })
 
+/** Git's well-known hash of a tree with no entries. */
+const EMPTY_TREE_SHA = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+/** Reads one truncated tree's walk may make: a monorepo needs one per directory it splits. */
+const MAX_TREE_WALK_READS = 400
+/**
+ * Entries a walk holds at most: 1.5 times GitHub's 100,000 per read, about 60 MB of heap with the
+ * caller's copy, well inside a Worker's 128 MB.
+ */
+const MAX_TREE_WALK_ENTRIES = 150_000
+const TREE_WALK_CONCURRENCY = 4
 /** A recursive listing; `size` is set on blobs only, `truncated` when GitHub cut the listing short. */
 const GithubApiRecursiveTree = Schema.Struct({
 	sha: Schema.String,
@@ -627,7 +657,9 @@ const decodeCommentStates = Schema.decodeUnknownEffect(GithubCommentStatesRespon
 
 /** GitHub.com serves GraphQL at `/graphql`; Enterprise at `/api/graphql` beside `/api/v3`. */
 const graphqlUrl = (apiBaseUrl: string) =>
-	apiBaseUrl.endsWith("/api/v3") ? `${apiBaseUrl.slice(0, -"/v3".length)}/graphql` : `${apiBaseUrl}/graphql`
+	Str.endsWith("/api/v3")(apiBaseUrl)
+		? `${Str.slice(0, -"/v3".length)(apiBaseUrl)}/graphql`
+		: `${apiBaseUrl}/graphql`
 const decodeReview = Schema.decodeUnknownEffect(GithubApiReviewSchema)
 const decodeIssueComment = Schema.decodeUnknownEffect(GithubApiIssueCommentSchema)
 const decodeIssueCommentList = Schema.decodeUnknownEffect(GithubApiIssueCommentList)
@@ -637,13 +669,35 @@ const decodeContentFile = Schema.decodeUnknownEffect(GithubContentFileSchema)
 const base64UrlString = (value: string) => Buffer.from(value, "utf8").toString("base64url")
 const base64UrlBytes = (value: ArrayBuffer) => Buffer.from(value).toString("base64url")
 
-const pemToPkcs8 = (pem: string): ArrayBuffer => {
-	const body = pem
-		.replace(/-----BEGIN[^-]+-----/g, "")
-		.replace(/-----END[^-]+-----/g, "")
-		.replace(/\s+/g, "")
-	const buf = Buffer.from(body, "base64")
-	return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength)
+const derLength = (length: number): Buffer =>
+	length < 0x80
+		? Buffer.from([length])
+		: length < 0x100
+			? Buffer.from([0x81, length])
+			: length < 0x10000
+				? Buffer.from([0x82, length >> 8, length & 0xff])
+				: Buffer.from([0x83, length >> 16, (length >> 8) & 0xff, length & 0xff])
+
+const derNode = (tag: number, content: Buffer): Buffer =>
+	Buffer.concat([Buffer.from([tag]), derLength(content.length), content])
+
+// INTEGER 0 (version) + AlgorithmIdentifier { rsaEncryption, NULL }.
+const PKCS8_RSA_PREFIX = Buffer.from("020100300d06092a864886f70d0101010500", "hex")
+
+/**
+ * GitHub hands out PKCS#1 keys (`BEGIN RSA PRIVATE KEY`) but WebCrypto only imports PKCS#8,
+ * so a PKCS#1 body is wrapped in a PKCS#8 PrivateKeyInfo.
+ */
+export const pemToPkcs8 = (pem: string): ArrayBuffer => {
+	const body = Str.replace(
+		/\s+/g,
+		"",
+	)(Str.replace(/-----END[^-]+-----/g, "")(Str.replace(/-----BEGIN[^-]+-----/g, "")(pem)))
+	const der = Buffer.from(body, "base64")
+	const buf = Str.includes("BEGIN RSA PRIVATE KEY")(pem)
+		? derNode(0x30, Buffer.concat([PKCS8_RSA_PREFIX, derNode(0x04, der)]))
+		: der
+	return new Uint8Array(buf).buffer
 }
 
 /** GitHub answers 401 to a revoked or expired token; some endpoints answer 403 "Bad credentials". */
@@ -652,7 +706,7 @@ const rejectsCredentials = (response: HttpClientResponse.HttpClientResponse) =>
 		? Effect.succeed(true)
 		: response.status === 403
 			? response.text.pipe(
-					Effect.map((body) => body.includes("Bad credentials")),
+					Effect.map((body) => Str.includes("Bad credentials")(body)),
 					Effect.orElseSucceed(() => false),
 				)
 			: Effect.succeed(false)
@@ -719,7 +773,11 @@ export class GithubAppClient extends Context.Service<GithubAppClient>()(
 				// A cached installation token GitHub rejects is evicted, so the next call re-mints and
 				// sees the installation-gone answer the mint gives. The body read is memoized.
 				const sent = init?.headers["authorization"]
-				if (sent?.startsWith("token ") === true && (yield* rejectsCredentials(response))) {
+				if (
+					sent !== undefined &&
+					Str.startsWith("token ")(sent) &&
+					(yield* rejectsCredentials(response))
+				) {
 					yield* installationTokens.removeWhere(({ token }) => sent === `token ${token}`)
 					yield* Effect.annotateCurrentSpan({ "vcs.provider.token_evicted": true })
 				}
@@ -737,7 +795,8 @@ export class GithubAppClient extends Context.Service<GithubAppClient>()(
 					Effect.gen(function* () {
 						const response = yield* request
 						if (!isRateLimited(response)) return response
-						const waitS = rateLimitWaitSeconds(response, yield* Clock.currentTimeMillis)
+						const nowMs = yield* Clock.currentTimeMillis
+						const waitS = rateLimitWaitSeconds(response, nowMs)
 						// Defer (surface to the caller) when a single wait is longer than we'll
 						// ride out inline, OR when we've retried inline too many times. Floor
 						// the exhausted-case deferral so a tiny/zero-wait server can't drive an
@@ -782,7 +841,7 @@ export class GithubAppClient extends Context.Service<GithubAppClient>()(
 				return {
 					appId,
 					privateKeyPem: Redacted.value(privateKey),
-					apiBaseUrl: env.GITHUB_API_BASE_URL.replace(/\/+$/, ""),
+					apiBaseUrl: Str.replace(/\/+$/, "")(env.GITHUB_API_BASE_URL),
 				}
 			})
 
@@ -802,11 +861,14 @@ export class GithubAppClient extends Context.Service<GithubAppClient>()(
 
 			const mintAppJwt = Effect.fn("GithubAppClient.mintAppJwt")(function* (config: ResolvedAppConfig) {
 				const nowSec = Math.floor((yield* Clock.currentTimeMillis) / 1000)
-				const header = base64UrlString(JSON.stringify({ alg: "RS256", typ: "JWT" }))
+				const headerJson = yield* encodeJsonBody({ alg: "RS256", typ: "JWT" }, "App JWT header")
+				const header = base64UrlString(headerJson)
 				// iat back-dated 60s for clock skew; exp ≤ 10min per GitHub's limit.
-				const payload = base64UrlString(
-					JSON.stringify({ iat: nowSec - 60, exp: nowSec + 540, iss: config.appId }),
+				const payloadJson = yield* encodeJsonBody(
+					{ iat: nowSec - 60, exp: nowSec + 540, iss: config.appId },
+					"App JWT payload",
 				)
+				const payload = base64UrlString(payloadJson)
 				const signingInput = `${header}.${payload}`
 				const key = yield* importSigningKey(config.privateKeyPem)
 				const signature = yield* Effect.tryPromise({
@@ -833,13 +895,11 @@ export class GithubAppClient extends Context.Service<GithubAppClient>()(
 								}),
 						),
 					)
-					return yield* Effect.fail(
-						new GithubAppError({
-							message: `${context} failed: ${response.status} ${body.slice(0, 300)}`,
-							status: response.status,
-							scope,
-						}),
-					)
+					return yield* new GithubAppError({
+						message: `${context} failed: ${response.status} ${Str.slice(0, 300)(body)}`,
+						status: response.status,
+						scope,
+					})
 				})
 
 			const parseJson = (response: HttpClientResponse.HttpClientResponse, context: string) =>
@@ -923,7 +983,8 @@ export class GithubAppClient extends Context.Service<GithubAppClient>()(
 					return grantsActions(token)
 				}
 				yield* installationTokens.remove(externalInstallationId)
-				return grantsActions(yield* installationToken(externalInstallationId))
+				const refreshed = yield* installationToken(externalInstallationId)
+				return grantsActions(refreshed)
 			})
 
 			const authedGet = (
@@ -1046,7 +1107,7 @@ export class GithubAppClient extends Context.Service<GithubAppClient>()(
 					error: RepositoryListingError,
 					commits: ReadonlyArray<GithubApiCommit>,
 				) =>
-					!(error instanceof GithubAppError) || error.retryAfterSeconds === undefined
+					!Schema.is(GithubAppError)(error) || error.retryAfterSeconds === undefined
 						? Effect.fail(error)
 						: Effect.succeed({
 								commits,
@@ -1129,16 +1190,26 @@ export class GithubAppClient extends Context.Service<GithubAppClient>()(
 					token,
 					`${config.apiBaseUrl}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/commits/${encodeURIComponent(sha)}`,
 				)
-				// 404 (not in this repo) and 422 ("No commit found for SHA") are answers, not
-				// failures: none, so the span stays Ok.
+				// 404 (not in this repo), 422 ("No commit found for SHA") and the empty-repository 409
+				// are answers, not failures: none, so the span stays Ok. Any other 409 still fails.
 				if (response.status === 404 || response.status === 422) return Option.none<GithubApiCommit>()
+				if (response.status === 409) {
+					const body = yield* response.text.pipe(Effect.orElseSucceed(() => ""))
+					if (Str.includes("Git Repository is empty")(body)) return Option.none<GithubApiCommit>()
+					return yield* new GithubAppError({
+						message: `Get commit failed: 409 ${Str.slice(0, 300)(body)}`,
+						status: 409,
+						scope: "repository",
+					})
+				}
 				if (!isOk(response)) return yield* failure(response, "Get commit", "repository")
 				const json = yield* parseJson(response, "Get commit")
 				return yield* decodeCommit(json).pipe(
-					Effect.map(Option.some),
-					Effect.mapError(
-						(cause) => new GithubAppError({ message: "Unexpected commit payload", cause }),
-					),
+					Effect.mapBoth({
+						onSuccess: Option.some,
+						onFailure: (cause) =>
+							new GithubAppError({ message: "Unexpected commit payload", cause }),
+					}),
 				)
 			})
 
@@ -1154,10 +1225,11 @@ export class GithubAppClient extends Context.Service<GithubAppClient>()(
 				if (!isOk(response)) return yield* failure(response, "Get repository", "repository")
 				const json = yield* parseJson(response, "Get repository")
 				return yield* decodeRepositorySize(json).pipe(
-					Effect.map((body) => body.size),
-					Effect.mapError(
-						(cause) => new GithubAppError({ message: "Unexpected repository payload", cause }),
-					),
+					Effect.mapBoth({
+						onSuccess: (body) => body.size,
+						onFailure: (cause) =>
+							new GithubAppError({ message: "Unexpected repository payload", cause }),
+					}),
 				)
 			})
 
@@ -1179,6 +1251,10 @@ export class GithubAppClient extends Context.Service<GithubAppClient>()(
 			) {
 				const config = yield* resolveConfig
 				const jwt = yield* mintAppJwt(config)
+				const tokenRequestBody = yield* encodeJsonBody(
+					{ repositories: [repo], permissions: { contents: "read", metadata: "read" } },
+					"Scoped installation token request",
+				)
 				const response = yield* rateLimitedFetch(
 					tracedFetch(
 						`${config.apiBaseUrl}/app/installations/${externalInstallationId}/access_tokens`,
@@ -1191,10 +1267,7 @@ export class GithubAppClient extends Context.Service<GithubAppClient>()(
 								"x-github-api-version": GITHUB_API_VERSION,
 								"user-agent": USER_AGENT,
 							},
-							body: JSON.stringify({
-								repositories: [repo],
-								permissions: { contents: "read", metadata: "read" },
-							}),
+							body: tokenRequestBody,
 						},
 						"Scoped installation token request failed",
 					),
@@ -1285,24 +1358,22 @@ export class GithubAppClient extends Context.Service<GithubAppClient>()(
 				url: string,
 				body: unknown,
 				context: string,
-			) =>
-				rateLimitedFetch(
-					tracedFetch(
-						url,
-						{
-							method,
-							headers: {
-								authorization: `token ${token}`,
-								accept: "application/vnd.github+json",
-								"content-type": "application/json",
-								"x-github-api-version": GITHUB_API_VERSION,
-								"user-agent": USER_AGENT,
-							},
-							body: JSON.stringify(body),
-						},
-						`${context} failed`,
-					),
+			) => {
+				const headers = {
+					authorization: `token ${token}`,
+					accept: "application/vnd.github+json",
+					"content-type": "application/json",
+					"x-github-api-version": GITHUB_API_VERSION,
+					"user-agent": USER_AGENT,
+				}
+				const send = (init: GithubRequestInit) =>
+					rateLimitedFetch(tracedFetch(url, init, `${context} failed`))
+				// A DELETE sends no body, which `JSON.stringify(undefined)` used to express.
+				if (body === undefined) return send({ method, headers })
+				return encodeJsonBody(body, context).pipe(
+					Effect.flatMap((encoded) => send({ method, headers, body: encoded })),
 				)
+			}
 
 			// Every page: a review needs the whole diff, and GitHub itself stops at
 			// 3,000 files, which is PER_PAGE * MAX_PR_FILE_PAGES.
@@ -1357,12 +1428,13 @@ export class GithubAppClient extends Context.Service<GithubAppClient>()(
 				})
 				const unexpected = (what: string) => (cause: unknown) =>
 					new GithubAppError({ message: `Unexpected ${what} payload`, cause })
-				const commits = yield* decodePullRequestCommits(
-					yield* getJson(
-						`${base}/pulls/${number}/commits?per_page=${PER_PAGE}`,
-						"List pull request commits",
-					),
-				).pipe(Effect.mapError(unexpected("pull request commits")))
+				const pullRequestCommitsJson = yield* getJson(
+					`${base}/pulls/${number}/commits?per_page=${PER_PAGE}`,
+					"List pull request commits",
+				)
+				const commits = yield* decodePullRequestCommits(pullRequestCommitsJson).pipe(
+					Effect.mapError(unexpected("pull request commits")),
+				)
 				const [inline, conversation] = yield* Effect.all(
 					[
 						getJson(
@@ -1378,25 +1450,28 @@ export class GithubAppClient extends Context.Service<GithubAppClient>()(
 				)
 				const notOwn = (comment: GithubApiDiscussionComment) =>
 					String(comment.performed_via_github_app?.id ?? "") !== config.appId
-				const comments = [
+				const allComments = [
 					...(yield* decodeDiscussionComments(inline).pipe(
 						Effect.mapError(unexpected("review comments")),
 					)),
 					...(yield* decodeDiscussionComments(conversation).pipe(
 						Effect.mapError(unexpected("comments")),
 					)),
-				].filter(notOwn)
+				]
+				const comments = Arr.filter(allComments, notOwn)
 				// The commits list is oldest first and one page long; the head is the pull request's own.
-				const head = (yield* decodePullRequestHead(
-					yield* getJson(`${base}/pulls/${number}`, "Get pull request"),
-				).pipe(Effect.mapError(unexpected("pull request")))).head.sha
-				const checks = (yield* decodeCheckRunList(
-					yield* getJson(
-						`${base}/commits/${head}/check-runs?per_page=${PER_PAGE}`,
-						"List check runs",
-					),
-				).pipe(Effect.mapError(unexpected("check runs")))).check_runs.filter(
-					// The review's own check run is still in progress while it reads this.
+				const pullRequestHeadJson = yield* getJson(`${base}/pulls/${number}`, "Get pull request")
+				const head = (yield* decodePullRequestHead(pullRequestHeadJson).pipe(
+					Effect.mapError(unexpected("pull request")),
+				)).head.sha
+				const checkRunListJson = yield* getJson(
+					`${base}/commits/${head}/check-runs?per_page=${PER_PAGE}`,
+					"List check runs",
+				)
+				const checks = Arr.filter(
+					(yield* decodeCheckRunList(checkRunListJson).pipe(
+						Effect.mapError(unexpected("check runs")),
+					)).check_runs,
 					(check) => String(check.app?.id ?? "") !== config.appId,
 				)
 				return { commits, comments, checks }
@@ -1423,10 +1498,15 @@ export class GithubAppClient extends Context.Service<GithubAppClient>()(
 
 			const graphqlFailure = (context: string, errors: ReadonlyArray<{ readonly message: string }>) =>
 				new GithubAppError({
-					message: `${context} failed: ${errors
-						.map((error) => error.message)
-						.join("; ")
-						.slice(0, 300)}`,
+					message: `${context} failed: ${Str.slice(
+						0,
+						300,
+					)(
+						Arr.join(
+							Arr.map(errors, (error) => error.message),
+							"; ",
+						),
+					)}`,
 					scope: "repository",
 				})
 
@@ -1499,9 +1579,8 @@ export class GithubAppClient extends Context.Service<GithubAppClient>()(
 						)
 						if (!isOk(response))
 							return yield* failure(response, "List pull request comments", "repository")
-						const comments = yield* decodeIssueCommentList(
-							yield* parseJson(response, "List pull request comments"),
-						).pipe(
+						const issueCommentListJson = yield* parseJson(response, "List pull request comments")
+						const comments = yield* decodeIssueCommentList(issueCommentListJson).pipe(
 							Effect.mapError(
 								(cause) =>
 									new GithubAppError({ message: "Unexpected comments payload", cause }),
@@ -1514,26 +1593,25 @@ export class GithubAppClient extends Context.Service<GithubAppClient>()(
 					Stream.filter(
 						(comment) =>
 							String(comment.performed_via_github_app?.id ?? "") === config.appId &&
-							(comment.body ?? "").startsWith(prefix) &&
-							!(comment.body ?? "").includes(keep),
+							Str.startsWith(prefix)(comment.body ?? "") &&
+							!Str.includes(keep)(comment.body ?? ""),
 					),
 					Stream.runCollect,
 				)
-				const ids = earlier.flatMap((comment) =>
+				const ids = Arr.flatMap(earlier, (comment) =>
 					comment.node_id === undefined ? [] : [comment.node_id],
 				)
 				if (ids.length === 0) return 0
 				// `nodes(ids:)` takes at most 100 ids a query.
 				const shown = yield* Effect.forEach(Arr.chunksOf(ids, 100), (chunk) =>
 					Effect.gen(function* () {
-						const states = yield* decodeCommentStates(
-							yield* graphql(
-								externalInstallationId,
-								COMMENT_STATES_QUERY,
-								{ ids: chunk },
-								"Read comment states",
-							),
-						).pipe(
+						const commentStatesJson = yield* graphql(
+							externalInstallationId,
+							COMMENT_STATES_QUERY,
+							{ ids: chunk },
+							"Read comment states",
+						)
+						const states = yield* decodeCommentStates(commentStatesJson).pipe(
 							Effect.mapError(
 								(cause) =>
 									new GithubAppError({
@@ -1544,7 +1622,7 @@ export class GithubAppClient extends Context.Service<GithubAppClient>()(
 						)
 						if (states.errors && states.errors.length > 0)
 							return yield* graphqlFailure("Read comment states", states.errors)
-						return (states.data?.nodes ?? []).flatMap((node) =>
+						return Arr.flatMap(states.data?.nodes ?? [], (node) =>
 							node?.id !== undefined && node.isMinimized === false ? [node.id] : [],
 						)
 					}),
@@ -1553,14 +1631,13 @@ export class GithubAppClient extends Context.Service<GithubAppClient>()(
 					shown,
 					(id) =>
 						Effect.gen(function* () {
-							const decoded = yield* decodeMutation(
-								yield* graphql(
-									externalInstallationId,
-									MINIMIZE_COMMENT_MUTATION,
-									{ id },
-									"Minimize comment",
-								),
-							).pipe(
+							const mutationJson = yield* graphql(
+								externalInstallationId,
+								MINIMIZE_COMMENT_MUTATION,
+								{ id },
+								"Minimize comment",
+							)
+							const decoded = yield* decodeMutation(mutationJson).pipe(
 								Effect.mapError(
 									(cause) =>
 										new GithubAppError({ message: "Unexpected mutation payload", cause }),
@@ -1590,9 +1667,8 @@ export class GithubAppClient extends Context.Service<GithubAppClient>()(
 					`${config.apiBaseUrl}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls/${number}/reviews/${reviewId}/comments?per_page=${PER_PAGE}`,
 				)
 				if (!isOk(response)) return yield* failure(response, "List review comments", "repository")
-				return yield* decodeReviewCommentList(
-					yield* parseJson(response, "List review comments"),
-				).pipe(
+				const reviewCommentListJson = yield* parseJson(response, "List review comments")
+				return yield* decodeReviewCommentList(reviewCommentListJson).pipe(
 					Effect.mapError(
 						(cause) =>
 							new GithubAppError({ message: "Unexpected review comments payload", cause }),
@@ -1618,9 +1694,8 @@ export class GithubAppClient extends Context.Service<GithubAppClient>()(
 					"Reply to review comment",
 				)
 				if (!isOk(response)) return yield* failure(response, "Reply to review comment", "repository")
-				return yield* decodeCreatedComment(
-					yield* parseJson(response, "Reply to review comment"),
-				).pipe(
+				const createdCommentJson = yield* parseJson(response, "Reply to review comment")
+				return yield* decodeCreatedComment(createdCommentJson).pipe(
 					Effect.mapError(
 						(cause) => new GithubAppError({ message: "Unexpected reply payload", cause }),
 					),
@@ -1644,9 +1719,8 @@ export class GithubAppClient extends Context.Service<GithubAppClient>()(
 					const token = yield* mintInstallationToken(externalInstallationId)
 					const response = yield* authedSend(method, token, url(config), body, context)
 					if (!isOk(response)) return yield* failure(response, context, "repository")
-					return yield* Schema.decodeUnknownEffect(schema)(
-						yield* parseJson(response, context),
-					).pipe(
+					const payloadJson = yield* parseJson(response, context)
+					return yield* Schema.decodeEffect(schema)(payloadJson).pipe(
 						Effect.mapError(
 							(cause) =>
 								new GithubAppError({ message: `Unexpected ${context} payload`, cause }),
@@ -1668,7 +1742,8 @@ export class GithubAppClient extends Context.Service<GithubAppClient>()(
 					`${repoBase(config, owner, repo)}/pulls/${number}`,
 				)
 				if (!isOk(response)) return yield* failure(response, "Get pull request", "repository")
-				return yield* decodePullRequestHead(yield* parseJson(response, "Get pull request")).pipe(
+				const pullRequestHeadJson = yield* parseJson(response, "Get pull request")
+				return yield* decodePullRequestHead(pullRequestHeadJson).pipe(
 					Effect.mapError(
 						(cause) => new GithubAppError({ message: "Unexpected pull request payload", cause }),
 					),
@@ -1723,9 +1798,11 @@ export class GithubAppClient extends Context.Service<GithubAppClient>()(
 					if (response.status === 404) return "none"
 					if (!isOk(response))
 						return yield* failure(response, "Get collaborator permission", "repository")
-					const decoded = yield* decodeCollaboratorPermission(
-						yield* parseJson(response, "Get collaborator permission"),
-					).pipe(
+					const collaboratorPermissionJson = yield* parseJson(
+						response,
+						"Get collaborator permission",
+					)
+					const decoded = yield* decodeCollaboratorPermission(collaboratorPermissionJson).pipe(
 						Effect.mapError(
 							(cause) =>
 								new GithubAppError({ message: "Unexpected permission payload", cause }),
@@ -1761,9 +1838,8 @@ export class GithubAppClient extends Context.Service<GithubAppClient>()(
 				)
 				if (!isOk(parentResponse))
 					return yield* failure(parentResponse, "Read parent commit", "repository")
-				const parent = yield* decodeGitCommit(
-					yield* parseJson(parentResponse, "Read parent commit"),
-				).pipe(
+				const gitCommitJson = yield* parseJson(parentResponse, "Read parent commit")
+				const parent = yield* decodeGitCommit(gitCommitJson).pipe(
 					Effect.mapError(
 						(cause) => new GithubAppError({ message: "Unexpected commit payload", cause }),
 					),
@@ -1776,7 +1852,8 @@ export class GithubAppClient extends Context.Service<GithubAppClient>()(
 					if (cached !== undefined) return cached
 					const response = yield* authedGet(config, token, `${base}/git/trees/${sha}`)
 					if (!isOk(response)) return yield* failure(response, "Read tree", "repository")
-					const listing = yield* decodeGitTreeListing(yield* parseJson(response, "Read tree")).pipe(
+					const gitTreeListingJson = yield* parseJson(response, "Read tree")
+					const listing = yield* decodeGitTreeListing(gitTreeListingJson).pipe(
 						Effect.mapError(
 							(cause) => new GithubAppError({ message: "Unexpected tree payload", cause }),
 						),
@@ -1785,14 +1862,15 @@ export class GithubAppClient extends Context.Service<GithubAppClient>()(
 					return listing.tree
 				})
 				const modeOf = (path: string) => {
-					const parts = path.split("/")
+					const parts = Str.split(path, "/")
 					const descend = (i: number, sha: string): Effect.Effect<string, GithubAppError> => {
 						const part = parts[i]
 						if (part === undefined) return Effect.succeed("100644")
 						return listTree(sha).pipe(
 							Effect.flatMap((tree) => {
-								const entry = tree.find((candidate) => candidate.path === part)
-								if (entry === undefined) return Effect.succeed("100644")
+								const found = Arr.findFirst(tree, (candidate) => candidate.path === part)
+								if (Option.isNone(found)) return Effect.succeed("100644")
+								const entry = found.value
 								if (i === parts.length - 1) {
 									if (entry.mode !== "100644" && entry.mode !== "100755")
 										return Effect.fail(
@@ -1807,7 +1885,7 @@ export class GithubAppClient extends Context.Service<GithubAppClient>()(
 								if (entry.type !== "tree")
 									return Effect.fail(
 										new GithubAppError({
-											message: `${path} passes through ${parts.slice(0, i + 1).join("/")}, which is not a directory (mode ${entry.mode}); it is not edited`,
+											message: `${path} passes through ${Arr.join(parts.slice(0, i + 1), "/")}, which is not a directory (mode ${entry.mode}); it is not edited`,
 											scope: "repository",
 										}),
 									)
@@ -1824,7 +1902,7 @@ export class GithubAppClient extends Context.Service<GithubAppClient>()(
 					() => `${base}/git/trees`,
 					{
 						base_tree: parent.tree.sha,
-						tree: input.files.map((file, i) => ({
+						tree: Arr.map(input.files, (file, i) => ({
 							path: file.path,
 							mode: modes[i] ?? "100644",
 							type: "blob",
@@ -1845,7 +1923,10 @@ export class GithubAppClient extends Context.Service<GithubAppClient>()(
 				const refResponse = yield* authedSend(
 					"PATCH",
 					token,
-					`${base}/git/refs/heads/${input.branch.split("/").map(encodeURIComponent).join("/")}`,
+					`${base}/git/refs/heads/${Arr.join(
+						Arr.map(Str.split(input.branch, "/"), (part) => encodeURIComponent(part)),
+						"/",
+					)}`,
 					{ sha: commit.sha, force: false },
 					"Update branch",
 				)
@@ -1873,7 +1954,8 @@ export class GithubAppClient extends Context.Service<GithubAppClient>()(
 					`${config.apiBaseUrl}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/compare/${encodeURIComponent(base)}...${encodeURIComponent(head)}?per_page=${PER_PAGE}`,
 				)
 				if (!isOk(response)) return yield* failure(response, "Compare commits", "repository")
-				const decoded = yield* decodeComparison(yield* parseJson(response, "Compare commits")).pipe(
+				const comparisonJson = yield* parseJson(response, "Compare commits")
+				const decoded = yield* decodeComparison(comparisonJson).pipe(
 					Effect.mapError(
 						(cause) => new GithubAppError({ message: "Unexpected comparison payload", cause }),
 					),
@@ -1902,14 +1984,16 @@ export class GithubAppClient extends Context.Service<GithubAppClient>()(
 					`${base}/commits/${encodeURIComponent(input.headSha)}/check-runs?check_name=${encodeURIComponent(input.name)}&app_id=${encodeURIComponent(config.appId)}&filter=latest`,
 				)
 				if (!isOk(listed)) return yield* failure(listed, "List check runs", "repository")
-				const running = (yield* decodeOwnCheckRunList(
-					yield* parseJson(listed, "List check runs"),
-				).pipe(
+				const ownCheckRunListJson = yield* parseJson(listed, "List check runs")
+				const ownCheckRunList = yield* decodeOwnCheckRunList(ownCheckRunListJson).pipe(
 					Effect.mapError(
 						(cause) =>
 							new GithubAppError({ message: "Unexpected check run list payload", cause }),
 					),
-				)).check_runs.find((run) => run.status !== "completed")
+				)
+				const running = Option.getOrUndefined(
+					Arr.findFirst(ownCheckRunList.check_runs, (run) => run.status !== "completed"),
+				)
 				yield* Effect.annotateCurrentSpan({
 					"vcs.check_run.status": input.state.status,
 					"vcs.check_run.updated": running !== undefined,
@@ -1917,14 +2001,17 @@ export class GithubAppClient extends Context.Service<GithubAppClient>()(
 				const output = {
 					title: input.title,
 					summary: input.summary,
-					annotations: input.annotations.slice(0, CHECK_RUN_ANNOTATION_LIMIT).map((annotation) => ({
-						path: annotation.path,
-						start_line: annotation.startLine,
-						end_line: annotation.endLine,
-						annotation_level: annotation.level,
-						title: annotation.title,
-						message: annotation.message,
-					})),
+					annotations: Arr.map(
+						input.annotations.slice(0, CHECK_RUN_ANNOTATION_LIMIT),
+						(annotation) => ({
+							path: annotation.path,
+							start_line: annotation.startLine,
+							end_line: annotation.endLine,
+							annotation_level: annotation.level,
+							title: annotation.title,
+							message: annotation.message,
+						}),
+					),
 				}
 				const state =
 					input.state.status === "completed"
@@ -1975,7 +2062,7 @@ export class GithubAppClient extends Context.Service<GithubAppClient>()(
 						commit_id: input.commitId,
 						body: input.body,
 						event: "COMMENT",
-						comments: input.comments.map((comment) => ({
+						comments: Arr.map(input.comments, (comment) => ({
 							path: comment.path,
 							line: comment.line,
 							side: "RIGHT",
@@ -2025,18 +2112,20 @@ export class GithubAppClient extends Context.Service<GithubAppClient>()(
 						)
 						if (!isOk(response))
 							return yield* failure(response, "List pull request comments", "repository")
-						const comments = yield* decodeIssueCommentList(
-							yield* parseJson(response, "List pull request comments"),
-						).pipe(
+						const issueCommentListJson = yield* parseJson(response, "List pull request comments")
+						const comments = yield* decodeIssueCommentList(issueCommentListJson).pipe(
 							Effect.mapError(
 								(cause) =>
 									new GithubAppError({ message: "Unexpected comments payload", cause }),
 							),
 						)
-						const match = comments.find(
-							(comment) =>
-								(comment.body ?? "").includes(marker) &&
-								String(comment.performed_via_github_app?.id ?? "") === config.appId,
+						const match = Option.getOrUndefined(
+							Arr.findFirst(
+								comments,
+								(comment) =>
+									Str.includes(marker)(comment.body ?? "") &&
+									String(comment.performed_via_github_app?.id ?? "") === config.appId,
+							),
 						)
 						const more =
 							match === undefined && comments.length >= PER_PAGE && page < MAX_COMMENT_PAGES
@@ -2082,9 +2171,8 @@ export class GithubAppClient extends Context.Service<GithubAppClient>()(
 							)
 				if (!isOk(response))
 					return yield* failure(response, "Write pull request comment", "repository")
-				return yield* decodeIssueComment(
-					yield* parseJson(response, "Write pull request comment"),
-				).pipe(
+				const issueCommentJson = yield* parseJson(response, "Write pull request comment")
+				return yield* decodeIssueComment(issueCommentJson).pipe(
 					Effect.mapError(
 						(cause) => new GithubAppError({ message: "Unexpected comment payload", cause }),
 					),
@@ -2101,9 +2189,13 @@ export class GithubAppClient extends Context.Service<GithubAppClient>()(
 			) {
 				const config = yield* resolveConfig
 				const token = yield* mintInstallationToken(externalInstallationId)
-				const query = [queryText, `repo:${owner}/${repo}`, path ? `path:${path}` : undefined]
-					.filter((part): part is string => part !== undefined)
-					.join(" ")
+				const query = Arr.join(
+					Arr.filter(
+						[queryText, `repo:${owner}/${repo}`, path ? `path:${path}` : undefined],
+						(part): part is string => part !== undefined,
+					),
+					" ",
+				)
 				const params = new URLSearchParams({ q: query, per_page: String(limit), page: "1" })
 				const response = yield* rateLimitedFetch(
 					tracedFetch(
@@ -2137,7 +2229,10 @@ export class GithubAppClient extends Context.Service<GithubAppClient>()(
 			) {
 				const config = yield* resolveConfig
 				const token = yield* mintInstallationToken(externalInstallationId)
-				const encodedPath = path.split("/").map(encodeURIComponent).join("/")
+				const encodedPath = Arr.join(
+					Arr.map(Str.split(path, "/"), (part) => encodeURIComponent(part)),
+					"/",
+				)
 				const params = new URLSearchParams({ ref })
 				const response = yield* authedGet(
 					config,
@@ -2149,11 +2244,11 @@ export class GithubAppClient extends Context.Service<GithubAppClient>()(
 				if (!isOk(response)) return yield* failure(response, "Get repository file", "repository")
 				const json = yield* parseJson(response, "Get repository file")
 				return yield* decodeContentFile(json).pipe(
-					Effect.map(Option.some),
-					Effect.mapError(
-						(cause) =>
+					Effect.mapBoth({
+						onSuccess: Option.some,
+						onFailure: (cause) =>
 							new GithubAppError({ message: "Unexpected repository file payload", cause }),
-					),
+					}),
 				)
 			})
 
@@ -2171,23 +2266,153 @@ export class GithubAppClient extends Context.Service<GithubAppClient>()(
 					token,
 					`${config.apiBaseUrl}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/trees/${encodeURIComponent(treeish)}?recursive=1`,
 				)
+				if (response.status === 404) {
+					// GitHub 404s the recursive tree of a commit whose tree is git's empty tree.
+					const commit = yield* authedGet(
+						config,
+						token,
+						`${config.apiBaseUrl}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/commits/${encodeURIComponent(treeish)}`,
+					)
+					const treeSha = isOk(commit)
+						? yield* parseJson(commit, "Read commit").pipe(
+								Effect.flatMap(decodeGitCommit),
+								Effect.map((decoded) => decoded.tree.sha),
+								Effect.orElseSucceed(() => undefined),
+							)
+						: undefined
+					if (treeSha === EMPTY_TREE_SHA)
+						return {
+							sha: EMPTY_TREE_SHA,
+							truncated: false,
+							tree: [],
+						} satisfies GithubRecursiveTree
+				}
 				if (!isOk(response)) return yield* failure(response, "Read tree", "repository")
-				return yield* decodeRecursiveTree(yield* parseJson(response, "Read tree")).pipe(
-					Effect.mapError(
-						(cause) => new GithubAppError({ message: "Unexpected tree payload", cause }),
+				const listing = yield* decodeTreeResponse(response)
+				if (!listing.truncated) return listing
+				// Too large for one read (a monorepo): list it again subtree by subtree.
+				const walked = yield* walkTree(
+					config,
+					token,
+					`${config.apiBaseUrl}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`,
+					listing.sha,
+				)
+				yield* Effect.annotateCurrentSpan({
+					"maple.github.tree_walk.reads": walked.reads,
+					"maple.github.tree_walk.truncated": walked.truncated,
+				})
+				return {
+					sha: listing.sha,
+					truncated: walked.truncated,
+					tree: walked.tree,
+				} satisfies GithubRecursiveTree
+			})
+
+			const decodeTreeResponse = (response: HttpClientResponse.HttpClientResponse) =>
+				parseJson(response, "Read tree").pipe(
+					Effect.flatMap((json) =>
+						decodeRecursiveTree(json).pipe(
+							Effect.mapError(
+								(cause) => new GithubAppError({ message: "Unexpected tree payload", cause }),
+							),
+						),
 					),
 				)
+
+			/**
+			 * A tree GitHub truncates, read as its direct entries plus one recursive read per subtree,
+			 * descending further only into a subtree that is itself truncated. Bounded in reads and
+			 * entries; past either bound the listing is reported truncated, never as complete.
+			 */
+			const walkTree = Effect.fnUntraced(function* (
+				config: ResolvedAppConfig,
+				token: string,
+				base: string,
+				rootSha: string,
+			) {
+				const reads = yield* Ref.make(0)
+				const entries = yield* Ref.make(0)
+				// One gate for the whole walk: nested walks would otherwise multiply the reads in flight.
+				// A read never recurses, so holding its permit cannot starve a nested one.
+				const gate = yield* Semaphore.make(TREE_WALK_CONCURRENCY)
+				const readOnce = Effect.fnUntraced(function* (sha: string, recursive: boolean) {
+					const count = yield* Ref.updateAndGet(reads, (n) => n + 1)
+					if (count > MAX_TREE_WALK_READS) return Option.none<GithubRecursiveTree>()
+					// Past the entry cap the answer is already truncated; spend no more reads on it.
+					if ((yield* Ref.get(entries)) > MAX_TREE_WALK_ENTRIES)
+						return Option.none<GithubRecursiveTree>()
+					const response = yield* authedGet(
+						config,
+						token,
+						`${base}/git/trees/${encodeURIComponent(sha)}${recursive ? "?recursive=1" : ""}`,
+					)
+					if (!isOk(response)) return yield* failure(response, "Read tree", "repository")
+					const listing = yield* decodeTreeResponse(response)
+					// A truncated recursive read is discarded and re-listed level by level, so it is not held.
+					const held = recursive && listing.truncated ? 0 : listing.tree.length
+					const total = yield* Ref.updateAndGet(entries, (n) => n + held)
+					return total > MAX_TREE_WALK_ENTRIES
+						? Option.none<GithubRecursiveTree>()
+						: Option.some(listing)
+				})
+				const read = (sha: string, recursive: boolean) =>
+					readOnce(sha, recursive).pipe(gate.withPermit)
+				type Walked = { readonly tree: GithubRecursiveTree["tree"]; readonly truncated: boolean }
+				const under = (prefix: string, walked: Walked): Walked => ({
+					truncated: walked.truncated,
+					tree: Arr.map(walked.tree, (entry) => ({ ...entry, path: `${prefix}${entry.path}` })),
+				})
+				const cut: Walked = { tree: [], truncated: true }
+				const walk = (sha: string): Effect.Effect<Walked, GithubAppError> =>
+					read(sha, false).pipe(
+						Effect.flatMap(
+							Option.match({
+								onNone: () => Effect.succeed(cut),
+								onSome: (level) =>
+									Effect.forEach(
+										Arr.filter(level.tree, (entry) => entry.type === "tree"),
+										(dir) =>
+											read(dir.sha, true).pipe(
+												Effect.flatMap(
+													Option.match({
+														onNone: () => Effect.succeed(cut),
+														onSome: (sub) =>
+															sub.truncated
+																? walk(dir.sha)
+																: Effect.succeed<Walked>({
+																		tree: sub.tree,
+																		truncated: false,
+																	}),
+													}),
+												),
+												Effect.map((walked) => under(`${dir.path}/`, walked)),
+											),
+										{ concurrency: TREE_WALK_CONCURRENCY },
+									).pipe(
+										Effect.map((subtrees): Walked => ({
+											truncated:
+												level.truncated || Arr.some(subtrees, (s) => s.truncated),
+											tree: [...level.tree, ...Arr.flatMap(subtrees, (s) => s.tree)],
+										})),
+									),
+							}),
+						),
+					)
+				const walked = yield* walk(rootSha)
+				const attempted = yield* Ref.get(reads)
+				return { ...walked, reads: Math.min(attempted, MAX_TREE_WALK_READS) }
 			})
 
 			/**
 			 * One blob's bytes as text, by its sha; unlike the contents API it serves files up to 100 MB.
-			 * Read raw, so a large lockfile is never held as base64 JSON as well.
+			 * Read raw, so a large lockfile is never held as base64 JSON as well, and never past `maxBytes`.
 			 */
 			const getBlobText = Effect.fn("GithubAppClient.getBlobText")(function* (
 				externalInstallationId: string,
 				owner: string,
 				repo: string,
 				sha: string,
+				maxBytes: number,
 			) {
 				const config = yield* resolveConfig
 				const token = yield* mintInstallationToken(externalInstallationId)
@@ -2198,9 +2423,11 @@ export class GithubAppClient extends Context.Service<GithubAppClient>()(
 					"application/vnd.github.raw+json",
 				)
 				if (!isOk(response)) return yield* failure(response, "Read blob", "repository")
-				return yield* response.text.pipe(
-					Effect.mapError(
-						(cause) => new GithubAppError({ message: "Could not read the blob", cause }),
+				return yield* readTextWithin(response, maxBytes).pipe(
+					Effect.mapError((cause) =>
+						cause._tag === "@maple/safe-fetch/ResponseTooLargeError"
+							? new GithubAppError({ message: `The blob is larger than ${maxBytes} bytes` })
+							: new GithubAppError({ message: "Could not read the blob", cause }),
 					),
 				)
 			})
@@ -2226,9 +2453,11 @@ export class GithubAppClient extends Context.Service<GithubAppClient>()(
 						)
 						if (!isOk(response))
 							return yield* failure(response, "List check run annotations", "repository")
-						const annotations = yield* decodeCheckRunAnnotations(
-							yield* parseJson(response, "List check run annotations"),
-						).pipe(
+						const checkRunAnnotationsJson = yield* parseJson(
+							response,
+							"List check run annotations",
+						)
+						const annotations = yield* decodeCheckRunAnnotations(checkRunAnnotationsJson).pipe(
 							Effect.mapError(
 								(cause) =>
 									new GithubAppError({ message: "Unexpected annotations payload", cause }),
@@ -2237,7 +2466,7 @@ export class GithubAppClient extends Context.Service<GithubAppClient>()(
 						const more =
 							annotations.length >= PER_PAGE &&
 							page < MAX_ANNOTATION_PAGES &&
-							!annotations.some((annotation) => annotation.annotation_level === "failure")
+							!Arr.some(annotations, (annotation) => annotation.annotation_level === "failure")
 						return [[annotations], more ? Option.some(page + 1) : Option.none<number>()] as const
 					}),
 				).pipe(Stream.runCollect)
@@ -2277,7 +2506,22 @@ export class GithubAppClient extends Context.Service<GithubAppClient>()(
 							downloadUrl,
 							{ headers: { "user-agent": USER_AGENT } },
 							"GitHub job log download failed",
+						).pipe(
+							Effect.filterOrElse(
+								(response) => response.status !== 503,
+								(response) => failure(response, "Download job log", "repository"),
+							),
+							Effect.retry({
+								while: (error) => error.status === 503,
+								schedule: Schedule.exponential(JOB_LOG_BUSY_BACKOFF),
+								times: JOB_LOG_BUSY_RETRIES,
+							}),
 						)
+						// A 404 from the log store is a log past retention: nothing to read, not a failure.
+						if (download.status === 404) {
+							yield* Effect.annotateCurrentSpan("maple.cicd.job_log", "expired")
+							return Stream.empty
+						}
 						if (!isOk(download)) return yield* failure(download, "Download job log", "repository")
 						return download.stream.pipe(
 							Stream.mapError(
@@ -2399,7 +2643,7 @@ export class GithubAppClient extends Context.Service<GithubAppClient>()(
 						return decoded.installations
 					}),
 				)
-				return new Set(items.map((installation) => String(installation.id)))
+				return new Set(Arr.map(items, (installation) => String(installation.id)))
 			})
 
 			// Org accounts need an active `admin` membership (a 403 means the App lacks Members: read,

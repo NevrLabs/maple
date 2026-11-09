@@ -1,7 +1,7 @@
 import { Clock, Duration, Effect, Schema } from "effect"
 import { Command, Mount } from "foldkit"
 import { resolveWindow } from "../../../../data/time-range"
-import { linkedCursorStream } from "../../../../charts/linked-cursor"
+import { linkedCursorStream } from "@maple/views/charts/linked-cursor"
 import {
 	BreakdownInput,
 	loadFilteredZones,
@@ -49,7 +49,7 @@ export const LoadStatus = Command.define("LoadCloudflareZoneStatus", {
 export const LoadUsage = Command.define("LoadCloudflareZoneUsage", {
 	args: { key: Schema.String },
 	messages: [Message.CompletedLoadUsage],
-	execute: ({ key }) => Effect.map(loadUsage(), (result) => Message.CompletedLoadUsage({ key, result })),
+	execute: ({ key }) => Effect.map(loadUsage, (result) => Message.CompletedLoadUsage({ key, result })),
 })
 
 export const FetchDetail = Command.define("FetchCloudflareZoneDetail", {

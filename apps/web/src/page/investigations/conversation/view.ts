@@ -3,18 +3,18 @@ import { parseDiagnosisMarker } from "./kit/diagnosis-marker"
 import { cn } from "@maple/ui/lib/utils"
 import { Mount } from "foldkit"
 import type { Html, HtmlBuilder } from "foldkit/html"
-import { AREA_CHART_TOKENS } from "../../../charts/area-chart"
-import { BAR_CHART_TOKENS } from "../../../charts/bar-chart"
-import { isChartRuntimeReady } from "../../../charts/chart-runtime"
-import { ResolveThemeColors } from "../../../charts/theme-colors"
-import { button } from "../../../ui/button"
-import { errorState } from "../../../ui/error-state"
-import type { LoadFailure } from "../../../data/load-failure"
-import { eyebrow } from "../../../ui/eyebrow"
-import { skeleton } from "../../../ui/skeleton"
+import { AREA_CHART_TOKENS } from "@maple/views/charts/area-chart"
+import { BAR_CHART_TOKENS } from "@maple/views/charts/bar-chart"
+import { isChartRuntimeReady } from "@maple/views/charts/chart-runtime"
+import { ResolveThemeColors } from "@maple/views/charts/theme-colors"
+import { button } from "@maple/views/ui/button"
+import { errorState } from "@maple/views/ui/error-state"
+import type { LoadFailure } from "@maple/views/data/load-failure"
+import { eyebrow } from "@maple/views/ui/eyebrow"
+import { skeleton } from "@maple/views/ui/skeleton"
 import { approvalCard } from "./kit/view-cards"
 import { taskCard, taskSheetId } from "./kit/view-task"
-import * as Dialog from "../../../ui/dialog"
+import * as Dialog from "@maple/views/ui/dialog"
 import { composer, failureNotice } from "./kit/view-composer"
 import { MountTurnMinimap } from "./kit/turn-minimap-mount"
 import { MountJumpToMessage } from "./kit/scroller"
@@ -25,6 +25,9 @@ import { chatMarkdownOverrides } from "./kit/view-markdown"
 import { type TranscriptHost, transcript } from "./kit/view-transcript"
 import { Message } from "./message"
 import { isLoading, type Model } from "./model"
+import { hstackClass, vstack } from "@maple/views/ui/stack"
+import { Array as Arr } from "effect"
+import { typography } from "@maple/views/ui/typography"
 
 // One conversation: transcript, notices, composer.
 
@@ -58,7 +61,7 @@ const cardsOf = <M>(
 	model: Model,
 	options: ConversationViewOptions<M>,
 ): Pick<TranscriptHost<M>, "inlineCard" | "ownCard" | "taskCard" | "markdownOverrides"> => ({
-	inlineCard: (segment) => inlineCard(h, segment, options.timeZone),
+	inlineCard: (segment) => inlineCard(h, segment, options.timeZone, options.nowMs),
 	taskCard: (part, draw) =>
 		taskCard(
 			h,
@@ -121,28 +124,26 @@ const themeMount = <M>(toMessage: (message: Message) => M) =>
 	)
 
 const loadingSkeleton = <M>(h: HtmlBuilder<M>): Html =>
-	h.div(
-		[h.Class("flex flex-col gap-3 py-6"), h.AriaHidden(true)],
-		[skeleton(h, "h-3 w-1/2"), skeleton(h, "h-3 w-2/3"), skeleton(h, "h-3 w-1/3")],
-	)
+	vstack(h, { gap: "3", className: "py-6", attributes: [h.AriaHidden(true)] }, [
+		skeleton(h, "h-3 w-1/2"),
+		skeleton(h, "h-3 w-2/3"),
+		skeleton(h, "h-3 w-1/3"),
+	])
 
 /** `EmptyNotice`: an eyebrow and a sentence, centred where the thread will be. */
 export const emptyNotice = <M>(h: HtmlBuilder<M>, title: string, body: string): Html =>
-	h.div(
-		[h.Class("flex flex-col items-center justify-center gap-2 text-center")],
-		[
-			eyebrow(
-				h,
-				{
-					as: "p",
-					variant: "label",
-					className: "flex items-center gap-1.5 text-foreground-subtle",
-				},
-				[h.span([], [title])],
-			),
-			h.p([h.Class("max-w-sm text-sm text-muted-foreground")], [body]),
-		],
-	)
+	vstack(h, { gap: "2", align: "center", justify: "center", className: "text-center" }, [
+		eyebrow(
+			h,
+			{
+				as: "p",
+				variant: "label",
+				className: "flex items-center gap-1.5 text-foreground-subtle",
+			},
+			[h.span([], [title])],
+		),
+		h.p([h.Class("max-w-sm text-sm text-muted-foreground")], [body]),
+	])
 
 /** The history read failed: the thread is unknown, so it offers a retry instead of the empty state. */
 const HISTORY_FAILURE: LoadFailure = {
@@ -194,6 +195,7 @@ const transcriptHostOf = <M>(
 	clockMount: Mount.mapMessage(MountRunningClock(), () => options.toMessage(Message.CompletedMountClock())),
 	markdown: model.markdown,
 	timeZone: options.timeZone,
+	nowMs: options.nowMs,
 	isLoading: isLoading(model),
 	readOnly: model.readOnly,
 	copies: model.copies,
@@ -256,8 +258,8 @@ const suggestionPills = <M>(
 	suggestions: Readonly<{ items: ReadonlyArray<string>; onSelect: (text: string) => M }>,
 ): Html =>
 	h.div(
-		[h.Class(cn("flex flex-wrap items-center gap-2", "mb-3"))],
-		suggestions.items.map((suggestion) =>
+		[h.Class(cn(hstackClass({ gap: "2", wrap: true }), "mb-3"))],
+		Arr.map(suggestions.items, (suggestion) =>
 			button(
 				h,
 				{
@@ -266,7 +268,7 @@ const suggestionPills = <M>(
 					className: "max-w-[min(100%,24rem)] cursor-pointer rounded-full px-3.5",
 					attributes: [h.Title(suggestion), h.OnClick(suggestions.onSelect(suggestion))],
 				},
-				[h.span([h.Class("min-w-0 truncate")], [suggestion])],
+				[typography(h, { truncate: true, className: "min-w-0" }, [suggestion])],
 			),
 		),
 	)
@@ -277,52 +279,49 @@ export const conversationView = <M>(
 	options: ConversationViewOptions<M>,
 ): Html => {
 	const loading = isLoading(model)
-	return h.div(
-		[h.Class("flex h-full min-h-0 flex-col")],
-		[
-			// Chart colours are read once a chart fence appears, from an empty `display: contents`
-			// probe that inherits the page's tokens; it is its own element so its Mount runs on insert.
-			...(model.chartRuntime === null
-				? []
-				: [
-						h.keyed("span")(
-							"chat-theme-probe",
-							[h.Class("contents"), h.OnMount(themeMount(options.toMessage))],
-							[],
-						),
-					]),
-			transcript(h, transcriptHostOf(h, model, options), model.messages, () =>
-				emptyStateOf(h, model, options),
-			),
-			...(model.readOnly !== null
-				? []
-				: [
-						h.div(
-							[
-								h.Class(
-									"mx-auto w-full max-w-3xl shrink-0 px-4 pb-[max(1rem,env(safe-area-inset-bottom))]",
-								),
-							],
-							[
-								...(model.historyReady &&
-								model.messages.length === 0 &&
-								options.suggestions !== undefined
-									? [suggestionPills(h, options.suggestions)]
-									: []),
-								...notices(h, model, options),
-								composer(h, {
-									textareaId: options.textareaId,
-									draft: model.draft,
-									placeholder: options.placeholder,
-									status: model.status,
-									onStop: loading ? options.toMessage(Message.ClickedStop()) : undefined,
-									isDisabled: false,
-									onInput: (text) => options.toMessage(Message.ChangedDraft({ text })),
-									onSubmit: options.toMessage(Message.SubmittedComposer()),
-								}),
-							],
-						),
-					]),
-		],
-	)
+	return vstack(h, { className: "h-full min-h-0" }, [
+		// Chart colours are read once a chart fence appears, from an empty `display: contents`
+		// probe that inherits the page's tokens; it is its own element so its Mount runs on insert.
+		...(model.chartRuntime === null
+			? []
+			: [
+					h.keyed("span")(
+						"chat-theme-probe",
+						[h.Class("contents"), h.OnMount(themeMount(options.toMessage))],
+						[],
+					),
+				]),
+		transcript(h, transcriptHostOf(h, model, options), model.messages, () =>
+			emptyStateOf(h, model, options),
+		),
+		...(model.readOnly !== null
+			? []
+			: [
+					h.div(
+						[
+							h.Class(
+								"mx-auto w-full max-w-3xl shrink-0 px-4 pb-[max(1rem,env(safe-area-inset-bottom))]",
+							),
+						],
+						[
+							...(model.historyReady &&
+							model.messages.length === 0 &&
+							options.suggestions !== undefined
+								? [suggestionPills(h, options.suggestions)]
+								: []),
+							...notices(h, model, options),
+							composer(h, {
+								textareaId: options.textareaId,
+								draft: model.draft,
+								placeholder: options.placeholder,
+								status: model.status,
+								onStop: loading ? options.toMessage(Message.ClickedStop()) : undefined,
+								isDisabled: false,
+								onInput: (text) => options.toMessage(Message.ChangedDraft({ text })),
+								onSubmit: options.toMessage(Message.SubmittedComposer()),
+							}),
+						],
+					),
+				]),
+	])
 }

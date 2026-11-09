@@ -1,3 +1,4 @@
+import type * as Policy from "@maple/domain/policy"
 import { OrgId } from "@maple/domain"
 import {
 	encodePublicId,
@@ -7,7 +8,7 @@ import {
 	V2Source,
 	V2SourceUsage,
 } from "@maple/domain/http/v2"
-import { Option, Result, Schema } from "effect"
+import { Option, Result, Schema, Array as Arr } from "effect"
 import {
 	all,
 	expect as expectView,
@@ -20,16 +21,16 @@ import {
 	withViewInputs,
 } from "foldkit/scene"
 import { describe, expect, test } from "vitest"
-import { ResolveThemeColors, ThemeMessage } from "../../../charts/theme-colors"
-import { toLoadFailure } from "../../../data/load-failure"
+import { ResolveThemeColors, ThemeMessage } from "@maple/views/charts/theme-colors"
+import { toLoadFailure } from "@maple/views/data/load-failure"
 import { AppRoute } from "../../../route"
-import * as Dialog from "../../../ui/dialog"
+import * as Dialog from "@maple/views/ui/dialog"
 import { type PageContext, PageOutMessage } from "../../contract"
 import { AwsConnectionId, GcpConnectorId, ScrapeTargetId } from "@maple/domain/primitives"
 import { Message as IntegrationMessage } from "../../integrations/message"
 import { Message } from "./message"
 import type { Model } from "./model"
-import { init, routeChanged, sourceOf, update } from "./update"
+import { init, isSettingsDirty, routeChanged, sourceOf, update } from "./update"
 import { breadcrumbsOf, view as pageView } from "./view"
 import { focusIdOf } from "../kit/shared"
 
@@ -42,14 +43,14 @@ const pageUpdate = (model: Model, message: Message) => update(model, message, co
 const view = withViewInputs(pageView, { context })()
 const NOW = Date.UTC(2026, 9, 1, 12)
 const names = (commands: ReadonlyArray<{ readonly name: string }> | undefined) =>
-	(commands ?? []).map(({ name }) => name)
+	Arr.map(commands ?? [], ({ name }) => name)
 const resolveTheme = Mount.resolve(ResolveThemeColors, ThemeMessage.ResolvedThemeColors({ colors: {} }))
 
 const UUID = "0199a0e1-0000-7000-8000-000000000002"
 const PUBLIC_ID = encodePublicId(PublicIdPrefixes.source, UUID)
 
 const source = (fields: Readonly<Record<string, unknown>> = {}) =>
-	Schema.decodeUnknownSync(V2Source)({
+	Schema.decodeSync(V2Source)({
 		id: PUBLIC_ID,
 		object: "source",
 		name: "Checkout API",
@@ -84,10 +85,14 @@ const route = (tab?: "setup" | "connection" | "settings", sourceId = PUBLIC_ID) 
 
 const loaded = (row: V2Source, tab?: "setup" | "connection" | "settings"): Model => {
 	const entered = init(route(tab), context).model
-	return [
-		Message.ReadClock({ nowMs: NOW }),
-		Message.CompletedFetchList({ key: entered.list.key ?? "", result: Result.succeed([row]) }),
-	].reduce((model, message) => pageUpdate(model, message).model, entered)
+	return Arr.reduce(
+		[
+			Message.ReadClock({ nowMs: NOW }),
+			Message.CompletedFetchList({ key: entered.list.key ?? "", result: Result.succeed([row]) }),
+		],
+		entered,
+		(model, message) => pageUpdate(model, message).model,
+	)
 }
 
 describe("source detail", () => {
@@ -95,7 +100,10 @@ describe("source detail", () => {
 		const entered = init(route(undefined, "nope"), context)
 		expect(names(entered.commands)).toEqual(expect.arrayContaining(["ReadSourceClock"]))
 		expect(names(entered.commands)).not.toContain("FetchSourceDetailList")
-		expect(breadcrumbsOf(entered.model).map((crumb) => crumb.label)).toEqual(["Sources", "Not found"])
+		expect(Arr.map(breadcrumbsOf(entered.model), (crumb) => crumb.label)).toEqual([
+			"Sources",
+			"Not found",
+		])
 		scene(
 			{ update: pageUpdate, view },
 			given(entered.model),
@@ -111,7 +119,10 @@ describe("source detail", () => {
 			Message.CompletedFetchList({ key: entered.list.key ?? "", result: Result.succeed([source()]) }),
 		)
 		expect(names(step.commands)).toEqual(["FetchSourceUsage"])
-		expect(breadcrumbsOf(step.model).map((crumb) => crumb.label)).toEqual(["Sources", "Checkout API"])
+		expect(Arr.map(breadcrumbsOf(step.model), (crumb) => crumb.label)).toEqual([
+			"Sources",
+			"Checkout API",
+		])
 		scene(
 			{ update: pageUpdate, view },
 			given(step.model),
@@ -126,6 +137,21 @@ describe("source detail", () => {
 		const onSetup = loaded(source(), "setup")
 		expect(onSetup.usage.key).toBeNull()
 		expect(names(routeChanged(onSetup, route(), context).commands)).toEqual(["FetchSourceUsage"])
+	})
+
+	test("a member sent to Settings reads the overview, without the source's actions", () => {
+		const step = pageUpdate(loaded(source(), "settings"), Message.CompletedReadGrants({ grants: [] }))
+		expect(step.model.tab).toBe("overview")
+		expect(names(step.commands)).toEqual(["FetchSourceUsage"])
+		scene(
+			{ update: pageUpdate, view },
+			given(step.model),
+			resolveTheme,
+			expectView(role("tab", { name: "Overview" })).toExist(),
+			expectView(role("tab", { name: "Settings" })).not.toExist(),
+			expectView(role("button", { name: "Delete" })).not.toExist(),
+			expectView(role("button", { name: "Roll token" })).not.toExist(),
+		)
 	})
 
 	test("a push source the gateway refuses shows Failing and why", () => {
@@ -190,16 +216,20 @@ describe("source detail", () => {
 			Message.CompletedResume({ result: Result.succeed(source()) }),
 		)
 		expect(names(resumed.commands)).toEqual(["FetchSourceDetailList"])
-		const final = [
-			Message.CompletedFetchList({
-				key: resumed.model.list.key ?? "",
-				result: Result.succeed([source()]),
-			}),
-			Message.CompletedFetchList({
-				key: paused.list.key ?? "",
-				result: Result.succeed([source({ status: "paused" })]),
-			}),
-		].reduce((model, message) => pageUpdate(model, message).model, resumed.model)
+		const final = Arr.reduce(
+			[
+				Message.CompletedFetchList({
+					key: resumed.model.list.key ?? "",
+					result: Result.succeed([source()]),
+				}),
+				Message.CompletedFetchList({
+					key: paused.list.key ?? "",
+					result: Result.succeed([source({ status: "paused" })]),
+				}),
+			],
+			resumed.model,
+			(model, message) => pageUpdate(model, message).model,
+		)
 		expect(Option.map(sourceOf(final), (row) => row.status)).toEqual(Option.some("active"))
 	})
 
@@ -244,6 +274,34 @@ describe("source detail tabs", () => {
 		const saved = pageUpdate(saving.model, Message.CompletedSave({ result: Result.succeed(source()) }))
 		expect(names(saved.commands)).toEqual(["FetchSourceDetailList"])
 		expect(saved.model.settings?.isSaving).toBe(false)
+	})
+
+	test("a successful save leaves the form clean before the list reload lands", () => {
+		const edited = pageUpdate(
+			loaded(source(), "settings"),
+			Message.ChangedSettingsName({ value: "Renamed" }),
+		).model
+		expect(edited.settings !== null && isSettingsDirty(edited.settings)).toBe(true)
+		const saving = pageUpdate(edited, Message.SubmittedSettings()).model
+		const saved = pageUpdate(
+			saving,
+			Message.CompletedSave({
+				result: Result.succeed(source({ name: "Renamed", updated_at: "2026-10-01T12:00:00.000Z" })),
+			}),
+		).model
+		expect(saved.settings?.name).toBe("Renamed")
+		expect(saved.settings !== null && isSettingsDirty(saved.settings)).toBe(false)
+	})
+
+	test("discard restores the saved name, so the save bar has nothing to save", () => {
+		const edited = pageUpdate(
+			loaded(source(), "settings"),
+			Message.ChangedSettingsName({ value: "Renamed" }),
+		).model
+		expect(edited.settings !== null && isSettingsDirty(edited.settings)).toBe(true)
+		const discarded = pageUpdate(edited, Message.ClickedDiscardSettings()).model
+		expect(discarded.settings?.name).toBe("Checkout API")
+		expect(discarded.settings !== null && isSettingsDirty(discarded.settings)).toBe(false)
 	})
 
 	test("an empty name blocks the save", () => {
@@ -400,12 +458,50 @@ describe("integration sources", () => {
 		expect(names(pausing.commands)).toContain("PauseSource")
 	})
 
+	test("the integration's actions need integrations:manage, its pause and delete sources:manage", () => {
+		const withGrants = (
+			sourceGrants: ReadonlyArray<Policy.Permission>,
+			integrationGrants: ReadonlyArray<Policy.Permission>,
+		) =>
+			Arr.reduce(
+				[
+					Message.CompletedReadGrants({ grants: sourceGrants }),
+					Message.GotConnectionMessage({
+						message: IntegrationMessage.CompletedLoadSession({ grants: integrationGrants }),
+					}),
+				],
+				loaded(prometheus()),
+				(model, message) => pageUpdate(model, message).model,
+			)
+		scene(
+			{ update: pageUpdate, view },
+			given(withGrants([], [])),
+			resolveTheme,
+			expectView(role("link", { name: "Docs" })).not.toExist(),
+			expectView(role("button", { name: "Delete" })).not.toExist(),
+		)
+		scene(
+			{ update: pageUpdate, view },
+			given(withGrants([], ["integrations:manage"])),
+			resolveTheme,
+			expectView(role("link", { name: "Docs" })).toExist(),
+			expectView(role("button", { name: "Delete" })).not.toExist(),
+		)
+		scene(
+			{ update: pageUpdate, view },
+			given(withGrants(["sources:manage"], ["integrations:manage"])),
+			resolveTheme,
+			expectView(role("link", { name: "Docs" })).toExist(),
+			expectView(role("button", { name: "Delete" })).toExist(),
+		)
+	})
+
 	describe("a Google Cloud source's Delete", () => {
 		const connectorUuid = "0199a0e1-0000-7000-8000-0000000000bb"
 		const connectorId = encodePublicId(PublicIdPrefixes.gcpConnector, connectorUuid)
 		const gcp = (integrationId: string | null) =>
 			prometheus({ name: "Google Cloud acme-prod", platform: "gcp", integration_id: integrationId })
-		const gcpStatus = Schema.decodeUnknownSync(V2GcpIntegration)({
+		const gcpStatus = Schema.decodeSync(V2GcpIntegration)({
 			object: "gcp_integration",
 			metrics_available: true,
 			connectors: [
@@ -554,7 +650,7 @@ describe("integration sources", () => {
 			Message.CompletedFetchUsage({
 				key: model.usage.key ?? "",
 				result: Result.succeed(
-					Schema.decodeUnknownSync(V2SourceUsage)({
+					Schema.decodeSync(V2SourceUsage)({
 						object: "source_usage",
 						window_start: "2026-09-30T13:00:00.000Z",
 						window_end: "2026-10-01T12:00:00.000Z",
@@ -595,7 +691,7 @@ describe("integration sources", () => {
 })
 
 const awsConnection = (id: AwsConnectionId): V2AwsConnection =>
-	Schema.decodeUnknownSync(V2AwsConnection)({
+	Schema.decodeSync(V2AwsConnection)({
 		id: encodePublicId(PublicIdPrefixes.awsConnection, id),
 		object: "aws_connection",
 		account_id: "123456789012",
@@ -763,7 +859,7 @@ describe("integration focus", () => {
 				}),
 			}),
 		).model
-		const name = "Disconnect AWS account 123456789012"
+		const name = "Disconnect AWS account 123456789012?"
 		const mountDialog = Mount.resolve(Dialog.MountDialog, Dialog.Message.CompletedMountDialog())
 		scene(
 			{ update: pageUpdate, view },

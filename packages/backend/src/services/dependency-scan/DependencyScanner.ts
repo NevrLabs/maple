@@ -11,8 +11,8 @@ import {
 	type VcsRepositoryRef,
 } from "@maple/domain/http"
 import { type PackageAdvisory, PackageEcosystem, packageKey } from "@maple/domain/package-advisories"
-import { parseLockfile } from "@maple/lockfiles"
-import { Cause, Clock, Context, Effect, Layer, Option, Schema } from "effect"
+import { parseLockfile, unsupportedReason } from "@maple/lockfiles"
+import { Cause, Clock, Context, Effect, Layer, Option, Schema, String as Str, Array as Arr } from "effect"
 import type {
 	VcsProviderClient,
 	VcsTreeFile,
@@ -27,6 +27,7 @@ import {
 import { type DependencyScanMatchInput, DependencyScanStore } from "./DependencyScanStore"
 import {
 	MAX_LOCKFILES,
+	MAX_MANIFEST_BYTES,
 	manifestsFor,
 	type SelectedLockfile,
 	sameLockfiles,
@@ -40,7 +41,7 @@ import { RESCAN_AFTER_MS } from "./production"
 
 const PARSE_CACHE_BUCKET = "lockfile-packages"
 /** Part of the parse cache key: bump it when a parser fix should reach lockfiles already cached. */
-const PARSER_VERSION = 1
+const PARSER_VERSION = 2
 const PARSE_CACHE_TTL_SECONDS = 7 * 24 * 60 * 60
 /** Larger lockfiles are recorded as too large rather than read into the Worker's memory. */
 export const MAX_LOCKFILE_BYTES = 8 * 1024 * 1024
@@ -56,10 +57,18 @@ const LockedPackageRow = Schema.Struct({
 })
 type LockedPackageRow = typeof LockedPackageRow.Type
 
-const CachedLockfile = Schema.Struct({
-	packages: Schema.Array(LockedPackageRow),
-	warnings: Schema.Array(Schema.String),
-})
+/** A blob's parse, or why it has none: a broken lockfile fails the same way until it changes. */
+const CachedLockfile = Schema.Union([
+	Schema.TaggedStruct("Parsed", {
+		packages: Schema.Array(LockedPackageRow),
+		warnings: Schema.Array(Schema.String),
+	}),
+	Schema.TaggedStruct("Unreadable", {
+		status: Schema.Literals(["failed", "unsupported"]),
+		message: Schema.String,
+	}),
+])
+type CachedLockfile = typeof CachedLockfile.Type
 
 export class DependencyScanError extends Schema.TaggedError<DependencyScanError>()(
 	"@maple/dependency-scan/DependencyScanError",
@@ -119,7 +128,7 @@ export class DependencySources extends Context.Service<
 	).pipe(Layer.provide(VcsProviderRegistry.layer))
 }
 
-const TREE_TOO_LARGE = "The repository tree is too large to list in one read"
+const TREE_TOO_LARGE = "The repository tree is too large to list, even directory by directory"
 
 interface ReadLockfile {
 	readonly lockfile: DependencyScanLockfile
@@ -157,6 +166,12 @@ export class DependencyScanner extends Context.Service<DependencyScanner, Depend
 				selected: SelectedLockfile,
 				tree: ReadonlyArray<VcsTreeFile>,
 			) => {
+				const unsupported = unsupportedReason(selected.kind)
+				if (unsupported !== undefined)
+					return Effect.succeed<ReadLockfile>({
+						lockfile: lockfileRow(selected, "unsupported", 0, unsupported),
+						packages: [],
+					})
 				if (selected.file.size > MAX_LOCKFILE_BYTES)
 					return Effect.succeed<ReadLockfile>({
 						lockfile: lockfileRow(
@@ -169,58 +184,87 @@ export class DependencyScanner extends Context.Service<DependencyScanner, Depend
 					})
 				const manifests = manifestsFor(selected, tree)
 				const read = Effect.gen(function* () {
-					const content = yield* provider.fetchBlobText(installation, repo, selected.file.sha)
+					const content = yield* provider.fetchBlobText(
+						installation,
+						repo,
+						selected.file.sha,
+						MAX_LOCKFILE_BYTES,
+					)
 					const manifestTexts = yield* Effect.forEach(
 						manifests,
 						(manifest) =>
 							provider
-								.fetchBlobText(installation, repo, manifest.file.sha)
+								.fetchBlobText(installation, repo, manifest.file.sha, MAX_MANIFEST_BYTES)
 								.pipe(Effect.map((text) => [manifest.relativePath, text] as const)),
 						{ concurrency: MANIFEST_CONCURRENCY },
 					)
-					const parsed = yield* parseLockfile({
+					return yield* parseLockfile({
 						path: selected.file.path,
 						content,
 						manifests: new Map(manifestTexts),
-					})
-					return { packages: parsed.packages, warnings: parsed.warnings }
+					}).pipe(
+						Effect.map((parsed): CachedLockfile => ({
+							_tag: "Parsed",
+							packages: parsed.packages,
+							warnings: parsed.warnings,
+						})),
+						Effect.catchTags({
+							"@maple/lockfiles/LockfileParseError": (error) =>
+								Effect.succeed<CachedLockfile>({
+									_tag: "Unreadable",
+									status: "failed",
+									message: error.message,
+								}),
+							"@maple/lockfiles/LockfileUnsupportedError": (error) =>
+								Effect.succeed<CachedLockfile>({
+									_tag: "Unreadable",
+									status: "unsupported",
+									message: error.message,
+								}),
+						}),
+					)
 				})
 				return edgeCache
 					.getOrCompute(
 						{
 							bucket: PARSE_CACHE_BUCKET,
-							key: [
-								`v${PARSER_VERSION}`,
-								selected.file.sha,
-								...manifests.map((manifest) => manifest.file.sha),
-							].join(":"),
+							key: Arr.join(
+								[
+									`v${PARSER_VERSION}`,
+									// The same bytes can be valid for one format and broken for another.
+									selected.kind,
+									selected.file.sha,
+									...Arr.map(manifests, (manifest) => manifest.file.sha),
+								],
+								":",
+							),
 							ttlSeconds: PARSE_CACHE_TTL_SECONDS,
 							schema: CachedLockfile,
 						},
 						read,
 					)
 					.pipe(
-						Effect.map(({ value }): ReadLockfile => ({
-							lockfile: lockfileRow(
-								selected,
-								"parsed",
-								value.packages.length,
-								value.warnings.length === 0 ? null : value.warnings.join("; "),
-							),
-							packages: value.packages,
-						})),
-						Effect.catchTags({
-							"@maple/lockfiles/LockfileParseError": (error) =>
-								Effect.succeed<ReadLockfile>({
-									lockfile: lockfileRow(selected, "failed", 0, error.message),
-									packages: [],
-								}),
-							"@maple/lockfiles/LockfileUnsupportedError": (error) =>
-								Effect.succeed<ReadLockfile>({
-									lockfile: lockfileRow(selected, "unsupported", 0, error.message),
-									packages: [],
-								}),
-						}),
+						Effect.map(({ value }): ReadLockfile =>
+							value._tag === "Unreadable"
+								? {
+										lockfile: lockfileRow(selected, value.status, 0, value.message),
+										packages: [],
+									}
+								: {
+										lockfile: lockfileRow(
+											selected,
+											"parsed",
+											value.packages.length,
+											value.warnings.length === 0
+												? null
+												: Arr.join(value.warnings, "; "),
+										),
+										packages: value.packages,
+									},
+						),
+						Effect.tap((read) =>
+							Effect.annotateCurrentSpan("maple.depscan.lockfile.status", read.lockfile.status),
+						),
 						Effect.withSpan("DependencyScanner.readLockfile", {
 							attributes: {
 								"maple.depscan.lockfile.path": selected.file.path,
@@ -234,20 +278,23 @@ export class DependencyScanner extends Context.Service<DependencyScanner, Depend
 				reads: ReadonlyArray<ReadLockfile>,
 				advisories: ReadonlyMap<string, ReadonlyArray<PackageAdvisory>>,
 			): ReadonlyArray<DependencyScanMatchInput> =>
-				reads.flatMap(({ lockfile, packages }) =>
-					packages.flatMap((pkg) =>
-						(advisories.get(packageKey(pkg)) ?? []).map((advisory): DependencyScanMatchInput => ({
-							lockfilePath: lockfile.path,
-							ecosystem: pkg.ecosystem,
-							packageName: pkg.name,
-							version: pkg.version,
-							relation: pkg.relation,
-							advisoryId: advisory.id,
-							aliases: advisory.aliases,
-							severity: advisory.severity,
-							summary: advisory.summary,
-							fixedIn: advisory.fixedIn,
-						})),
+				Arr.flatMap(reads, ({ lockfile, packages }) =>
+					Arr.flatMap(packages, (pkg) =>
+						Arr.map(
+							advisories.get(packageKey(pkg)) ?? [],
+							(advisory): DependencyScanMatchInput => ({
+								lockfilePath: lockfile.path,
+								ecosystem: pkg.ecosystem,
+								packageName: pkg.name,
+								version: pkg.version,
+								relation: pkg.relation,
+								advisoryId: advisory.id,
+								aliases: advisory.aliases,
+								severity: advisory.severity,
+								summary: advisory.summary,
+								fixedIn: advisory.fixedIn,
+							}),
+						),
 					),
 				)
 
@@ -267,6 +314,24 @@ export class DependencyScanner extends Context.Service<DependencyScanner, Depend
 					})
 					const scanError = (message: string) => (cause: unknown) =>
 						new DependencyScanError({ message, repositoryId: repository.id, cause })
+					// A scan whose worker died stays `running`; each new scan of the repo settles those.
+					const startedAt = yield* Clock.currentTimeMillis
+					yield* store
+						.failAbandonedScans({
+							orgId,
+							repositoryId: repository.id,
+							startedBefore: startedAt - RESCAN_AFTER_MS,
+						})
+						.pipe(
+							Effect.catchTag(
+								"@maple/dependency-scan/DependencyScanPersistenceError",
+								(error) =>
+									Effect.logWarning(
+										"Could not settle abandoned dependency scans",
+										error.message,
+									),
+							),
+						)
 					const provider = yield* sources
 						.resolve(repository.provider)
 						.pipe(Effect.mapError(scanError("Unknown VCS provider")))
@@ -290,7 +355,8 @@ export class DependencyScanner extends Context.Service<DependencyScanner, Depend
 								commitShas: [commitSha],
 							})
 							.pipe(Effect.mapError(scanError("Could not read the last scan")))
-						const covered = scans.some(
+						const covered = Arr.some(
+							scans,
 							(scan) =>
 								scan.status === "completed" ||
 								(scan.status === "running" && now - scan.startedAt <= RESCAN_AFTER_MS),
@@ -310,7 +376,8 @@ export class DependencyScanner extends Context.Service<DependencyScanner, Depend
 					})
 
 					// A yarn scan also reads package.json for direct and dev, which a lockfile sha does not cover.
-					const readsManifests = selected.some(
+					const readsManifests = Arr.some(
+						selected,
 						(lockfile) => lockfile.kind === "yarn-v1" || lockfile.kind === "yarn-berry",
 					)
 					if (request.trigger === "push" && !readsManifests) {
@@ -334,10 +401,11 @@ export class DependencyScanner extends Context.Service<DependencyScanner, Depend
 					// scan of a commit records its own failure, which is retried after a while.
 					// Pushes only: a manual or scheduled scan records its own result, so Scan now sees one.
 					if (tree.truncated && request.trigger === "push") {
-						const last = (yield* store
+						const scans = yield* store
 							.latestBranchScans({ orgId })
-							.pipe(Effect.mapError(scanError("Could not read the last scan")))).find(
-							(scan) => scan.repositoryId === repository.id,
+							.pipe(Effect.mapError(scanError("Could not read the last scan")))
+						const last = Option.getOrUndefined(
+							Arr.findFirst(scans, (scan) => scan.repositoryId === repository.id),
 						)
 						if (last !== undefined && last.status === "failed" && last.error === TREE_TOO_LARGE)
 							return { _tag: "Unchanged" } satisfies DependencyScanOutcome
@@ -370,7 +438,7 @@ export class DependencyScanner extends Context.Service<DependencyScanner, Depend
 								),
 							{ concurrency: READ_CONCURRENCY },
 						)
-						const packages = reads.flatMap((read) => read.packages)
+						const packages = Arr.flatMap(reads, (read) => read.packages)
 						const advisories = yield* catalog
 							.advisories(packages)
 							.pipe(Effect.mapError(scanError("Could not read advisories")))
@@ -394,15 +462,15 @@ export class DependencyScanner extends Context.Service<DependencyScanner, Depend
 									onSome: (sha) =>
 										sha === commitSha
 											? undefined
-											: `${ref} moved on to ${sha.slice(0, 7)} during the scan`,
+											: `${ref} moved on to ${Str.slice(0, 7)(sha)} during the scan`,
 								})
 						return yield* store
 							.completeScan({
 								orgId,
 								scanId: started.id,
 								lockfiles: [
-									...reads.map((read) => read.lockfile),
-									...skipped.map((lockfile) =>
+									...Arr.map(reads, (read) => read.lockfile),
+									...Arr.map(skipped, (lockfile) =>
 										lockfileRow(
 											lockfile,
 											"skipped",

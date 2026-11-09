@@ -4,7 +4,7 @@
  */
 import { OrgId, UserId } from "@maple/domain"
 import { inProcessCodeExecutorLayer } from "@yielded/agent-testing/code-executor-substitute"
-import { Effect, Exit, Layer, Schema, Stream } from "effect"
+import { Effect, Exit, Layer, Option, Schema, Stream, Array as Arr } from "effect"
 import { LanguageModel } from "effect/ai"
 import type { Prompt, Response } from "effect/ai"
 import * as AiModel from "effect/ai/Model"
@@ -51,7 +51,7 @@ const scriptedModel = (script: ReadonlyArray<ReadonlyArray<Response.StreamPartEn
 	const offered: Array<ReadonlyArray<string>> = []
 	const respond = (options: LanguageModel.ProviderOptions) => {
 		prompts.push(options.prompt)
-		offered.push(options.tools.map((tool) => tool.name))
+		offered.push(Arr.map(options.tools, (tool) => tool.name))
 		return script[prompts.length - 1] ?? answer("(script ran out)")
 	}
 	const model: ResolvedModel = {
@@ -116,7 +116,7 @@ const run = (input: {
 	)
 
 const toolResults = (prompt: Prompt.Prompt) =>
-	prompt.content.flatMap((message) => (message.role === "tool" ? message.content : []))
+	Arr.flatMap(prompt.content, (message) => (message.role === "tool" ? message.content : []))
 
 describe("run_code", () => {
 	it("runs a program's batched reads through the Maple tools in one model turn", async () => {
@@ -132,8 +132,11 @@ describe("run_code", () => {
 
 		assert.isTrue(Exit.isSuccess(exit) && exit.value.submitted, `run failed: ${String(exit)}`)
 		assert.sameMembers(dispatched, ["list_services", "find_errors"])
-		const result = toolResults(prompts[1]!).find(
-			(part) => part.type === "tool-result" && part.name === RUN_CODE,
+		const result = Option.getOrUndefined(
+			Arr.findFirst(
+				toolResults(Arr.getUnsafe(prompts, 1)),
+				(part) => part.type === "tool-result" && part.name === RUN_CODE,
+			),
 		)
 		assert.include(JSON.stringify(result), "list_services ran")
 		assert.include(JSON.stringify(result), "find_errors ran")
@@ -162,7 +165,7 @@ describe("run_code", () => {
 			append: (event) => events.push(event),
 		})
 
-		const calls = events.flatMap((event) =>
+		const calls = Arr.flatMap(events, (event) =>
 			event.type === "tool-call" || event.type === "tool-result"
 				? [`${event.type} ${event.callId}`]
 				: [],
@@ -173,12 +176,18 @@ describe("run_code", () => {
 			`tool-result call-${RUN_CODE}#0`,
 			`tool-result call-${RUN_CODE}`,
 		])
-		const read = events.find(
-			(event) => event.type === "tool-call" && event.callId === `call-${RUN_CODE}#0`,
+		const read = Option.getOrUndefined(
+			Arr.findFirst(
+				events,
+				(event) => event.type === "tool-call" && event.callId === `call-${RUN_CODE}#0`,
+			),
 		)
 		assert.deepInclude(read, { name: "list_services", input: {} })
-		const result = events.find(
-			(event) => event.type === "tool-result" && event.callId === `call-${RUN_CODE}#0`,
+		const result = Option.getOrUndefined(
+			Arr.findFirst(
+				events,
+				(event) => event.type === "tool-result" && event.callId === `call-${RUN_CODE}#0`,
+			),
 		)
 		assert.deepInclude(result, {
 			output: {
@@ -202,8 +211,11 @@ describe("run_code", () => {
 
 		assert.isTrue(Exit.isSuccess(exit), `run failed: ${String(exit)}`)
 		assert.deepEqual(dispatched, [])
-		const result = toolResults(prompts[1]!).find(
-			(part) => part.type === "tool-result" && part.name === RUN_CODE,
+		const result = Option.getOrUndefined(
+			Arr.findFirst(
+				toolResults(Arr.getUnsafe(prompts, 1)),
+				(part) => part.type === "tool-result" && part.name === RUN_CODE,
+			),
 		)
 		assert.include(JSON.stringify(result), '["undefined","undefined","function"]')
 	})
@@ -260,8 +272,11 @@ describe("run_code", () => {
 
 		assert.isTrue(Exit.isSuccess(exit), `run failed: ${String(exit)}`)
 		assert.deepEqual(dispatched, [])
-		const result = toolResults(prompts[1]!).find(
-			(part) => part.type === "tool-result" && part.name === RUN_CODE,
+		const result = Option.getOrUndefined(
+			Arr.findFirst(
+				toolResults(Arr.getUnsafe(prompts, 1)),
+				(part) => part.type === "tool-result" && part.name === RUN_CODE,
+			),
 		)
 		assert.isTrue(result?.type === "tool-result" && result.isFailure)
 	})
@@ -348,9 +363,12 @@ describe("run_code", () => {
 
 			assert.isTrue(Exit.isSuccess(exit) && exit.value.submitted, `run failed: ${String(exit)}`)
 			// Model call 2 is the child's first.
-			assert.include(offered[1], RUN_CODE)
-			assert.strictEqual(offered[1]!.includes("pr_file_diff"), !codeOnly)
-			assert.include(JSON.stringify(prompts[1]!.content[0]), "Reading with run_code")
+			assert.include(Arr.getUnsafe(offered, 1), RUN_CODE)
+			assert.strictEqual(Arr.getUnsafe(offered, 1).includes("pr_file_diff"), !codeOnly)
+			assert.include(
+				JSON.stringify(Arr.getUnsafe(Arr.getUnsafe(prompts, 1).content, 0)),
+				"Reading with run_code",
+			)
 			assert.include(dispatched, "pr_file_diff")
 			// The child's two model calls, counted apart from the parent's own usage.
 			assert.strictEqual(usage.delegated.modelCalls, 2)
@@ -360,7 +378,7 @@ describe("run_code", () => {
 			// ...and billed with them: four calls of one input token each.
 			assert.strictEqual(usage.input, 4)
 			assert.strictEqual(
-				usage.charges.reduce((sum, charge) => sum + charge.inputTokens, 0),
+				Arr.reduce(usage.charges, 0, (sum, charge) => sum + charge.inputTokens),
 				4,
 			)
 		},
@@ -387,15 +405,18 @@ describe("run_code", () => {
 			}).pipe(Effect.provide(llmClients)),
 		)
 
-		assert.include(offered[0], RUN_CODE)
-		assert.include(offered[0], "submit_diagnosis")
-		assert.notInclude(offered[0], "list_services")
-		assert.notInclude(offered[0], "run_sql")
+		const [first] = offered
+		assert.isDefined(first)
+		assert.include(first, RUN_CODE)
+		assert.include(first, "submit_diagnosis")
+		assert.notInclude(first, "list_services")
+		assert.notInclude(first, "run_sql")
 	})
 
 	it("lists only registered, read-only tools", () => {
-		const registered = new Set(mapleToolCatalog.map((definition) => definition.name))
-		const unknown = [...CODE_MODE_TOOLS].filter(
+		const registered = new Set(Arr.map(mapleToolCatalog, (definition) => definition.name))
+		const unknown = Arr.filter(
+			[...CODE_MODE_TOOLS],
 			(name) => !registered.has(name) || MUTATING_TOOL_NAMES.has(name),
 		)
 		assert.deepEqual(unknown, [])
@@ -411,7 +432,7 @@ describe("run_code", () => {
 				executor: recordingExecutor().executor,
 				withCode,
 			})
-			return offered[0]!.includes(RUN_CODE)
+			return Arr.getUnsafe(offered, 0).includes(RUN_CODE)
 		}
 
 		assert.isTrue(await offeredTo(INVESTIGATION, true))

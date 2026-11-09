@@ -20,7 +20,7 @@ import {
 import * as PG from "@maple-dev/effect-orm/postgres"
 import { generateApiKey, hashApiKey, parseIngestKeyLookupHmacKey } from "@maple/db"
 import { ApiKeys, CliDeviceAuthorizations, type CliDeviceAuthorizationRow } from "@maple/db/tables"
-import { Clock, Context, Effect, Layer, Option, Redacted, Schema } from "effect"
+import { DateTime, Clock, Context, Effect, Layer, Option, Redacted, Schema, String as Str } from "effect"
 import { Database } from "@maple/backend/platform/DatabaseLive"
 import { makeDbExecute } from "@maple/backend/platform/db-execute"
 import { decryptAes256Gcm, encryptAes256Gcm, parseBase64Aes256GcmKey } from "@maple/backend/platform/Crypto"
@@ -40,8 +40,8 @@ const CLI_KEY_TTL_MS = 90 * 24 * 60 * 60 * 1000
 const POLL_INTERVAL_SECONDS = 5
 const USER_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 const hashCode = (value: string) => createHash("sha256").update(value).digest("hex")
-const normalizeUserCode = (value: string) => value.toUpperCase().replace(/[^A-Z0-9]/g, "")
-const displayUserCode = (value: string) => `${value.slice(0, 4)}-${value.slice(4, 8)}`
+const normalizeUserCode = (value: string) => Str.replace(/[^A-Z0-9]/g, "")(Str.toUpperCase(value))
+const displayUserCode = (value: string) => `${Str.slice(0, 4)(value)}-${Str.slice(4, 8)(value)}`
 const decodeApiKeyId = Schema.decodeUnknownSync(ApiKeyId)
 
 const makeUserCode = () => {
@@ -185,13 +185,13 @@ export class CliDeviceAuthService extends Context.Service<
 			yield* purgeExpired(now)
 			const deviceCode = randomBytes(32).toString("base64url")
 			const userCode = makeUserCode()
-			const verificationUri = `${env.MAPLE_APP_BASE_URL.replace(/\/+$/, "")}/cli-login`
+			const verificationUri = `${Str.replace(/\/+$/, "")(env.MAPLE_APP_BASE_URL)}/cli-login`
 			yield* dbExecute((db) =>
 				db.run(
 					PG.insertInto(CliDeviceAuthorizations).values({
 						deviceCodeHash: hashCode(deviceCode),
 						userCodeHash: hashCode(userCode),
-						deviceName: deviceName.trim().slice(0, 120) || "Maple CLI",
+						deviceName: Str.slice(0, 120)(Str.trim(deviceName)) || "Maple CLI",
 						createdAt: now,
 						expiresAt: now + DEVICE_TTL_SECONDS * 1000,
 					}),
@@ -221,7 +221,7 @@ export class CliDeviceAuthService extends Context.Service<
 			return new CliDeviceInfoResponse({
 				userCode: displayUserCode(normalized),
 				deviceName: row.deviceName,
-				expiresAt: new Date(row.expiresAt).toISOString(),
+				expiresAt: DateTime.formatIso(DateTime.makeUnsafe(row.expiresAt)),
 				status,
 			})
 		})
@@ -356,7 +356,7 @@ export class CliDeviceAuthService extends Context.Service<
 								name: row.deviceName,
 								description: "Created by maple auth login",
 								keyHash: hashApiKey(rawToken, apiKeyHmacKey),
-								keyPrefix: rawToken.slice(0, 12) + "...",
+								keyPrefix: Str.slice(0, 12)(rawToken) + "...",
 								kind: "standard",
 								scopes: null,
 								metadataJson: {

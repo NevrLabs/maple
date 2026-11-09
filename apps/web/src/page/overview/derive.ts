@@ -8,8 +8,9 @@ import {
 	type ServiceHealth,
 	type ServiceHealthCause,
 } from "../../components/dashboard/service-health"
-import { DateTime, Option } from "effect"
+import { DateTime, Option, Array as Arr, String as Str } from "effect"
 import { AsyncData } from "foldkit"
+import { isPresetValue, type PresetValue } from "../kit/time-controls"
 import type { FacetsHint, HealthSnapshot, Incident, Model } from "./model"
 
 // Pure derivations of the home page (`defaultPreset`, `environmentFilter`) and its service health
@@ -17,12 +18,17 @@ import type { FacetsHint, HealthSnapshot, Incident, Model } from "./model"
 
 export type { ServiceHealth, ServiceHealthCause }
 
-/** `defaultPreset`: the hint's preset until facets resolve; 6h for all-demo orgs, else 24h. */
-export const defaultPreset = (model: Model): string =>
+/** `defaultPreset`: the hint's preset until facets resolve (when it is still a rail preset); 6h for
+ * all-demo orgs, else 24h. */
+export const defaultPreset = (model: Model): PresetValue =>
 	Option.match(AsyncData.getData(model.facets.data), {
-		onNone: () => model.hint.preset,
+		onNone: () => (isPresetValue(model.hint.preset) ? model.hint.preset : "24h"),
 		onSome: ({ services }) =>
-			services.length === 0 ? "24h" : services.every((name) => name.startsWith("demo-")) ? "6h" : "24h",
+			services.length === 0
+				? "24h"
+				: Arr.every(services, (name) => Str.startsWith("demo-")(name))
+					? "6h"
+					: "24h",
 	})
 
 export const timePresetOf = (model: Model): string => model.search.timePreset ?? defaultPreset(model)
@@ -60,7 +66,7 @@ export const selectedEnvironment = (model: Model): string =>
 
 export const environmentItems = (model: Model): ReadonlyArray<{ value: string; label: string }> => [
 	{ value: ALL_ENVIRONMENTS, label: "All environments" },
-	...environmentsOf(model).map((name) => ({ value: name, label: name })),
+	...Arr.map(environmentsOf(model), (name) => ({ value: name, label: name })),
 ]
 
 /** The hint `FacetsHintPersister` writes once facets are ready. */
@@ -97,6 +103,23 @@ const affectsHealth = (row: V2AnomalyServiceCount, nowMs: number): boolean => {
 	return row.signal_type !== "error_spike" && !isStale
 }
 
+const serviceKey = (name: string, environment: string): string => `${name}\u0000${environment}`
+
+const groupCauses = <A>(
+	rows: ReadonlyArray<A>,
+	keyOf: (row: A) => string,
+	causeOf: (row: A) => ServiceHealthCause,
+): Map<string, Array<ServiceHealthCause>> => {
+	const byKey = new Map<string, Array<ServiceHealthCause>>()
+	for (const row of rows) {
+		const key = keyOf(row)
+		const list = byKey.get(key)
+		if (list) list.push(causeOf(row))
+		else byKey.set(key, [causeOf(row)])
+	}
+	return byKey
+}
+
 export interface EnrichedService {
 	readonly service: HealthSnapshot
 	readonly health: ServiceHealth
@@ -109,40 +132,40 @@ export const enrichServices = (
 	incidents: ReadonlyArray<Incident>,
 	anomalies: ReadonlyArray<V2AnomalyServiceCount>,
 	nowMs: number,
-): Array<EnrichedService> =>
-	services
-		.map((service) => {
-			const alertCauses: Array<ServiceHealthCause> = incidents
-				.filter((incident) => incident.status === "open" && incident.groupKey === service.serviceName)
-				.map((incident) => ({
-					severity: incident.severity,
-					label: alertIncidentCauseLabel(incident.signalType),
-				}))
-			const anomalyCauses: Array<ServiceHealthCause> = anomalies
-				.filter(
-					(row) =>
-						affectsHealth(row, nowMs) &&
-						row.service_name === service.serviceName &&
-						(row.deployment_env || "unknown") === service.environment,
-				)
-				.map((row) => ({
-					severity: row.severity,
-					label: ANOMALY_LABEL.get(row.signal_type) ?? "",
-					metric: ANOMALY_METRIC.get(row.signal_type),
-					direction: anomalyDirection(row.signal_type),
-				}))
-			const causes = [...alertCauses, ...anomalyCauses].sort((a, b) =>
-				a.severity === b.severity ? 0 : a.severity === "critical" ? -1 : 1,
-			)
-			return { service, causes, health: deriveServiceHealthFromCauses(causes) }
-		})
-		.sort(
-			(a, b) =>
-				healthRank(b.health) - healthRank(a.health) || b.service.errorRate - a.service.errorRate,
+): Array<EnrichedService> => {
+	// Indexed once so each row is a lookup, not a scan of every incident and anomaly (with a date parse).
+	const alertCausesByService = groupCauses(
+		Arr.filter(incidents, (incident) => incident.status === "open" && incident.groupKey !== null),
+		(incident) => incident.groupKey ?? "",
+		(incident) => ({ severity: incident.severity, label: alertIncidentCauseLabel(incident.signalType) }),
+	)
+	const anomalyCausesByService = groupCauses(
+		Arr.filter(anomalies, (row) => affectsHealth(row, nowMs)),
+		(row) => serviceKey(row.service_name, row.deployment_env || "unknown"),
+		(row) => ({
+			severity: row.severity,
+			label: ANOMALY_LABEL.get(row.signal_type) ?? "",
+			metric: ANOMALY_METRIC.get(row.signal_type),
+			direction: anomalyDirection(row.signal_type),
+		}),
+	)
+	return Arr.map(services, (service) => {
+		const alertCauses = alertCausesByService.get(service.serviceName) ?? []
+		const anomalyCauses =
+			anomalyCausesByService.get(serviceKey(service.serviceName, service.environment)) ?? []
+		const causes = [...alertCauses, ...anomalyCauses].sort((a, b) =>
+			a.severity === b.severity ? 0 : a.severity === "critical" ? -1 : 1,
 		)
+		return { service, causes, health: deriveServiceHealthFromCauses(causes) }
+	}).sort((a, b) =>
+		healthRank(b.health) !== healthRank(a.health)
+			? healthRank(b.health) - healthRank(a.health)
+			: b.service.errorRate - a.service.errorRate,
+	)
+}
 
 export const countByHealth = (services: ReadonlyArray<EnrichedService>): Record<ServiceHealth, number> => ({
-	healthy: services.filter((entry) => entry.health === "healthy").length,
-	degraded: services.filter((entry) => entry.health === "degraded").length,
-	unhealthy: services.filter((entry) => entry.health === "unhealthy").length,
+	healthy: Arr.filter(services, (entry) => entry.health === "healthy").length,
+	degraded: Arr.filter(services, (entry) => entry.health === "degraded").length,
+	unhealthy: Arr.filter(services, (entry) => entry.health === "unhealthy").length,
 })

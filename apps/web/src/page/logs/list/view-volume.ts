@@ -1,22 +1,24 @@
 import { refreshingClass } from "@maple/ui/lib/refreshing"
 import { SEVERITY_COLORS, SEVERITY_ORDER } from "@maple/ui/lib/severity"
 import { formatBucketLabel, formatNumber } from "@maple/ui/lib/format"
-import { eyebrow } from "../../../ui/eyebrow"
+import { eyebrow } from "@maple/views/ui/eyebrow"
 import { formatWarehouseDateTime, warehouseDateTimeToIso } from "@maple/query-engine"
 import { computeBucketSeconds } from "@maple/web-data/warehouse/timeseries-utils"
 import { cn } from "@maple/ui/lib/utils"
-import { DateTime, Option } from "effect"
+import { DateTime, Option, Array as Arr, Record as Rec, String as Str } from "effect"
 import { AsyncData, Submodel } from "foldkit"
 import type { Html, HtmlBuilder } from "foldkit/html"
-import * as Chart from "../../../charts/chart"
-import type { ChartSpec } from "../../../charts/chart-spec"
-import { plotFrame } from "../../../charts/plot-frame"
-import { chartError, chartLoading } from "../../../ui/chart-state"
-import { resolveColor, type ThemeColors } from "../../../charts/theme-colors"
+import * as Chart from "@maple/views/charts/chart"
+import type { ChartSpec } from "@maple/views/charts/chart-spec"
+import { plotFrame } from "@maple/views/charts/plot-frame"
+import { chartError, chartLoading } from "@maple/views/ui/chart-state"
+import { resolveColor, type ThemeColors } from "@maple/views/charts/theme-colors"
 import { HISTOGRAM_TARGET_POINTS, volumeSeriesKeys, volumeTotal } from "./derive"
 import { Message } from "./message"
 import type { Model, VolumeBrush, VolumeBucket } from "./model"
-import { bucketTooltipBody } from "../../../charts/bucket-tooltip"
+import { bucketTooltipBody } from "@maple/views/charts/bucket-tooltip"
+import { typography } from "@maple/views/ui/typography"
+import { hstack, vstack } from "@maple/views/ui/stack"
 
 /** The strip is a scrubber above the list, not a chart in its own right. */
 export const LOGS_VOLUME_CHART_HEIGHT = 120
@@ -25,10 +27,10 @@ const FALLBACK_SEVERITY_TOKEN = "var(--color-muted-foreground)"
 
 /** The custom properties the plot reads: every severity colour plus the chrome border. */
 export const VOLUME_THEME_TOKENS = [
-	...new Set([...Object.values(SEVERITY_COLORS), FALLBACK_SEVERITY_TOKEN, "--border"]),
+	...new Set([...Rec.values(SEVERITY_COLORS), FALLBACK_SEVERITY_TOKEN, "--border"]),
 ]
 
-const severityToken = (key: string) => SEVERITY_COLORS[key.toUpperCase()] ?? FALLBACK_SEVERITY_TOKEN
+const severityToken = (key: string) => SEVERITY_COLORS[Str.toUpperCase(key)] ?? FALLBACK_SEVERITY_TOKEN
 
 const volumeSpec = (
 	buckets: ReadonlyArray<VolumeBucket>,
@@ -41,7 +43,7 @@ const volumeSpec = (
 		_tag: "LogsVolume",
 		buckets,
 		seriesKeys,
-		colors: Object.fromEntries(seriesKeys.map((key) => [key, resolveColor(theme, severityToken(key))])),
+		colors: Rec.fromEntries(Arr.map(seriesKeys, (key) => [key, resolveColor(theme, severityToken(key))])),
 		border: resolveColor(theme, "--border"),
 		selection:
 			brush.left !== null && brush.right !== null ? { left: brush.left, right: brush.right } : null,
@@ -61,7 +63,9 @@ const volumePlot = Submodel.defineView<Chart.Model, Chart.Message, PlotInputs>((
 		className: "h-full w-full",
 		tooltipBody: (portal) =>
 			Option.flatMap(model.tooltip, (tooltip) =>
-				tooltip._tag === "Bucket" ? Option.some(bucketTooltipBody(h, tooltip, portal)) : Option.none(),
+				tooltip._tag === "Bucket"
+					? Option.some(bucketTooltipBody(h, tooltip, portal))
+					: Option.none(),
 			),
 	}),
 )
@@ -113,109 +117,108 @@ const emptyStrip = (
 	}))
 	const dashed = (className: string) =>
 		h.div([h.Class(`absolute inset-x-0 ${className} border-t border-dashed border-border-subtle`)])
-	return h.div(
+	return hstack(
+		h,
+		{
+			align: "stretch",
+			className: "w-full select-none pt-1 text-muted-foreground",
+			attributes: [
+				h.Style({ height: `${LOGS_VOLUME_CHART_HEIGHT}px` }),
+				h.AriaLabel("Log volume by severity, no logs in this window"),
+			],
+		},
 		[
-			h.Style({ height: `${LOGS_VOLUME_CHART_HEIGHT}px` }),
-			h.Class("flex w-full select-none pt-1 text-muted-foreground"),
-			h.AriaLabel("Log volume by severity, no logs in the selected range"),
-		],
-		[
-			h.div(
-				[
-					h.Class(
-						"flex w-10 shrink-0 flex-col justify-end pb-[18px] pr-1 text-right text-3xs leading-none",
-					),
-				],
+			vstack(
+				h,
+				{
+					justify: "end",
+					className: "w-10 shrink-0 pb-4.5 pr-1 text-right text-3xs leading-none",
+				},
 				["0"],
 			),
-			h.div(
-				[h.Class("relative flex min-w-0 flex-1 flex-col")],
-				[
-					h.div(
-						[h.Class("relative flex-1")],
-						[
-							dashed("top-0"),
-							dashed("top-1/2"),
-							h.div(
-								[
-									h.AriaHidden(true),
-									h.Class("absolute inset-0 flex items-end gap-px opacity-[0.18]"),
-								],
-								EMPTY_STRIP_BARS_STACKED.map((slices) =>
-									h.div(
-										[h.Class("flex h-full min-w-0 flex-1 flex-col-reverse")],
-										slices.map((slice) =>
-											h.div([
-												h.Style({
-													height: `${slice.height * 100}%`,
-													"background-color": SEVERITY_COLORS[slice.severity] ?? "",
-												}),
-											]),
-										),
+			vstack(h, { shrink: true, grow: true, className: "relative" }, [
+				h.div(
+					[h.Class("relative flex-1")],
+					[
+						dashed("top-0"),
+						dashed("top-1/2"),
+						hstack(
+							h,
+							{
+								align: "end",
+								className: "absolute inset-0 gap-px opacity-[0.18]",
+								attributes: [h.AriaHidden(true)],
+							},
+							Arr.map(EMPTY_STRIP_BARS_STACKED, (slices) =>
+								h.div(
+									[h.Class("flex h-full min-w-0 flex-1 flex-col-reverse")],
+									Arr.map(slices, (slice) =>
+										h.div([
+											h.Style({
+												height: `${slice.height * 100}%`,
+												"background-color": SEVERITY_COLORS[slice.severity] ?? "",
+											}),
+										]),
 									),
 								),
 							),
-							h.div(
-								[h.Class("absolute inset-0 flex flex-col items-center justify-center gap-2")],
-								[
-									h.span([h.Class("text-xs")], ["No log volume in this window"]),
-									eyebrow(
-										h,
-										{ as: "ul", className: "flex items-center gap-3 opacity-60" },
-										SEVERITY_ORDER.filter((s) => s !== "WARNING").map((severity) =>
-											h.li(
-												[h.Class("flex items-center gap-1.5")],
-												[
-													h.span([
-														h.Class("size-1.5 rounded-xs"),
-														h.Style({
-															"background-color":
-																SEVERITY_COLORS[severity] ?? "",
-														}),
-													]),
-													severity,
-												],
-											),
-										),
+						),
+						vstack(
+							h,
+							{ gap: "2", align: "center", justify: "center", className: "absolute inset-0" },
+							[
+								typography(h, { size: "xs" }, ["No log volume in this window"]),
+								eyebrow(
+									h,
+									{ as: "ul", className: "flex items-center gap-3 opacity-60" },
+									Arr.map(
+										Arr.filter(SEVERITY_ORDER, (s) => s !== "WARNING"),
+										(severity) =>
+											hstack(h, { gap: "1.5", as: "li" }, [
+												h.span([
+													h.Class("size-1.5 rounded-xs"),
+													h.Style({
+														"background-color": SEVERITY_COLORS[severity] ?? "",
+													}),
+												]),
+												severity,
+											]),
 									),
-								],
-							),
-						],
-					),
-					h.div(
-						[h.Class("relative h-4.5 border-t border-border")],
-						ticks.map((tick, i) =>
-							h.span(
-								[
-									h.Class("absolute top-1 whitespace-nowrap text-3xs leading-none"),
-									h.Style({
-										left: `${tick.left}%`,
-										transform:
-											i === 0
-												? "none"
-												: i === ticks.length - 1
-													? "translateX(-100%)"
-													: "translateX(-50%)",
-									}),
-								],
-								[tick.label],
-							),
+								),
+							],
+						),
+					],
+				),
+				h.div(
+					[h.Class("relative h-4.5 border-t border-border")],
+					Arr.map(ticks, (tick, i) =>
+						h.span(
+							[
+								h.Class("absolute top-1 whitespace-nowrap text-3xs leading-none"),
+								h.Style({
+									left: `${tick.left}%`,
+									transform:
+										i === 0
+											? "none"
+											: i === ticks.length - 1
+												? "translateX(-100%)"
+												: "translateX(-50%)",
+								}),
+							],
+							[tick.label],
 						),
 					),
-				],
-			),
+				),
+			]),
 		],
 	)
 }
 
 const header = (h: HtmlBuilder<Message>, total: number): Html =>
-	h.div(
-		[h.Class("mb-1 flex items-baseline gap-2")],
-		[
-			h.span([h.Class("text-sm font-medium")], [formatNumber(total), " logs"]),
-			h.span([h.Class("text-xs text-muted-foreground")], ["in selected range"]),
-		],
-	)
+	hstack(h, { gap: "2", align: "baseline", className: "mb-1" }, [
+		typography(h, { size: "sm", weight: "medium" }, [formatNumber(total), " logs"]),
+		typography(h, { size: "xs", tone: "muted" }, ["in this window"]),
+	])
 
 export const volumeChart = (h: HtmlBuilder<Message>, model: Model, timeZone: string): Html =>
 	AsyncData.matchData(model.volume.data, {
@@ -256,7 +259,12 @@ export const volumeChart = (h: HtmlBuilder<Message>, model: Model, timeZone: str
 											model: model.volumeChart,
 											view: volumePlot,
 											viewInputs: {
-												spec: volumeSpec(buckets, model.themeColors, timeZone, model.volumeBrush),
+												spec: volumeSpec(
+													buckets,
+													model.themeColors,
+													timeZone,
+													model.volumeBrush,
+												),
 											},
 											toParentMessage: (message) =>
 												Message.GotVolumeChartMessage({ message }),

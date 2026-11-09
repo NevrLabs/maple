@@ -15,7 +15,7 @@ import {
 	type PrReviewMergeStepStatus,
 	type PullRequestFile,
 } from "@maple/domain/http"
-import { Array as Arr, HashSet, Option, Order, Result, Schema } from "effect"
+import { Array as Arr, HashSet, Option, Order, Result, Schema, String as Str } from "effect"
 
 /** A name the diff starts reading, before the service checks the base does not already. */
 export interface MergeStepName {
@@ -71,6 +71,13 @@ const looksSecret = (name: string) =>
 	/SECRET|TOKEN|PASSWORD|PASSWD|PRIVATE|CREDENTIAL|API_?KEY|_KEY$|_DSN$|SIGNING/.test(name) &&
 	!/PUBLISHABLE|PUBLIC/.test(name)
 
+/**
+ * A name only a test run reads: a whole `TEST` or `E2E` token, as in `STRIPE_E2E_TEST_SECRET_KEY`.
+ * Whole tokens only, so `LATEST_RELEASE` and `CONTEST_KEY` still count.
+ */
+const testOnlyName = (name: string) =>
+	Arr.some(Str.split("_")(name), (token) => token === "TEST" || token === "E2E")
+
 /** Names every runtime or CI provides; never something to add. */
 const PROVIDED = new Set([
 	"NODE_ENV",
@@ -95,8 +102,12 @@ const PROVIDED = new Set([
 	"BASE_URL",
 ])
 
+/**
+ * A test by folder, or by the file name's last dot segment before the extension: a known test
+ * suffix (`x.e2e.ts`, `x.test-d.ts`) or a custom one ending in it (`x.stripe-live.ts`).
+ */
 const TEST_PATH =
-	/(^|\/)(__tests__|__snapshots__|__fixtures__|tests?|fixtures?|e2e|testdata|mocks?)\/|\.(test|spec|eval|bench)\.[a-z]+$/i
+	/(^|\/)(__tests__|__snapshots__|__fixtures__|tests?|fixtures?|e2e|integration|playwright|testdata|mocks?)\/|\.(test|spec|eval|bench|e2e|integration|it|live|test-d|[\w-]+-(live|e2e|test))\.[a-z]+$/i
 const DOC_PATH = /\.(md|mdx|txt|rst)$/i
 /** Code a developer runs by hand; what it reads is set on their machine, not in a deployment. */
 const LOCAL_PATH = /(^|\/)(scripts?|examples?|benchmarks?|evals?)\//i
@@ -131,13 +142,14 @@ const HUNK_HEADER = /^@@ -\d+(?:,\d+)? \+(\d+)/
  */
 export const patchLines = (patch: string): ReadonlyArray<PatchLine> =>
 	Arr.getSomes(
-		Arr.mapAccum(patch.split("\n"), 0, (line, raw): readonly [number, Option.Option<PatchLine>] => {
+		Arr.mapAccum(Str.split("\n")(patch), 0, (line, raw): readonly [number, Option.Option<PatchLine>] => {
 			const hunk = HUNK_HEADER.exec(raw)
 			if (hunk !== null) return [Number(hunk[1]), Option.none()]
-			if (raw.startsWith("+"))
-				return [line + 1, Option.some({ kind: "added", text: raw.slice(1), line })]
-			if (raw.startsWith("-")) return [line, Option.some({ kind: "removed", text: raw.slice(1), line })]
-			return [raw.startsWith("\\") ? line : line + 1, Option.none()]
+			if (Str.startsWith("+")(raw))
+				return [line + 1, Option.some({ kind: "added", text: Str.slice(1)(raw), line })]
+			if (Str.startsWith("-")(raw))
+				return [line, Option.some({ kind: "removed", text: Str.slice(1)(raw), line })]
+			return [Str.startsWith("\\")(raw) ? line : line + 1, Option.none()]
 		})[1],
 	)
 
@@ -153,16 +165,16 @@ const splitPatch = (patch: string | null) => {
 const namesRead = (text: string): Array<{ name: string; secret: boolean }> => {
 	const found: Array<{ name: string; secret: boolean }> = []
 	for (const pattern of ENV_READS) {
-		for (const match of text.matchAll(pattern)) {
-			const name = match.slice(1).find((group) => group !== undefined)
-			if (name !== undefined) found.push({ name, secret: false })
+		for (const match of Str.matchAll(pattern)(text)) {
+			const name = Arr.findFirst(match.slice(1), (group) => group !== undefined)
+			if (Option.isSome(name)) found.push({ name: name.value, secret: false })
 		}
 	}
-	for (const [, constant = "", name] of text.matchAll(NAMED_CONSTANT)) {
-		if (name !== undefined && name.includes("_"))
+	for (const [, constant = "", name] of Str.matchAll(NAMED_CONSTANT)(text)) {
+		if (name !== undefined && Str.includes("_")(name))
 			found.push({ name, secret: /SECRET|TOKEN/.test(constant) })
 	}
-	for (const match of text.matchAll(CONFIG_CALL)) {
+	for (const match of Str.matchAll(CONFIG_CALL)(text)) {
 		const [, callee = "", name] = match
 		if (name !== undefined && CONFIG_CALLEE.test(callee))
 			found.push({ name, secret: SECRET_CALLEE.test(callee) })
@@ -222,6 +234,8 @@ export const detectMergeSteps = (files: ReadonlyArray<PullRequestFile>): Detecte
 		if (!readsNamesIn(path)) continue
 		const remember = (candidate: MergeStepName) => {
 			if (PROVIDED.has(candidate.name) || names.has(candidate.name)) return
+			// A CI secret for an e2e run still has to be added to the repository; a runtime read does not.
+			if (!candidate.ci && testOnlyName(candidate.name)) return
 			names.set(candidate.name, candidate)
 		}
 		for (const { text, line } of added) {
@@ -232,7 +246,7 @@ export const detectMergeSteps = (files: ReadonlyArray<PullRequestFile>): Detecte
 				continue
 			}
 			if (WORKFLOW.test(path)) {
-				for (const [, context, name] of text.matchAll(CI_READ)) {
+				for (const [, context, name] of Str.matchAll(CI_READ)(text)) {
 					if (name === undefined) continue
 					remember({ name, kind: context === "secrets" ? "secret" : "env", ci: true, path, line })
 				}
@@ -250,9 +264,10 @@ export const detectMergeSteps = (files: ReadonlyArray<PullRequestFile>): Detecte
 		}
 	}
 
-	const removed = removedText.join("\n")
+	const removed = Arr.join(removedText, "\n")
 	return {
-		names: [...names.values()].filter(
+		names: Arr.filter(
+			[...names.values()],
 			(candidate) => !new RegExp(`\\b${candidate.name}\\b`).test(removed),
 		),
 		steps,
@@ -275,7 +290,10 @@ export interface SearchHit {
  */
 export const searchVerdict = (name: string, hits: ReadonlyArray<SearchHit>): NameVerdict => {
 	const whole = new RegExp(`(?<![A-Za-z0-9_])${name}(?![A-Za-z0-9_])`)
-	return hits.some((hit) => hit.snippets.length === 0 || hit.snippets.some((text) => whole.test(text)))
+	return Arr.some(
+		hits,
+		(hit) => hit.snippets.length === 0 || Arr.some(hit.snippets, (text) => whole.test(text)),
+	)
 		? "exists"
 		: "new"
 }
@@ -333,38 +351,47 @@ export const buildChecklist = (input: {
 	readonly reviewer: ReadonlyArray<PrReviewMergeStep>
 	readonly isIgnored: (path: string) => boolean
 }): Checklist => {
-	const names = input.detected.names.map((candidate) => ({
+	const names = Arr.map(input.detected.names, (candidate) => ({
 		candidate,
 		verdict: input.verdicts.get(candidate.name) ?? ("unverified" as const),
 	}))
 	const fromDiff = [
-		...names.filter(({ verdict }) => verdict !== "exists").map(({ candidate }) => nameStep(candidate)),
+		...Arr.map(
+			Arr.filter(names, ({ verdict }) => verdict !== "exists"),
+			({ candidate }) => nameStep(candidate),
+		),
 		...input.detected.steps,
 	]
-	const ignored = fromDiff.filter((step) => step.path !== undefined && input.isIgnored(step.path))
-	const replaced = fromDiff.filter(
+	const ignored = Arr.filter(fromDiff, (step) => step.path !== undefined && input.isIgnored(step.path))
+	const replaced = Arr.filter(
+		fromDiff,
 		(step) =>
 			!ignored.includes(step) &&
-			input.reviewer.some((other) => step.subject !== undefined && other.title.includes(step.subject)),
+			Arr.some(
+				input.reviewer,
+				(other) => step.subject !== undefined && Str.includes(step.subject)(other.title),
+			),
 	)
-	const kept = fromDiff.filter((step) => !ignored.includes(step) && !replaced.includes(step))
+	const kept = Arr.filter(fromDiff, (step) => !ignored.includes(step) && !replaced.includes(step))
 	// A reviewer step that replaces a diff step takes over its identity, so a tick on either
 	// wording carries across pushes and the comment still labels it a secret, not a manual step.
-	const reviewer = input.reviewer.map((step) => {
-		const named = replaced.find(
-			(other) => other.subject !== undefined && step.title.includes(other.subject),
+	const reviewer = Arr.map(input.reviewer, (step) => {
+		const named = Arr.findFirst(
+			replaced,
+			(other) => other.subject !== undefined && Str.includes(other.subject)(step.title),
 		)
-		return named === undefined
-			? step
-			: new PrReviewMergeStep({ ...named, title: step.title, source: "reviewer" })
+		return Option.match(named, {
+			onNone: () => step,
+			onSome: (other) => new PrReviewMergeStep({ ...other, title: step.title, source: "reviewer" }),
+		})
 	})
 	const all = [...kept, ...reviewer].sort((a, b) => KIND_ORDER[a.kind] - KIND_ORDER[b.kind])
 	const subjects = (steps: ReadonlyArray<PrReviewMergeStep>) =>
-		steps.map((step) => step.subject ?? step.title)
+		Arr.map(steps, (step) => step.subject ?? step.title)
 	return {
 		steps: all.slice(0, MAX_STEPS),
 		trace: {
-			names: names.map(({ candidate, verdict }) => ({ name: candidate.name, verdict })),
+			names: Arr.map(names, ({ candidate, verdict }) => ({ name: candidate.name, verdict })),
 			fileSteps: input.detected.steps.length,
 			reviewerSteps: input.reviewer.length,
 			replaced: subjects(replaced),
@@ -384,10 +411,13 @@ export const checklistAttributes = (
 ): Record<string, string | number> => {
 	const { trace } = checklist
 	const named = (verdict: NameVerdict) =>
-		trace.names
-			.filter((item) => item.verdict === verdict)
-			.map((item) => item.name)
-			.join(",")
+		Arr.join(
+			Arr.map(
+				Arr.filter(trace.names, (item) => item.verdict === verdict),
+				(item) => item.name,
+			),
+			",",
+		)
 	return {
 		"maple.pr_review.checklist.status": status,
 		"maple.pr_review.checklist.steps": checklist.steps.length,
@@ -396,8 +426,8 @@ export const checklistAttributes = (
 		"maple.pr_review.checklist.names_unverified": named("unverified"),
 		"maple.pr_review.checklist.file_steps": trace.fileSteps,
 		"maple.pr_review.checklist.reviewer_steps": trace.reviewerSteps,
-		"maple.pr_review.checklist.replaced": trace.replaced.join(","),
-		"maple.pr_review.checklist.ignored": trace.ignored.join(","),
+		"maple.pr_review.checklist.replaced": Arr.join(trace.replaced, ","),
+		"maple.pr_review.checklist.ignored": Arr.join(trace.ignored, ","),
 		"maple.pr_review.checklist.cut": trace.cut,
 	}
 }
@@ -422,8 +452,8 @@ export interface ReconciledMergeSteps {
 
 /** Words that say nothing about which step it is. */
 const FILLER = HashSet.fromIterable(
-	"the and for add run set with from into this that every all environment environments before after merge make sure check".split(
-		" ",
+	Str.split(" ")(
+		"the and for add run set with from into this that every all environment environments before after merge make sure check",
 	),
 )
 
@@ -431,8 +461,9 @@ const FILLER = HashSet.fromIterable(
 const words = (text: string): ReadonlyArray<string> =>
 	Arr.dedupe(
 		Arr.filter(
-			Arr.map(text.toLowerCase().match(/[a-z0-9_]{2,}/g) ?? [], (word) =>
-				word.replace(/(?<=[a-z]{3})s$/, ""),
+			Arr.map(
+				Option.getOrElse(Str.match(/[a-z0-9_]{2,}/g)(Str.toLowerCase(text)), () => []),
+				(word) => Str.replace(/(?<=[a-z]{3})s$/, "")(word),
 			),
 			(word) => !HashSet.has(FILLER, word),
 		),

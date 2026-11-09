@@ -3,7 +3,8 @@ import { defaultRuleForm, ruleToFormState } from "@maple/web-data/alerts/form-ut
 import { switchSignalKind } from "@maple/web-data/alerts/rule-modes"
 import { buildRuleStatesByRuleId, rowToAlertRuleDocument } from "@maple/web-data/collections/alerts"
 import { createWidgetAlertPrefill, resolveWidgetAlertPrefill } from "../../../lib/alerts/widget-prefill"
-import { Option, Schema } from "effect"
+import { Option, Result, Schema, Array as Arr } from "effect"
+import { Base64Url } from "effect/encoding"
 import { ALERT_TEMPLATES } from "../shared/templates"
 import { fromFormState, type RuleForm } from "./form"
 import type { Model, Notice } from "./model"
@@ -14,6 +15,7 @@ import type { Model, Notice } from "./model"
 export type Initialization =
 	| { readonly _tag: "Loading" }
 	| { readonly _tag: "Failed" }
+	| { readonly _tag: "Unreadable" }
 	| {
 			readonly _tag: "Ready"
 			readonly key: string
@@ -53,18 +55,18 @@ const AlertChartContext = Schema.Struct({
 })
 const decodeChart = Schema.decodeUnknownOption(Schema.fromJsonString(AlertChartContext))
 const fromBase64Url = (input: string): Option.Option<string> =>
-	Option.liftThrowable(() => {
-		const base64 = input.replace(/-/g, "+").replace(/_/g, "/")
-		const padded = base64 + "=".repeat((4 - (base64.length % 4)) % 4)
-		return decodeURIComponent(escape(atob(padded)))
-	})()
+	Result.getSuccess(Base64Url.decodeString(input))
 export const decodeChartParam = (raw: string) => Option.flatMap(fromBase64Url(raw), decodeChart)
 
-/** The rule being edited, from the live rows. */
-export const editingRuleOf = (model: Model, ruleId: string): AlertRuleDocument | null => {
-	const row = (model.rules ?? []).find((candidate) => candidate.id === ruleId)
-	return row === undefined ? null : rowToAlertRuleDocument(row, buildRuleStatesByRuleId(model.states ?? []))
-}
+/** The rule being edited, from the live rows: `None` when no row has its id. */
+export const editingRuleOf = (
+	model: Model,
+	ruleId: string,
+): Option.Option<Option.Option<AlertRuleDocument>> =>
+	Option.map(
+		Arr.findFirst(model.rules ?? [], (candidate) => candidate.id === ruleId),
+		(row) => rowToAlertRuleDocument(row, buildRuleStatesByRuleId(model.states ?? [])),
+	)
 
 export const initialization = (model: Model, draftId: string): Initialization => {
 	const search = model.search
@@ -72,19 +74,34 @@ export const initialization = (model: Model, draftId: string): Initialization =>
 	if (search.ruleId !== undefined) {
 		// Terminal: an edit must not silently turn into a create, so the page stops here.
 		if (model.rules === null) return model.isRulesLoadFailed ? { _tag: "Failed" } : { _tag: "Loading" }
-		const rule = editingRuleOf(model, search.ruleId)
+		const found = editingRuleOf(model, search.ruleId)
+		// Terminal too: a rule a newer build saved must not open as a blank create that duplicates it.
+		if (Option.exists(found, Option.isNone)) return { _tag: "Unreadable" }
+		const rule = Option.getOrNull(Option.flatten(found))
 		if (rule !== null) {
 			const form = fromFormState(ruleToFormState(rule))
-			return ready(`rule:${rule.id}`, rule.queryBuilderDraft === null ? withDraftId(form, draftId) : form, [], rule)
+			return ready(
+				`rule:${rule.id}`,
+				rule.queryBuilderDraft === null ? withDraftId(form, draftId) : form,
+				[],
+				rule,
+			)
 		}
 		return ready(`missing-rule:${search.ruleId}`, base, [
-			{ severity: "warning", message: "The alert rule could not be found. Starting from a blank alert." },
+			{
+				severity: "warning",
+				message: "The alert rule could not be found. Starting from a blank alert.",
+			},
 		])
 	}
 	const chart = search.chart === undefined ? Option.none() : decodeChartParam(search.chart)
 	if (Option.isSome(chart)) {
 		const result = createWidgetAlertPrefill(chart.value.widget, base)
-		return ready(`chart:${chart.value.dashboardId}:${chart.value.widget.id}`, fromFormState(result.form), result.notices)
+		return ready(
+			`chart:${chart.value.dashboardId}:${chart.value.widget.id}`,
+			fromFormState(result.form),
+			result.notices,
+		)
 	}
 	if (search.dashboardId !== undefined || search.widgetId !== undefined) {
 		if (search.dashboardId === undefined || search.widgetId === undefined) {
@@ -108,14 +125,22 @@ export const initialization = (model: Model, draftId: string): Initialization =>
 				widgetId: search.widgetId,
 				base,
 			})
-			return ready(`dashboard:${search.dashboardId}:widget:${search.widgetId}`, fromFormState(result.form), result.notices)
+			return ready(
+				`dashboard:${search.dashboardId}:widget:${search.widgetId}`,
+				fromFormState(result.form),
+				result.notices,
+			)
 		}
 		if (!model.isDashboardsLoadFailed) return { _tag: "Loading" }
 		return ready(`dashboard-load-failed:${search.dashboardId}:${search.widgetId}`, base, [
 			{ severity: "warning", message: "Couldn't load dashboards. Starting from a blank alert." },
 		])
 	}
-	const template = ALERT_TEMPLATES.find((candidate) => candidate.id === search.template)
-	if (template !== undefined) return ready(`new:template:${template.id}`, fromFormState(template.apply(base)))
+	// "New rule → Anomaly rule" in the hub: the editor opens on the anomaly kind.
+	if (search.template === "anomaly")
+		return ready("new:anomaly", fromFormState(switchSignalKind(base, "anomaly").form))
+	const template = Arr.findFirst(ALERT_TEMPLATES, (candidate) => candidate.id === search.template)
+	if (Option.isSome(template))
+		return ready(`new:template:${template.value.id}`, fromFormState(template.value.apply(base)))
 	return ready(`new:${search.serviceName ?? "blank"}`, base, [], null, search.serviceName === undefined)
 }

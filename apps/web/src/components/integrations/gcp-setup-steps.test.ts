@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { Schema } from "effect"
+import { Option, Schema, Array as Arr, String as Str } from "effect"
 import { gcpSetupPlan } from "@maple/domain/gcp"
 import { V2GcpConnector } from "@maple/domain/http/v2"
 
@@ -8,7 +8,7 @@ import { GCP_SETUP_FIXTURES } from "../../lab/gcp-setup-fixtures"
 import { gcpAgentPrompt, gcpManualSteps, gcpRemovalList } from "./gcp-setup-steps"
 
 const connector = (over: Record<string, unknown> = {}) =>
-	Schema.decodeUnknownSync(V2GcpConnector)({
+	Schema.decodeSync(V2GcpConnector)({
 		id: "gcpc_YofPTrK9782DWwcnXhpcCw",
 		object: "gcp_connector",
 		scope_type: "project",
@@ -49,11 +49,14 @@ const plan = (of: V2GcpConnector) =>
 		logFilter: GCP_SETUP_FIXTURES.project.log_filter,
 	})
 
-const titles = (of: V2GcpConnector) => gcpManualSteps(plan(of)).map((step) => step.title)
+const titles = (of: V2GcpConnector) => Arr.map(gcpManualSteps(plan(of)), (step) => step.title)
 const values = (of: V2GcpConnector, title: string) =>
-	gcpManualSteps(plan(of))
-		.find((step) => step.title === title)
-		?.fields.map((field) => field.value)
+	Option.getOrUndefined(
+		Option.map(
+			Arr.findFirst(gcpManualSteps(plan(of)), (step) => step.title === title),
+			(step) => Arr.map(step.fields, (field) => field.value),
+		),
+	)
 
 describe("gcpManualSteps", () => {
 	it("lists what the connection collects, Maple's grant before the read-only roles", () => {
@@ -92,11 +95,13 @@ describe("gcpManualSteps", () => {
 
 	it("routes an organization's sink to the topic by its full path", () => {
 		const org = connector(ORGANIZATION)
-		const sink = gcpManualSteps(plan(org)).find((step) =>
-			step.title.startsWith("Create the Log Router sink"),
+		const sink = Option.getOrUndefined(
+			Arr.findFirst(gcpManualSteps(plan(org)), (step) =>
+				Str.startsWith("Create the Log Router sink")(step.title),
+			),
 		)
 		expect(sink?.title).toBe("Create the Log Router sink on the organization")
-		expect(sink?.fields.map((field) => field.value)).toEqual(
+		expect(sink === undefined ? undefined : Arr.map(sink.fields, (field) => field.value)).toEqual(
 			expect.arrayContaining([
 				"Other resource",
 				"pubsub.googleapis.com/projects/acme-observability/topics/maple-018f2b3c4d5e6f708192a3b4",
@@ -107,19 +112,32 @@ describe("gcpManualSteps", () => {
 
 	it("grants the quota role on the host project, the read roles on the scope", () => {
 		const steps = gcpManualSteps(plan(connector(ORGANIZATION)))
-		const scope = steps.find((step) => step.title === "Grant the read-only roles on the organization")
-		const host = steps.find((step) => step.title === "Grant Service Usage Consumer on acme-observability")
+		const scope = Option.getOrUndefined(
+			Arr.findFirst(steps, (step) => step.title === "Grant the read-only roles on the organization"),
+		)
+		const host = Option.getOrUndefined(
+			Arr.findFirst(
+				steps,
+				(step) => step.title === "Grant Service Usage Consumer on acme-observability",
+			),
+		)
 		expect(scope?.consoleUrl).toContain("organizationId=123456789012")
-		expect(scope?.fields.map((field) => field.value)).not.toContain("Service Usage Consumer")
+		expect(scope === undefined ? undefined : Arr.map(scope.fields, (field) => field.value)).not.toContain(
+			"Service Usage Consumer",
+		)
 		expect(host?.consoleUrl).toContain("project=acme-observability")
-		expect(host?.fields.map((field) => field.value)).toContain("Service Usage Consumer")
+		expect(host === undefined ? undefined : Arr.map(host.fields, (field) => field.value)).toContain(
+			"Service Usage Consumer",
+		)
 	})
 
 	it("opens a folder's console pages on the folder", () => {
 		const steps = gcpManualSteps(plan(connector({ ...ORGANIZATION, scope_type: "folder" })))
-		expect(steps.find((step) => step.title === "Create the Log Router sink on the folder")?.consoleUrl).toContain(
-			"folder=123456789012",
-		)
+		expect(
+			Option.getOrUndefined(
+				Arr.findFirst(steps, (step) => step.title === "Create the Log Router sink on the folder"),
+			)?.consoleUrl,
+		).toContain("folder=123456789012")
 	})
 })
 
@@ -131,7 +149,7 @@ describe("gcpRemovalList", () => {
 			applied_logs_enabled: true,
 			applied_metrics_enabled: true,
 		})
-		expect(gcpRemovalList(off).map((item) => item.name)).toEqual([
+		expect(Arr.map(gcpRemovalList(off), (item) => item.name)).toEqual([
 			"maple-018f2b3c4d5e6f708192a3b4",
 			"maple-018f2b3c4d5e6f708192a3b4",
 			"maple-018f2b3c4d5e6f708192a3b4",
@@ -141,10 +159,10 @@ describe("gcpRemovalList", () => {
 		expect(gcpRemovalList(connector({ logs_enabled: false, applied_logs_enabled: false }))).toEqual([])
 		// Set up by hand or as code but never confirmed: listed, with nothing to confirm.
 		const unconfirmed = gcpRemovalList(connector({ logs_enabled: false, applied_logs_enabled: null }))
-		expect(unconfirmed.map((item) => item.name)).toHaveLength(4)
-		expect(unconfirmed.some((item) => item.confirmed)).toBe(false)
+		expect(Arr.map(unconfirmed, (item) => item.name)).toHaveLength(4)
+		expect(Arr.some(unconfirmed, (item) => item.confirmed)).toBe(false)
 		const reader = gcpRemovalList(connector({ metrics_enabled: false, applied_metrics_enabled: true }))
-		expect(reader.map((item) => item.name)).toEqual([
+		expect(Arr.map(reader, (item) => item.name)).toEqual([
 			"maple-018f2b3c4d5e6f708192a3b4@acme-prod.iam.gserviceaccount.com",
 			"maple-018f2b3c4d5e6f708192a3b4@acme-prod.iam.gserviceaccount.com",
 		])
@@ -152,12 +170,16 @@ describe("gcpRemovalList", () => {
 	})
 
 	it("lists everything not known to be gone for a disconnect", () => {
-		const loggingOnly = connector({ logs_enabled: true, applied_logs_enabled: true, applied_metrics_enabled: false })
+		const loggingOnly = connector({
+			logs_enabled: true,
+			applied_logs_enabled: true,
+			applied_metrics_enabled: false,
+		})
 		expect(gcpRemovalList(loggingOnly)).toEqual([])
-		expect(gcpRemovalList(loggingOnly, "all").map((item) => item.name)).toHaveLength(4)
-		expect(gcpRemovalList(connector({ applied_logs_enabled: false, applied_metrics_enabled: false }), "all")).toEqual(
-			[],
-		)
+		expect(Arr.map(gcpRemovalList(loggingOnly, "all"), (item) => item.name)).toHaveLength(4)
+		expect(
+			gcpRemovalList(connector({ applied_logs_enabled: false, applied_metrics_enabled: false }), "all"),
+		).toEqual([])
 	})
 })
 
@@ -175,7 +197,7 @@ describe("gcpAgentPrompt", () => {
 			"gcloud pubsub subscriptions describe maple-018f2b3c4d5e6f708192a3b4 --project=acme-prod",
 		)
 		expect(prompt).toContain("Maple's first metrics read confirms read-only access")
-		expect(prompt.endsWith(`--- maple.tf ---\n${config.trimEnd()}\n`)).toBe(true)
+		expect(Str.endsWith(`--- maple.tf ---\n${Str.trimEnd(config)}\n`)(prompt)).toBe(true)
 	})
 
 	it("says what it takes over and what applying a regenerated file removes", () => {

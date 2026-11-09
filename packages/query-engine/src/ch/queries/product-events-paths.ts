@@ -19,9 +19,9 @@
 
 import * as CH from "@maple-dev/effect-orm/expr"
 import { param, from, fromQuery, inSubquery, table } from "@maple-dev/effect-orm/clickhouse"
-import type { CHQuery } from "@maple-dev/effect-orm/clickhouse"
+import type { CHQuery, ColumnDefs } from "@maple-dev/effect-orm/clickhouse"
 import * as T from "@maple-dev/effect-orm/clickhouse"
-import { Result, Schema } from "effect"
+import { Result, Schema, Array as Arr, String as Str } from "effect"
 import { ProductEvents, orgIdParam } from "../tables"
 import { CHNumber } from "../schema"
 import {
@@ -99,7 +99,7 @@ function validate(opts: ProductEventsPathsOpts): ProductEventsFunnelError | unde
 		})
 	}
 	const anchorName = opts.anchor.kind === "event" ? opts.anchor.eventName : opts.anchor.pagePath
-	if (anchorName.trim() === "") {
+	if (Str.trim(anchorName) === "") {
 		return new ProductEventsFunnelError({
 			reason: "NoSteps",
 			message: "paths need an anchor event or page",
@@ -190,13 +190,17 @@ function pathEventsBranch(opts: ProductEventsPathsOpts, filters: ProductEventsFi
 		.where(($) => {
 			const ts = $.ts as CH.Expr<number>
 			const anchorTs = $.a.anchorTs as CH.Expr<number>
-			const narrowing = [
-				includeCondition($.kind as CH.Expr<string>, include),
-				exclude.length > 0 ? CH.notInList($.name as CH.Expr<string>, exclude) : undefined,
-			].filter((cond): cond is CH.Condition => cond !== undefined)
-			const narrowed = narrowing.reduce<CH.Condition | undefined>(
-				(acc, cond) => (acc ? acc.and(cond) : cond),
+			const narrowing = Arr.filter(
+				[
+					includeCondition($.kind as CH.Expr<string>, include),
+					exclude.length > 0 ? CH.notInList($.name as CH.Expr<string>, exclude) : undefined,
+				],
+				(cond): cond is CH.Condition => cond !== undefined,
+			)
+			const narrowed = Arr.reduce<CH.Condition, CH.Condition | undefined>(
+				narrowing,
 				undefined,
+				(acc, cond) => (acc ? acc.and(cond) : cond),
 			)
 			return [
 				forward ? ts.gte(anchorTs) : ts.lte(anchorTs),
@@ -215,7 +219,7 @@ function pathEventsBranch(opts: ProductEventsPathsOpts, filters: ProductEventsFi
  */
 export function productEventsPathsQuery(
 	opts: ProductEventsPathsOpts,
-): Result.Result<CHQuery<any, ProductEventsPathsOutput, any>, ProductEventsFunnelError> {
+): Result.Result<CHQuery<ColumnDefs, ProductEventsPathsOutput>, ProductEventsFunnelError> {
 	const invalid = validate(opts)
 	if (invalid !== undefined) return Result.fail(invalid)
 	const filters = opts.filters ?? {}
@@ -230,9 +234,7 @@ export function productEventsPathsQuery(
 	const perPerson = fromQuery(pathEventsBranch(opts, filters), "path_events")
 		.select(($) => ({
 			key: $.key,
-			evs: CH.untypedExpr<unknown>(
-				"arraySort(x -> (x.1, x.2), groupArray(tuple(ts, seq, name, isAnchor)))",
-			),
+			evs: CH.untypedExpr("arraySort(x -> (x.1, x.2), groupArray(tuple(ts, seq, name, isAnchor)))"),
 		}))
 		.groupBy("key")
 
@@ -254,7 +256,7 @@ export function productEventsPathsQuery(
 	// have gone on.
 	const edges = fromQuery(sequences, "sequences").select(($) => ({
 		key: $.key,
-		edge: CH.untypedExpr<unknown>(
+		edge: CH.untypedExpr(
 			`arrayJoin(arrayMap(i -> tuple(i, arrayElement(seq, i), if(i < length(seq), arrayElement(seq, i + 1), '')), arrayEnumerate(seq)))`,
 		),
 	}))
@@ -287,14 +289,14 @@ export function productEventsPathsQuery(
 	const ranked = fromQuery(nodeCounts, "node_counts")
 		.select(($) => ({
 			hop: $.hop,
-			head: CH.untypedExpr<unknown>(
+			head: CH.untypedExpr(
 				`arraySlice(arrayReverseSort(x -> x.2, groupArray(tuple(name, n))), 1, ${opts.branches})`,
 			),
 		}))
 		.groupBy("hop")
 	const keptEntries = fromQuery(ranked, "ranked").select(($) => ({
 		hop: $.hop,
-		entry: CH.untypedExpr<unknown>("arrayJoin(head)"),
+		entry: CH.untypedExpr("arrayJoin(head)"),
 	}))
 	const kept = fromQuery(keptEntries, "kept_entries").select(($) => ({
 		hop: $.hop,
@@ -311,8 +313,8 @@ export function productEventsPathsQuery(
 			const hop = $.hop as CH.Expr<number>
 			const fromName = $.fromNode as CH.Expr<string>
 			const toName = $.toNode as CH.Expr<string>
-			const keptFrom = CH.coalesce($.kf.name as CH.Expr<string | null>, CH.lit(""))
-			const keptTo = CH.coalesce($.kt.name as CH.Expr<string | null>, CH.lit(""))
+			const keptFrom = CH.coalesce($.kf.name, CH.lit(""))
+			const keptTo = CH.coalesce($.kt.name, CH.lit(""))
 			return {
 				hop,
 				// Column 0 is the anchor alone, so a first hop's `fromNode` is always named.

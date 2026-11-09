@@ -1,6 +1,6 @@
 import { describe, it } from "@effect/vitest"
 import { strict as assert } from "node:assert"
-import { Cause, Effect, Exit, Layer, Option, Tracer } from "effect"
+import { Cause, Effect, Exit, Layer, Option, Schema, Tracer, Array as Arr, String as Str } from "effect"
 import {
 	FetchHttpClient,
 	HttpClient,
@@ -51,8 +51,9 @@ describe("rawQuery instrumentation", () => {
 			)
 
 			assert.deepStrictEqual(rows, [{ value: 1 }])
-			const span = spans.find((candidate) => candidate.name === "WarehouseExecutor.rawQuery")
-			assert.ok(span)
+			const found = Arr.findFirst(spans, (candidate) => candidate.name === "WarehouseExecutor.rawQuery")
+			assert.ok(Option.isSome(found))
+			const span = found.value
 			assert.strictEqual(span.kind, "client")
 			assert.strictEqual(span.attributes.get("db.system.name"), "clickhouse")
 			assert.strictEqual(span.attributes.get("peer.service"), "chdb")
@@ -95,7 +96,7 @@ describe("rawQuery failures", () => {
 		const error = await run(() =>
 			Effect.succeed(new Response("read-only query endpoint: CREATE is not allowed", { status: 400 })),
 		)
-		assert.ok(error instanceof ReadOnlyQueryError)
+		assert.ok(Schema.is(ReadOnlyQueryError)(error))
 		assert.equal(error.message, "maple query is read-only: CREATE is not allowed")
 	})
 
@@ -110,7 +111,7 @@ describe("rawQuery failures", () => {
 				}),
 			),
 		)
-		assert.ok(error instanceof LocalServerUnreachableError)
+		assert.ok(Schema.is(LocalServerUnreachableError)(error))
 		assert.match(error.message, /http:\/\/127\.0\.0\.1:4318/)
 		assert.match(error.hint ?? "", /MAPLE_LOCAL_URL/)
 	})
@@ -202,12 +203,12 @@ describe("assertKnownService", () => {
 												request.body._tag === "Uint8Array"
 													? new TextDecoder().decode(request.body.body)
 													: ""
-											const rows = body.includes("throughput")
+											const rows = Str.includes("throughput")(body)
 												? [overviewRow("api"), overviewRow("worker")]
-												: body.includes("spanCount")
+												: Str.includes("spanCount")(body)
 													? [
 															{
-																spanCount: body.includes("'checkout'")
+																spanCount: Str.includes("'checkout'")(body)
 																	? presentSpans
 																	: 0,
 															},
@@ -236,7 +237,7 @@ describe("assertKnownService", () => {
 		const exit = await run(0)
 		assert.ok(Exit.isFailure(exit))
 		const error = Cause.findErrorOption(exit.cause)
-		assert.ok(Option.isSome(error) && error.value instanceof CliNotFoundError)
+		assert.ok(Option.isSome(error) && Schema.is(CliNotFoundError)(error.value))
 		assert.strictEqual(error.value.message, "no telemetry for 'checkout' in the last hour")
 		assert.match(error.value.hint ?? "", /known services: (api, worker|worker, api)/)
 	})
@@ -256,9 +257,9 @@ describe("serviceMap in local mode", () => {
 				// SAFETY: the local executor always posts a `{ sql }` JSON body.
 				const sql = (JSON.parse(raw) as { sql?: string }).sql ?? ""
 				sqls.push(sql)
-				const rows = sql.includes("service_map_db_edges_hourly")
+				const rows = Str.includes("service_map_db_edges_hourly")(sql)
 					? [{ sourceService: "api", dbSystem: "postgresql", dbNamespace: "shop", ...STATS }]
-					: sql.includes("service_external_edges_hourly")
+					: Str.includes("service_external_edges_hourly")(sql)
 						? [
 								{
 									sourceService: "api",
@@ -296,11 +297,16 @@ describe("serviceMap in local mode", () => {
 			const { result, sqls } = yield* run()
 			assert.strictEqual(result.edges.length, 2)
 			assert.deepStrictEqual(
-				result.databases?.map((d) => `${d.sourceService} -> ${d.dbSystem}/${d.dbNamespace}`),
+				result.databases === undefined
+					? undefined
+					: Arr.map(
+							result.databases,
+							(d) => `${d.sourceService} -> ${d.dbSystem}/${d.dbNamespace}`,
+						),
 				["api -> postgresql/shop"],
 			)
 			assert.strictEqual(result.external, undefined)
-			assert.ok(!sqls.some((sql) => sql.includes("service_external_edges_hourly")))
+			assert.ok(!Arr.some(sqls, (sql) => Str.includes("service_external_edges_hourly")(sql)))
 		}),
 	)
 
@@ -308,17 +314,20 @@ describe("serviceMap in local mode", () => {
 		Effect.gen(function* () {
 			const { result, sqls } = yield* run("api")
 			// Filtering a capped org-wide list would drop a quiet service's inbound edges.
-			const edgesSql = sqls.find((sql) => sql.includes("service_map_edges_hourly"))
-			assert.ok(edgesSql)
+			const foundSql = Arr.findFirst(sqls, (sql) => Str.includes("service_map_edges_hourly")(sql))
+			assert.ok(Option.isSome(foundSql))
+			const edgesSql = foundSql.value
 			assert.match(edgesSql, /SourceService = 'api' OR [\w.]*TargetService = 'api'/)
 			assert.match(edgesSql, /p\.ServiceName = 'api' OR c\.ServiceName = 'api'/)
 			assert.deepStrictEqual(
-				result.edges.map((e) => `${e.sourceService} -> ${e.targetService}`),
+				Arr.map(result.edges, (e) => `${e.sourceService} -> ${e.targetService}`),
 				["web -> api", "api -> billing"],
 			)
 			assert.strictEqual(result.databases?.length, 1)
 			assert.deepStrictEqual(
-				result.external?.map((e) => `${e.targetType} ${e.targetName}`),
+				result.external === undefined
+					? undefined
+					: Arr.map(result.external, (e) => `${e.targetType} ${e.targetName}`),
 				["http api.stripe.com"],
 			)
 		}),

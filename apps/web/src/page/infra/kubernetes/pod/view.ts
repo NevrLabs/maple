@@ -2,15 +2,15 @@ import { severityLevel } from "../../../../components/infra/format"
 import { formatPercent } from "@maple/ui/lib/format"
 import { AsyncData, Submodel } from "foldkit"
 import type { Html, HtmlBuilder } from "foldkit/html"
-import { ResolveThemeColors } from "../../../../charts/theme-colors"
-import { errorState } from "../../../../ui/error-state"
-import { segmentedSelect } from "../../../../ui/segmented-select"
+import { ResolveThemeColors } from "@maple/views/charts/theme-colors"
+import { errorState } from "@maple/views/ui/error-state"
+import { segmentedSelect } from "@maple/views/ui/segmented-select"
 import type { PageViewInputs } from "../../../contract"
 import { dashboardPage } from "../../../kit/dashboard-page"
 import * as Frame from "../../kit/frame"
 import { heroChip } from "../../kit/hero-chip"
 import { k8sChart } from "../../kit/k8s-chart"
-import { INFRA_CHART_TOKENS } from "../../../../charts/infra-metric-series"
+import { INFRA_CHART_TOKENS } from "@maple/views/charts/infra-metric-series"
 import { noMetricsMessage, pageHeroParts } from "../../kit/page-parts"
 import {
 	metaRow,
@@ -24,6 +24,8 @@ import { podContainerRestarts, podRestartsStat } from "../pod-restarts-view"
 import { Message } from "./message"
 import type { Model } from "./model"
 import { DEFAULT_PRESET } from "./update"
+import { String as Str } from "effect"
+import { typography } from "@maple/views/ui/typography"
 
 // `PodDetailPage` in `KubernetesShell`.
 
@@ -105,7 +107,7 @@ export const view = Submodel.defineView<Model, Message, PageViewInputs>((model, 
 	const metric = model.metric
 	const namespace = model.search.namespace
 	const hero = pageHeroParts(h, {
-		title: h.span([h.Class("font-mono")], [model.podName]),
+		title: typography(h, { mono: true }, [model.podName]),
 		description: "Pod metrics from the kubelet stats receiver; restarts from the cluster receiver.",
 		meta: [
 			...(namespace ? [heroChip(h, ["ns ", namespace])] : []),
@@ -152,7 +154,8 @@ export const view = Submodel.defineView<Model, Message, PageViewInputs>((model, 
 										chartId: `pod-${metric}`,
 										seriesLabel: POD_METRIC_LABELS.get(metric) ?? metric,
 										showThreshold:
-											metric.startsWith("cpu_") || metric.startsWith("memory_"),
+											Str.startsWith("cpu_")(metric) ||
+											Str.startsWith("memory_")(metric),
 										theme: model.themeColors,
 										runtime: model.chartRuntime,
 										timeZone: inputs.context.timeZone,

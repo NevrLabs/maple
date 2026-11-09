@@ -1,5 +1,5 @@
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api"
-import { Schema } from "effect"
+import { Schema, String as Str } from "effect"
 import { AiAgentSpanSchema, AiGenAiValuesSchema } from "../gen-ai"
 import { TinybirdDateTime } from "../query-engine"
 import { BucketSeconds } from "./query-engine"
@@ -206,7 +206,7 @@ export const AI_SESSION_DETAILS_MAX_SESSIONS = 100
 export const AI_SESSION_DETAILS_MAX_EXTENT_MS = 31 * 24 * 60 * 60_000
 
 /** `TinybirdDateTime` is UTC without a zone marker. */
-const tinybirdDateTimeMs = (value: string): number => Date.parse(`${value.replace(" ", "T")}Z`)
+const tinybirdDateTimeMs = (value: string): number => Date.parse(`${Str.replace(" ", "T")(value)}Z`)
 
 export class ListAiSessionDetailsRequest extends Schema.Class<ListAiSessionDetailsRequest>(
 	"ListAiSessionDetailsRequest",
@@ -451,13 +451,10 @@ export const AiSessionTokenTotals = Schema.Struct({
 export type AiSessionTokenTotals = Schema.Schema.Type<typeof AiSessionTokenTotals>
 
 /**
- * How a session's usage was reported, which decides which spans' figures the
- * totals sum. `per-call`: the model-call spans carry usage, and the totals are
- * theirs alone — an agent span that also carries a roll-up of its children is
- * not added on top. `roll-up`: no model-call span reported anything, so the
- * totals are what the wrapping spans reported. `none`: nothing did.
+ * How a session's usage was reported. `per-call`: the model calls carry it (the
+ * ingest gateway stamps usage on them alone). `none`: nothing did.
  */
-export const AiSessionTokenReporting = Schema.Literals(["per-call", "roll-up", "none"])
+export const AiSessionTokenReporting = Schema.Literals(["per-call", "none"])
 export type AiSessionTokenReporting = Schema.Schema.Type<typeof AiSessionTokenReporting>
 
 /**

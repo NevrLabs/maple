@@ -3,22 +3,25 @@ import { externalUrl, pullRequestUrl } from "../../../components/code-review/ci/
 import { formatDuration } from "@maple/ui/lib/format"
 import { TONE_TEXT } from "@maple/ui/lib/tone"
 import { cn } from "@maple/ui/lib/utils"
-import { Option } from "effect"
+import { Option, Array as Arr } from "effect"
 import { AsyncData } from "foldkit"
 import type { Html, HtmlBuilder } from "foldkit/html"
-import { linkButton } from "../../../ui/button"
-import { textLink } from "../../../ui/text-link"
-import { errorState } from "../../../ui/error-state"
-import { icon } from "../../../ui/icon"
-import { listFooter, loadingMoreRow } from "../../../ui/list-footer"
-import { panel } from "../../../ui/panel"
-import { skeletonList } from "../../../ui/skeleton"
-import { table, tableBody, tableCell, tableHead, tableHeader, tableRow } from "../../../ui/table"
-import { truncatedId } from "../../../ui/truncated-id"
-import { nothingInWindow } from "../../kit/nothing-in-window"
+import { linkButton } from "@maple/views/ui/button"
+import { textLink } from "@maple/views/ui/text-link"
+import { errorState } from "@maple/views/ui/error-state"
+import { icon } from "@maple/views/ui/icon"
+import { listFooter, loadingMoreRow } from "@maple/views/ui/list-footer"
+import { panel } from "@maple/views/ui/panel"
+import { runsTableSkeleton } from "../kit/skeletons"
+import { table, tableBody, tableCell, tableHead, tableHeader, tableRow } from "@maple/views/ui/table"
+import { truncatedId } from "@maple/views/ui/truncated-id"
 import { ciResultBadge, traceLink } from "../kit/parts"
-import { relativeTime } from "../../kit/relative-time"
+import { filteredEmpty } from "@maple/views/ui/signal-empty-state"
+import { listRelativeTime } from "../../kit/relative-time"
 import { Message, type Model } from "./model"
+import { typography } from "@maple/views/ui/typography"
+import { emptyFrameClass } from "@maple/views/ui/empty"
+import { hstack, vstack } from "@maple/views/ui/stack"
 
 // `CiRunsList`, `RunRows` and the paging footers.
 
@@ -31,8 +34,14 @@ const FAILED_JOBS_SHOWN = 3
 const dot = (h: H) => h.span([h.AriaHidden(true)], ["·"])
 
 const runMeta = (h: H, run: CodeReviewCiRun, prUrl: string | null): Html =>
-	h.div(
-		[h.Class("mt-0.5 flex min-w-0 flex-wrap items-center gap-x-1.5 text-xs text-muted-foreground")],
+	hstack(
+		h,
+		{
+			align: "center",
+			wrap: true,
+			shrink: true,
+			className: "mt-0.5 gap-x-1.5 text-xs text-muted-foreground",
+		},
 		[
 			h.span([h.Class("max-w-full truncate"), h.Title(run.repository)], [run.repository]),
 			...(run.branch
@@ -71,7 +80,7 @@ const runMeta = (h: H, run: CodeReviewCiRun, prUrl: string | null): Html =>
 									["#", String(run.pullRequest)],
 								),
 					]),
-			...(run.actor ? [dot(h), h.span([h.Class("truncate")], [run.actor])] : []),
+			...(run.actor ? [dot(h), typography(h, { truncate: true }, [run.actor])] : []),
 			h.span([h.Class("sm:hidden")], ["· ", formatDuration(run.durationMs)]),
 		],
 	)
@@ -81,43 +90,49 @@ const failedJobs = (h: H, run: CodeReviewCiRun): ReadonlyArray<Html> => {
 	const hidden = run.failedJobs.length - failed.length
 	if (failed.length === 0) return []
 	return [
-		h.ul(
-			[h.Class("mt-1 flex flex-col gap-0.5 text-xs")],
-			[
-				...failed.map((job) => {
-					const jobUrl = externalUrl(job.url)
-					return h.li(
-						[h.Key(job.job), h.Class("flex min-w-0 gap-1.5")],
-						[
-							jobUrl === null
-								? h.span([h.Class(cn("shrink-0 font-medium", TONE_TEXT.crit))], [job.job])
-								: h.a(
-										[
-											h.Href(jobUrl),
-											h.Attribute("target", "_blank"),
-											h.Attribute("rel", "noreferrer"),
-											h.Class(
-												cn("shrink-0 font-medium hover:underline active:underline", TONE_TEXT.crit),
+		vstack(h, { gap: "0.5", as: "ul", className: "mt-1 text-xs" }, [
+			...Arr.map(failed, (job) => {
+				const jobUrl = externalUrl(job.url)
+				return hstack(
+					h,
+					{ gap: "1.5", align: "stretch", shrink: true, as: "li", attributes: [h.Key(job.job)] },
+					[
+						jobUrl === null
+							? h.span([h.Class(cn("shrink-0 font-medium", TONE_TEXT.crit))], [job.job])
+							: h.a(
+									[
+										h.Href(jobUrl),
+										h.Attribute("target", "_blank"),
+										h.Attribute("rel", "noreferrer"),
+										h.Class(
+											cn(
+												"shrink-0 font-medium hover:underline active:underline",
+												TONE_TEXT.crit,
 											),
-										],
-										[job.job],
-									),
-							...(job.reason
-								? [
-										h.span(
-											[h.Class("truncate text-muted-foreground"), h.Title(job.reason)],
-											[job.reason],
 										),
-									]
-								: []),
-						],
-					)
-				}),
-				...(hidden > 0
-					? [h.li([h.Class("text-muted-foreground")], ["+", String(hidden), " more failed"])]
-					: []),
-			],
-		),
+									],
+									[job.job],
+								),
+						...(job.reason
+							? [
+									typography(
+										h,
+										{
+											tone: "muted",
+											truncate: true,
+											attributes: [h.Title(job.reason)],
+										},
+										[job.reason],
+									),
+								]
+							: []),
+					],
+				)
+			}),
+			...(hidden > 0
+				? [h.li([h.Class("text-muted-foreground")], ["+", String(hidden), " more failed"])]
+				: []),
+		]),
 	]
 }
 
@@ -135,7 +150,11 @@ const runRow = (h: H, run: CodeReviewCiRun, time: TimeContext): Html => {
 			tableCell(
 				h,
 				[
-					h.div([h.Class("truncate font-medium"), h.Title(run.pipeline)], [run.pipeline]),
+					typography(
+						h,
+						{ weight: "medium", truncate: true, as: "div", attributes: [h.Title(run.pipeline)] },
+						[run.pipeline],
+					),
 					runMeta(h, run, prUrl),
 					...failedJobs(h, run),
 					...traceLink(h, run, time.nowMs, "mt-1 -ml-2 sm:hidden"),
@@ -149,36 +168,33 @@ const runRow = (h: H, run: CodeReviewCiRun, time: TimeContext): Html => {
 			),
 			tableCell(
 				h,
-				[relativeTime(h, { tooltip: "title", value: run.startedAt, variant: "short", ...time })],
+				[listRelativeTime(h, { value: run.startedAt, variant: "short", ...time })],
 				"hidden px-3 text-right align-top text-muted-foreground tabular-nums md:table-cell",
 			),
 			tableCell(
 				h,
 				[
-					h.span(
-						[h.Class("inline-flex items-center justify-end gap-1")],
-						[
-							...traceLink(h, run, time.nowMs),
-							...(runUrl === null
-								? []
-								: [
-										linkButton(
-											h,
-											{
-												variant: "ghost",
-												size: "xs",
-												href: runUrl,
-												attributes: [
-													h.Attribute("target", "_blank"),
-													h.Attribute("rel", "noreferrer"),
-													h.AriaLabel("Open the run on GitHub"),
-												],
-											},
-											["GitHub", icon(h, "ExternalLinkIcon")],
-										),
-									]),
-						],
-					),
+					hstack(h, { gap: "1", align: "center", justify: "end", inline: true, as: "span" }, [
+						...traceLink(h, run, time.nowMs),
+						...(runUrl === null
+							? []
+							: [
+									linkButton(
+										h,
+										{
+											variant: "ghost",
+											size: "xs",
+											href: runUrl,
+											attributes: [
+												h.Attribute("target", "_blank"),
+												h.Attribute("rel", "noreferrer"),
+												h.AriaLabel("Open the run on GitHub"),
+											],
+										},
+										["GitHub", icon(h, "ExternalLinkIcon")],
+									),
+								]),
+					]),
 				],
 				"hidden px-4 text-right align-top sm:table-cell",
 			),
@@ -217,7 +233,7 @@ const footer = (h: H, model: Model, firstNext: string | null): Html | null => {
 
 export const runsList = (h: H, model: Model, time: TimeContext, canClear: boolean): Html =>
 	AsyncData.matchData(model.runs.data, {
-		onEmpty: () => skeletonList(h, { rows: 6, rowClassName: "h-14", gap: "2" }),
+		onEmpty: () => runsTableSkeleton(h),
 		onFailure: (failure) =>
 			errorState(h, {
 				failure,
@@ -226,12 +242,13 @@ export const runsList = (h: H, model: Model, time: TimeContext, canClear: boolea
 			}),
 		onData: (response) => {
 			if (response.runs.length === 0)
-				return nothingInWindow(h, {
-					title: "No runs match",
+				return filteredEmpty(h, {
+					noun: "runs",
 					description: "No run in this window has this result or branch.",
+					className: emptyFrameClass("dashed"),
 					onClear: canClear ? Message.ClickedClearRunFilters() : undefined,
 				})
-			const rows = [...response.runs, ...model.cursors.flatMap((cursor) => runsOf(model, cursor))]
+			const rows = [...response.runs, ...Arr.flatMap(model.cursors, (cursor) => runsOf(model, cursor))]
 			const more = footer(h, model, response.nextCursor)
 			return panel(h, {}, [
 				table(h, { size: "sm", className: "table-fixed" }, [
@@ -262,7 +279,7 @@ export const runsList = (h: H, model: Model, time: TimeContext, canClear: boolea
 					),
 					tableBody(
 						h,
-						rows.map((run) => runRow(h, run, time)),
+						Arr.map(rows, (run) => runRow(h, run, time)),
 					),
 				]),
 				...(more === null ? [] : [more]),

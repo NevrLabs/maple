@@ -1,3 +1,4 @@
+import * as Policy from "@maple/domain/policy"
 import { StatusPageComponentId, StatusPageIncidentId, StatusPageIncidentKind } from "@maple/domain"
 import {
 	StatusPageConfig,
@@ -18,10 +19,10 @@ import {
 } from "@maple/domain/status-page"
 import { Schema } from "effect"
 import { defineMessageUnion } from "foldkit/message"
-import { LoadFailure } from "../../../data/load-failure"
-import * as CopyButton from "../../../ui/copy-button"
-import * as Dialog from "../../../ui/dialog"
-import * as Menu from "../../../ui/menu"
+import { LoadFailure } from "@maple/views/data/load-failure"
+import * as CopyButton from "@maple/views/ui/copy-button"
+import * as Dialog from "@maple/views/ui/dialog"
+import * as Menu from "@maple/views/ui/menu"
 import { ComponentTextField, IncidentTextField, SettingsTextField, ThemeColorField } from "../shared/form"
 import { PickerMessage } from "../shared/picker"
 import { PreviewScheme, PreviewSelection } from "../shared/preview"
@@ -36,7 +37,7 @@ export const Message = defineMessageUnion({
 	CompletedFetchComponents: { key: Schema.String, result: outcome(Schema.Array(V2StatusPageComponent)) },
 	CompletedFetchIncidents: { key: Schema.String, result: outcome(Schema.Array(V2StatusPageIncident)) },
 	CompletedFetchMonitors: { key: Schema.String, result: outcome(Schema.Array(V2UptimeMonitor)) },
-	CompletedFetchSession: { orgId: Schema.String, isAdmin: Schema.Boolean },
+	CompletedFetchSession: { orgId: Schema.String, grants: Schema.Array(Policy.PermissionName) },
 	ClickedRetry: {},
 	GotPageMenuMessage: { message: Menu.Message },
 	CompletedFocus: {},
@@ -82,7 +83,8 @@ export const Message = defineMessageUnion({
 	ChangedUpdateField: { field: UpdateTextField, value: Schema.String },
 	SubmittedUpdate: {},
 	ClickedCancelUpdate: {},
-	CompletedPostUpdate: { result: outcome(V2StatusPageIncident) },
+	/** `generation`: which post answered; the form may have moved on to another one. */
+	CompletedPostUpdate: { generation: Schema.Number, result: outcome(V2StatusPageIncident) },
 	ClickedPublishIncident: { incidentId: StatusPageIncidentId },
 	CompletedPublishIncident: { incidentId: StatusPageIncidentId, result: outcome(V2StatusPageIncident) },
 	// Live

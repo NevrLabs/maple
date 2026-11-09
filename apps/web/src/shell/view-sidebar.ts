@@ -1,16 +1,15 @@
 import { cn } from "@maple/ui/lib/utils"
 import { selfhostIdentity } from "../platform/selfhost-session"
-import { ROW_LANE } from "@maple/ui/styles/ui/list-row"
 import { MAPLE_REGION_LABELS } from "@maple/domain/organization-regions"
 import { initialsFrom } from "@maple/ui/lib/initials"
 import { hasMultipleRegions } from "../lib/region"
-import { Option, Record } from "effect"
+import { Option, Record, Array as Arr, String as Str } from "effect"
 import { AsyncData } from "foldkit"
 import type { ChildAttribute, Html, HtmlBuilder } from "foldkit/html"
-import { warmAvatarTone } from "../ui/avatar-tone"
-import { avatarFallback, badge, kbd } from "../ui/display"
-import { menuTriggerAttributes } from "../ui/dropdown-menu"
-import { icon } from "../ui/icon"
+import { warmAvatarTone } from "@maple/views/ui/avatar-tone"
+import { avatarFallback, badge, kbd } from "@maple/views/ui/display"
+import { menuTriggerAttributes } from "@maple/views/ui/dropdown-menu"
+import { icon } from "@maple/views/ui/icon"
 import {
 	sidebarFooter,
 	sidebarHeader,
@@ -18,15 +17,15 @@ import {
 	sidebarMenuBadge,
 	sidebarMenuButton,
 	sidebarMenuItem,
-} from "../ui/sidebar"
+} from "@maple/views/ui/sidebar"
 import { isSameMenu, triggerIdOf } from "./menus"
 import { Menu, Message } from "./message"
 import type { Model, ShellClerk } from "./model"
 import * as ClerkOrgSwitcherView from "./clerk-org-switcher-view"
 import { orgAvatar } from "./clerk-org-switcher-view"
-
-/** The selected row's rail: a 2px lane every row reserves, painted only when active. */
-export const ACTIVE_RAIL = `${ROW_LANE} data-[active=true]:rounded-l-none data-[active=true]:before:bg-sidebar-primary data-[active=true]:text-sidebar-primary`
+import { typography } from "@maple/views/ui/typography"
+import { identityLabel } from "@maple/views/ui/identity-label"
+import { hstack } from "@maple/views/ui/stack"
 
 export const GROUP_LABEL = "h-6 text-muted-foreground"
 
@@ -67,29 +66,28 @@ const orgSwitcher = (h: HtmlBuilder<Message>, model: Model): Html =>
 					attributes: triggerFor(h, model, Menu.Org()),
 				},
 				[
-					h.div(
-						[
-							h.Class(
-								"flex size-8 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground",
-							),
-						],
+					hstack(
+						h,
+						{
+							align: "center",
+							justify: "center",
+							className: "size-8 shrink-0 rounded-md bg-muted text-muted-foreground",
+						},
 						[icon(h, "ServerIcon", { size: 16 })],
 					),
-					h.div(
-						[h.Class("grid flex-1 text-left text-sm leading-tight")],
-						[
-							h.span([h.Class("truncate font-medium")], ["Self Hosted"]),
-							...Option.match(pinnedNamespaceOf(model), {
-								onNone: () => [],
-								onSome: (namespace) => [
-									h.span(
-										[h.Class("truncate text-xs font-medium text-primary")],
-										[namespace],
-									),
-								],
-							}),
-						],
-					),
+					identityLabel(h, [
+						typography(h, { weight: "medium", truncate: true }, ["Self Hosted"]),
+						...Option.match(pinnedNamespaceOf(model), {
+							onNone: () => [],
+							onSome: (namespace) => [
+								typography(
+									h,
+									{ size: "xs", tone: "primary", weight: "medium", truncate: true },
+									[namespace],
+								),
+							],
+						}),
+					]),
 					icon(h, "ChevronExpandYIcon", { size: 16, className: "ml-auto" }),
 				],
 			),
@@ -168,38 +166,34 @@ const clerkOrgSwitcher = (h: HtmlBuilder<Message>, model: Model, clerk: ShellCle
 											onSome: (org) => org.imageUrl,
 										}),
 									),
-									h.div(
-										[h.Class("grid flex-1 text-left text-sm leading-tight")],
-										[
-											h.span(
-												[h.Class("truncate font-medium"), h.Title(orgName)],
-												[orgName],
-											),
-											Option.match(pinned, {
-												onNone: () =>
-													h.span(
-														[h.Class("truncate text-xs text-muted-foreground")],
-														regionSuffix === ""
-															? ["Organization"]
-															: ["Organization", regionSuffix],
-													),
-												onSome: (namespace) =>
-													h.span(
-														[h.Class("truncate text-xs")],
-														[
-															h.span(
-																[h.Class("font-medium text-primary")],
-																[namespace],
-															),
-															h.span(
-																[h.Class("text-muted-foreground")],
-																[regionSuffix],
-															),
-														],
-													),
-											}),
-										],
-									),
+									identityLabel(h, [
+										typography(
+											h,
+											{
+												weight: "medium",
+												truncate: true,
+												attributes: [h.Title(orgName)],
+											},
+											[orgName],
+										),
+										Option.match(pinned, {
+											onNone: () =>
+												typography(
+													h,
+													{ size: "xs", tone: "muted", truncate: true },
+													regionSuffix === ""
+														? ["Organization"]
+														: ["Organization", regionSuffix],
+												),
+											onSome: (namespace) =>
+												typography(h, { size: "xs", truncate: true }, [
+													typography(h, { tone: "primary", weight: "medium" }, [
+														namespace,
+													]),
+													typography(h, { tone: "muted" }, [regionSuffix]),
+												]),
+										}),
+									]),
 									icon(h, "ChevronExpandYIcon", { size: 16, className: "ml-auto" }),
 								],
 							),
@@ -238,11 +232,11 @@ const footerNavRow = (
 		sidebarMenuButton(
 			h,
 			{
-				className: ACTIVE_RAIL,
-				isActive: [
-					options.href,
-					...(options.alsoActive === undefined ? [] : [options.alsoActive]),
-				].some((path) => currentPath === path || currentPath.startsWith(`${path}/`)),
+				rail: "active",
+				isActive: Arr.some(
+					[options.href, ...(options.alsoActive === undefined ? [] : [options.alsoActive])],
+					(path) => currentPath === path || Str.startsWith(`${path}/`)(currentPath),
+				),
 				link: { href: options.href, currentPath },
 				hasTooltip: true,
 				attributes: tip(options.title),

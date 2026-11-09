@@ -15,6 +15,8 @@ import {
 	Schema,
 	SchemaGetter,
 	Semaphore,
+	Array as Arr,
+	String as Str,
 } from "effect"
 import {
 	INVESTIGATION_PROGRESS_STEPS,
@@ -55,7 +57,7 @@ const SALIENT_KEYS = [
 ] as const
 
 const Scalar = Schema.Union([Schema.String, Schema.Finite, Schema.Boolean])
-const scalarText = (value: typeof Scalar.Type): string => String(value).trim()
+const scalarText = (value: typeof Scalar.Type): string => Str.trim(String(value))
 
 /** An argument as one line: a scalar as itself, a list by its first item and a count (`a.ts +2`). */
 const ArgText = Schema.Union([Scalar, Schema.NonEmptyArray(Scalar)]).pipe(
@@ -71,13 +73,13 @@ const ArgText = Schema.Union([Scalar, Schema.NonEmptyArray(Scalar)]).pipe(
 const decodeArg = Schema.decodeUnknownOption(ArgText)
 
 const clamp = (value: string): string => {
-	const line = value.split("\n")[0]!.trim()
-	return line.length > ARG_MAX ? `${line.slice(0, ARG_MAX - 1).trimEnd()}…` : line
+	const line = Str.trim(Str.split("\n")(value)[0])
+	return line.length > ARG_MAX ? `${Str.trimEnd(Str.slice(0, ARG_MAX - 1)(line))}…` : line
 }
 
 /** The one argument worth showing, or nothing: a label padded with a time bound reads as detail while carrying none. */
 const salientArg = (input: ToolCallInput): string | null =>
-	Option.match(Option.firstSomeOf(SALIENT_KEYS.map((key) => decodeArg(input[key]))), {
+	Option.match(Option.firstSomeOf(Arr.map(SALIENT_KEYS, (key) => decodeArg(input[key]))), {
 		onNone: () => null,
 		onSome: clamp,
 	})
@@ -86,15 +88,25 @@ const salientArg = (input: ToolCallInput): string | null =>
 const ACRONYMS = new Set(["sql", "id", "api", "mcp"])
 
 const word = (raw: string, first: boolean): string =>
-	ACRONYMS.has(raw) ? raw.toUpperCase() : first ? `${raw.charAt(0).toUpperCase()}${raw.slice(1)}` : raw
+	ACRONYMS.has(raw)
+		? Str.toUpperCase(raw)
+		: first
+			? `${Str.toUpperCase(Str.slice(0, 1)(raw))}${Str.slice(1)(raw)}`
+			: raw
 
 /**
  * A tool call as a line of English, derived from the verb-first snake-case tool name rather than
  * mapped from it: a map over ~47 tools goes stale the first time one is added and nobody notices.
  */
 export const stepLabel = (tool: string, input: ToolCallInput): string => {
-	const words = tool.split("_").filter((part) => part.length > 0)
-	const phrase = words.length === 0 ? tool : words.map((part, index) => word(part, index === 0)).join(" ")
+	const words = Arr.filter(Str.split("_")(tool), (part) => part.length > 0)
+	const phrase =
+		words.length === 0
+			? tool
+			: Arr.join(
+					Arr.map(words, (part, index) => word(part, index === 0)),
+					" ",
+				)
 	const arg = salientArg(input)
 	return arg === null ? phrase : `${phrase} · ${arg}`
 }
@@ -106,9 +118,9 @@ export interface ProgressFeed {
 	readonly flush: Effect.Effect<void>
 	/** Stop writing, waiting out a write in flight. Steps still queue, for a `resume`. */
 	readonly pause: Effect.Effect<void>
-	/** Write again after a `pause`, as when the report it made way for was refused. */
+	/** Write again after a `pause`, as when the report it made way for was refused. A no-op once closed. */
 	readonly resume: Effect.Effect<void>
-	/** Stop the feed for good, waiting out a write in flight. Safe to call twice. */
+	/** Stop the feed for good, waiting out a write in flight. Safe to call twice; final. */
 	readonly close: Effect.Effect<void>
 }
 
@@ -117,6 +129,9 @@ interface ToolCall {
 	readonly input: ToolCallInput
 	readonly at: number
 }
+
+/** Whether the feed writes. `Closed` is final: its writer fiber is gone, so nothing resumes it. */
+type FeedPhase = "Open" | "Paused" | "Closed"
 
 interface FeedState {
 	readonly stepCount: number
@@ -138,7 +153,7 @@ export const makeProgressFeed = Effect.fnUntraced(function* (options: {
 	const calls = yield* Queue.unbounded<ToolCall>()
 	const state = yield* Ref.make<FeedState>({ stepCount: 0, steps: [], dirty: false })
 	const permit = yield* Semaphore.make(1)
-	const open = yield* Ref.make(true)
+	const phase = yield* Ref.make<FeedPhase>("Open")
 
 	const absorb = (batch: ReadonlyArray<ToolCall>) =>
 		Ref.update(state, (current) =>
@@ -148,7 +163,7 @@ export const makeProgressFeed = Effect.fnUntraced(function* (options: {
 						stepCount: current.stepCount + batch.length,
 						steps: [
 							...current.steps,
-							...batch.map((call) => ({
+							...Arr.map(batch, (call) => ({
 								tool: call.tool,
 								label: options.label(call.tool, call.input),
 								at: call.at,
@@ -162,7 +177,7 @@ export const makeProgressFeed = Effect.fnUntraced(function* (options: {
 	// timeout, so a hung request cannot hold the permit (and the report behind it) for long.
 	const write = Effect.uninterruptibleMask((restore) =>
 		Effect.gen(function* () {
-			if (!(yield* Ref.get(open))) return
+			if ((yield* Ref.get(phase)) !== "Open") return
 			yield* Queue.clear(calls).pipe(Effect.flatMap(absorb))
 			const current = yield* Ref.get(state)
 			if (!current.dirty) return
@@ -194,17 +209,20 @@ export const makeProgressFeed = Effect.fnUntraced(function* (options: {
 		Effect.all([first, beat], { concurrency: "unbounded", discard: true }),
 	)
 
-	// The flag first, so a write still queued for the permit gives way at once; then the permit,
+	// The phase first, so a write still queued for the permit gives way at once; then the permit,
 	// so the one write in flight (bounded by its timeout) finishes before anything follows.
-	const pause = Ref.set(open, false).pipe(Effect.andThen(permit.withPermits(1)(Effect.void)))
+	const stop = (next: Exclude<FeedPhase, "Open">) =>
+		Ref.update(phase, (current) => (current === "Closed" ? current : next)).pipe(
+			Effect.andThen(permit.withPermits(1)(Effect.void)),
+		)
 
 	return {
 		step: (tool, input) => {
 			Queue.offerUnsafe(calls, { tool, input, at: clock.currentTimeMillisUnsafe() })
 		},
 		flush: write,
-		pause,
-		resume: Ref.set(open, true),
-		close: pause.pipe(Effect.andThen(Fiber.interrupt(fiber))),
+		pause: stop("Paused"),
+		resume: Ref.update(phase, (current) => (current === "Paused" ? "Open" : current)),
+		close: stop("Closed").pipe(Effect.andThen(Fiber.interrupt(fiber))),
 	} satisfies ProgressFeed
 })

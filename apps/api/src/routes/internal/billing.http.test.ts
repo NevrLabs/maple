@@ -1,7 +1,7 @@
 import { assert, describe, it } from "@effect/vitest"
 import { BillingCustomerResolver } from "@maple/backend/services/billing/BillingCustomerResolver"
 import { BillingOrgService } from "@maple/backend/services/billing/BillingOrgService"
-import { ConfigProvider, Context, Effect, Layer, Option, Schema } from "effect"
+import { ConfigProvider, Context, Effect, Layer, Schema, Array as Arr } from "effect"
 import { FetchHttpClient, HttpRouter } from "effect/http"
 import { HttpApi, HttpApiBuilder } from "effect/http-api"
 import {
@@ -108,7 +108,7 @@ describe("AutumnClient.updateCustomerBillingControls", () => {
 	it("uses Autumn's canonical customer update route and v2.3 wire shape", async () => {
 		let request: { readonly url: string; readonly init?: RequestInit } | undefined
 		const fetch = (async (input, init) => {
-			request = { url: String(input), init }
+			request = { url: new Request(input).url, init }
 			return new Response(JSON.stringify({ id: ORG }), { status: 200 })
 		}) as typeof globalThis.fetch
 
@@ -216,7 +216,7 @@ describe("AutumnClient.updateCustomerName", () => {
 	it("renames the customer through customers.update", async () => {
 		let request: { readonly url: string; readonly body: string } | undefined
 		const fetch = (async (input, init) => {
-			request = { url: String(input), body: await new Response(init?.body).text() }
+			request = { url: new Request(input).url, body: await new Response(init?.body).text() }
 			return new Response(JSON.stringify({ id: ORG }), { status: 200 })
 		}) as typeof globalThis.fetch
 
@@ -418,7 +418,7 @@ describe("sumDailySpend", () => {
 			series([day("2026-10-01", 0.5), day("2026-10-02", 4, 1)]),
 		])
 		assert.deepStrictEqual(
-			total.days.map((d) => [d.date, d.logsGB, d.tracesGB, d.browserSessions, d.productEvents]),
+			Arr.map(total.days, (d) => [d.date, d.logsGB, d.tracesGB, d.browserSessions, d.productEvents]),
 			[
 				["2026-10-01", 1.5, 2, 4, 3],
 				["2026-10-02", 6, 2, 4, 1],
@@ -621,7 +621,7 @@ describe("billing writes over HTTP", () => {
 		.middleware(ApiUnexpectedErrors) {}
 
 	const decodeTenant = Schema.decodeUnknownSync(CurrentTenant.TenantSchema)
-	const PAYER_ORG = Schema.decodeUnknownSync(OrgId)("org_billing_payer")
+	const PAYER_ORG = Schema.decodeSync(OrgId)("org_billing_payer")
 	const tenantWithRoles = (roles: ReadonlyArray<string>) =>
 		decodeTenant({ orgId: ORG, userId: "user_billing_test", roles, authMode: "self_hosted" })
 
@@ -636,7 +636,7 @@ describe("billing writes over HTTP", () => {
 				Effect.fail(
 					new BillingManagedByBillingOrgError({ message: "billed elsewhere", billingOrgId: payer }),
 				),
-			readLink: () => Effect.succeed(Option.some(payer)),
+			readLink: () => Effect.succeedSome(payer),
 			forget: () => Effect.void,
 		})
 
@@ -645,6 +645,7 @@ describe("billing writes over HTTP", () => {
 		overrides: {
 			readonly autumn?: object
 			readonly organizations?: object
+			readonly stripe?: object
 			/** The org this one is billed through, when it is a member org. */
 			readonly billedThrough?: OrgId
 		} = {},
@@ -672,7 +673,7 @@ describe("billing writes over HTTP", () => {
 				Layer.succeed(BillingOrgService, { members: () => Effect.succeed([]) } as never),
 			),
 			Layer.provideMerge(Layer.succeed(ProductEventsService, { track: die, trackMany: die })),
-			Layer.provideMerge(Layer.succeed(StripeClient, { request: die })),
+			Layer.provideMerge(Layer.succeed(StripeClient, { request: die, ...overrides.stripe })),
 			Layer.provideMerge(
 				Layer.succeed(OrganizationService, { retrieve: die, ...overrides.organizations } as never),
 			),
@@ -686,20 +687,20 @@ describe("billing writes over HTTP", () => {
 		)
 		const { handler, dispose } = HttpRouter.toWebHandler(routes as never, { disableLogger: true })
 
-		const post = async (path: string, body: unknown) => {
+		const send = (method: string) => async (path: string, body: unknown) => {
 			const response = await handler(
 				new Request(`http://maple.test${path}`, {
-					method: "POST",
+					method,
 					headers: { authorization: "Bearer test-token", "content-type": "application/json" },
 					body: JSON.stringify(body),
 				}),
-				Context.empty() as never,
+				Context.empty(),
 			)
 			const text = await response.text()
 			return { status: response.status, body: text.length === 0 ? null : JSON.parse(text) }
 		}
 
-		return { post, dispose }
+		return { post: send("POST"), put: send("PUT"), dispose }
 	}
 
 	it("refuses attach from a non-admin member", async () => {
@@ -708,6 +709,51 @@ describe("billing writes over HTTP", () => {
 			const response = await harness.post("/internal/billing/attach", { planId: "startup" })
 			assert.strictEqual(response.status, 403)
 			assert.strictEqual(response.body._tag, "@maple/http/errors/BillingForbiddenError")
+		} finally {
+			await harness.dispose()
+		}
+	})
+
+	it("answers a details save against a customer Stripe no longer has as unavailable", async () => {
+		const missing = {
+			statusCode: 404,
+			response: { message: "No such customer", code: "resource_missing", statusCode: 404 },
+		}
+		const harness = makeHarness(["org:admin"], {
+			autumn: {
+				getOrCreateCustomer: () =>
+					Effect.succeed({ statusCode: 200, response: { id: ORG, stripeId: "cus_deleted" } }),
+			},
+			stripe: { updateCustomer: () => Effect.succeed(missing) },
+		})
+		try {
+			const response = await harness.put("/internal/billing/profile", { name: "Acme GmbH" })
+			assert.strictEqual(response.status, 409)
+			assert.strictEqual(response.body._tag, "@maple/http/errors/BillingProfileUnavailableError")
+		} finally {
+			await harness.dispose()
+		}
+	})
+
+	it("answers a tax-ID add against a customer Stripe no longer has as unavailable", async () => {
+		const missing = {
+			statusCode: 404,
+			response: { message: "No such customer", code: "resource_missing", statusCode: 404 },
+		}
+		const harness = makeHarness(["org:admin"], {
+			autumn: {
+				getOrCreateCustomer: () =>
+					Effect.succeed({ statusCode: 200, response: { id: ORG, stripeId: "cus_deleted" } }),
+			},
+			stripe: { createTaxId: () => Effect.succeed(missing) },
+		})
+		try {
+			const response = await harness.post("/internal/billing/profile/tax-ids", {
+				type: "eu_vat",
+				value: "DE123456789",
+			})
+			assert.strictEqual(response.status, 409)
+			assert.strictEqual(response.body._tag, "@maple/http/errors/BillingProfileUnavailableError")
 		} finally {
 			await harness.dispose()
 		}

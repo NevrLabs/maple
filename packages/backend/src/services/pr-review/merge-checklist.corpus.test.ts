@@ -1,6 +1,6 @@
 import { readdirSync, readFileSync } from "node:fs"
 import { join } from "node:path"
-import { Array as Arr, Record as Rec, Schema } from "effect"
+import { Array as Arr, Record as Rec, Schema, String as Str } from "effect"
 import { assert, describe, it } from "vitest"
 import { detectMergeSteps } from "./merge-checklist"
 import {
@@ -14,12 +14,12 @@ import {
 } from "./merge-checklist-corpus"
 
 const DIR = join(import.meta.dirname, "__fixtures__", "merge-checklist")
-const labels = Schema.decodeUnknownSync(Schema.fromJsonString(MergeChecklistLabelFile))(
+const labels = Schema.decodeSync(Schema.fromJsonString(MergeChecklistLabelFile))(
 	readFileSync(join(DIR, "labels.json"), "utf8"),
 )
 const decodeCase = Schema.decodeUnknownSync(Schema.fromJsonString(MergeChecklistCase))
 const cases = Arr.map(
-	Arr.filter(readdirSync(DIR), (name) => name.endsWith(".json") && name !== "labels.json"),
+	Arr.filter(readdirSync(DIR), (name) => Str.endsWith(".json")(name) && name !== "labels.json"),
 	(name) => decodeCase(readFileSync(join(DIR, name), "utf8")),
 )
 
@@ -47,7 +47,7 @@ describe("before-merge detectors on real pull requests", () => {
 	})
 
 	it("finds what a careful reviewer would list, and little else", () => {
-		const score = scoreCorpus(Arr.map(cases, (item) => scoreCase(item, labels[item.id]!)))
+		const score = scoreCorpus(Arr.map(cases, (item) => scoreCase(item, labels[item.id])))
 		// The report is the point when a bar fails: which case missed or over-listed what.
 		console.log(`before-merge corpus, ${cases.length} cases\n${renderCorpusScore(score)}`)
 		const atLeast = (share: Fraction | undefined, min: number, what: string) => {

@@ -31,13 +31,10 @@ import {
 	type TestDb,
 } from "@maple/backend/platform/test-pglite"
 import { OrganizationFeatureFlagsService } from "@maple/backend/services/org/OrganizationFeatureFlagsService"
-import {
-	SecurityAuditCredits,
-	SecurityAuditNoCredits,
-} from "@maple/backend/services/security-audit/SecurityAuditCredits"
+import { AiCredits, AiCreditsExhausted } from "@maple/backend/services/billing/AiCredits"
 import { SecurityAuditRepositorySize } from "@maple/backend/services/security-audit/SecurityAuditRepositorySize"
 import { SecurityAuditStore } from "@maple/backend/services/security-audit/SecurityAuditStore"
-import { Clock, Context, Duration, Effect, Layer, Schema } from "effect"
+import { Clock, Context, Duration, Effect, Layer, Schema, Array as Arr, String as Str } from "effect"
 import { HttpRouter, HttpServerRequest } from "effect/http"
 import { HttpApi, HttpApiBuilder } from "effect/http-api"
 import { HttpSecurityAuditLive } from "./security-audit.http"
@@ -70,9 +67,9 @@ const trackedDbs: TestDb[] = []
 const NO_ESTIMATES: ReadonlyMap<string, EstimatedSeverity> = new Map()
 afterEach(() => cleanupTestDbs(trackedDbs))
 
-const ORG_A = Schema.decodeUnknownSync(OrgId)("org_audit_a")
-const ORG_B = Schema.decodeUnknownSync(OrgId)("org_audit_b")
-const USER = Schema.decodeUnknownSync(UserId)("user_audit")
+const ORG_A = Schema.decodeSync(OrgId)("org_audit_a")
+const ORG_B = Schema.decodeSync(OrgId)("org_audit_b")
+const USER = Schema.decodeSync(UserId)("user_audit")
 const decodeRole = Schema.decodeUnknownSync(RoleName)
 
 /** The bearer token names the caller: `<orgId>|<role>`, so one harness serves several tenants. */
@@ -82,11 +79,11 @@ const AuthorizationStubLayer = Layer.succeed(
 		bearer: (httpEffect) =>
 			Effect.gen(function* () {
 				const request = yield* HttpServerRequest.HttpServerRequest
-				const [org = "", role = ""] = (request.headers.authorization ?? "")
-					.replace("Bearer ", "")
-					.split("|")
+				const [org, role = ""] = Str.split("|")(
+					Str.replace("Bearer ", "")(request.headers.authorization ?? ""),
+				)
 				const tenant = new CurrentTenant.TenantSchema({
-					orgId: Schema.decodeUnknownSync(OrgId)(org),
+					orgId: Schema.decodeSync(OrgId)(org),
 					userId: USER,
 					roles: [decodeRole(role)],
 					authMode: "clerk",
@@ -146,16 +143,18 @@ const makeHarness = (
 				starter,
 				Layer.succeed(AuditLogService, auditLog),
 				options.noCredits !== undefined
-					? Layer.succeed(SecurityAuditCredits, {
+					? Layer.succeed(AiCredits, {
 							ensure: () =>
 								Effect.fail(
-									new SecurityAuditNoCredits({
+									new AiCreditsExhausted({
 										message: NO_CREDITS,
+										reason:
+											options.noCredits?.resetsAt == null ? "no_credits" : "used_up",
 										resetsAt: options.noCredits?.resetsAt ?? null,
 									}),
 								),
 						})
-					: SecurityAuditCredits.unmetered,
+					: AiCredits.unmetered,
 				// The route reads this clock, so spend windows in the tests follow it.
 				Layer.succeed(Clock.Clock, fixedClock(NOW)),
 				SecurityAuditRepositorySize.fixed(options.repositoryBytes ?? {}),
@@ -297,9 +296,38 @@ describe("/api/security-audit access", () => {
 				}),
 			])
 
-			expect(memberCalls.map((r) => r.status)).toEqual([200, 200, 403, 403, 403, 403, 403])
+			expect(Arr.map(memberCalls, (r) => r.status)).toEqual([200, 200, 403, 403, 403, 403, 403])
 			expect(memberCalls[5]?.body._tag).toBe(tag("SecurityAuditForbiddenError"))
-			expect(harness.started.map((p) => p.runId)).toEqual([run.body.id])
+			expect(Arr.map(harness.started, (p) => p.runId)).toEqual([run.body.id])
+		} finally {
+			await harness.dispose()
+		}
+	})
+
+	it("lets engineers read and triage findings but keeps the audit budget to admins", async () => {
+		const harness = makeHarness()
+		try {
+			const engineer = `${ORG_A}|org:engineer`
+			const target = await harness.call("POST", "/targets", { body: TARGET })
+			const run = await harness.call("POST", `/targets/${target.body.id}/runs`, { body: {} })
+			const engineerCalls = await Promise.all([
+				harness.call("GET", `/runs/${run.body.id}`, { as: engineer }),
+				harness.call("GET", `/targets/${target.body.id}/findings`, { as: engineer }),
+				harness.call("POST", "/targets", { as: engineer, body: { ...TARGET, branch: "next" } }),
+				harness.call("POST", `/targets/${target.body.id}/runs`, { as: engineer, body: {} }),
+				harness.call("PUT", "/settings", {
+					as: engineer,
+					body: {
+						monthlySpendLimitUsd: 750,
+						discoveryModel: "anthropic/claude-haiku-5.5",
+						validationModel: "openai/gpt-6-luna",
+					},
+				}),
+			])
+
+			expect(Arr.map(engineerCalls, (r) => r.status)).toEqual([200, 200, 403, 403, 403])
+			expect(engineerCalls[3]?.body._tag).toBe(tag("SecurityAuditForbiddenError"))
+			expect(Arr.map(harness.started, (p) => p.runId)).toEqual([run.body.id])
 		} finally {
 			await harness.dispose()
 		}
@@ -327,9 +355,9 @@ describe("/api/security-audit access", () => {
 			])
 			const foreignRuns = await harness.call("GET", "/runs", { as: other })
 
-			expect(responses.map((r) => r.status)).toEqual([404, 404, 404, 404, 404])
+			expect(Arr.map(responses, (r) => r.status)).toEqual([404, 404, 404, 404, 404])
 			expect(foreignRuns.body.runs).toEqual([])
-			expect(harness.started.map((p) => p.orgId)).toEqual([ORG_A])
+			expect(Arr.map(harness.started, (p) => p.orgId)).toEqual([ORG_A])
 		} finally {
 			await harness.dispose()
 		}
@@ -341,20 +369,23 @@ describe("/api/security-audit targets", () => {
 		const harness = makeHarness()
 		try {
 			const statuses = await Promise.all(
-				[
-					{ ...TARGET, repository: "acme" },
-					{ ...TARGET, repository: "acme/../etc" },
-					{ ...TARGET, branch: "--upload-pack=x" },
-					{ ...TARGET, scopePaths: ["../secrets"] },
-					{ ...TARGET, scopePaths: ["/etc/passwd"] },
-					{ ...TARGET, discoveryModel: "acme/unlisted-model" },
-					// It refused verifier prompts in the eval, so it never verifies.
-					{ ...TARGET, validationModel: "openai/gpt-6.1-sol" },
-				].map((body) => harness.call("POST", "/targets", { body }).then((r) => r.status)),
+				Arr.map(
+					[
+						{ ...TARGET, repository: "acme" },
+						{ ...TARGET, repository: "acme/../etc" },
+						{ ...TARGET, branch: "--upload-pack=x" },
+						{ ...TARGET, scopePaths: ["../secrets"] },
+						{ ...TARGET, scopePaths: ["/etc/passwd"] },
+						{ ...TARGET, discoveryModel: "acme/unlisted-model" },
+						// It refused verifier prompts in the eval, so it never verifies.
+						{ ...TARGET, validationModel: "openai/gpt-6.1-sol" },
+					],
+					(body) => harness.call("POST", "/targets", { body }).then((r) => r.status),
+				),
 			)
 			const run = "00000000-0000-4000-8000-000000000000"
 			const pages = await Promise.all(
-				["limit=0", "limit=1001", "beforeAt=-1"].map((q) =>
+				Arr.map(["limit=0", "limit=1001", "beforeAt=-1"], (q) =>
 					harness.call("GET", `/runs/${run}/events?${q}`).then((r) => r.status),
 				),
 			)
@@ -548,7 +579,14 @@ describe("/api/security-audit runs", () => {
 				validation: "anthropic/claude-sonnet-5.5",
 			}
 			expect(
-				harness.started.map((p) => [p.runId, p.ref, p.scopePaths, p.budget, p.priorRunId, p.models]),
+				Arr.map(harness.started, (p) => [
+					p.runId,
+					p.ref,
+					p.scopePaths,
+					p.budget,
+					p.priorRunId,
+					p.models,
+				]),
 			).toEqual([
 				[whole.body.id, "main", [], null, null, defaults],
 				[scoped.body.id, "main", ["apps/api/src/routes"], null, whole.body.id, defaults],
@@ -642,7 +680,7 @@ describe("/api/security-audit runs", () => {
 				aiCreditsUsd(10),
 				"2026-11-01T00:00:00.000Z",
 			])
-			expect([raised.status, harness.started.map((p) => p.runId)]).toEqual([200, [raised.body.id]])
+			expect([raised.status, Arr.map(harness.started, (p) => p.runId)]).toEqual([200, [raised.body.id]])
 		} finally {
 			await harness.dispose()
 		}
@@ -747,7 +785,7 @@ describe("/api/security-audit findings", () => {
 			)
 
 			const fingerprints = (body: { findings: ReadonlyArray<{ fingerprint: string }> }) =>
-				body.findings.map((f) => f.fingerprint)
+				Arr.map(body.findings, (f) => f.fingerprint)
 			expect([fingerprints(visible.body), fingerprints(all.body)]).toEqual([
 				[fingerprint],
 				[fingerprint, "f2"],
@@ -762,7 +800,7 @@ describe("/api/security-audit findings", () => {
 					],
 				),
 			).toEqual([["dismissed", "fixture data, not reachable", USER]])
-			expect(audit.map((entry) => [entry.userId, entry.metadata])).toEqual([
+			expect(Arr.map(audit, (entry) => [entry.userId, entry.metadata])).toEqual([
 				[
 					USER,
 					{
@@ -890,7 +928,7 @@ describe("/api/security-audit run cancellation", () => {
 			).toEqual([["Note", `Run cancelled by ${USER}`]])
 			// The cancelled run frees the target.
 			expect(next.status).toBe(200)
-			expect(audit.map((entry) => [entry.userId, entry.metadata])).toEqual([
+			expect(Arr.map(audit, (entry) => [entry.userId, entry.metadata])).toEqual([
 				[USER, { targetId: target.body.id, runId: run.body.id }],
 			])
 		} finally {
@@ -979,7 +1017,7 @@ describe("/api/security-audit run units", () => {
 						reviewed_paths: [],
 						local_checks: [],
 						result_fingerprints: ["keys/roll"],
-						unresolved: ["x".repeat(500)],
+						unresolved: [Str.repeat(500)("x")],
 						priority: 1,
 					}),
 				],
@@ -1009,7 +1047,7 @@ describe("/api/security-audit run units", () => {
 					failedAttempts: null,
 					resultFingerprints: ["keys/roll"],
 					carriedFingerprint: null,
-					unresolved: ["x".repeat(300)],
+					unresolved: [Str.repeat(300)("x")],
 				},
 				{
 					coverageId: "u2",

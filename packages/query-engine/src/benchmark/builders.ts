@@ -67,6 +67,16 @@ const SPAN_ID = "b7ad6b7169203331"
 const FINGERPRINT = "11640393269246331608"
 
 const window = { orgId: ORG_ID, startTime: START_TIME, endTime: END_TIME }
+const USERS_SCOPE = {
+	namespaces: [],
+	services: [],
+	serviceNamespaces: [
+		["storefront-web", "storefront"],
+		["maple-ai", "platform"],
+	],
+	mcpServices: ["maple-ai"],
+} as const
+const USERS_NAMESPACE_SCOPE = { ...USERS_SCOPE, namespaces: ["storefront"], services: ["storefront-web"] }
 
 // Web analytics fixtures used by the v1 route registry.
 //
@@ -280,6 +290,55 @@ const securityTelemetryFixtures: ReadonlyArray<BuilderFixture> = [
 		label: "default",
 		compile: () => CH.compileUnsafe(CH.runtimeVersionsQuery(), window),
 	},
+]
+
+// `/users` reads (user-activity.ts): the rollup scoped to a user and namespaces, and the raw
+// trace/log reads narrowed to the services its slices name.
+const USER_SCOPE = { userId: "user_catalog", namespaces: ["storefront"] }
+const userActivityFixture = (name: string, compile: () => CompiledQuery<unknown>): BuilderFixture => ({
+	module: "user-activity",
+	name,
+	label: "default",
+	compile,
+})
+const userActivityFixtures: ReadonlyArray<BuilderFixture> = [
+	userActivityFixture("userActivitySlicesQuery", () =>
+		CH.compileUnsafe(CH.userActivitySlicesQuery(USER_SCOPE), window),
+	),
+	userActivityFixture("userActivitySummaryQuery", () =>
+		CH.compileUnsafe(CH.userActivitySummaryQuery(USER_SCOPE), window),
+	),
+	userActivityFixture("userActivityServicesQuery", () =>
+		CH.compileUnsafe(CH.userActivityServicesQuery(USER_SCOPE), window),
+	),
+	userActivityFixture("userActivityTotalsQuery", () =>
+		CH.compileUnsafe(CH.userActivityTotalsQuery({ userIds: ["user_a", "user_b"] }), window),
+	),
+	userActivityFixture("userTracesQuery", () =>
+		CH.compileUnsafe(CH.userTracesQuery({ ...USER_SCOPE, serviceNames: ["api"] }), window),
+	),
+	{
+		...userActivityFixture("userTracesQuery", () =>
+			CH.compileUnsafe(
+				CH.userTracesQuery({ ...USER_SCOPE, serviceNames: ["api"], notableSlowerThanMs: 2000 }),
+				window,
+			),
+		),
+		label: "notable",
+	},
+	userActivityFixture("userLogsQuery", () =>
+		CH.compileUnsafe(CH.userLogsQuery({ ...USER_SCOPE, serviceNames: ["api"] }), window),
+	),
+	userActivityFixture("userIssuesQuery", () => CH.compileUnsafe(CH.userIssuesQuery(USER_SCOPE), window)),
+	userActivityFixture("userIssueTotalsQuery", () =>
+		CH.compileUnsafe(CH.userIssueTotalsQuery(USER_SCOPE), window),
+	),
+	userActivityFixture("issueAffectedUsersQuery", () =>
+		CH.compileUnsafe(CH.issueAffectedUsersQuery({ fingerprintHashes: ["1234567890"] }), window),
+	),
+	userActivityFixture("issueAffectedUserCountQuery", () =>
+		CH.compileUnsafe(CH.issueAffectedUserCountQuery({ fingerprintHashes: ["1234567890"] }), window),
+	),
 ]
 
 // Product-event funnel fixtures. The funnel SQL has four independent axes —
@@ -597,7 +656,11 @@ const alertingFixtures: ReadonlyArray<BuilderFixture> = [
 		name: "listRuleChecksQuery",
 		label: "firstPage",
 		compile: () =>
-			CH.compileUnsafe(CH.listRuleChecksQuery({ limit: 50 }), { orgId: ORG_ID, ruleId: RULE_ID }),
+			CH.compileUnsafe(CH.listRuleChecksQuery({ limit: 50, since: START_UTC }), {
+				orgId: ORG_ID,
+				ruleId: RULE_ID,
+				since: START_UTC,
+			}),
 	},
 	{
 		// Same call site with every optional filter plus the keyset cursor.
@@ -1125,6 +1188,89 @@ export const builderFixtures: ReadonlyArray<BuilderFixture> = [
 		label: "default",
 		compile: () => CH.compileUnionUnsafe(CH.signalPresenceQuery(), window),
 	},
+	// SLOs (SlosService): the budget window, the hourly budget chart, the minute burn windows.
+	{
+		module: "slos",
+		name: "sloTotalsQuery",
+		label: "availability",
+		compile: () =>
+			CH.compileUnsafe(
+				CH.sloTotalsQuery({
+					serviceName: "api",
+					environments: ["production"],
+					sli: { _tag: "availability" },
+				}),
+				window,
+			),
+	},
+	{
+		module: "slos",
+		name: "sloTotalsQuery",
+		label: "latency",
+		compile: () =>
+			CH.compileUnsafe(
+				CH.sloTotalsQuery({
+					serviceName: "api",
+					environments: [],
+					sli: { _tag: "latency", thresholdMs: 500 },
+				}),
+				window,
+			),
+	},
+	{
+		module: "slos",
+		name: "sloBucketsQuery",
+		label: "hour",
+		compile: () =>
+			CH.compileUnsafe(
+				CH.sloBucketsQuery(
+					{ serviceName: "api", environments: [], sli: { _tag: "availability" } },
+					"hour",
+				),
+				{ ...window, bucketSeconds: 3600 },
+			),
+	},
+	{
+		module: "slos",
+		name: "sloBucketsQuery",
+		label: "minute",
+		compile: () =>
+			CH.compileUnsafe(
+				CH.sloBucketsQuery(
+					{ serviceName: "api", environments: [], sli: { _tag: "availability" } },
+					"minute",
+				),
+				{ ...window, bucketSeconds: 60 },
+			),
+	},
+	{
+		// The SLOs tab: every SLO's window totals in one read per (SLI, window).
+		module: "slos",
+		name: "sloTotalsByServiceQuery",
+		label: "default",
+		compile: () =>
+			CH.compileUnsafe(
+				CH.sloTotalsByServiceQuery({
+					serviceNames: ["api", "checkout"],
+					sli: { _tag: "availability" },
+				}),
+				window,
+			),
+	},
+	{
+		// The SLOs tab: every SLO's four burn windows in one read per SLI.
+		module: "slos",
+		name: "sloBurnByServiceQuery",
+		label: "default",
+		compile: () =>
+			CH.compileUnsafe(
+				CH.sloBurnByServiceQuery({
+					serviceNames: ["api", "checkout"],
+					sli: { _tag: "latency", thresholdMs: 500 },
+				}),
+				window,
+			),
+	},
 	// Audit log listing (apps/api/src/services/audit/AuditLogService.ts `list`).
 	{
 		module: "audit-log",
@@ -1153,6 +1299,7 @@ export const builderFixtures: ReadonlyArray<BuilderFixture> = [
 					requestId: true,
 					since: true,
 					until: true,
+					excludeActionSuffixes: [".read", ".called"],
 					limit: 50,
 					offset: 50,
 				}),
@@ -1173,6 +1320,97 @@ export const builderFixtures: ReadonlyArray<BuilderFixture> = [
 					until: END_TIME,
 				},
 			),
+	},
+	// Cancellation evidence (CancellationTelemetryEvidence.read).
+	{
+		module: "cancellation-evidence",
+		name: "cancellationServiceUsageQuery",
+		label: "default",
+		compile: () =>
+			CH.compileUnsafe(CH.cancellationServiceUsageQuery({ limit: 15 }), {
+				...window,
+				splitTime: START_TIME,
+			}),
+	},
+	{
+		module: "cancellation-evidence",
+		name: "cancellationServiceCountsQuery",
+		label: "default",
+		compile: () =>
+			CH.compileUnsafe(CH.cancellationServiceCountsQuery(), { ...window, splitTime: START_TIME }),
+	},
+	{
+		module: "cancellation-evidence",
+		name: "cancellationResourceAttributesQuery",
+		label: "default",
+		compile: () =>
+			CH.compileUnsafe(CH.cancellationResourceAttributesQuery({ limit: 500 }), {
+				...window,
+				splitTime: START_TIME,
+			}),
+	},
+	{
+		module: "cancellation-evidence",
+		name: "cancellationResourceSpansQuery",
+		label: "default",
+		compile: () => CH.compileUnsafe(CH.cancellationResourceSpansQuery(), window),
+	},
+	{
+		module: "cancellation-evidence",
+		name: "cancellationErrorFingerprintsQuery",
+		label: "default",
+		compile: () =>
+			CH.compileUnsafe(CH.cancellationErrorFingerprintsQuery(), { ...window, splitTime: START_TIME }),
+	},
+	{
+		module: "cancellation-evidence",
+		name: "cancellationAuditActionsQuery",
+		label: "default",
+		compile: () =>
+			CH.compileUnsafe(CH.cancellationAuditActionsQuery({ limit: 25 }), {
+				...window,
+				splitTime: START_TIME,
+			}),
+	},
+	{
+		module: "cancellation-evidence",
+		name: "cancellationAuditActorsQuery",
+		label: "default",
+		compile: () =>
+			CH.compileUnsafe(CH.cancellationAuditActorsQuery(), { ...window, splitTime: START_TIME }),
+	},
+	{
+		module: "cancellation-evidence",
+		name: "cancellationToolCallsQuery",
+		label: "default",
+		compile: () =>
+			CH.compileUnsafe(CH.cancellationToolCallsQuery({ limit: 15 }), {
+				...window,
+				splitTime: START_TIME,
+			}),
+	},
+	{
+		module: "cancellation-evidence",
+		name: "cancellationAlertChecksQuery",
+		label: "default",
+		compile: () => CH.compileUnsafe(CH.cancellationAlertChecksQuery(), window),
+	},
+	{
+		module: "cancellation-evidence",
+		name: "cancellationErrorsByDayQuery",
+		label: "default",
+		compile: () => CH.compileUnsafe(CH.cancellationErrorsByDayQuery(), window),
+	},
+	{
+		module: "cancellation-evidence",
+		name: "cancellationProductEventsQuery",
+		label: "default",
+		compile: () =>
+			CH.compileUnsafe(CH.cancellationProductEventsQuery({ limit: 50 }), {
+				...window,
+				splitTime: START_TIME,
+				groupId: "org_customer",
+			}),
 	},
 	// Session replay fixtures used by the replay routes.
 	{
@@ -1342,6 +1580,7 @@ export const builderFixtures: ReadonlyArray<BuilderFixture> = [
 	...webAnalyticsFixtures,
 	...webAnalyticsAiFixtures,
 	...securityTelemetryFixtures,
+	...userActivityFixtures,
 
 	// Traces sidebar (query-engine runtime); the pipe fixtures cover the raw-only route.
 	{
@@ -1443,11 +1682,18 @@ export const builderFixtures: ReadonlyArray<BuilderFixture> = [
 		name: "errorIssueTimeseriesQuery",
 		label: "default",
 		compile: () =>
-			CH.compileUnsafe(CH.errorIssueTimeseriesQuery(), {
+			CH.compileUnsafe(CH.errorIssueTimeseriesQuery({ fingerprintHashes: [FINGERPRINT] }), {
 				...window,
-				fingerprintHash: FINGERPRINT,
 				bucketSeconds: 300,
 			}),
+	},
+	{
+		// ErrorsService tick: the v3 hash of each scanned fingerprint a version bump re-keyed.
+		module: "errors",
+		name: "errorFingerprintLineageQuery",
+		label: "default",
+		compile: () =>
+			CH.compileUnsafe(CH.errorFingerprintLineageQuery({ fingerprintHashes: [FINGERPRINT] }), window),
 	},
 	{
 		module: "errors",
@@ -1464,9 +1710,8 @@ export const builderFixtures: ReadonlyArray<BuilderFixture> = [
 		name: "errorIssueSampleTracesQuery",
 		label: "default",
 		compile: () =>
-			CH.compileUnsafe(CH.errorIssueSampleTracesQuery({ limit: 5 }), {
+			CH.compileUnsafe(CH.errorIssueSampleTracesQuery({ fingerprintHashes: [FINGERPRINT], limit: 5 }), {
 				...window,
-				fingerprintHash: FINGERPRINT,
 			}),
 		// TraceId/SpanId decode through their branded schemas (minLength 1), which
 		// the synthetic row's "" would fail.
@@ -1477,9 +1722,8 @@ export const builderFixtures: ReadonlyArray<BuilderFixture> = [
 		name: "errorIssueEnvironmentsQuery",
 		label: "default",
 		compile: () =>
-			CH.compileUnsafe(CH.errorIssueEnvironmentsQuery(), {
+			CH.compileUnsafe(CH.errorIssueEnvironmentsQuery({ fingerprintHashes: [FINGERPRINT] }), {
 				...window,
-				fingerprintHash: FINGERPRINT,
 			}),
 	},
 	{
@@ -1489,9 +1733,8 @@ export const builderFixtures: ReadonlyArray<BuilderFixture> = [
 		name: "errorIssueVersionsSinceQuery",
 		label: "default",
 		compile: () =>
-			CH.compileUnsafe(CH.errorIssueVersionsSinceQuery(), {
+			CH.compileUnsafe(CH.errorIssueVersionsSinceQuery({ fingerprintHashes: [FINGERPRINT] }), {
 				...window,
-				fingerprintHash: FINGERPRINT,
 			}),
 	},
 	{
@@ -1877,6 +2120,423 @@ export const builderFixtures: ReadonlyArray<BuilderFixture> = [
 		compile: () => CH.compileUnsafe(CH.ciRunTotalsQuery({}), window),
 	},
 	{
+		module: "mcp",
+		name: "mcpServicesQuery",
+		label: "default",
+		compile: () => CH.compileUnsafe(CH.mcpServicesQuery(), window),
+	},
+	{
+		module: "mcp",
+		name: "mcpFirstSeenQuery",
+		label: "default",
+		compile: () => CH.compileUnsafe(CH.mcpFirstSeenQuery(), { ...window, serviceName: "maple-ai" }),
+	},
+	{
+		module: "mcp",
+		name: "mcpToolErrorsQuery",
+		label: "searched",
+		compile: () =>
+			CH.compileUnsafe(CH.mcpToolErrorsQuery({ search: "sql" }), {
+				...window,
+				serviceName: "maple-ai",
+			}),
+	},
+	{
+		module: "mcp",
+		name: "mcpServerStatsQuery",
+		label: "twoServers",
+		compile: () => CH.compileUnsafe(CH.mcpServerStatsQuery(["maple-ai", "docs-mcp"]), window),
+	},
+	{
+		module: "mcp",
+		name: "mcpServerSparkQuery",
+		label: "hourly",
+		compile: () =>
+			CH.compileUnsafe(CH.mcpServerSparkQuery(["maple-ai"]), { ...window, bucketSeconds: 3_600 }),
+	},
+	{
+		module: "mcp",
+		name: "mcpServerClientsQuery",
+		label: "default",
+		compile: () => CH.compileUnsafe(CH.mcpServerClientsQuery(["maple-ai"]), window),
+	},
+	{
+		module: "mcp",
+		name: "mcpClientsQuery",
+		label: "filtered",
+		compile: () =>
+			CH.compileUnsafe(CH.mcpClientsQuery({ search: "sql", kind: "agent", failingOnly: true }), {
+				...window,
+				serviceName: "maple-ai",
+			}),
+	},
+	{
+		module: "mcp",
+		name: "mcpClientReachQuery",
+		label: "filtered",
+		compile: () =>
+			CH.compileUnsafe(CH.mcpClientReachQuery({ kind: "agent" }), {
+				...window,
+				serviceName: "maple-ai",
+			}),
+	},
+	{
+		module: "mcp",
+		name: "mcpSpanSummaryQuery",
+		label: "default",
+		compile: () => CH.compileUnsafe(CH.mcpSpanSummaryQuery(), { ...window, serviceName: "maple-ai" }),
+	},
+	{
+		module: "mcp",
+		name: "mcpClientInfoQuery",
+		label: "default",
+		compile: () => CH.compileUnsafe(CH.mcpClientInfoQuery(), { ...window, serviceName: "maple-ai" }),
+	},
+	{
+		module: "mcp",
+		name: "mcpMethodsQuery",
+		label: "default",
+		compile: () => CH.compileUnsafe(CH.mcpMethodsQuery(), { ...window, serviceName: "maple-ai" }),
+	},
+	{
+		module: "mcp",
+		name: "mcpCallTotalsQuery",
+		label: "filtered",
+		compile: () =>
+			CH.compileUnsafe(CH.mcpCallTotalsQuery({ client: "Claude Code", failingOnly: true }), {
+				...window,
+				serviceName: "maple-ai",
+			}),
+	},
+	{
+		module: "mcp",
+		name: "mcpCallSeriesQuery",
+		label: "hourly",
+		compile: () =>
+			CH.compileUnsafe(CH.mcpCallSeriesQuery(), {
+				...window,
+				serviceName: "maple-ai",
+				bucketSeconds: 3_600,
+			}),
+	},
+	{
+		module: "mcp",
+		name: "mcpCallSplitSeriesQuery",
+		label: "byClient",
+		compile: () =>
+			CH.compileUnsafe(CH.mcpCallSplitSeriesQuery("client", { tool: "run_sql" }), {
+				...window,
+				serviceName: "maple-ai",
+				bucketSeconds: 3_600,
+			}),
+	},
+	{
+		module: "mcp",
+		name: "mcpToolStatsQuery",
+		label: "default",
+		compile: () => CH.compileUnsafe(CH.mcpToolStatsQuery(), { ...window, serviceName: "maple-ai" }),
+	},
+	{
+		module: "mcp",
+		name: "mcpErrorGroupsQuery",
+		label: "oneTool",
+		compile: () =>
+			CH.compileUnsafe(CH.mcpErrorGroupsQuery({ tool: "run_sql" }), {
+				...window,
+				serviceName: "maple-ai",
+			}),
+	},
+	{
+		module: "mcp",
+		name: "mcpErrorTrendQuery",
+		label: "oneTool",
+		compile: () =>
+			CH.compileUnsafe(CH.mcpErrorTrendQuery({ tool: "run_sql" }, ["", "Query error"]), {
+				...window,
+				serviceName: "maple-ai",
+				bucketSeconds: 3_600,
+			}),
+	},
+	{
+		module: "mcp",
+		name: "mcpCallListQuery",
+		label: "slowest",
+		compile: () =>
+			CH.compileUnsafe(CH.mcpCallListQuery("slowest", { tool: "run_sql" }), {
+				...window,
+				serviceName: "maple-ai",
+			}),
+	},
+	{
+		module: "mcp",
+		name: "mcpCallListQuery",
+		label: "failed",
+		compile: () =>
+			CH.compileUnsafe(CH.mcpCallListQuery("failed", { tool: "run_sql" }), {
+				...window,
+				serviceName: "maple-ai",
+			}),
+	},
+	{
+		module: "mcp",
+		name: "mcpSessionListQuery",
+		label: "failingAgents",
+		compile: () =>
+			CH.compileUnsafe(CH.mcpSessionListQuery({ kind: "agent", search: "7f3c", failingOnly: true }), {
+				...window,
+				serviceName: "maple-ai",
+			}),
+	},
+	{
+		module: "mcp",
+		name: "mcpSessionListQuery",
+		label: "oneUser",
+		compile: () =>
+			CH.compileUnsafe(CH.mcpSessionListQuery({ user: "user_42" }, 100), {
+				...window,
+				serviceName: "maple-ai",
+			}),
+	},
+	{
+		module: "mcp",
+		name: "mcpUserActivityQuery",
+		label: "userPage",
+		compile: () =>
+			CH.compileUnsafe(CH.mcpUserActivityQuery({ user: "user_42" }, 5_001), {
+				...window,
+				serviceName: "maple-ai",
+			}),
+	},
+	{
+		module: "mcp",
+		name: "mcpServersSessionListQuery",
+		label: "userPage",
+		compile: () =>
+			CH.compileUnsafe(
+				CH.mcpServersSessionListQuery(["maple-ai", "docs-mcp"], {
+					user: "user_42",
+					namespaces: ["platform"],
+				}),
+				window,
+			),
+	},
+	{
+		module: "mcp",
+		name: "mcpServersUserActivityQuery",
+		label: "userPage",
+		compile: () =>
+			CH.compileUnsafe(
+				CH.mcpServersUserActivityQuery(["maple-ai", "docs-mcp"], { user: "user_42" }, 5_000),
+				window,
+			),
+	},
+	{
+		module: "mcp",
+		name: "mcpSessionTotalsQuery",
+		label: "default",
+		compile: () => CH.compileUnsafe(CH.mcpSessionTotalsQuery(), { ...window, serviceName: "maple-ai" }),
+	},
+	{
+		module: "mcp",
+		name: "mcpSessionRequestsQuery",
+		label: "default",
+		compile: () =>
+			CH.compileUnsafe(CH.mcpSessionRequestsQuery(), {
+				...window,
+				serviceName: "maple-ai",
+				sessionId: "7f3c9a2e",
+			}),
+	},
+	{
+		module: "mcp",
+		name: "mcpUserSessionRequestsQuery",
+		label: "default",
+		compile: () =>
+			CH.compileUnsafe(CH.mcpUserSessionRequestsQuery(), {
+				...window,
+				serviceName: "maple-ai",
+				userId: "user_2abc",
+				client: "Claude Code",
+			}),
+	},
+	{
+		module: "users",
+		name: "usersListQuery",
+		label: "unscoped",
+		compile: () => CH.compileUnsafe(CH.usersListQuery(USERS_SCOPE), window),
+	},
+	{
+		module: "users",
+		name: "usersListQuery",
+		label: "namespaceFiltered",
+		compile: () =>
+			CH.compileUnsafe(
+				CH.usersListQuery(USERS_NAMESPACE_SCOPE, {
+					search: "ada",
+					hasErrors: true,
+					hasReplay: true,
+					groups: ["acme"],
+				}),
+				window,
+			),
+	},
+	{
+		module: "users",
+		name: "usersListQuery",
+		label: "activityRollup",
+		compile: () =>
+			CH.compileUnsafe(CH.usersListQuery({ ...USERS_NAMESPACE_SCOPE, activityRollup: true }), window),
+	},
+	{
+		module: "users",
+		name: "usersListQuery",
+		label: "requestChannels",
+		compile: () =>
+			CH.compileUnsafe(
+				CH.usersListQuery({ ...USERS_SCOPE, activityRollup: true, requestChannels: true }),
+				window,
+			),
+	},
+	{
+		module: "users",
+		name: "usersFacetsQuery",
+		label: "default",
+		compile: () => CH.compileUnionUnsafe(CH.usersFacetsQuery(USERS_NAMESPACE_SCOPE, USERS_SCOPE), window),
+	},
+	{
+		module: "users",
+		name: "usersMcpNamesQuery",
+		label: "default",
+		compile: () => CH.compileUnsafe(CH.usersMcpNamesQuery(["maple-ai"], ["user_42", "user_43"]), window),
+	},
+	{
+		module: "users",
+		name: "usersGroupsQuery",
+		label: "default",
+		compile: () =>
+			CH.compileUnsafe(CH.usersGroupsQuery({ ...USERS_SCOPE, activityRollup: true }), {
+				...window,
+				activeSince: START_TIME,
+			}),
+	},
+	{
+		module: "users",
+		name: "usersGroupNamesQuery",
+		label: "default",
+		compile: () => CH.compileUnsafe(CH.usersGroupNamesQuery(["grp_acme", "grp_globex"]), window),
+	},
+	{
+		module: "users",
+		name: "usersMcpNameSearchQuery",
+		label: "default",
+		compile: () => CH.compileUnsafe(CH.usersMcpNameSearchQuery(["maple-ai"], "ada"), window),
+	},
+	{
+		module: "users",
+		name: "usersFacetsQuery",
+		label: "pinned",
+		compile: () => CH.compileUnionUnsafe(CH.usersFacetsQuery(USERS_NAMESPACE_SCOPE), window),
+	},
+	{
+		module: "users",
+		name: "usersSummaryQuery",
+		label: "default",
+		compile: () =>
+			CH.compileUnsafe(CH.usersSummaryQuery(USERS_SCOPE), { ...window, activeSince: START_TIME }),
+	},
+	{
+		module: "users",
+		name: "usersAnonymousVisitorsQuery",
+		label: "default",
+		compile: () => CH.compileUnsafe(CH.usersAnonymousVisitorsQuery(USERS_NAMESPACE_SCOPE), window),
+	},
+	{
+		module: "users",
+		name: "usersServiceNamespacesQuery",
+		label: "default",
+		compile: () => CH.compileUnsafe(CH.usersServiceNamespacesQuery(), window),
+	},
+	{
+		module: "users",
+		name: "userReplayProfileQuery",
+		label: "namespaceFiltered",
+		compile: () =>
+			CH.compileUnsafe(CH.userReplayProfileQuery(USERS_NAMESPACE_SCOPE), {
+				...window,
+				userId: "user_42",
+			}),
+	},
+	{
+		module: "users",
+		name: "userDevicesQuery",
+		label: "default",
+		compile: () => CH.compileUnsafe(CH.userDevicesQuery(USERS_SCOPE), { ...window, userId: "user_42" }),
+	},
+	{
+		module: "users",
+		name: "userEventsSummaryQuery",
+		label: "default",
+		compile: () =>
+			CH.compileUnsafe(CH.userEventsSummaryQuery(USERS_SCOPE), { ...window, userId: "user_42" }),
+	},
+	{
+		module: "users",
+		name: "userEventsQuery",
+		label: "namespaceFiltered",
+		compile: () =>
+			CH.compileUnsafe(CH.userEventsQuery(USERS_NAMESPACE_SCOPE), { ...window, userId: "user_42" }),
+	},
+	{
+		module: "users",
+		name: "userMcpSummaryQuery",
+		label: "default",
+		compile: () =>
+			CH.compileUnsafe(CH.userMcpSummaryQuery(USERS_SCOPE), { ...window, userId: "user_42" }),
+	},
+	{
+		module: "users",
+		name: "userServicesQuery",
+		label: "default",
+		compile: () => CH.compileUnsafe(CH.userServicesQuery(USERS_SCOPE), { ...window, userId: "user_42" }),
+	},
+	{
+		module: "users",
+		name: "userVisitorIdsQuery",
+		label: "default",
+		compile: () => CH.compileUnsafe(CH.userVisitorIdsQuery(), { ...window, userId: "user_42" }),
+	},
+	{
+		module: "mcp",
+		name: "mcpUserActivityQuery",
+		label: "searchAgents",
+		compile: () =>
+			CH.compileUnsafe(CH.mcpUserActivityQuery({ kind: "agent", search: "ada" }), {
+				...window,
+				serviceName: "maple-ai",
+			}),
+	},
+	{
+		module: "mcp",
+		name: "mcpUserActivityQuery",
+		label: "oneUser",
+		compile: () =>
+			CH.compileUnsafe(CH.mcpUserActivityQuery({ user: "user_2abc", client: "Claude Code" }), {
+				...window,
+				serviceName: "maple-ai",
+			}),
+	},
+	{
+		module: "mcp",
+		name: "mcpSessionActivityQuery",
+		label: "default",
+		compile: () =>
+			CH.compileUnsafe(CH.mcpSessionActivityQuery(), {
+				...window,
+				serviceName: "maple-ai",
+				bucketSeconds: 3_600,
+			}),
+	},
+	{
 		module: "ci-runs",
 		name: "ciRunSeriesQuery",
 		label: "sixHourly",
@@ -2066,6 +2726,17 @@ export const builderFixtures: ReadonlyArray<BuilderFixture> = [
 		name: "hostFilesystemsQuery",
 		label: "default",
 		compile: () => CH.compileUnsafe(CH.hostFilesystemsQuery({ hostName: "ip-10-0-1-42" }), window),
+	},
+	{
+		// apps/api route `hostInfraTimeseries` filesystem metric.
+		module: "infra",
+		name: "hostFilesystemTimeseriesQuery",
+		label: "default",
+		compile: () =>
+			CH.compileUnsafe(CH.hostFilesystemTimeseriesQuery({ hostName: "ip-10-0-1-42" }), {
+				...window,
+				bucketSeconds: 300,
+			}),
 	},
 	{
 		module: "infra",

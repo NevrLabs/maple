@@ -4,6 +4,7 @@ import {
 	type RuntimeProduct,
 	runtimePosture,
 } from "./runtime-posture"
+import { Array as Arr, Option, String as Str } from "effect"
 
 // Known vulnerabilities in a runtime version for the Security Center's Runtimes tab. Pure, so the
 // web bundle and the API share it.
@@ -64,10 +65,13 @@ export function advisoryTargetOf(input: Parameters<typeof runtimePosture>[0]): A
 }
 
 export function severityOf(raw: string | null | undefined): AdvisorySeverity {
-	const severity = (raw ?? "").trim().toLowerCase()
+	const severity = Str.toLowerCase(Str.trim(raw ?? ""))
 	// GitHub's advisory database says MODERATE for medium.
 	if (severity === "moderate") return "medium"
-	return ADVISORY_SEVERITIES.find((known) => known === severity) ?? "unknown"
+	return Option.getOrElse(
+		Arr.findFirst(ADVISORY_SEVERITIES, (known) => known === severity),
+		(): AdvisorySeverity => "unknown",
+	)
 }
 
 type RangeClause = { readonly op: string; readonly bound: string }
@@ -77,13 +81,13 @@ type RangeClause = { readonly op: string; readonly bound: string }
  * `1.5.0 - 1.10.1`, or a bare version. Undefined when any clause is unreadable.
  */
 const rangeClauses = (range: string): ReadonlyArray<RangeClause> | undefined => {
-	const hyphen = /^(\S+)\s+-\s+(\S+)$/.exec(range.trim())
+	const hyphen = /^(\S+)\s+-\s+(\S+)$/.exec(Str.trim(range))
 	const text = hyphen === null ? range : `>= ${hyphen[1]}, <= ${hyphen[2]}`
-	const tokens = text
-		.replace(/(>=|<=|>|<|=)\s+/g, "$1")
-		.split(/[\s,]+/)
-		.filter((token) => token !== "")
-	const clauses = tokens.flatMap((token) => {
+	const tokens = Arr.filter(
+		Str.split(/[\s,]+/)(Str.replace(/(>=|<=|>|<|=)\s+/g, "$1")(text)),
+		(token) => token !== "",
+	)
+	const clauses = Arr.flatMap(tokens, (token) => {
 		const match = /^(>=|<=|>|<|=)?(.+)$/.exec(token)
 		const bound = normalizeRuntimeVersion(match?.[2] ?? "")
 		return match === null || bound === undefined ? [] : [{ op: match[1] ?? "=", bound }]
@@ -116,34 +120,31 @@ const isUpperBound = (clause: RangeClause) => clause.op === "<" || clause.op ===
 export function inAdvisoryRange(range: string, version: string): boolean {
 	const clauses = rangeClauses(range)
 	if (clauses === undefined) return false
-	return clauses.length > 1 && clauses.every(isUpperBound)
-		? clauses.some((clause) => holds(clause, version))
-		: clauses.every((clause) => holds(clause, version))
+	return clauses.length > 1 && Arr.every(clauses, isUpperBound)
+		? Arr.some(clauses, (clause) => holds(clause, version))
+		: Arr.every(clauses, (clause) => holds(clause, version))
 }
 
 /** The lowest exclusive upper bound above `version`: the fix when an advisory lists no patched version. */
 export function rangeEndFor(range: string, version: string): string | null {
-	const ends = (rangeClauses(range) ?? []).flatMap((clause) =>
+	const ends = Arr.flatMap(rangeClauses(range) ?? [], (clause) =>
 		clause.op === "<" && compareVersions(clause.bound, version) > 0 ? [clause.bound] : [],
 	)
 	return lowestVersion(ends)
 }
 
 const patchedVersions = (patched: string | null): ReadonlyArray<string> =>
-	(patched ?? "")
-		.split(",")
-		.flatMap((raw) => {
-			const fixed = normalizeRuntimeVersion(raw)
-			return fixed === undefined ? [] : [fixed]
-		})
-		.sort(compareVersions)
+	Arr.flatMap(Str.split(",")(patched ?? ""), (raw) => {
+		const fixed = normalizeRuntimeVersion(raw)
+		return fixed === undefined ? [] : [fixed]
+	}).sort(compareVersions)
 
 /** The lowest of a GitHub advisory's comma-separated patched versions above `version`, null for none. */
 export function patchedVersionFor(patched: string | null, version: string): string | null {
-	return lowestVersion(patchedVersions(patched).filter((fixed) => compareVersions(fixed, version) > 0))
+	return lowestVersion(Arr.filter(patchedVersions(patched), (fixed) => compareVersions(fixed, version) > 0))
 }
 
-const lineOf = (version: string) => version.split(".").slice(0, 2).join(".")
+const lineOf = (version: string) => Arr.join(Str.split(".")(version).slice(0, 2), ".")
 
 /**
  * Whether `version` already has a fix from patched versions such as `2.1.13, 2.2.13, >=2.3.3`: one on
@@ -152,7 +153,7 @@ const lineOf = (version: string) => version.split(".").slice(0, 2).join(".")
  */
 export function isPatched(patched: string | null, version: string): boolean {
 	const fixes = patchedVersions(patched)
-	const below = fixes.filter((fixed) => compareVersions(fixed, version) <= 0)
+	const below = Arr.filter(fixes, (fixed) => compareVersions(fixed, version) <= 0)
 	const nearest = below.at(-1)
 	return nearest !== undefined && (nearest === fixes.at(-1) || lineOf(nearest) === lineOf(version))
 }
@@ -173,14 +174,15 @@ export function fixedVersionFor(
 	version: string,
 	compare: VersionComparator = compareVersions,
 ): string | null {
-	const spans = events.reduce<{ introduced: string | null; fixes: ReadonlyArray<string> }>(
+	const spans = Arr.reduce<OsvRangeEvent, { introduced: string | null; fixes: ReadonlyArray<string> }>(
+		events,
+		{ introduced: null, fixes: [] },
 		(state, event) => {
 			if (event.introduced !== undefined) return { ...state, introduced: event.introduced }
 			if (event.fixed === undefined || state.introduced === null) return state
 			const holds = compare(version, state.introduced) >= 0 && compare(version, event.fixed) < 0
 			return { introduced: null, fixes: holds ? [...state.fixes, event.fixed] : state.fixes }
 		},
-		{ introduced: null, fixes: [] },
 	)
 	return spans.fixes[0] ?? null
 }
@@ -192,12 +194,12 @@ const SEVERITY_RANK = { critical: 0, high: 1, medium: 2, low: 3, unknown: 4 } sa
 
 /** Worst first, then newest. */
 export const sortAdvisories = (advisories: ReadonlyArray<RuntimeAdvisory>): ReadonlyArray<RuntimeAdvisory> =>
-	[...advisories].sort(
-		(a, b) =>
-			SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity] ||
-			(b.published ?? "").localeCompare(a.published ?? "") ||
-			a.id.localeCompare(b.id),
-	)
+	[...advisories].sort((a, b) => {
+		const bySeverity = SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity]
+		if (bySeverity !== 0) return bySeverity
+		const byPublished = Str.localeCompare(a.published ?? "")(b.published ?? "")
+		return byPublished !== 0 ? byPublished : Str.localeCompare(b.id)(a.id)
+	})
 
 export const isUrgentSeverity = (severity: AdvisorySeverity): boolean =>
 	severity === "critical" || severity === "high"
@@ -207,9 +209,8 @@ export const lowestVersion = (
 	versions: ReadonlyArray<string>,
 	compare: VersionComparator = compareVersions,
 ): string | null =>
-	versions.reduce<string | null>(
-		(lowest, version) => (lowest === null || compare(version, lowest) < 0 ? version : lowest),
-		null,
+	Arr.reduce<string, string | null>(versions, null, (lowest, version) =>
+		lowest === null || compare(version, lowest) < 0 ? version : lowest,
 	)
 
 export interface AdvisorySummary {
@@ -229,7 +230,7 @@ export interface AdvisorySummary {
 
 export function summarizeAdvisories(advisories: ReadonlyArray<RuntimeAdvisory>): AdvisorySummary {
 	const count = (severity: AdvisorySeverity) =>
-		advisories.filter((advisory) => advisory.severity === severity).length
+		Arr.filter(advisories, (advisory) => advisory.severity === severity).length
 	const counts = {
 		critical: count("critical"),
 		high: count("high"),
@@ -237,16 +238,15 @@ export function summarizeAdvisories(advisories: ReadonlyArray<RuntimeAdvisory>):
 		low: count("low"),
 		unknown: count("unknown"),
 	}
-	const urgent = advisories.filter((advisory) => isUrgentSeverity(advisory.severity))
-	const fixes = urgent.flatMap((advisory) => (advisory.fixedIn === null ? [] : [advisory.fixedIn]))
+	const urgent = Arr.filter(advisories, (advisory) => isUrgentSeverity(advisory.severity))
+	const fixes = Arr.flatMap(urgent, (advisory) => (advisory.fixedIn === null ? [] : [advisory.fixedIn]))
 	return {
 		total: advisories.length,
 		counts,
-		worst: ADVISORY_SEVERITIES.find((severity) => counts[severity] > 0) ?? null,
+		worst: Option.getOrNull(Arr.findFirst(ADVISORY_SEVERITIES, (severity) => counts[severity] > 0)),
 		urgent: counts.critical + counts.high > 0,
-		upgradeTo: fixes.reduce<string | null>(
-			(highest, fix) => (highest === null || compareVersions(fix, highest) > 0 ? fix : highest),
-			null,
+		upgradeTo: Arr.reduce<string, string | null>(fixes, null, (highest, fix) =>
+			highest === null || compareVersions(fix, highest) > 0 ? fix : highest,
 		),
 		unfixed: urgent.length - fixes.length,
 	}

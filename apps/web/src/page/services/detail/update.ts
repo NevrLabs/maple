@@ -1,18 +1,19 @@
+import * as Policy from "@maple/domain/policy"
 import { UPTIME_LIST_LIMIT } from "../../alerts/shared/uptime-commands"
 import { ENDPOINTS_LIMIT } from "../../../components/services/service-endpoints"
 import { buildServiceOpenIssuesQuery } from "../../../lib/services/error-issues"
 import { parseWarehouseDateTime } from "@maple/query-engine"
-import { Option, type Result } from "effect"
+import { Option, type Result, Array as Arr, Record as Rec, Order } from "effect"
 import { AsyncData, Command } from "foldkit"
-import * as Chart from "../../../charts/chart"
-import { LoadChartRuntime } from "../../../charts/chart-runtime"
-import * as Keyed from "../../../data/keyed"
-import { requestKey } from "../../../data/request-key"
+import * as Chart from "@maple/views/charts/chart"
+import { LoadChartRuntime } from "@maple/views/charts/chart-runtime"
+import * as Keyed from "@maple/views/data/keyed"
+import { requestKey } from "@maple/views/data/request-key"
 import { commitDetailKey } from "../../kit/commit-card"
 import { resolveWindow, type TimeWindow } from "../../../data/time-range"
 import type { Resources } from "../../../platform/resources"
 import { AppRoute, hrefOf } from "../../../route"
-import * as Select from "../../../ui/select"
+import * as Select from "@maple/views/ui/select"
 import { type PageContext, PageOutMessage, type PageReturn } from "../../contract"
 import * as TimeRangePicker from "../../kit/time-range-picker"
 import {
@@ -54,7 +55,7 @@ import { deriveDeploys, isResolvableSha } from "./derive-panels"
 import { matchesFilter } from "./derive-api"
 import * as EndpointPeek from "./endpoint-peek/model"
 import * as EndpointPeekUpdate from "./endpoint-peek/update"
-import { Message, type RequestMode } from "./message"
+import { Message, type RequestMode, type RetryTarget } from "./message"
 import type { Commit, CommitFailure, Model } from "./model"
 import type { Endpoint } from "./model-tabs"
 import { groupsOf, visibleEndpoints } from "./view-api"
@@ -86,17 +87,14 @@ const keyed = <A, E>(
 
 /** Steps run in order, each against the Model the previous ones patched. */
 const runSteps = (model: Model, steps: ReadonlyArray<(model: Model) => Step>): Return =>
-	steps.reduce<Return>(
-		(result, step) => {
-			const next = step(result.model)
-			return {
-				...result,
-				model: { ...result.model, ...next.patch },
-				commands: [...(result.commands ?? []), ...next.commands],
-			}
-		},
-		{ model },
-	)
+	Arr.reduce<(model: Model) => Step, Return>(steps, { model }, (result, step) => {
+		const next = step(result.model)
+		return {
+			...result,
+			model: { ...result.model, ...next.patch },
+			commands: [...(result.commands ?? []), ...next.commands],
+		}
+	})
 
 /** `useEffectiveTimeRange(startTime, endTime, timePreset ?? "12h")`; snapped until a Reload. */
 export const windowOf = (model: Model, context: PageContext, nowMs: number): TimeWindow =>
@@ -178,7 +176,7 @@ const dependenciesStep =
 const samplingActive = (model: Model): boolean =>
 	Option.match(AsyncData.getData(model.overview.data), {
 		onNone: () => false,
-		onSome: (overview) => overview.points.some((point) => point.hasSampling),
+		onSome: (overview) => Arr.some(overview.points, (point) => point.hasSampling),
 	})
 
 /** `ServiceErrorsPanel`'s query: one selected environment scopes it to the window, capped at 90 days. */
@@ -199,14 +197,14 @@ const overviewShas = (model: Model): ReadonlyArray<string> =>
 	Option.match(AsyncData.getData(model.overview.data), {
 		onNone: () => [],
 		onSome: (overview) => {
-			const buckets = overview.points.map((point) => point.bucket)
+			const buckets = Arr.map(overview.points, (point) => point.bucket)
 			const markers = commitMarkers(overview.releases, buckets, model.commits)
 			const deploys = deriveDeploys(overview.releases)
 			const visible = deploys.slice(0, model.isDeploysExpanded ? DEPLOYS_EXPANDED : DEPLOYS_RAIL)
 			return [
 				...new Set([
 					...markerShas(markers),
-					...visible.flatMap((deploy) => (isResolvableSha(deploy.sha) ? [deploy.sha] : [])),
+					...Arr.flatMap(visible, (deploy) => (isResolvableSha(deploy.sha) ? [deploy.sha] : [])),
 				]),
 			]
 		},
@@ -219,17 +217,17 @@ export const DEPLOYS_EXPANDED = 50
 const commitsStep =
 	(context: PageContext) =>
 	(model: Model): Step => {
-		const missing = overviewShas(model).filter((sha) => model.commits[sha] === undefined)
+		const missing = Arr.filter(overviewShas(model), (sha) => model.commits[sha] === undefined)
 		return missing.length === 0
 			? NONE
 			: {
 					patch: {
 						commits: {
 							...model.commits,
-							...Object.fromEntries(missing.map((sha) => [sha, AsyncData.Loading()])),
+							...Rec.fromEntries(Arr.map(missing, (sha) => [sha, AsyncData.Loading()])),
 						},
 					},
-					commands: missing.map((sha) =>
+					commands: Arr.map(missing, (sha) =>
 						FetchCommit({ key: commitDetailKey(context.orgId, sha), sha }),
 					),
 				}
@@ -339,13 +337,24 @@ const isCollapsedKind = (kind: string) => kind === "probes" || kind === "unroute
 export const seriesSpanNames = (model: Model): ReadonlyArray<string> =>
 	model.endpoints.retained === true
 		? []
-		: groupsOf(loadedEndpoints(model), model.sorts.endpoints)
-				.filter((group) => !isCollapsedKind(group.kind))
-				.flatMap((group) => group.endpoints)
-				.toSorted((a, b) => b.estimatedSpanCount - a.estimatedSpanCount)
-				.slice(0, SPARKLINE_ENDPOINTS)
-				.map((endpoint) => endpoint.spanName)
-				.toSorted()
+		: Arr.sort(
+				Arr.map(
+					Arr.sort(
+						Arr.flatMap(
+							Arr.filter(
+								groupsOf(loadedEndpoints(model), model.sorts.endpoints),
+								(group) => !isCollapsedKind(group.kind),
+							),
+							(group: ReturnType<typeof groupsOf>[number]) => group.endpoints,
+						),
+						Order.flip(
+							Order.mapInput(Order.Number, (endpoint: Endpoint) => endpoint.estimatedSpanCount),
+						),
+					).slice(0, SPARKLINE_ENDPOINTS),
+					(endpoint) => endpoint.spanName,
+				),
+				Order.String,
+			)
 
 /** What `ServiceApiTab` mounts: the endpoints, the KPI overview, the status rows and the sparklines. */
 const apiTabSteps = (context: PageContext, window: TimeWindow, mode: RequestMode): Steps => [
@@ -401,7 +410,7 @@ const apiTabSteps = (context: PageContext, window: TimeWindow, mode: RequestMode
 export const tableRows = (model: Model): ReadonlyArray<Endpoint> =>
 	visibleEndpoints(
 		groupsOf(
-			loadedEndpoints(model).filter((endpoint) =>
+			Arr.filter(loadedEndpoints(model), (endpoint) =>
 				matchesFilter(endpoint, model.endpointFilter, model.endpointQuery),
 			),
 			model.sorts.endpoints,
@@ -451,8 +460,10 @@ const liftPeek = (model: Model, result: EndpointPeekUpdate.Return): Return => {
 
 const stepTarget = (model: Model, step: 1 | -1): string | undefined => {
 	const rows = tableRows(model)
-	const index = rows.findIndex((row) => row.spanName === model.search.endpoint)
-	return index < 0 ? undefined : rows[index + step]?.spanName
+	return Option.match(
+		Arr.findFirstIndex(rows, (row) => row.spanName === model.search.endpoint),
+		{ onNone: () => undefined, onSome: (index) => rows[index + step]?.spanName },
+	)
 }
 
 /**
@@ -464,10 +475,14 @@ const reconcilePeek = (model: Model): Readonly<{ model: Model; clear: boolean }>
 	const spanName = model.search.endpoint
 	if (spanName === undefined || tabOf(model.search) !== "api" || !AsyncData.isSuccess(model.endpoints.data))
 		return { model, clear: false }
-	if (tableRows(model).some((row) => row.spanName === spanName)) return { model, clear: false }
-	const group = groupsOf(loadedEndpoints(model), model.sorts.endpoints).find(
-		(candidate) =>
-			isCollapsedKind(candidate.kind) && candidate.endpoints.some((row) => row.spanName === spanName),
+	if (Arr.some(tableRows(model), (row) => row.spanName === spanName)) return { model, clear: false }
+	const group = Option.getOrUndefined(
+		Arr.findFirst(
+			groupsOf(loadedEndpoints(model), model.sorts.endpoints),
+			(candidate) =>
+				isCollapsedKind(candidate.kind) &&
+				Arr.some(candidate.endpoints, (row) => row.spanName === spanName),
+		),
 	)
 	return group === undefined || model.expandedEndpointGroups.includes(group.kind)
 		? { model, clear: true }
@@ -574,7 +589,7 @@ export const init = (
 		},
 		environmentSelect: Select.init("service-environment", { value: ALL_ENVIRONMENTS, selectedIndex: 0 }),
 		timePicker: TimeRangePicker.init("service-time-range"),
-		charts: Object.fromEntries(CHART_IDS.map((id) => [id, Chart.init()])),
+		charts: Rec.fromEntries(Arr.map(CHART_IDS, (id) => [id, Chart.init()])),
 		chartRuntime: { _tag: "Loading" },
 		themeColors: null,
 		refreshVersion: 0,
@@ -715,6 +730,24 @@ const settleCommit = (model: Model, sha: string, result: Result.Result<Commit, C
 	},
 })
 
+/** Clears the failed read so `sync` asks for it again. */
+const retrying = (model: Model, target: RetryTarget): Model => {
+	switch (target) {
+		case "Overview":
+			return { ...model, overview: Keyed.idle() }
+		case "Operations":
+			return { ...model, operations: Keyed.idle() }
+		case "Dependencies":
+			return { ...model, dependencies: Keyed.idle() }
+		case "Endpoints":
+			return { ...model, endpoints: Keyed.idle() }
+		case "ApiOverview":
+			return { ...model, apiOverview: Keyed.idle() }
+		case "StatusBreakdown":
+			return { ...model, statusBreakdown: Keyed.idle() }
+	}
+}
+
 export const update = (model: Model, message: Message, context: PageContext): Return =>
 	Message.match<Return>(message, {
 		CompletedResolveClock: ({ nowMs, mode }) => sync({ ...model, nowMs }, context, mode),
@@ -784,7 +817,7 @@ export const update = (model: Model, message: Message, context: PageContext): Re
 					model: {
 						...model,
 						expandedEndpointGroups: model.expandedEndpointGroups.includes(kind)
-							? model.expandedEndpointGroups.filter((open) => open !== kind)
+							? Arr.filter(model.expandedEndpointGroups, (open) => open !== kind)
 							: [...model.expandedEndpointGroups, kind],
 					},
 				},
@@ -797,11 +830,11 @@ export const update = (model: Model, message: Message, context: PageContext): Re
 		CompletedFetchUsage: ({ key, result }) => ({
 			model: { ...model, usage: Keyed.accept(model.usage, key, result) },
 		}),
-		CompletedFetchUptimeMonitors: ({ key, result, isAdmin }) => ({
+		CompletedFetchUptimeMonitors: ({ key, result, grants }) => ({
 			model: {
 				...model,
 				uptimeMonitors: Keyed.accept(model.uptimeMonitors, key, result),
-				canCreateUptimeMonitors: isAdmin,
+				canCreateUptimeMonitors: Policy.has(grants, "uptime_monitors:manage"),
 			},
 		}),
 		CompletedFetchRuntimes: ({ key, result }) => ({
@@ -833,7 +866,7 @@ export const update = (model: Model, message: Message, context: PageContext): Re
 		CompletedReloadSpin: ({ version }) =>
 			version === model.refreshVersion ? { model: { ...model, isReloading: false } } : { model },
 		// `useAtomRefresh` on the failed overview: forget the slot, so the next sync requests it again.
-		ClickedRetry: () => sync({ ...model, overview: Keyed.idle() }, context, "Load"),
+		ClickedRetry: ({ target }) => sync(retrying(model, target), context, "Load"),
 		ClickedResetTimeRange: () =>
 			navigate(
 				model,

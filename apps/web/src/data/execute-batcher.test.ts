@@ -3,10 +3,11 @@ import {
 	type QueryEngineBatchOutcome,
 	QueryEngineExecuteRequest,
 } from "@maple/query-engine"
-import { Effect, Exit, Fiber, Ref, type Scope } from "effect"
+import { Effect, Exit, Fiber, Ref, type Scope, Array as Arr } from "effect"
 import { TestClock } from "effect/testing"
-import { describe, expect, test } from "vitest"
-import { MissingBatchResultError, makeExecuteBatcher, type SendExecuteBatch } from "./execute-batcher"
+import { assert, describe, expect, test } from "vitest"
+import { MissingBatchResultError } from "@maple/web-data/warehouse/warehouse-services"
+import { makeExecuteBatcher, type SendExecuteBatch } from "./execute-batcher"
 
 const WINDOW_MS = 15
 
@@ -32,7 +33,7 @@ const countOf = (outcome: { readonly result: { readonly kind: string; readonly d
 	outcome.result.kind === "count" ? outcome.result.data : undefined
 
 const echo = (requests: ReadonlyArray<QueryEngineExecuteRequest>): ReadonlyArray<QueryEngineBatchOutcome> =>
-	requests.map((_, index) => ({
+	Arr.map(requests, (_, index) => ({
 		outcome: "success",
 		result: { kind: "count", source: "logs", data: { total: index } },
 	}))
@@ -69,7 +70,7 @@ describe("makeExecuteBatcher", () => {
 				yield* TestClock.adjust("1 millis")
 				const responses = yield* Fiber.joinAll([first, second])
 				expect(yield* Ref.get(batches)).toEqual([2])
-				expect(responses.map(countOf)).toEqual([{ total: 0 }, { total: 1 }])
+				expect(Arr.map(responses, countOf)).toEqual([{ total: 0 }, { total: 1 }])
 			}),
 		))
 
@@ -115,7 +116,7 @@ describe("makeExecuteBatcher", () => {
 		run(
 			Effect.gen(function* () {
 				const { send } = yield* recording((requests) =>
-					requests.flatMap((_, index): ReadonlyArray<QueryEngineBatchOutcome> =>
+					Arr.flatMap(requests, (_, index): ReadonlyArray<QueryEngineBatchOutcome> =>
 						index === 1
 							? [{ outcome: "failure", error: timeout }]
 							: index === 2
@@ -129,6 +130,9 @@ describe("makeExecuteBatcher", () => {
 				)
 				yield* TestClock.adjust(`${WINDOW_MS} millis`)
 				const [ok, timedOut, missing] = yield* Fiber.joinAll(fibers)
+				assert.isDefined(ok)
+				assert.isDefined(timedOut)
+				assert.isDefined(missing)
 				expect(Exit.isSuccess(ok)).toBe(true)
 				// Rejected with its own public body, as the promise batcher rejects it.
 				expect(timedOut).toEqual(Exit.fail(timeout))
@@ -179,8 +183,8 @@ describe("makeExecuteBatcher", () => {
 				)
 				yield* TestClock.adjust(`${WINDOW_MS} millis`)
 				const exits = yield* Fiber.joinAll(fibers)
-				expect(exits.every(Exit.isFailure)).toBe(true)
-				expect(exits.some(Exit.hasInterrupts)).toBe(false)
+				expect(Arr.every(exits, Exit.isFailure)).toBe(true)
+				expect(Arr.some(exits, Exit.hasInterrupts)).toBe(false)
 			}),
 		))
 })

@@ -4,20 +4,26 @@ import { docsUrl } from "../../../lib/docs"
 import { ingestUrl } from "../../../lib/services/common/ingest-url"
 import { AsyncData, Submodel } from "foldkit"
 import type { Html, HtmlBuilder } from "foldkit/html"
-import { button, linkButton } from "../../../ui/button"
-import * as CopyButton from "../../../ui/copy-button"
-import { confirmDialog } from "../../../ui/confirm-dialog"
-import { icon } from "../../../ui/icon"
-import { panel } from "../../../ui/panel"
-import { statusDot } from "../../../ui/status-dot"
+import { button, linkButton } from "@maple/views/ui/button"
+import * as CopyButton from "@maple/views/ui/copy-button"
+import { confirmDialog } from "@maple/views/ui/confirm-dialog"
+import { icon } from "@maple/views/ui/icon"
+import { panel } from "@maple/views/ui/panel"
+import { statusDot } from "@maple/views/ui/status-dot"
 import { INLINE_LINK_CLASS, settingsSection, settingsSections } from "../kit/section"
 import * as MappingDialogView from "./mapping-dialog-view"
 import { Message } from "./message"
-import type { Model } from "./model"
+import { canManageRules, canRollKeys, canViewKeys, type Model } from "./model"
 import { credentialRow, ingestKeyRows } from "./view-keys"
 import { connectInstructions, frameworkIconStrip, frameworkPicker } from "./view-setup"
+import { NO_KEYS, type SetupKeys } from "../../kit/guided-setup"
 import { deleteMappingDialog, mappingsSection, recommendationsSection } from "./view-rules"
 import { deleteRuleDialog, ingestRulesSection } from "./view-ingest-rules"
+import { typography } from "@maple/views/ui/typography"
+import { hstack } from "@maple/views/ui/stack"
+import { Array as Arr, String as Str } from "effect"
+import { textLink } from "@maple/views/ui/text-link"
+import { stripClass } from "@maple/views/ui/rule"
 
 // `IngestionSection`.
 
@@ -26,14 +32,17 @@ type H = HtmlBuilder<Message>
 /** `useIngestConnection`: the org's own (non-`demo-`) services and their span rate. */
 const connectionOf = (model: Model) => {
 	const rows = AsyncData.getOrElse(model.overview, () => [])
-	const real = rows.filter((row) => !row.serviceName.startsWith("demo-"))
+	const real = Arr.filter(rows, (row) => !Str.startsWith("demo-")(row.serviceName))
 	return {
 		isConnected: real.length > 0,
 		serviceCount: real.length,
-		spansPerMinute: real.reduce((sum, row) => sum + row.spanCount, 0) / 60,
-		privateKey: AsyncData.getOrElse(
-			AsyncData.map(model.ingest, (keys) => keys.private_key),
-			() => "",
+		spansPerMinute: Arr.reduce(real, 0, (sum, row) => sum + row.spanCount) / 60,
+		keys: AsyncData.getOrElse(
+			AsyncData.map(model.ingest, (keys): SetupKeys => ({
+				privateKey: keys.private_key,
+				publicKey: keys.public_key,
+			})),
+			() => NO_KEYS,
 		),
 	}
 }
@@ -42,11 +51,10 @@ const connectionOf = (model: Model) => {
 const unknownStatusBanner = (h: H): Html =>
 	panel(h, { className: "flex-row items-center gap-3 px-4 py-2.5" }, [
 		statusDot(h, { tone: "neutral", size: "lg" }),
-		h.span([h.Class("text-sm font-medium whitespace-nowrap")], ["Status unknown"]),
-		h.span(
-			[h.Class("truncate font-prose text-xs text-muted-foreground")],
-			["Couldn't check for incoming telemetry."],
-		),
+		typography(h, { size: "sm", weight: "medium", className: "whitespace-nowrap" }, ["Status unknown"]),
+		typography(h, { size: "xs", tone: "muted", truncate: true, className: "font-prose" }, [
+			"Couldn't check for incoming telemetry.",
+		]),
 	])
 
 const statusBanner = (h: H, model: Model): Html => {
@@ -57,23 +65,23 @@ const statusBanner = (h: H, model: Model): Html => {
 		connection.isConnected
 			? statusDot(h, { tone: "ok", size: "lg" })
 			: icon(h, "PulseIcon", { size: 12, className: "text-primary shrink-0" }),
-		h.span(
-			[h.Class("text-sm font-medium whitespace-nowrap")],
-			[connection.isConnected ? "Receiving telemetry" : "Waiting for telemetry"],
-		),
-		h.span(
-			[h.Class("text-muted-foreground truncate font-mono text-xs")],
-			[
-				connection.isConnected
-					? [
-							countLabel(connection.serviceCount, "service"),
-							spansPerMinute > 0 ? `${formatNumber(spansPerMinute)} spans/min` : null,
-						]
-							.filter((part) => part !== null)
-							.join(" · ")
-					: "watching for your first trace",
-			],
-		),
+		typography(h, { size: "sm", weight: "medium", className: "whitespace-nowrap" }, [
+			connection.isConnected ? "Receiving telemetry" : "Waiting for telemetry",
+		]),
+		typography(h, { size: "xs", tone: "muted", mono: true, truncate: true }, [
+			connection.isConnected
+				? Arr.join(
+						Arr.filter(
+							[
+								countLabel(connection.serviceCount, "service"),
+								spansPerMinute > 0 ? `${formatNumber(spansPerMinute)} spans/min` : null,
+							],
+							(part) => part !== null,
+						),
+						" · ",
+					)
+				: "watching for your first trace",
+		]),
 		h.div([h.Class("grow")], []),
 		...(connection.isConnected
 			? [
@@ -82,7 +90,8 @@ const statusBanner = (h: H, model: Model): Html => {
 						{
 							variant: "ghost",
 							size: "sm",
-							className: "text-muted-foreground hover:text-foreground active:text-foreground gap-1.5",
+							className:
+								"text-muted-foreground hover:text-foreground active:text-foreground gap-1.5",
 							href: "/traces",
 						},
 						["Explore traces", icon(h, "ArrowRightIcon")],
@@ -98,7 +107,7 @@ const endpointAndKeysSection = (h: H, model: Model): Html =>
 		h,
 		{
 			id: "ingestion-endpoint-heading",
-			title: model.isAdmin ? "Endpoint & keys" : "Endpoint",
+			title: canViewKeys(model) ? "Endpoint & keys" : "Endpoint",
 			description: ["Point your OTLP exporter at the endpoint and authenticate with an ingest key."],
 			padded: false,
 			actions: h.a(
@@ -128,7 +137,7 @@ const endpointAndKeysSection = (h: H, model: Model): Html =>
 								message: CopyButton.Message.ClickedCopy({ text }),
 							}),
 					}),
-					...(model.isAdmin ? ingestKeyRows(h, model) : []),
+					...(canViewKeys(model) ? ingestKeyRows(h, model) : []),
 					manageSourcesRow(h),
 				],
 			),
@@ -137,22 +146,14 @@ const endpointAndKeysSection = (h: H, model: Model): Html =>
 
 /** The pointer to `/sources` under the keys. */
 const manageSourcesRow = (h: H): Html =>
-	h.div(
-		[h.Class("text-muted-foreground flex items-center gap-2 px-4 py-2.5 text-xs")],
-		[
-			icon(h, "ConnectionIcon", { size: 12, className: "shrink-0" }),
-			h.span([h.Class("grow font-prose")], ["Give each sender its own token, rules and pause switch."]),
-			h.a(
-				[
-					h.Href("/sources"),
-					h.Class(
-						"text-foreground inline-flex items-center gap-1 hover:underline active:underline underline-offset-2",
-					),
-				],
-				["Manage sources", icon(h, "ChevronRightIcon", { size: 12 })],
-			),
-		],
-	)
+	hstack(h, { gap: "2", align: "center", className: "text-muted-foreground px-4 py-2.5 text-xs" }, [
+		icon(h, "ConnectionIcon", { size: 12, className: "shrink-0" }),
+		h.span([h.Class("grow font-prose")], ["Give each sender its own token, rules and pause switch."]),
+		textLink(h, { href: "/sources", tone: "inherit", className: "text-foreground" }, [
+			"Manage sources",
+			icon(h, "ChevronRightIcon", { size: 12 }),
+		]),
+	])
 
 const rollKeyDialog = (h: H, model: Model): Html =>
 	confirmDialog(h, {
@@ -192,34 +193,31 @@ const addServiceSection = (h: H, model: Model): Html => {
 						[],
 						[
 							// Its own wrapping row, so the chips never crowd the section heading.
-							h.div([h.Class("border-b px-4 py-3")], [frameworkPicker(h, model.framework)]),
-							connectInstructions(h, model, connection.privateKey),
+							h.div([h.Class(stripClass("header"))], [frameworkPicker(h, model.framework)]),
+							connectInstructions(h, model, connection.keys),
 						],
 					)
-				: h.div(
-						[h.Class("flex items-center gap-3 px-4 py-3")],
-						[
-							frameworkIconStrip(h),
-							h.span(
-								[h.Class("text-muted-foreground min-w-0 grow truncate text-xs")],
-								["Next.js, Node.js, Python, Go, Effect and more"],
-							),
-							button(
-								h,
-								{
-									variant: "outline",
-									size: "sm",
-									attributes: [h.OnClick(Message.ClickedShowSetup())],
-								},
-								[
-									"Show setup",
-									icon(h, "ChevronRightIcon", {
-										attributes: [h.DataAttribute("icon", "inline-end")],
-									}),
-								],
-							),
-						],
-					),
+				: hstack(h, { gap: "3", className: "px-4 py-3" }, [
+						frameworkIconStrip(h),
+						h.span(
+							[h.Class("text-muted-foreground min-w-0 grow truncate text-xs")],
+							["Node.js, Python, Go, Java, Ruby, the browser and more"],
+						),
+						button(
+							h,
+							{
+								variant: "outline",
+								size: "sm",
+								attributes: [h.OnClick(Message.ClickedShowSetup())],
+							},
+							[
+								"Show setup",
+								icon(h, "ChevronRightIcon", {
+									attributes: [h.DataAttribute("icon", "inline-end")],
+								}),
+							],
+						),
+					]),
 		],
 	)
 }
@@ -234,7 +232,7 @@ export const view = Submodel.defineView<Model, Message, NoInputs>((model, _input
 		endpointAndKeysSection(h, model),
 		addServiceSection(h, model),
 		...recommendationsSection(h, model),
-		ingestRulesSection(h, model.ingestRules, model.isAdmin),
+		ingestRulesSection(h, model.ingestRules, canManageRules(model)),
 		mappingsSection(h, model),
 		h.submodel({
 			slotId: "ingestion-mapping-dialog",
@@ -244,7 +242,7 @@ export const view = Submodel.defineView<Model, Message, NoInputs>((model, _input
 			viewInputs: { slotId: "ingestion-mapping-dialog-popup" },
 		}),
 		deleteMappingDialog(h, model),
-		...(model.isAdmin ? [deleteRuleDialog(h, model.ingestRules)] : []),
-		...(model.isAdmin ? [rollKeyDialog(h, model)] : []),
+		...(canManageRules(model) ? [deleteRuleDialog(h, model.ingestRules)] : []),
+		...(canRollKeys(model) ? [rollKeyDialog(h, model)] : []),
 	]),
 )

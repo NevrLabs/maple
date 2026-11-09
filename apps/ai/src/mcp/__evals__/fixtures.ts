@@ -1,7 +1,8 @@
 import type { SpanHierarchyOutput, ListLogsOutput } from "@maple/domain/tinybird"
 import { FIXTURES } from "./utils"
+import { String as Str } from "effect"
 
-const hex = (n: number): string => n.toString(16).padStart(16, "0")
+const hex = (n: number): string => Str.padStart(16, "0")(n.toString(16))
 
 /** Total spans in the synthetic large trace (> MAX_OVERVIEW_SPANS=100 to force the cap). */
 export const LARGE_TRACE_SPAN_COUNT = 150
@@ -170,6 +171,8 @@ const AI_SPAN_ATTRIBUTES = {
 	"gen_ai.request.model": "gpt-5",
 	"gen_ai.response.model": "gpt-5",
 	"gen_ai.usage.input_tokens": "1200",
+	"maple_ai.llm_call": "1",
+	"maple_ai.usage.input_tokens": "1200",
 	"gen_ai.input.messages": JSON.stringify([
 		{ role: "user", parts: [{ type: "text", content: "why is checkout failing?" }] },
 	]),
@@ -242,6 +245,8 @@ export const makeAiTraceSpanRows = (): ReadonlyArray<Record<string, unknown>> =>
 			"gen_ai.tool.name": "run_sql",
 			"gen_ai.tool.call.id": "call_1",
 			"gen_ai.tool.call.result": JSON.stringify({ error: "table orders does not exist" }),
+			"maple_ai.llm_call": "0",
+			"maple_ai.tool_call": "1",
 		},
 	}),
 ]
@@ -251,14 +256,18 @@ export const makeAiTraceSpanRows = (): ReadonlyArray<Record<string, unknown>> =>
 export const makePartialAiTraceSpanRows = (): ReadonlyArray<Record<string, unknown>> =>
 	Array.from({ length: PARTIAL_AI_TRACE_SPANS }, (_, index) =>
 		aiSpanRow({
-			spanId: `c${index.toString(16).padStart(15, "0")}`,
+			spanId: `c${Str.padStart(15, "0")(index.toString(16))}`,
 			spanName: "chat gpt-5",
 			// The first span is the LLM call that requested `call_1`; the tool span
 			// that answered it is not in this trace's first page.
 			attributes:
 				index === 0
 					? AI_SPAN_ATTRIBUTES
-					: { "maple_ai.vendor.id": "eve", "gen_ai.operation.name": "chat" },
+					: {
+							"maple_ai.vendor.id": "eve",
+							"gen_ai.operation.name": "chat",
+							"maple_ai.llm_call": "1",
+						},
 			traceId: PARTIAL_AI_TRACE_ID,
 		}),
 	)

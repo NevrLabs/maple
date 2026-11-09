@@ -1,5 +1,5 @@
 /**
- * Self-hosted runtime ports: the same 13 seams `apiPorts()` (apps/api/src/worker/bindings.ts)
+ * Self-hosted runtime ports: the seams `apiPorts()` (apps/api/src/worker/bindings.ts)
  * fills from Cloudflare bindings, filled here from plain process resources so the unmodified
  * api route graph and alerting ticks run under Bun on Kubernetes.
  *
@@ -11,6 +11,7 @@ import { envPorts } from "@maple/backend/platform/env-ports"
 import {
 	ApiV2RateLimit,
 	AuditEventsQueueProducer,
+	CancellationReviewQueueProducer,
 	CliAuthRateLimit,
 	EmailSender,
 	MapleDbConnection,
@@ -20,6 +21,8 @@ import {
 	type RateLimiter,
 	ReplayBlobBucket,
 	SchemaApplyWorkflow,
+	ShareLinkRateLimit,
+	VcsBackfillQueueProducer,
 	VcsSyncQueueProducer,
 	type WorkflowStarter,
 	WorkflowStartError,
@@ -108,8 +111,12 @@ const statusPageStoreLayer = () => {
 export const selfhostPorts = (env: Record<string, unknown>, vcsSync?: QueueProducer) =>
 	Layer.mergeAll(
 		Layer.succeed(VcsSyncQueueProducer, vcsSync ?? droppingQueue("vcs-sync")),
+		// Both upstream VCS lanes use the durable selfhost consumer.
+		Layer.succeed(VcsBackfillQueueProducer, vcsSync ?? droppingQueue("vcs-backfill")),
 		Layer.succeed(PlanetScaleWebhookQueueProducer, droppingQueue("planetscale-webhooks")),
 		Layer.succeed(AuditEventsQueueProducer, droppingQueue("audit-events")),
+		Layer.succeed(CancellationReviewQueueProducer, droppingQueue("cancellation-reviews")),
+		Layer.succeed(ShareLinkRateLimit, memoryLimiter(6000, 60)),
 		Layer.succeed(ApiV2RateLimit, memoryLimiter(600, 60)),
 		Layer.succeed(CliAuthRateLimit, memoryLimiter(30, 60)),
 		Layer.succeed(McpOAuthRateLimit, memoryLimiter(60, 60)),

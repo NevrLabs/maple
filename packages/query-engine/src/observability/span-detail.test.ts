@@ -1,5 +1,6 @@
 import { assert, describe, it } from "@effect/vitest"
-import { Effect, Layer } from "effect"
+import { Effect, Layer, Array as Arr, String as Str } from "effect"
+import { TestClock } from "effect/testing"
 import { spanDetail } from "./span-detail"
 import { WarehouseExecutor, type WarehouseExecutorApi } from "./WarehouseExecutor"
 import { compiledQueryOf } from "../execution/compiled-input"
@@ -24,49 +25,118 @@ const detailRow = {
 	resourceAttributes: "{}",
 }
 
-/** Answers only unbounded lookups, as if the hinted window missed the span. */
-const makeExecutor = (sqls: string[]): WarehouseExecutorApi => ({
+const probeRow = {
+	traceId: TRACE_ID,
+	timestamp: "2026-03-20 07:59:58.000000000",
+	endTimestamp: "2026-03-20 08:00:03.000000000",
+}
+
+const isProbe = (sql: string) => Str.includes("FROM trace_index")(sql) && !Str.includes("FROM traces")(sql)
+
+const NOW = Date.parse("2026-03-25T00:00:00Z")
+const probeBound = (sql: string, op: ">=" | "<") => new RegExp(`Timestamp ${op} '([^']+)'`).exec(sql)?.[1]
+/** The fixture trace's rows fall inside this probe tier. */
+const probeHits = (sql: string) => {
+	const lower = probeBound(sql, ">=")
+	const upper = probeBound(sql, "<")
+	return (
+		(lower === undefined || probeRow.endTimestamp >= lower) &&
+		(upper === undefined || probeRow.timestamp < upper)
+	)
+}
+
+/**
+ * A warehouse holding the span. A hinted (bounded) lookup misses unless `boundedHit`, as if the
+ * hint pointed elsewhere; the trace-bounds probe answers when `indexed`.
+ */
+const makeExecutor = (
+	sqls: string[],
+	opts: { readonly indexed?: boolean; readonly boundedHit?: boolean } = {},
+): WarehouseExecutorApi => ({
 	orgId: OrgId.make("org_test"),
 	compiledQuery: (compiled) => compiledQueryOf(compiled).decodeRows([]).pipe(Effect.orDie),
 	compiledQueryFirst: (compiled) => {
 		const query = compiledQueryOf(compiled)
 		sqls.push(query.sql)
-		const bounded = query.sql.includes("Timestamp >=")
-		return query.decodeFirstRow(bounded ? [] : [detailRow]).pipe(Effect.orDie)
+		if (isProbe(query.sql))
+			return query
+				.decodeFirstRow(opts.indexed === false || !probeHits(query.sql) ? [] : [probeRow])
+				.pipe(Effect.orDie)
+		const bounded = Str.includes("Timestamp >=")(query.sql)
+		return query
+			.decodeFirstRow(!bounded || opts.boundedHit === true ? [detailRow] : [])
+			.pipe(Effect.orDie)
 	},
 	query: () => Effect.succeed({ data: [] }),
 })
 
-const run = (sqls: string[], timestampHint?: Date) =>
-	spanDetail({ traceId: TRACE_ID, spanId: SPAN_ID, timestampHint }).pipe(
-		Effect.provide(Layer.succeed(WarehouseExecutor, makeExecutor(sqls))),
-	)
+const run = (
+	sqls: string[],
+	timestampHint?: Date,
+	opts?: { readonly indexed?: boolean; readonly boundedHit?: boolean },
+) =>
+	Effect.gen(function* () {
+		yield* TestClock.setTime(NOW)
+		return yield* spanDetail({ traceId: TRACE_ID, spanId: SPAN_ID, timestampHint }).pipe(
+			Effect.provide(Layer.succeed(WarehouseExecutor, makeExecutor(sqls, opts))),
+		)
+	})
+
+/** A timestamp hint far from where the fixture trace actually is. */
+const STALE_HINT = new Date("2026-04-05T12:00:00Z")
 
 describe("spanDetail", () => {
 	it.effect("retries unbounded once when the hinted window misses", () =>
 		Effect.gen(function* () {
 			const sqls: string[] = []
-			const result = yield* run(sqls, new Date("2026-04-05T12:00:00Z"))
+			const result = yield* run(sqls, STALE_HINT)
 			assert.isTrue(result.found)
 			assert.isTrue(result.widened)
 			assert.lengthOf(sqls, 2)
+			assert.isFalse(Arr.some(sqls, isProbe))
 			assert.deepStrictEqual(result.spanAttributes, { "http.route": "/orders" })
 		}),
 	)
 
-	it.effect("does one lookup without a hint", () =>
+	it.effect("without a hint, locates the trace by day tier and reads inside its bounds", () =>
 		Effect.gen(function* () {
 			const sqls: string[] = []
-			const result = yield* run(sqls)
+			const result = yield* run(sqls, undefined, { boundedHit: true })
 			assert.isTrue(result.found)
 			assert.isFalse(result.widened)
-			assert.lengthOf(sqls, 1)
+			// The last day misses; the week tier holds the trace five days back, and the day below
+			// that tier's edge is checked for earlier spans.
+			assert.lengthOf(sqls, 4)
+			assert.isTrue(isProbe(Arr.getUnsafe(sqls, 0)))
+			assert.isTrue(isProbe(Arr.getUnsafe(sqls, 1)))
+			assert.include(sqls[1], "Bucket >= toStartOfFiveMinutes(toDateTime64('2026-03-18 00:00:00', 9))")
+			assert.include(sqls[3], "Timestamp >= '2026-03-20 07:59:57'")
+		}),
+	)
+
+	it.effect("reports an unindexed trace as not found after the day tiers, not an unbounded scan", () =>
+		Effect.gen(function* () {
+			const sqls: string[] = []
+			const result = yield* run(sqls, undefined, { indexed: false })
+			assert.isFalse(result.found)
+			assert.lengthOf(sqls, 3)
+			assert.isTrue(Arr.every(sqls, (sql) => isProbe(sql) && Str.includes("Bucket >=")(sql)))
+		}),
+	)
+
+	it.effect("does not widen a miss inside the trace's own bounds", () =>
+		Effect.gen(function* () {
+			const sqls: string[] = []
+			const result = yield* run(sqls, undefined, { boundedHit: false })
+			assert.isFalse(result.found)
+			assert.isFalse(result.widened)
+			assert.lengthOf(sqls, 4)
 		}),
 	)
 
 	it.effect("returns the stored name, status and timing beside the attributes", () =>
 		Effect.gen(function* () {
-			const result = yield* run([])
+			const result = yield* run([], undefined, { boundedHit: true })
 			assert.deepStrictEqual(result.span, {
 				spanName: "GET /orders",
 				rawSpanName: "GET",

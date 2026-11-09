@@ -1,21 +1,22 @@
 import { DashboardDocument, HEATMAP_SCALE_TYPES } from "@maple/domain/http"
 import { Schema } from "effect"
 import { defineMessageUnion } from "foldkit/message"
-import * as Chart from "../../../charts/chart"
-import { ThemeColors } from "../../../charts/theme-colors"
-import * as Combobox from "../../../ui/combobox"
-import * as Dialog from "../../../ui/dialog"
-import * as Select from "../../../ui/select"
-import * as Tabs from "../../../ui/tabs"
-import * as Tooltip from "../../../ui/tooltip"
+import * as Chart from "@maple/views/charts/chart"
+import { ThemeColors } from "@maple/views/charts/theme-colors"
+import * as Combobox from "@maple/views/ui/combobox"
+import * as Dialog from "@maple/views/ui/dialog"
+import * as Select from "@maple/views/ui/select"
+import * as Tabs from "@maple/views/ui/tabs"
+import * as Tooltip from "@maple/views/ui/tooltip"
 import * as QueryPanel from "../../kit/query-builder/panel"
 import * as TimeRangePicker from "../../kit/time-range-picker"
-import { LoadFailure } from "../../../data/load-failure"
+import { LoadFailure } from "@maple/views/data/load-failure"
 import { AutocompleteLookup, LookupNames } from "../../kit/autocomplete-lookups"
 import { WhereFieldMessage } from "../../kit/where-field"
 import { WidgetFailure } from "../kit/widget-data"
 import { LegendPosition, PointsMode } from "./editor-state"
-import { MetricPageSchema } from "./metric-option"
+import { MetricKeysSchema } from "../../kit/query-builder/metrics-body"
+import { MetricPageSchema } from "../../kit/query-builder/metric-options"
 import { ProductEdit } from "./product-edit"
 import { Suggestion, SuggestionLookup } from "./suggestions"
 
@@ -44,7 +45,6 @@ export const Message = defineMessageUnion({
 	ClickedSortColumn: { field: Schema.String, isText: Schema.Boolean },
 	GotTimePickerMessage: { message: TimeRangePicker.Message },
 	GotRangePickerMessage: { message: TimeRangePicker.Message },
-	CompletedSaveTimeRange: { error: Schema.NullOr(Schema.String) },
 	GotSourceTabsMessage: { message: Tabs.Message },
 	GotSelectMessage: { id: Schema.String, message: Select.Message },
 	GotQueryPanelMessage: { message: QueryPanel.Message },
@@ -86,6 +86,7 @@ export const Message = defineMessageUnion({
 	ToggledSparkline: {},
 	ChangedGaugeBound: { bound: Schema.Literals(["min", "max"]), value: Schema.String },
 	ChangedTableLimit: { value: Schema.String },
+	ChangedStatValueField: { value: Schema.String },
 	ChangedHeatmapScaleType: { scaleType: Schema.Literals(HEATMAP_SCALE_TYPES) },
 	ClickedApply: {},
 	CompletedSave: { error: Schema.NullOr(Schema.String) },
@@ -115,7 +116,7 @@ export const Message = defineMessageUnion({
 	},
 	CompletedFetchMetricKeys: {
 		metric: Schema.String,
-		result: Schema.Result(Schema.Array(Schema.String), LoadFailure),
+		result: Schema.Result(MetricKeysSchema, LoadFailure),
 	},
 	CompletedFetchAutocomplete: {
 		key: Schema.String,

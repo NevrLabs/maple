@@ -12,6 +12,7 @@ import { handleOidc, OidcRejection, oidcConfigFromEnv } from "./oidc"
 import { mintSession } from "./session"
 import { makeUsersStore, pgSql } from "./users"
 import { selfhostEnv, selfhostPorts, setSchemaApplyRunner } from "./ports"
+import { withRequestContext } from "./request-context"
 import { runSchemaApplyInline } from "./schema-apply"
 import { pgQueueStore, startVcsQueue, storeProducer } from "./vcs-queue"
 
@@ -75,7 +76,7 @@ const server = Bun.serve({
 			never,
 			Scope.Scope | Cloudflare.WorkerEnvironment
 		>
-		return Effect.runPromise(Effect.scoped(effect).pipe(Effect.provide(requestLayer)))
+		return Effect.runPromise(withRequestContext(Effect.scoped(effect).pipe(Effect.provide(requestLayer)), env))
 	},
 })
 console.log(`maple-api (selfhost) listening on :${server.port}`)

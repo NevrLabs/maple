@@ -1,3 +1,4 @@
+import * as Policy from "@maple/domain/policy"
 import { OrgId, UserId } from "@maple/domain"
 import { organizationFeatureFlagsFrom } from "@maple/domain/organization-feature-flags"
 import {
@@ -8,7 +9,7 @@ import {
 } from "@maple/domain/organization-regions"
 import { currentRegion } from "../lib/region"
 import { bootedClerk, type ClerkLoadError } from "./clerk-boot"
-import { Clock, Duration, Effect, Option, Predicate, Queue, Schema, Stream } from "effect"
+import { Clock, Duration, Effect, Option, Predicate, Queue, Schema, Stream, Array as Arr } from "effect"
 
 /** The slice of clerk-js this app reads (`window.Clerk`). */
 interface ClerkResources {
@@ -265,8 +266,8 @@ const toOrganization = (organization: ClerkOrganizationResource, nowMs: number):
 
 const toSnapshot = (resources: ClerkResources): Effect.Effect<ClerkSnapshot> =>
 	Effect.map(Clock.currentTimeMillis, (nowMs) => ({
-		maybeUserId: Option.map(Option.fromNullishOr(resources.user?.id), UserId.make),
-		maybeOrgId: Option.map(Option.fromNullishOr(resources.organization?.id), OrgId.make),
+		maybeUserId: Option.map(Option.fromNullishOr(resources.user?.id), (id) => UserId.make(id)),
+		maybeOrgId: Option.map(Option.fromNullishOr(resources.organization?.id), (id) => OrgId.make(id)),
 		maybeUser: Option.map(Option.fromNullishOr(resources.user), (user) => ({
 			fullName: user.fullName ?? null,
 			email: user.primaryEmailAddress?.emailAddress ?? null,
@@ -275,7 +276,7 @@ const toSnapshot = (resources: ClerkResources): Effect.Effect<ClerkSnapshot> =>
 		maybeOrganization: Option.map(Option.fromNullishOr(resources.organization), (organization) =>
 			toOrganization(organization, nowMs),
 		),
-		memberships: (resources.user?.organizationMemberships ?? []).map((membership) =>
+		memberships: Arr.map(resources.user?.organizationMemberships ?? [], (membership) =>
 			toOrganization(membership.organization, nowMs),
 		),
 		maybePendingTask: Option.filter(
@@ -323,8 +324,8 @@ export const signOutOfClerk: Effect.Effect<void> = Effect.promise(
 /** The active org's handle for its own rename and invitations (`useOrganization().organization`). */
 export interface ClerkTeamOrganization {
 	readonly name: string
-	/** `useAuth().orgRole === "org:admin"`: the role of the user's membership in it. */
-	readonly isAdmin: boolean
+	/** The user's membership role holds `members:manage`: they may invite and rename. */
+	readonly canManageMembers: boolean
 	readonly update: (input: { name: string }) => Promise<void>
 	readonly inviteMember: (input: { emailAddress: string; role: "org:member" }) => Promise<void>
 	readonly pendingInvitations: () => Promise<ReadonlyArray<string>>
@@ -334,12 +335,15 @@ export const clerkTeamOrganization: Effect.Effect<Option.Option<ClerkTeamOrganiz
 	Option.flatMap(Option.fromNullishOr(window.Clerk?.organization), (organization) => {
 		const { update, inviteMember, getInvitations } = organization
 		const missing = () => Promise.reject(new TypeError("Clerk organization method is missing"))
-		const membership = window.Clerk?.user?.organizationMemberships?.find(
+		const membership = Arr.findFirst(
+			window.Clerk?.user?.organizationMemberships ?? [],
 			(candidate) => candidate.organization.id === organization.id,
 		)
 		return Option.some<ClerkTeamOrganization>({
 			name: organization.name,
-			isAdmin: membership?.role === "org:admin",
+			canManageMembers: Option.exists(membership, (found) =>
+				Policy.can(found.role === undefined ? [] : [found.role], "members:manage"),
+			),
 			update: (input) =>
 				update === undefined ? missing() : update.call(organization, input).then(() => undefined),
 			inviteMember: (input) =>
@@ -351,7 +355,7 @@ export const clerkTeamOrganization: Effect.Effect<Option.Option<ClerkTeamOrganiz
 					? Promise.resolve([])
 					: getInvitations
 							.call(organization, { status: ["pending"] })
-							.then((page) => page.data.map((invitation) => invitation.emailAddress)),
+							.then((page) => Arr.map(page.data, (invitation) => invitation.emailAddress)),
 		})
 	}),
 )
@@ -359,7 +363,11 @@ export const clerkTeamOrganization: Effect.Effect<Option.Option<ClerkTeamOrganiz
 const SESSION_TOKEN_TIMEOUT = Duration.seconds(10)
 
 const sessionToken = (skipCache: boolean): Effect.Effect<Option.Option<string>> =>
-	Effect.tryPromise(() => window.Clerk?.session?.getToken({ skipCache }) ?? Promise.resolve(null)).pipe(
+	// Object form, not `clerkTry`: this runs at module load, before `clerkTry` is defined.
+	Effect.tryPromise({
+		try: () => window.Clerk?.session?.getToken({ skipCache }) ?? Promise.resolve(null),
+		catch: (cause) => new ClerkActionError({ message: "Could not read the session token", cause }),
+	}).pipe(
 		Effect.map(Option.fromNullishOr),
 		// Runs before the request deadline starts, so a stalled token refresh must not hang every request.
 		Effect.timeoutOrElse({ duration: SESSION_TOKEN_TIMEOUT, orElse: () => Effect.succeedNone }),
@@ -385,7 +393,7 @@ const stringField = (value: unknown, key: string): string | undefined =>
 
 /** `accountErrorMessage`: Clerk's own `longMessage`/`message`, else the error's, else `fallback`. */
 export const clerkErrorMessage = (cause: unknown, fallback: string): string => {
-	if (Predicate.hasProperty(cause, "errors") && Array.isArray(cause.errors)) {
+	if (Predicate.hasProperty(cause, "errors") && Arr.isArray(cause.errors)) {
 		const first: unknown = cause.errors[0]
 		return stringField(first, "longMessage") ?? stringField(first, "message") ?? fallback
 	}
@@ -397,19 +405,13 @@ const missing = (what: string) =>
 
 /** The signed-in Clerk user (`useUser().user`). */
 export const currentClerkUser: Effect.Effect<ClerkUserResource, ClerkActionError> = Effect.suspend(() =>
-	Option.match(Option.fromNullishOr(window.Clerk?.user), {
-		onNone: () => Effect.fail(missing("user")),
-		onSome: Effect.succeed,
-	}),
+	Effect.fromOption(Option.fromNullishOr(window.Clerk?.user), () => missing("user")),
 )
 
 /** The active organization (`useOrganization().organization`). */
 export const currentClerkOrganization: Effect.Effect<ClerkOrganizationResource, ClerkActionError> =
 	Effect.suspend(() =>
-		Option.match(Option.fromNullishOr(window.Clerk?.organization), {
-			onNone: () => Effect.fail(missing("organization")),
-			onSome: Effect.succeed,
-		}),
+		Effect.fromOption(Option.fromNullishOr(window.Clerk?.organization), () => missing("organization")),
 	)
 
 /** The current session's id (`useSession().session?.id`). */
@@ -430,8 +432,9 @@ export const REVERIFICATION_CANCELLED = "User cancelled attempted verification"
 /** `session_reverification_required`: the session is past the window for this write. */
 const isReverificationRequired = (error: ClerkActionError): boolean =>
 	Predicate.hasProperty(error.cause, "errors") &&
-	Array.isArray(error.cause.errors) &&
-	error.cause.errors.some(
+	Arr.isArray(error.cause.errors) &&
+	Arr.some(
+		error.cause.errors,
 		(entry: unknown) => stringField(entry, "code") === "session_reverification_required",
 	)
 
@@ -487,7 +490,7 @@ export const pendingUserInvitations: Effect.Effect<
 > = currentClerkUser.pipe(
 	Effect.flatMap(userInvitationPage),
 	Effect.map((invitations) =>
-		invitations.map((invitation) => ({
+		Arr.map(invitations, (invitation) => ({
 			id: invitation.id,
 			orgId: invitation.publicOrganizationData.id,
 			orgName: invitation.publicOrganizationData.name,
@@ -501,12 +504,13 @@ export const acceptUserInvitation = (invitationId: string): Effect.Effect<string
 	Effect.gen(function* () {
 		const user = yield* currentClerkUser
 		const invitations = yield* userInvitationPage(user)
-		const invitation = invitations.find((candidate) => candidate.id === invitationId)
-		if (invitation === undefined)
+		const found = Arr.findFirst(invitations, (candidate) => candidate.id === invitationId)
+		if (Option.isNone(found))
 			return yield* new ClerkActionError({
 				message: "This invitation is no longer pending",
 				cause: undefined,
 			})
+		const invitation = found.value
 		yield* clerkTry("Could not accept the invitation", () => invitation.accept.call(invitation))
 		return invitation.publicOrganizationData.id
 	})
@@ -520,12 +524,20 @@ export const switchAwayFrom = (orgId: string): Effect.Effect<void> =>
 		const memberships =
 			user === null || user === undefined
 				? []
-				: yield* Effect.tryPromise(() => user.getOrganizationMemberships()).pipe(
+				: yield* clerkTry("Could not list organization memberships", () =>
+						user.getOrganizationMemberships(),
+					).pipe(
 						Effect.map((page) => page.data),
 						Effect.orElseSucceed(() => []),
 					)
-		const next =
-			memberships.find((membership) => membership.organization.id !== orgId)?.organization.id ?? null
+		const next = Option.getOrNull(
+			Option.map(
+				Arr.findFirst(memberships, (membership) => membership.organization.id !== orgId),
+				(membership) => membership.organization.id,
+			),
+		)
 		// A failed switch falls through to navigation; Clerk's session refreshes on next load.
-		yield* Effect.tryPromise(() => clerk.setActive({ organization: next })).pipe(Effect.ignore)
+		yield* clerkTry("Could not switch organization", () => clerk.setActive({ organization: next })).pipe(
+			Effect.ignore,
+		)
 	})

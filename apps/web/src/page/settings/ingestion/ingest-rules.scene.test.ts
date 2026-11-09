@@ -1,11 +1,12 @@
+import * as Policy from "@maple/domain/policy"
 import { V2IngestRule, V2IngestRuleStats } from "@maple/domain/http/v2"
-import { Result, Schema } from "effect"
+import { Result, Schema, Array as Arr } from "effect"
 import { Submodel } from "foldkit"
 import { expect as expectView, given, Mount, role, scene, text, withViewInputs } from "foldkit/scene"
 import { describe, expect, test } from "vitest"
-import * as Dialog from "../../../ui/dialog"
-import * as Menu from "../../../ui/menu"
-import { toLoadFailure } from "../../../data/load-failure"
+import * as Dialog from "@maple/views/ui/dialog"
+import * as Menu from "@maple/views/ui/menu"
+import { toLoadFailure } from "@maple/views/data/load-failure"
 import { PageOutMessage } from "../../contract"
 import { menuIdOf, Message as RulesMessage } from "./ingest-rules"
 import { Message } from "./message"
@@ -13,8 +14,10 @@ import type { Model } from "./model"
 import { init, type InitOptions, update } from "./update"
 import { deleteRuleDialog, ingestRulesSection } from "./view-ingest-rules"
 
+const ADMIN = Policy.grantsOf(["org:admin"])
+
 const options: InitOptions = {
-	isAdmin: true,
+	grants: ADMIN,
 	orgKey: "default",
 	timeZone: "UTC",
 	pinnedNamespace: null,
@@ -24,14 +27,11 @@ const rules = (message: RulesMessage) => Message.GotIngestRulesMessage({ message
 /** The section and its dialog alone; the rest of the tab has its own tests. */
 const sectionView = Submodel.defineView<Model, Message, Readonly<{ readonly none?: never }>>(
 	(model, _inputs, h) =>
-		h.div(
-			[],
-			[ingestRulesSection(h, model.ingestRules, model.isAdmin), deleteRuleDialog(h, model.ingestRules)],
-		),
+		h.div([], [ingestRulesSection(h, model.ingestRules, true), deleteRuleDialog(h, model.ingestRules)]),
 )
 const view = withViewInputs(sectionView, {})()
 const names = (commands: ReadonlyArray<{ readonly name: string }> | undefined) =>
-	(commands ?? []).map(({ name }) => name)
+	Arr.map(commands ?? [], ({ name }) => name)
 
 const decodeRule = Schema.decodeUnknownSync(V2IngestRule)
 const dropDebug = decodeRule({
@@ -98,7 +98,7 @@ describe("ingest rules section", () => {
 	})
 
 	test("the last 24 hours show what each rule dropped or redacted, and No hits for the rest", () => {
-		const stats = Schema.decodeUnknownSync(V2IngestRuleStats)({
+		const stats = Schema.decodeSync(V2IngestRuleStats)({
 			object: "ingest_rule_stats",
 			start_time: "2026-10-27T12:00:00.000Z",
 			end_time: "2026-10-28T12:00:00.000Z",

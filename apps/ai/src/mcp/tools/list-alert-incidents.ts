@@ -1,11 +1,12 @@
 import { McpQueryError, type McpToolRegistrar } from "./types"
 import { truncate } from "../lib/format"
-import { Clock, Effect, Schema } from "effect"
+import { Clock, Effect, Schema, Array as Arr, String as Str } from "effect"
 import { ListAlertIncidentsOutput } from "@maple/domain/mcp-outputs"
 import { CurrentMcpTenant } from "../lib/query-warehouse"
 import { AlertReadModelsService } from "@maple/backend/services/alerts/AlertReadModelsService"
-import { ALERT_INCIDENT_STATUSES, ALERT_SEVERITIES, formatCondition } from "../lib/alert-rules"
+import { ackLabel, ALERT_INCIDENT_STATUSES, ALERT_SEVERITIES, formatCondition } from "../lib/alert-rules"
 import * as P from "../lib/params"
+import { onlySloIncidents, sloIncidentNext } from "../lib/slos"
 import { doc } from "../lib/tool-doc"
 import { parseWarehouseDateTime } from "@maple/query-engine"
 
@@ -20,11 +21,14 @@ export function registerListAlertIncidentsTool(server: McpToolRegistrar) {
 		name: "list_alert_incidents",
 		title: "List Alert Incidents",
 		description:
-			"List triggered alert incidents (open and resolved) with severity, group, condition and last observed value. For one rule's history with trigger, notify and resolve timestamps use get_incident_timeline.",
+			"Alert incidents: alert-rule breaches, open and resolved, with severity, group, condition and last observed value (flare-ups of an error issue are list_error_incidents). For one rule's trigger, notify and resolve timestamps use get_incident_timeline.",
 		parameters: Schema.Struct({
 			status: P.optionalOneOf(ALERT_INCIDENT_STATUSES, "Only incidents in this status"),
 			severity: P.optionalOneOf(ALERT_SEVERITIES, "Only incidents with this severity"),
 			group_key: P.optionalText("Only incidents with this exact group key"),
+			acknowledged: P.optionalFlag(
+				"true: open incidents someone acknowledged; false: open incidents nobody has. Implies status=open",
+			),
 			limit: P.limit({ default: 50, max: MAX_LIMIT, noun: "incidents" }),
 		}),
 		output: ListAlertIncidentsOutput,
@@ -38,6 +42,9 @@ export function registerListAlertIncidentsTool(server: McpToolRegistrar) {
 			const result = yield* readModels
 				.listIncidents(tenant.orgId, {
 					...(params.status === undefined ? undefined : { status: params.status }),
+					...(params.acknowledged === undefined
+						? undefined
+						: { acknowledged: params.acknowledged }),
 					limit: inMemoryFilter ? FILTERED_SCAN : params.limit + 1,
 				})
 				.pipe(
@@ -51,15 +58,16 @@ export function registerListAlertIncidentsTool(server: McpToolRegistrar) {
 					),
 				)
 
-			const matching = result.incidents.filter(
+			const matching = Arr.filter(
+				result.incidents,
 				(i) =>
 					(params.severity === undefined || i.severity === params.severity) &&
 					(params.group_key === undefined || i.groupKey === params.group_key),
 			)
 			const incidents = matching.slice(0, params.limit)
 
-			const openCount = incidents.filter((i) => i.status === "open").length
-			const resolvedCount = incidents.filter((i) => i.status === "resolved").length
+			const openCount = Arr.filter(incidents, (i) => i.status === "open").length
+			const resolvedCount = Arr.filter(incidents, (i) => i.status === "resolved").length
 
 			const recentlyResolvedCount =
 				params.status === "open"
@@ -68,7 +76,8 @@ export function registerListAlertIncidentsTool(server: McpToolRegistrar) {
 								Clock.currentTimeMillis.pipe(
 									Effect.map((now) => {
 										const cutoff = now - RECENTLY_RESOLVED_HOURS * 3_600_000
-										return resolved.incidents.filter(
+										return Arr.filter(
+											resolved.incidents,
 											(i) =>
 												i.resolvedAt !== null &&
 												parseWarehouseDateTime(i.resolvedAt) >= cutoff &&
@@ -93,7 +102,7 @@ export function registerListAlertIncidentsTool(server: McpToolRegistrar) {
 			})
 
 			return {
-				incidents: incidents.map((i) => ({
+				incidents: Arr.map(incidents, (i) => ({
 					id: i.id,
 					ruleId: i.ruleId,
 					ruleName: i.ruleName,
@@ -103,11 +112,18 @@ export function registerListAlertIncidentsTool(server: McpToolRegistrar) {
 					status: i.status,
 					holdReason: i.holdReason,
 					heldSince: i.heldSince,
+					acknowledgedAt: i.acknowledgedAt,
+					acknowledgedBy: ackLabel(i),
 					threshold: i.threshold,
 					comparator: i.comparator,
 					firstTriggeredAt: i.firstTriggeredAt,
 					resolvedAt: i.resolvedAt,
 					lastObservedValue: i.lastObservedValue,
+					...(i.anomalyIncidentId === undefined
+						? undefined
+						: { anomalyIncidentId: i.anomalyIncidentId }),
+					...(i.groupLabel === undefined ? undefined : { groupLabel: i.groupLabel }),
+					...(i.labels === undefined ? undefined : { labels: i.labels }),
 				})),
 				total: incidents.length,
 				openCount,
@@ -116,6 +132,7 @@ export function registerListAlertIncidentsTool(server: McpToolRegistrar) {
 				...(params.status === undefined ? undefined : { status: params.status }),
 				...(params.severity === undefined ? undefined : { severity: params.severity }),
 				...(params.group_key === undefined ? undefined : { groupKey: params.group_key }),
+				...(params.acknowledged === undefined ? undefined : { acknowledged: params.acknowledged }),
 				limit: params.limit,
 				hasMore: matching.length > params.limit,
 			}
@@ -123,7 +140,9 @@ export function registerListAlertIncidentsTool(server: McpToolRegistrar) {
 		render: (output) => {
 			const openGroups = [
 				...new Set(
-					output.incidents.flatMap((i) => (i.status === "open" && i.groupKey ? [i.groupKey] : [])),
+					Arr.flatMap(output.incidents, (i) =>
+						i.status === "open" && i.groupKey ? [i.groupKey] : [],
+					),
 				),
 			].slice(0, 3)
 			const limit = output.limit ?? 0
@@ -152,6 +171,10 @@ export function registerListAlertIncidentsTool(server: McpToolRegistrar) {
 					["Status", output.status],
 					["Severity", output.severity],
 					["Group", output.groupKey],
+					[
+						"Acknowledged",
+						output.acknowledged === undefined ? undefined : output.acknowledged ? "yes" : "no",
+					],
 				],
 				...(scanNotice === undefined ? undefined : { notices: [scanNotice] }),
 				...(output.incidents.length === 0
@@ -190,17 +213,19 @@ export function registerListAlertIncidentsTool(server: McpToolRegistrar) {
 										"Value",
 										"Triggered",
 									],
-									output.incidents.map((i) => [
+									Arr.map(output.incidents, (i) => [
 										truncate(i.ruleName, 30),
 										i.severity,
 										i.holdReason != null
 											? `open (waiting on data: ${i.holdReason})`
-											: i.status,
-										i.groupKey ?? "all",
+											: i.acknowledgedAt != null
+												? `open (acknowledged by ${i.acknowledgedBy ?? "someone"})`
+												: i.status,
+										i.groupLabel ?? i.groupKey ?? "all",
 										i.signalType,
 										formatCondition(i),
 										i.lastObservedValue != null ? String(i.lastObservedValue) : "-",
-										i.firstTriggeredAt.slice(0, 19),
+										Str.slice(0, 19)(i.firstTriggeredAt),
 									]),
 								),
 							],
@@ -217,6 +242,7 @@ export function registerListAlertIncidentsTool(server: McpToolRegistrar) {
 													status: output.status,
 													severity: output.severity,
 													group_key: output.groupKey,
+													acknowledged: output.acknowledged,
 													limit: MAX_LIMIT,
 												},
 												"more incidents",
@@ -229,16 +255,19 @@ export function registerListAlertIncidentsTool(server: McpToolRegistrar) {
 				next: [
 					...recentNext,
 					...(openGroups.length > 0
-						? openGroups.map((groupKey) =>
+						? Arr.map(openGroups, (groupKey) =>
 								doc.next(
 									"get_incident_timeline",
 									{ group_key: groupKey },
 									"inspect this alert group",
 								),
 							)
-						: [doc.next("list_alert_rules", {}, "review alert configuration")]),
+						: onlySloIncidents(output.incidents)
+							? []
+							: [doc.next("list_alert_rules", {}, "review alert configuration")]),
+					...sloIncidentNext(output.incidents),
 					// Uptime incidents come from monitors, whose rules list_alert_rules hides.
-					...(output.incidents.some((i) => i.signalType === "uptime")
+					...(Arr.some(output.incidents, (i) => i.signalType === "uptime")
 						? [doc.next("list_uptime_monitors", {}, "the uptime monitors behind these incidents")]
 						: []),
 				],

@@ -1,7 +1,7 @@
 import { HttpServerRequest } from "effect/http"
 import { API_KEY_PREFIX } from "@maple/db"
 import { CurrentTenant } from "@maple/domain/http"
-import { Effect, Layer } from "effect"
+import { Effect, Layer, String as Str } from "effect"
 import { makeResolveTenant } from "./AuthService"
 import { annotateAuthSpan } from "@maple/backend/services/auth/auth-span"
 import { CurrentAuditActor } from "@maple/backend/services/auth/audit-actor"
@@ -13,8 +13,8 @@ import { OrganizationRegionService } from "@maple/backend/services/org/Organizat
 const getBearerToken = (headers: Record<string, string | undefined>): string | undefined => {
 	const header = headers["authorization"] ?? headers["Authorization"]
 	if (!header) return undefined
-	const [scheme, token] = header.split(" ")
-	if (!scheme || !token || scheme.toLowerCase() !== "bearer") return undefined
+	const [scheme, token] = Str.split(" ")(header)
+	if (!scheme || !token || Str.toLowerCase(scheme) !== "bearer") return undefined
 	return token
 }
 
@@ -45,7 +45,7 @@ export const SessionAuthorizationLive = Layer.effect(
 					const request = yield* HttpServerRequest.HttpServerRequest
 
 					const token = getBearerToken(request.headers)
-					if (token?.startsWith(API_KEY_PREFIX)) {
+					if (token !== undefined && Str.startsWith(API_KEY_PREFIX)(token)) {
 						return yield* new CurrentTenant.ApiKeyNotAcceptedError({
 							message: "API keys cannot call the internal API; use the /v2 API instead",
 						})
@@ -85,7 +85,7 @@ export const RegionlessSessionAuthorizationLive = Layer.effect(
 			bearer: (httpEffect, options) =>
 				Effect.gen(function* () {
 					const request = yield* HttpServerRequest.HttpServerRequest
-					if (getBearerToken(request.headers)?.startsWith(API_KEY_PREFIX)) {
+					if (Str.startsWith(API_KEY_PREFIX)(getBearerToken(request.headers) ?? "")) {
 						return yield* new CurrentTenant.ApiKeyNotAcceptedError({
 							message: "API keys cannot call the internal API; use the /v2 API instead",
 						})

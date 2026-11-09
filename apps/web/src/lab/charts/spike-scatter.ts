@@ -6,9 +6,9 @@ import { type HexbinDatum, hexbin } from "@tanstack/charts/spatial/hexbin"
 import { tooltip } from "@tanstack/charts/tooltip"
 import { scaleLinear } from "@tanstack/charts-scales/linear"
 import { scaleLog } from "d3-scale"
-import { Option } from "effect"
-import { ChartTooltip } from "../../charts/chart-spec"
-import type { BuiltChart } from "../../charts/definitions/built-chart"
+import { Option, Array as Arr } from "effect"
+import { ChartTooltip } from "@maple/views/charts/chart-spec"
+import type { BuiltChart } from "@maple/views/charts/definitions/built-chart"
 import type { SpikeSpec } from "./spike-spec"
 import { RAMP_TOKENS } from "./spike-timeseries-tokens"
 
@@ -41,10 +41,9 @@ const nextState = (state: number): number => (Math.imul(state, 1_664_525) + 1_01
 const makeSpans = (): ReadonlyArray<ScatterRow> => {
 	const burstStart = WINDOW_START_MS + WINDOW_MS * 0.62
 	const burstEnd = burstStart + 3 * 60 * 1000
-	return Array.from({ length: SPAN_COUNT }, (_, index) => index).reduce<{
-		state: number
-		rows: Array<ScatterRow>
-	}>(
+	return Arr.reduce<number, { state: number; rows: Array<ScatterRow> }>(
+		Array.from({ length: SPAN_COUNT }, (_, index) => index),
+		{ state: 0x5eed_1234 >>> 0, rows: [] },
 		(acc, index) => {
 			const s1 = nextState(acc.state)
 			const s2 = nextState(s1)
@@ -72,7 +71,6 @@ const makeSpans = (): ReadonlyArray<ScatterRow> => {
 			acc.rows.push({ startMs, durationMs: Math.min(9_500, Math.max(0.4, durationMs)) })
 			return { state: s4, rows: acc.rows }
 		},
-		{ state: 0x5eed_1234 >>> 0, rows: [] },
 	).rows
 }
 
@@ -82,7 +80,10 @@ const padTimeDomain = (min: number, max: number): readonly [number, number] => {
 }
 
 const timeDomainOf = (rows: ReadonlyArray<ScatterRow>): readonly [number, number] => {
-	const starts = rows.map((row) => row.startMs).filter((value) => Number.isFinite(value))
+	const starts = Arr.filter(
+		Arr.map(rows, (row) => row.startMs),
+		(value) => Number.isFinite(value),
+	)
 	const min = Math.min(...starts)
 	const max = Math.max(...starts)
 	return !Number.isFinite(min) || !Number.isFinite(max) || min === max
@@ -100,7 +101,7 @@ const clockOf = (ms: number, withSeconds: boolean): string =>
 export const buildTraceScatterSpike = (spec: SpikeSpec) => {
 	const rows = makeSpans()
 	const colorScale = createSequentialColorScale({
-		stops: RAMP_TOKENS.blues.map(([token]) => spec.colors[token] ?? ""),
+		stops: Arr.map(RAMP_TOKENS.blues, ([token]) => spec.colors[token] ?? ""),
 		domain: DENSITY_DOMAIN,
 		scaleType: "log",
 	})
@@ -146,7 +147,7 @@ export const buildTraceScatterSpike = (spec: SpikeSpec) => {
 		definition,
 		focusKeyOf: (point) => `${point.datum.x}:${point.datum.y}`,
 		// Packed for the lab's body: the clock, then the count with its swatch and the reading.
-		tooltipOf: (points: ReadonlyArray<ChartPoint<Bin, ChartValue, ChartValue>>) =>
+		tooltipOf: (points: ReadonlyArray<ChartPoint<Bin>>) =>
 			Option.map(Option.fromNullishOr(points[0]?.datum), (bin) =>
 				ChartTooltip.Bucket({
 					heading: clockOf(bin.x, true),

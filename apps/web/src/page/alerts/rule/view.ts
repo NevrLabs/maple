@@ -1,13 +1,14 @@
-import type { AlertRuleDocument } from "@maple/domain/http"
+import type { AlertIncidentDocument, AlertRuleDocument } from "@maple/domain/http"
+import { anomalyScopeSummary } from "@maple/web-data/alerts/anomaly-rule"
 import { comparatorLabels, formatSignalValue, signalLabels } from "@maple/web-data/alerts/form-utils"
-import { Submodel } from "foldkit"
+import { AsyncData, Submodel } from "foldkit"
 import type { Html, HtmlBuilder } from "foldkit/html"
-import { ResolveThemeColors } from "../../../charts/theme-colors"
-import { linkButton } from "../../../ui/button"
-import { eyebrow } from "../../../ui/eyebrow"
-import { icon } from "../../../ui/icon"
-import { pageTitle } from "../../../ui/page-layout"
-import { skeleton } from "../../../ui/skeleton"
+import { ResolveThemeColors } from "@maple/views/charts/theme-colors"
+import { linkButton } from "@maple/views/ui/button"
+import { eyebrow } from "@maple/views/ui/eyebrow"
+import { icon } from "@maple/views/ui/icon"
+import { pageTitle } from "@maple/views/ui/page-layout"
+import { skeleton } from "@maple/views/ui/skeleton"
 import type { PageViewInputs } from "../../contract"
 import { dashboardPage } from "../../kit/dashboard-page"
 import { resourceNotFound } from "../../kit/resource-not-found"
@@ -22,6 +23,15 @@ import { Message } from "./message"
 import type { Model } from "./model"
 import { historyTab } from "./view-history"
 import { overviewTab } from "./view-overview"
+import { typography } from "@maple/views/ui/typography"
+import { hstack } from "@maple/views/ui/stack"
+import { Option, Array as Arr } from "effect"
+import { activeSilenceFor } from "../shared/silences"
+import { silenceBadge, silenceButton, silenceCheckFailed } from "../shared/silence-view"
+import * as Policy from "@maple/domain/policy"
+import type { V2AlertSilence } from "@maple/domain/http/v2"
+import { incidentGroup } from "@maple/web-data/alerts/incident-timeline"
+import * as SilenceDialogView from "../silence-dialog/view"
 
 // The rule detail page through `ResultPage` and `DetailHeader`.
 
@@ -32,76 +42,120 @@ type Tab = (typeof TABS)[number]
 const activeTabOf = (model: Model): Tab => (model.search.tab === "history" ? "history" : "overview")
 
 export const ruleSubtitle = (rule: AlertRuleDocument): string => {
-	const tiers = rule.thresholds
-		.map((tier) =>
+	// An anomaly rule has no threshold or window: what it pages on is the whole story.
+	if (rule.signalType === "anomaly") return `Pages on anomalies in ${anomalyScopeSummary(rule)}`
+	const tiers = Arr.join(
+		Arr.map(rule.thresholds, (tier) =>
 			rule.thresholds.length > 1
 				? `${tier.severity} ${formatSignalValue(rule.signalType, tier.value)}`
 				: formatSignalValue(rule.signalType, tier.value),
-		)
-		.join(", ")
-	return `${signalLabels[rule.signalType]} ${comparatorLabels[rule.comparator]} ${tiers} over ${rule.windowMinutes}min${rule.serviceNames?.length > 0 ? ` on ${rule.serviceNames.join(", ")}` : ""}${rule.environments?.length > 0 ? ` in ${rule.environments.join(", ")}` : ""}${rule.excludeServiceNames?.length > 0 ? ` (excl. ${rule.excludeServiceNames.join(", ")})` : ""}`
+		),
+		", ",
+	)
+	return `${signalLabels[rule.signalType]} ${comparatorLabels[rule.comparator]} ${tiers} over ${rule.windowMinutes}min${rule.serviceNames?.length > 0 ? ` on ${Arr.join(rule.serviceNames, ", ")}` : ""}${rule.environments?.length > 0 ? ` in ${Arr.join(rule.environments, ", ")}` : ""}${rule.excludeServiceNames?.length > 0 ? ` (excl. ${Arr.join(rule.excludeServiceNames, ", ")})` : ""}`
 }
 
 const toTimePicker = (message: TimeRangePicker.Message) => Message.GotTimePickerMessage({ message })
 
+/** The silence over the whole rule, or else over one open incident's group (named in the badge). */
+const ruleSilence = (
+	model: Model,
+	rule: AlertRuleDocument,
+	openIncidents: ReadonlyArray<AlertIncidentDocument>,
+): Option.Option<{ readonly silence: V2AlertSilence; readonly group: string | null }> => {
+	const silences = AsyncData.getOrElse(model.silences.data, () => [])
+	return Option.orElse(
+		Option.map(activeSilenceFor(silences, rule, null, model.nowMs), (silence) => ({
+			silence,
+			group: null,
+		})),
+		() =>
+			Arr.head(
+				Arr.flatMap(openIncidents, (incident) =>
+					Option.toArray(
+						Option.map(
+							activeSilenceFor(
+								silences,
+								rule,
+								incident.groupKey,
+								model.nowMs,
+								incident.labels ?? null,
+							),
+							(silence) => ({
+								silence,
+								group: incidentGroup(incident),
+							}),
+						),
+					),
+				),
+			),
+	)
+}
+
 /** `DetailHeader` (kind eyebrow, title, meta row) with the time controls and Edit rule. */
-const header = (h: H, model: Model, rule: AlertRuleDocument) => {
-	const openIncidents = ruleIncidentsOf(model).filter((i) => i.status === "open")
+
+const header = (h: H, model: Model, rule: AlertRuleDocument, timeZone: string) => {
+	const openIncidents = Arr.filter(ruleIncidentsOf(model), (i) => i.status === "open")
 	const isFiring = openIncidents.length > 0
+	const silence = ruleSilence(model, rule, openIncidents)
 	return {
 		titleContent: h.div(
 			[h.Class("min-w-0 space-y-2.5")],
 			[
 				eyebrow(h, { as: "div", className: "flex flex-wrap items-center gap-x-2 gap-y-1" }, [
-					h.span([h.Class("truncate")], ["Alert rule"]),
+					typography(h, { truncate: true }, ["Alert rule"]),
 				]),
 				pageTitle(h, { title: rule.name }, [rule.name]),
-				h.div(
-					[h.Class("flex flex-wrap items-center gap-2")],
-					[
-						...rule.thresholds.map((tier) => severityBadge(h, tier.severity)),
-						isFiring
-							? alertStatusBadge(
-									h,
-									openIncidents.every((i) => i.holdReason != null) ? "held" : "firing",
-								)
-							: alertStatusBadge(h, rule.enabled ? "ok" : "disabled"),
-						h.span([h.Class("text-muted-foreground text-sm")], [ruleSubtitle(rule)]),
-					],
-				),
-			],
-		),
-		actions: h.div(
-			[h.Class("flex items-center gap-2")],
-			[
-				timeControls(h, {
-					search: model.search,
-					defaultPreset: DEFAULT_PRESET,
-					window: model.window,
-					onReset: Message.ClickedResetTimeRange(),
-					onReload: Message.ClickedReload(),
-					isReloading: model.isReloading,
-					trigger: (label) =>
-						h.submodel({
-							slotId: "alert-rule-time-picker",
-							model: model.timePicker,
-							view: TimeRangePicker.view,
-							toParentMessage: toTimePicker,
-							viewInputs: {
-								label,
-								selectedPreset:
-									model.search.timePreset ??
-									(model.search.startTime === undefined ? DEFAULT_PRESET : undefined),
-								presets: TimeRangePicker.LONG_RANGE_PRESET_VALUES,
-							},
-						}),
-				}),
-				linkButton(h, { variant: "outline", size: "sm", href: createHref({ ruleId: rule.id }) }, [
-					icon(h, "PencilIcon"),
-					"Edit rule",
+				hstack(h, { gap: "2", wrap: true }, [
+					...Arr.map(rule.thresholds, (tier) => severityBadge(h, tier.severity)),
+					isFiring
+						? alertStatusBadge(
+								h,
+								Arr.every(openIncidents, (i) => i.holdReason != null) ? "held" : "firing",
+							)
+						: alertStatusBadge(h, rule.enabled ? "ok" : "disabled"),
+					...(AsyncData.isFailure(model.silences.data)
+						? [silenceCheckFailed(h)]
+						: Option.toArray(
+								Option.map(silence, ({ silence: active, group }) =>
+									silenceBadge(h, active, model.nowMs, timeZone, group),
+								),
+							)),
+					typography(h, { size: "sm", tone: "muted" }, [ruleSubtitle(rule)]),
 				]),
 			],
 		),
+		actions: hstack(h, { gap: "2" }, [
+			timeControls(h, {
+				search: model.search,
+				defaultPreset: DEFAULT_PRESET,
+				window: model.window,
+				onReset: Message.ClickedResetTimeRange(),
+				onReload: Message.ClickedReload(),
+				isReloading: model.isReloading,
+				trigger: (label) =>
+					h.submodel({
+						slotId: "alert-rule-time-picker",
+						model: model.timePicker,
+						view: TimeRangePicker.view,
+						toParentMessage: toTimePicker,
+						viewInputs: {
+							label,
+							selectedPreset:
+								model.search.timePreset ??
+								(model.search.startTime === undefined ? DEFAULT_PRESET : undefined),
+							presets: TimeRangePicker.LONG_RANGE_PRESET_VALUES,
+						},
+					}),
+			}),
+			...(Policy.has(model.grants, "alerts:manage")
+				? [silenceButton(h, Message.ClickedSilence())]
+				: []),
+			linkButton(h, { variant: "outline", size: "sm", href: createHref({ ruleId: rule.id }) }, [
+				icon(h, "PencilIcon"),
+				"Edit rule",
+			]),
+		]),
 	}
 }
 
@@ -110,7 +164,7 @@ const tabStrip = (h: H, model: Model): Html => {
 	return linkTabStrip(
 		h,
 		"Rule sections",
-		TABS.map((tab) => ({
+		Arr.map(TABS, (tab) => ({
 			key: tab,
 			// `search={(prev) => ({ ...prev, tab })}`: the time range rides along.
 			href: ruleHref(model.ruleId, { ...model.search, tab }),
@@ -149,14 +203,26 @@ export const view = Submodel.defineView<Model, Message, PageViewInputs>((model, 
 							back: { href: alertsHref({}), label: "Back to rules" },
 						}),
 					])
-				: dashboardPage(h, { ...header(h, model, rule), tabs: tabStrip(h, model) }, [
+				: dashboardPage(h, { ...header(h, model, rule, timeZone), tabs: tabStrip(h, model) }, [
 						activeTabOf(model) === "overview"
 							? overviewTab(h, model, rule, timeZone)
 							: model.incidents === null
 								? historyLoading(h)
 								: historyTab(h, model, rule, ruleIncidentsOf(model), timeZone, model.nowMs),
 					])
-	return h.div([h.Class("contents"), h.OnMount(ResolveThemeColors({ tokens: RULE_CHART_TOKENS }))], [page])
+	return h.div(
+		[h.Class("contents"), h.OnMount(ResolveThemeColors({ tokens: RULE_CHART_TOKENS }))],
+		[
+			page,
+			h.submodel({
+				slotId: "alert-rule-silence",
+				model: model.silenceDialog,
+				view: SilenceDialogView.view,
+				viewInputs: { id: "alert-rule-silence" },
+				toParentMessage: (message) => Message.GotSilenceDialogMessage({ message }),
+			}),
+		],
+	)
 })
 
 export const breadcrumbsOf = (model: Model) => {

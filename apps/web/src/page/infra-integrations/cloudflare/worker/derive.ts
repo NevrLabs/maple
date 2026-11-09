@@ -1,11 +1,12 @@
 import { mergeWorkerRows, type WorkerListRow } from "../../../../components/infra/cloudflare/list-model"
 import { deployMarkers } from "../../../../components/infra/cloudflare/worker-signals"
 import { toIsoBucket } from "@maple/web-data/warehouse/timeseries-utils"
-import { chartBucketSeconds } from "../../../../charts/infra-metric-series"
-import type { ChartEventMarker } from "../../../../charts/event-marker-spec"
+import { chartBucketSeconds } from "@maple/views/charts/infra-metric-series"
+import type { ChartEventMarker } from "@maple/views/charts/event-marker-spec"
 import type { Release } from "../data"
 import { dataOf } from "../list/derive"
 import type { Model } from "./model"
+import { Array as Arr, String as Str, Option } from "effect"
 
 export type Traced = Readonly<{ service: string; spans: number; errors: number }>
 
@@ -24,17 +25,20 @@ export const pageOf = (model: Model): PageData => {
 	const row =
 		workers === null
 			? null
-			: (mergeWorkerRows(workers, durableObjects).find(
-					(worker) =>
-						worker.scriptName === model.scriptName &&
-						(model.search.account === undefined || worker.accountId === model.search.account),
-				) ?? null)
+			: Option.getOrNull(
+					Arr.findFirst(
+						mergeWorkerRows(workers, durableObjects),
+						(worker) =>
+							worker.scriptName === model.scriptName &&
+							(model.search.account === undefined || worker.accountId === model.search.account),
+					),
+				)
 	// Releases carry no account, so for a name shared across accounts they would mix both Workers.
 	const loaded = dataOf(model.releases.data)
 	const releases: ReadonlyArray<Release> | null =
 		loaded === null || row?.nameInOtherAccounts === true
 			? null
-			: loaded.filter((release) => release.serviceName === model.scriptName)
+			: Arr.filter(loaded, (release) => release.serviceName === model.scriptName)
 	const status = dataOf(model.status.data)
 	const accounts = status?.accounts ?? []
 	const accountId = row?.accountId ?? model.search.account
@@ -42,15 +46,18 @@ export const pageOf = (model: Model): PageData => {
 		status === null
 			? null
 			: accounts.length > 1
-				? (accounts.find((account) => account.accountId === accountId)?.accountName ?? null)
+				? Arr.findFirst(accounts, (account) => account.accountId === accountId).pipe(
+						Option.flatMapNullishOr((found) => found.accountName),
+						Option.getOrNull,
+					)
 				: (status.accountName ?? null)
 	const traced =
 		releases === null || releases.length === 0
 			? null
 			: {
 					service: model.scriptName,
-					spans: releases.reduce((acc, release) => acc + release.spanCount, 0),
-					errors: releases.reduce((acc, release) => acc + release.errorCount, 0),
+					spans: Arr.reduce(releases, 0, (acc, release) => acc + release.spanCount),
+					errors: Arr.reduce(releases, 0, (acc, release) => acc + release.errorCount),
 				}
 	const window = model.window
 	const markers =
@@ -64,6 +71,15 @@ export const pageOf = (model: Model): PageData => {
 	const currentVersion =
 		releases === null || releases.length === 0
 			? null
-			: (releases.toSorted((a, b) => b.firstSeen.localeCompare(a.firstSeen))[0]?.commitSha ?? null)
+			: Option.getOrNull(
+					Option.flatMapNullishOr(
+						Arr.head(
+							Arr.sort(releases, (a: (typeof releases)[number], b: (typeof releases)[number]) =>
+								Str.localeCompare(a.firstSeen)(b.firstSeen),
+							),
+						),
+						(release) => release.commitSha,
+					),
+				)
 	return { row, accountName, traced, markers, currentVersion }
 }

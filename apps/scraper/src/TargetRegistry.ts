@@ -1,4 +1,4 @@
-import { type Array as Arr, Clock, Context, Effect, Layer, Option, Ref } from "effect"
+import { type Array as Arr, Clock, Context, Effect, Layer, Option, Ref, Array as EArr } from "effect"
 import type { InternalScrapeTarget } from "@maple/domain/http"
 import { ApiClient, type ApiRequestError } from "./ApiClient"
 
@@ -10,7 +10,7 @@ export type TargetGroup = Arr.NonEmptyReadonlyArray<InternalScrapeTarget>
 
 /** Group rows by parent target id, last row winning per sub-target key. */
 export const groupTargets = (list: ReadonlyArray<InternalScrapeTarget>): ReadonlyMap<string, TargetGroup> => {
-	const deduped = new Map(list.map((target) => [targetKey(target), target]))
+	const deduped = new Map(EArr.map(list, (target) => [targetKey(target), target]))
 	const groups = new Map<string, TargetGroup>()
 	deduped.forEach((target) => {
 		const existing = groups.get(target.id)
@@ -42,13 +42,18 @@ export class TargetRegistry extends Context.Service<TargetRegistry, TargetRegist
 			const lastRefreshAt = yield* Ref.make<number | null>(null)
 
 			const refresh = Effect.gen(function* () {
-				const list = yield* api.listTargets()
+				const list = yield* api.listTargets
 				// Last row wins per sub-target: duplicate rows must never scrape twice.
 				const groups = groupTargets(list)
-				const distinct = Array.from(groups.values()).reduce((total, group) => total + group.length, 0)
+				const distinct = EArr.reduce(
+					Array.from(groups.values()),
+					0,
+					(total, group) => total + group.length,
+				)
 				const duplicates = list.length - distinct
 				yield* Ref.set(targets, groups)
-				yield* Ref.set(lastRefreshAt, yield* Clock.currentTimeMillis)
+				const refreshedAt = yield* Clock.currentTimeMillis
+				yield* Ref.set(lastRefreshAt, refreshedAt)
 				yield* Effect.annotateCurrentSpan("maple.scraper.duplicate_targets_dropped", duplicates)
 				if (duplicates > 0) {
 					yield* Effect.logWarning("Dropped duplicate scrape targets sharing one key").pipe(

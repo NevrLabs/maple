@@ -16,10 +16,12 @@ import {
 	type AlertComparator,
 	type AlertDeliveryStatus,
 	type AlertDestinationId,
+	type EscalationChainId,
 	type AlertDestinationType,
 	type AlertEventType,
 	type AlertSeverity,
 	type AlertSignalType,
+	type AnomalySignalType,
 	type ChatWorkspaceId,
 	type QueryBuilderQueryDraftPayload,
 	MAX_ALERT_BREACH_WINDOW,
@@ -37,7 +39,7 @@ import type {
 } from "@maple/domain/http/v2"
 import { fromV2Threshold } from "@maple/domain/http/v2"
 import type { QueryEngineAlertReducer } from "@maple/query-engine"
-import { Array as Arr, Option, Schema } from "effect"
+import { Array as Arr, Option, Schema, Record as Rec, String as Str } from "effect"
 import {
 	buildTimeseriesQuerySpec,
 	createQueryDraft,
@@ -68,6 +70,8 @@ export type RuleFormState = {
 	 * carry their own filters.
 	 */
 	environments: string[]
+	/** Anomaly rules only: the detector signals the rule pages on. Empty means every signal. */
+	anomalySignals: AnomalySignalType[]
 	/** Free-form tags used to group and filter rules in the alerts list. */
 	tags: string[]
 	/**
@@ -105,6 +109,8 @@ export type RuleFormState = {
 	rawQuerySql: string
 	rawQueryReducer: QueryEngineAlertReducer
 	destinationIds: AlertDestinationId[]
+	/** The escalation chain the main tier starts; null when it only notifies its destinations. */
+	escalationChainId: EscalationChainId | null
 	/**
 	 * Custom notification message. Empty strings mean "use the built-in format".
 	 * `title` + Markdown `body` support `{{ variable }}` substitution; channels
@@ -119,6 +125,7 @@ export interface EscalationTierForm {
 	threshold: string
 	recoveryValue: string
 	destinationIds: AlertDestinationId[]
+	escalationChainId: EscalationChainId | null
 }
 
 export const signalLabels: Record<AlertSignalType, string> = {
@@ -130,6 +137,8 @@ export const signalLabels: Record<AlertSignalType, string> = {
 	builder_query: "Query builder",
 	raw_query: "Raw SQL",
 	uptime: "Uptime check",
+	slo_burn_rate: "SLO burn rate",
+	anomaly: "Anomaly",
 } satisfies Record<AlertSignalType, string>
 
 export const RAW_QUERY_REDUCER_LABELS: Record<QueryEngineAlertReducer, string> = {
@@ -185,6 +194,12 @@ export function formatSignalValue(signalType: AlertSignalType, value: number | n
 		// An uptime rule observes 1 while its monitor is down, else 0.
 		case "uptime":
 			return value >= 1 ? "Down" : "Up"
+		// An SLO rule observes how many times faster than sustainable the budget burns.
+		case "slo_burn_rate":
+			return `${value.toFixed(1)}x`
+		// An anomaly rule observes the open anomaly's severity: 0 none, 1 warning, 2 critical.
+		case "anomaly":
+			return value >= 2 ? "Critical" : value >= 1 ? "Warning" : "Normal"
 	}
 }
 
@@ -245,7 +260,7 @@ const decodeEvaluationInterval = Schema.decodeUnknownOption(AlertEvaluationInter
 
 /** The interval the form picked, or null for the window's own. */
 export const formEvaluationInterval = (form: RuleFormState): AlertEvaluationIntervalMinutes | null =>
-	form.evaluationIntervalMinutes.trim().length === 0
+	Str.trim(form.evaluationIntervalMinutes).length === 0
 		? null
 		: Option.getOrNull(decodeEvaluationInterval(Number(form.evaluationIntervalMinutes)))
 
@@ -306,6 +321,7 @@ export function defaultRuleForm(serviceName?: string): RuleFormState {
 		serviceNames: serviceName ? [serviceName] : [],
 		excludeServiceNames: [],
 		environments: [],
+		anomalySignals: [],
 		tags: [],
 		groupBy: [],
 		signalType: "error_rate",
@@ -327,8 +343,41 @@ export function defaultRuleForm(serviceName?: string): RuleFormState {
 		rawQuerySql: DEFAULT_RAW_QUERY_SQL,
 		rawQueryReducer: "identity",
 		destinationIds: [],
+		escalationChainId: null,
 		notificationTitle: "",
 		notificationBody: "",
+	}
+}
+
+/**
+ * The form as an anomaly rule: both tiers (their values are the severity codes the server pins) and
+ * the evaluation fields the server pins, so the change list and the save agree with the stored rule.
+ */
+export function anomalyRuleForm(form: RuleFormState): RuleFormState {
+	return {
+		...form,
+		signalType: "anomaly",
+		severity: "warning",
+		comparator: "gte",
+		threshold: "1",
+		thresholdUpper: "",
+		recoveryValue: "",
+		escalation: {
+			threshold: "2",
+			recoveryValue: "",
+			destinationIds: form.escalation?.destinationIds ?? [],
+			escalationChainId: form.escalation?.escalationChainId ?? null,
+		},
+		excludeServiceNames: [],
+		groupBy: [],
+		windowMinutes: "5",
+		evaluationIntervalMinutes: "1",
+		minimumSampleCount: "0",
+		alertOnNoData: false,
+		consecutiveBreachesRequired: "1",
+		breachesOutOf: "",
+		consecutiveHealthyRequired: "1",
+		renotifyIntervalMinutes: "30",
 	}
 }
 
@@ -336,7 +385,7 @@ export function defaultRuleForm(serviceName?: string): RuleFormState {
 export function ruleFormIsGrouped(form: RuleFormState): boolean {
 	if (form.signalType === "raw_query") return false
 	if (form.signalType === "builder_query") {
-		return form.queryBuilderDraft.groupBy.some((token) => token !== "none" && token.length > 0)
+		return Arr.some(form.queryBuilderDraft.groupBy, (token) => token !== "none" && token.length > 0)
 	}
 	return form.groupBy.length > 0
 }
@@ -355,6 +404,7 @@ export function ruleToFormState(rule: AlertRuleDocument): RuleFormState {
 		serviceNames: rule.serviceNames?.length > 0 ? [...rule.serviceNames] : [],
 		excludeServiceNames: rule.excludeServiceNames?.length > 0 ? [...rule.excludeServiceNames] : [],
 		environments: rule.environments?.length > 0 ? [...rule.environments] : [],
+		anomalySignals: [...(rule.anomalySignals ?? [])],
 		tags: rule.tags?.length > 0 ? [...rule.tags] : [],
 		groupBy: rule.groupBy ? [...rule.groupBy] : [],
 		signalType: rule.signalType,
@@ -369,6 +419,7 @@ export function ruleToFormState(rule: AlertRuleDocument): RuleFormState {
 						threshold: toForm(escalation.value),
 						recoveryValue: toForm(escalation.recoveryValue),
 						destinationIds: [...escalation.destinationIds],
+						escalationChainId: escalation.escalationChainId ?? null,
 					},
 		windowMinutes: String(rule.windowMinutes),
 		evaluationIntervalMinutes:
@@ -384,19 +435,22 @@ export function ruleToFormState(rule: AlertRuleDocument): RuleFormState {
 		rawQuerySql: rule.rawQuerySql ?? DEFAULT_RAW_QUERY_SQL,
 		rawQueryReducer: rule.rawQueryReducer ?? "identity",
 		destinationIds: [...primary.destinationIds],
+		escalationChainId: primary.escalationChainId ?? null,
 		notificationTitle: rule.notificationTemplate?.title ?? "",
 		notificationBody: rule.notificationTemplate?.body ?? "",
 	}
 }
 
 export function rawSqlHasValueColumn(sql: string): boolean {
-	const trimmed = sql.trim()
+	const trimmed = Str.trim(sql)
 	if (trimmed.length === 0) return false
 
 	if (/\bas\s+["`]?value["`]?\b/i.test(trimmed)) return true
 
-	const firstFrom = trimmed.search(/\bfrom\b/i)
-	const selectHead = firstFrom >= 0 ? trimmed.slice(0, firstFrom) : trimmed.slice(0, 500)
+	const selectHead = Option.match(Str.search(/\bfrom\b/i)(trimmed), {
+		onNone: () => Str.slice(0, 500)(trimmed),
+		onSome: (firstFrom) => Str.slice(0, firstFrom)(trimmed),
+	})
 	return /(?:\bselect\b|,)\s*["`]?value["`]?\s*(?:,|$)/i.test(selectHead)
 }
 
@@ -409,7 +463,7 @@ export function deriveRuleQueryIssues(form: RuleFormState): string[] {
 		}
 	}
 	if (form.signalType === "raw_query") {
-		const sql = form.rawQuerySql.trim()
+		const sql = Str.trim(form.rawQuerySql)
 		if (sql.length > 0 && !rawSqlHasValueColumn(sql)) {
 			issues.push("SQL value column")
 		}
@@ -424,7 +478,7 @@ export function comparatorSupportsTiers(comparator: AlertComparator): boolean {
 
 /** A form value that may be left empty, in domain units; null when empty or not a number. */
 export function optionalFormThreshold(subject: ThresholdSubject, value: string): number | null {
-	return value.trim().length > 0 && Number.isFinite(Number(value))
+	return Str.trim(value).length > 0 && Number.isFinite(Number(value))
 		? formThresholdToDomain(subject, value)
 		: null
 }
@@ -442,7 +496,7 @@ function breachesOneSided(value: number, comparator: AlertComparator, threshold:
 
 /** `Number("")` is 0, so an empty field would otherwise pass as a value of zero. */
 export const isFilledNumber = (value: string): boolean =>
-	value.trim().length > 0 && Number.isFinite(Number(value))
+	Str.trim(value).length > 0 && Number.isFinite(Number(value))
 
 /**
  * The tier and breach-window problems the server would reject, named for the form. Mirrors
@@ -454,7 +508,7 @@ export function deriveTierIssues(form: RuleFormState): string[] {
 	// Tier ordering is strict even for inclusive comparators: equal tiers would always fire together.
 	const strict = form.comparator === "gte" ? "gt" : form.comparator === "lte" ? "lt" : form.comparator
 	const recoveryIssue = (label: string, threshold: string, recovery: string) => {
-		if (recovery.trim().length === 0 || !isFilledNumber(threshold)) return
+		if (Str.trim(recovery).length === 0 || !isFilledNumber(threshold)) return
 		if (
 			!isFilledNumber(recovery) ||
 			breachesOneSided(Number(recovery), form.comparator, Number(threshold))
@@ -479,9 +533,17 @@ export function deriveTierIssues(form: RuleFormState): string[] {
 			issues.push("Critical recovery past warning")
 		}
 		recoveryIssue("Critical recovery value", escalation.threshold, escalation.recoveryValue)
-		if (escalation.destinationIds.length === 0) issues.push("Critical destinations")
+		// An escalation chain routes the tier on its own, as on the server; an anomaly tier may
+		// stay unrouted, as the default rule ships.
+		if (
+			escalation.destinationIds.length === 0 &&
+			escalation.escalationChainId === null &&
+			form.signalType !== "anomaly"
+		) {
+			issues.push("Critical destinations")
+		}
 	}
-	if (form.breachesOutOf.trim().length > 0) {
+	if (Str.trim(form.breachesOutOf).length > 0) {
 		const outOf = Number(form.breachesOutOf)
 		const required = Number(form.consecutiveBreachesRequired)
 		if (!Number.isInteger(outOf) || outOf < required || outOf > MAX_ALERT_BREACH_WINDOW) {
@@ -501,6 +563,7 @@ export function formThresholds(form: RuleFormState): Arr.NonEmptyReadonlyArray<V
 		upper: isRangeComparator(form.comparator) ? optionalFormThreshold(form, form.thresholdUpper) : null,
 		recovery_value: tiered ? optionalFormThreshold(form, form.recoveryValue) : null,
 		destination_ids: [...new Set(form.destinationIds)],
+		escalation_chain_id: form.escalationChainId,
 	}
 	if (escalation === null) return [primary]
 	return [
@@ -511,6 +574,7 @@ export function formThresholds(form: RuleFormState): Arr.NonEmptyReadonlyArray<V
 			upper: null,
 			recovery_value: optionalFormThreshold(form, escalation.recoveryValue),
 			destination_ids: [...new Set(escalation.destinationIds)],
+			escalation_chain_id: escalation.escalationChainId,
 		},
 	]
 }
@@ -525,8 +589,8 @@ export function formThresholds(form: RuleFormState): Arr.NonEmptyReadonlyArray<V
 export function buildRuleCreateParamsV2(form: RuleFormState): V2AlertRuleCreateParams {
 	const signalType = form.signalType
 	const queryOwnsScope = signalType === "builder_query" || signalType === "raw_query"
-	const notificationTitle = form.notificationTitle.trim()
-	const notificationBody = form.notificationBody.trim()
+	const notificationTitle = Str.trim(form.notificationTitle)
+	const notificationBody = Str.trim(form.notificationBody)
 	const notificationTemplate =
 		notificationTitle.length > 0 || notificationBody.length > 0
 			? {
@@ -539,17 +603,18 @@ export function buildRuleCreateParamsV2(form: RuleFormState): V2AlertRuleCreateP
 	const thresholds = formThresholds(form)
 	const primary = Arr.headNonEmpty(thresholds)
 	return {
-		name: form.name.trim(),
-		notes: form.notes.trim() || null,
+		name: Str.trim(form.name),
+		notes: Str.trim(form.notes) || null,
 		enabled: form.enabled,
 		thresholds,
 		severity: Arr.lastNonEmpty(thresholds).severity,
 		tags: form.tags,
-		service_names: queryOwnsScope ? [] : form.serviceNames.filter((s) => s.trim().length > 0),
+		service_names: queryOwnsScope ? [] : Arr.filter(form.serviceNames, (s) => Str.trim(s).length > 0),
 		exclude_service_names: queryOwnsScope
 			? []
-			: form.excludeServiceNames.filter((s) => s.trim().length > 0),
-		environments: queryOwnsScope ? [] : form.environments.filter((s) => s.trim().length > 0),
+			: Arr.filter(form.excludeServiceNames, (s) => Str.trim(s).length > 0),
+		environments: queryOwnsScope ? [] : Arr.filter(form.environments, (s) => Str.trim(s).length > 0),
+		...(signalType === "anomaly" ? { anomaly_signals: Arr.dedupe(form.anomalySignals) } : undefined),
 		group_by: queryOwnsScope ? null : form.groupBy.length > 0 ? form.groupBy : null,
 		signal_type: signalType,
 		comparator: form.comparator,
@@ -560,17 +625,16 @@ export function buildRuleCreateParamsV2(form: RuleFormState): V2AlertRuleCreateP
 		minimum_sample_count: parseNonNegativeNumber(form.minimumSampleCount, 0),
 		alert_on_no_data: form.alertOnNoData && !ruleFormIsGrouped(form),
 		consecutive_breaches_required: parsePositiveNumber(form.consecutiveBreachesRequired, 2),
-		breaches_out_of: form.breachesOutOf.trim().length === 0 ? null : Number(form.breachesOutOf),
+		breaches_out_of: Str.trim(form.breachesOutOf).length === 0 ? null : Number(form.breachesOutOf),
 		consecutive_healthy_required: parsePositiveNumber(form.consecutiveHealthyRequired, 2),
 		renotify_interval_minutes: parsePositiveNumber(form.renotifyIntervalMinutes, 30),
 		apdex_threshold_ms: signalType === "apdex" ? parsePositiveNumber(form.apdexThresholdMs, 500) : null,
 		query_builder_draft:
-			signalType === "builder_query"
-				? Object.fromEntries(Object.entries(form.queryBuilderDraft))
-				: null,
-		raw_query_sql: signalType === "raw_query" ? form.rawQuerySql.trim() || null : null,
+			// @effect-diagnostics-next-line preferEffectRecord:off -- not a record type; Rec.toEntries would need a cast
+			signalType === "builder_query" ? Rec.fromEntries(Object.entries(form.queryBuilderDraft)) : null,
+		raw_query_sql: signalType === "raw_query" ? Str.trim(form.rawQuerySql) || null : null,
 		raw_query_reducer: signalType === "raw_query" ? form.rawQueryReducer : null,
-		destination_ids: Arr.dedupe(thresholds.flatMap((tier) => tier.destination_ids)),
+		destination_ids: Arr.dedupe(Arr.flatMap(thresholds, (tier) => tier.destination_ids)),
 		notification_template: notificationTemplate,
 	}
 }
@@ -583,16 +647,16 @@ export function buildRuleTestParamsV2(form: RuleFormState, sendNotification: boo
 }
 
 export function isRulePreviewReady(form: RuleFormState): boolean {
-	if (form.name.trim().length === 0) return false
+	if (Str.trim(form.name).length === 0) return false
 	if (!isFilledNumber(form.threshold)) return false
 	if (isRangeComparator(form.comparator) && !isFilledNumber(form.thresholdUpper)) return false
-	if (deriveTierIssues(form).some((issue) => issue !== "Critical destinations")) return false
+	if (Arr.some(deriveTierIssues(form), (issue) => issue !== "Critical destinations")) return false
 	if (form.signalType === "builder_query") return deriveRuleQueryIssues(form).length === 0
 	if (form.signalType === "raw_query") {
 		// The alert workload additionally requires $__timeFilter, and the shared
 		// validator covers the deny list, statement shape and terminal clauses that
 		// this used to leave for the server to discover.
-		return isValidRawSql(form.rawQuerySql.trim(), "alert") && deriveRuleQueryIssues(form).length === 0
+		return isValidRawSql(Str.trim(form.rawQuerySql), "alert") && deriveRuleQueryIssues(form).length === 0
 	}
 	return deriveRuleQueryIssues(form).length === 0
 }
@@ -605,7 +669,7 @@ export type DestinationFormState = {
 	type: AlertDestinationType
 	name: string
 	enabled: boolean
-	/** Discord or Google Chat incoming-webhook URL. */
+	/** Discord, Google Chat or Microsoft Teams (Workflows) incoming-webhook URL. */
 	webhookUrl: string
 	integrationKey: string
 	url: string
@@ -613,6 +677,11 @@ export type DestinationFormState = {
 	/** Telegram bot token from @BotFather, and the chat it posts to. */
 	telegramBotToken: string
 	telegramChatId: string
+	/** incident.io HTTP alert source: its config id (not secret) and its token (write-only). */
+	incidentIoAlertSourceId: string
+	incidentIoToken: string
+	/** The saved source's id, `""` for a new destination: another source needs its own token. */
+	incidentIoStoredAlertSourceId: string
 	/** Selected workspace-member recipients (email type only). */
 	memberUserIds: string[]
 	/**
@@ -643,6 +712,9 @@ export function defaultDestinationForm(type: AlertDestinationType = "discord"): 
 		signingSecret: "",
 		telegramBotToken: "",
 		telegramChatId: "",
+		incidentIoAlertSourceId: "",
+		incidentIoToken: "",
+		incidentIoStoredAlertSourceId: "",
 		memberUserIds: [],
 		chatWorkspaceId: null,
 		chatConnector: "",
@@ -658,13 +730,14 @@ export function pickDefaultDestination(
 	destinations: ReadonlyArray<Pick<AlertDestinationDocument, "id" | "enabled" | "disabledAt">>,
 	rules: ReadonlyArray<Pick<AlertRuleDocument, "destinationIds">>,
 ): AlertDestinationDocument["id"] | null {
-	const usable = destinations.filter((d) => d.enabled && !d.disabledAt)
-	if (usable.length === 1) return usable[0]!.id
+	const usable = Arr.filter(destinations, (d) => d.enabled && !d.disabledAt)
+	const [onlyUsable, ...otherUsable] = usable
+	if (onlyUsable !== undefined && otherUsable.length === 0) return onlyUsable.id
 	const uses = new Map<string, number>()
-	for (const id of rules.flatMap((rule) => rule.destinationIds)) uses.set(id, (uses.get(id) ?? 0) + 1)
-	const ranked = usable
-		.filter((d) => (uses.get(d.id) ?? 0) > 0)
-		.sort((a, b) => (uses.get(b.id) ?? 0) - (uses.get(a.id) ?? 0))
+	for (const id of Arr.flatMap(rules, (rule) => rule.destinationIds)) uses.set(id, (uses.get(id) ?? 0) + 1)
+	const ranked = Arr.filter(usable, (d) => (uses.get(d.id) ?? 0) > 0).sort(
+		(a, b) => (uses.get(b.id) ?? 0) - (uses.get(a.id) ?? 0),
+	)
 	return ranked[0]?.id ?? null
 }
 
@@ -684,7 +757,7 @@ export function suggestedDestinationName(form: DestinationFormState): string {
 		case "linear":
 			return form.linearTeamName.length > 0 ? `Linear ${form.linearTeamName}` : "Linear"
 		case "webhook":
-			return URL.canParse(form.url.trim()) ? new URL(form.url.trim()).host : "Webhook"
+			return URL.canParse(Str.trim(form.url)) ? new URL(Str.trim(form.url)).host : "Webhook"
 		case "pagerduty":
 			return "PagerDuty"
 		case "discord":
@@ -693,6 +766,10 @@ export function suggestedDestinationName(form: DestinationFormState): string {
 			return "Telegram"
 		case "google-chat":
 			return "Google Chat"
+		case "microsoft-teams":
+			return "Microsoft Teams"
+		case "incident-io":
+			return "incident.io"
 		case "email":
 			return "Email"
 	}
@@ -711,6 +788,11 @@ export function destinationToFormState(destination: AlertDestinationDocument): D
 		// comes back as `channelLabel` so an edit doesn't demand retyping it.
 		telegramBotToken: "",
 		telegramChatId: destination.type === "telegram" ? (destination.channelLabel ?? "") : "",
+		// Likewise the alert source id comes back as `channelLabel`; the token never does.
+		incidentIoAlertSourceId: destination.type === "incident-io" ? (destination.channelLabel ?? "") : "",
+		incidentIoToken: "",
+		incidentIoStoredAlertSourceId:
+			destination.type === "incident-io" ? (destination.channelLabel ?? "") : "",
 		memberUserIds: destination.memberUserIds != null ? [...destination.memberUserIds] : [],
 		// The stored channel's id isn't returned, its `#name` is — kept so the current
 		// channel stays visible on edit (an empty id keeps the stored one).
@@ -718,10 +800,15 @@ export function destinationToFormState(destination: AlertDestinationDocument): D
 		chatConnector: destination.chatConnector ?? "",
 		chatChannelId: "",
 		chatChannelName:
-			destination.type === "chat" ? (destination.channelLabel?.replace(/^#/, "") ?? "") : "",
+			destination.type === "chat"
+				? destination.channelLabel == null
+					? ""
+					: Str.replace(/^#/, "")(destination.channelLabel)
+				: "",
 		// The team's name is only in the server's "Linear · <team>" summary.
 		linearTeamId: destination.linearTeamId ?? "",
-		linearTeamName: destination.type === "linear" ? destination.summary.replace(/^Linear · /, "") : "",
+		linearTeamName:
+			destination.type === "linear" ? Str.replace(/^Linear · /, "")(destination.summary) : "",
 	}
 }
 
@@ -730,48 +817,63 @@ export function buildDestinationCreateParamsV2(form: DestinationFormState): V2Al
 		case "pagerduty":
 			return {
 				type: "pagerduty",
-				name: form.name.trim(),
+				name: Str.trim(form.name),
 				enabled: form.enabled,
-				integration_key: form.integrationKey.trim(),
+				integration_key: Str.trim(form.integrationKey),
 			}
 		case "webhook": {
-			const signingSecret = form.signingSecret.trim()
+			const signingSecret = Str.trim(form.signingSecret)
 			return {
 				type: "webhook",
-				name: form.name.trim(),
+				name: Str.trim(form.name),
 				enabled: form.enabled,
-				url: form.url.trim(),
+				url: Str.trim(form.url),
 				...(signingSecret ? { signing_secret: signingSecret } : undefined),
 			}
 		}
 		case "discord":
 			return {
 				type: "discord",
-				name: form.name.trim(),
+				name: Str.trim(form.name),
 				enabled: form.enabled,
-				webhook_url: form.webhookUrl.trim(),
+				webhook_url: Str.trim(form.webhookUrl),
 			}
 		case "telegram":
 			return {
 				type: "telegram",
-				name: form.name.trim(),
+				name: Str.trim(form.name),
 				enabled: form.enabled,
-				bot_token: form.telegramBotToken.trim(),
-				chat_id: form.telegramChatId.trim(),
+				bot_token: Str.trim(form.telegramBotToken),
+				chat_id: Str.trim(form.telegramChatId),
 			}
 		case "google-chat":
 			return {
 				type: "google-chat",
-				name: form.name.trim(),
+				name: Str.trim(form.name),
 				enabled: form.enabled,
-				webhook_url: form.webhookUrl.trim(),
+				webhook_url: Str.trim(form.webhookUrl),
+			}
+		case "microsoft-teams":
+			return {
+				type: "microsoft-teams",
+				name: Str.trim(form.name),
+				enabled: form.enabled,
+				webhook_url: Str.trim(form.webhookUrl),
+			}
+		case "incident-io":
+			return {
+				type: "incident-io",
+				name: Str.trim(form.name),
+				enabled: form.enabled,
+				alert_source_config_id: Str.trim(form.incidentIoAlertSourceId),
+				token: Str.trim(form.incidentIoToken),
 			}
 		case "email":
 			return {
 				type: "email",
-				name: form.name.trim(),
+				name: Str.trim(form.name),
 				enabled: form.enabled,
-				member_user_ids: form.memberUserIds.map((userId) => asUserId(userId)),
+				member_user_ids: Arr.map(form.memberUserIds, (userId) => asUserId(userId)),
 			}
 		case "chat":
 			// Unreachable from the dialog: its save stays disabled until a workspace is picked.
@@ -779,18 +881,18 @@ export function buildDestinationCreateParamsV2(form: DestinationFormState): V2Al
 			// No channel name: the server reads it from the workspace's own listing.
 			return {
 				type: "chat",
-				name: form.name.trim(),
+				name: Str.trim(form.name),
 				enabled: form.enabled,
 				workspace_id: form.chatWorkspaceId,
-				channel_id: form.chatChannelId.trim(),
+				channel_id: Str.trim(form.chatChannelId),
 			}
 		case "linear":
 			// The team's key and name are read from Linear on save.
 			return {
 				type: "linear",
-				name: form.name.trim(),
+				name: Str.trim(form.name),
 				enabled: form.enabled,
-				team_id: form.linearTeamId.trim(),
+				team_id: Str.trim(form.linearTeamId),
 			}
 	}
 }
@@ -800,10 +902,10 @@ export function buildDestinationCreateParamsV2(form: DestinationFormState): V2Al
  * (secrets the user didn't re-enter) are dropped from the payload entirely.
  */
 export function buildDestinationUpdateParamsV2(form: DestinationFormState): V2AlertDestinationUpdateParams {
-	const name = form.name.trim()
+	const name = Str.trim(form.name)
 	switch (form.type) {
 		case "pagerduty": {
-			const integrationKey = form.integrationKey.trim()
+			const integrationKey = Str.trim(form.integrationKey)
 			return {
 				type: "pagerduty",
 				enabled: form.enabled,
@@ -812,8 +914,8 @@ export function buildDestinationUpdateParamsV2(form: DestinationFormState): V2Al
 			}
 		}
 		case "webhook": {
-			const url = form.url.trim()
-			const signingSecret = form.signingSecret.trim()
+			const url = Str.trim(form.url)
+			const signingSecret = Str.trim(form.signingSecret)
 			return {
 				type: "webhook",
 				enabled: form.enabled,
@@ -823,7 +925,7 @@ export function buildDestinationUpdateParamsV2(form: DestinationFormState): V2Al
 			}
 		}
 		case "discord": {
-			const webhookUrl = form.webhookUrl.trim()
+			const webhookUrl = Str.trim(form.webhookUrl)
 			return {
 				type: "discord",
 				enabled: form.enabled,
@@ -832,7 +934,7 @@ export function buildDestinationUpdateParamsV2(form: DestinationFormState): V2Al
 			}
 		}
 		case "google-chat": {
-			const webhookUrl = form.webhookUrl.trim()
+			const webhookUrl = Str.trim(form.webhookUrl)
 			return {
 				type: "google-chat",
 				enabled: form.enabled,
@@ -840,9 +942,29 @@ export function buildDestinationUpdateParamsV2(form: DestinationFormState): V2Al
 				...(webhookUrl ? { webhook_url: webhookUrl } : undefined),
 			}
 		}
+		case "microsoft-teams": {
+			const webhookUrl = Str.trim(form.webhookUrl)
+			return {
+				type: "microsoft-teams",
+				enabled: form.enabled,
+				...(name ? { name } : undefined),
+				...(webhookUrl ? { webhook_url: webhookUrl } : undefined),
+			}
+		}
+		case "incident-io": {
+			const alertSourceId = Str.trim(form.incidentIoAlertSourceId)
+			const token = Str.trim(form.incidentIoToken)
+			return {
+				type: "incident-io",
+				enabled: form.enabled,
+				...(name ? { name } : undefined),
+				...(alertSourceId ? { alert_source_config_id: alertSourceId } : undefined),
+				...(token ? { token } : undefined),
+			}
+		}
 		case "telegram": {
-			const botToken = form.telegramBotToken.trim()
-			const chatId = form.telegramChatId.trim()
+			const botToken = Str.trim(form.telegramBotToken)
+			const chatId = Str.trim(form.telegramChatId)
 			return {
 				type: "telegram",
 				enabled: form.enabled,
@@ -858,13 +980,13 @@ export function buildDestinationUpdateParamsV2(form: DestinationFormState): V2Al
 				...(name ? { name } : undefined),
 				...(form.memberUserIds.length > 0
 					? {
-							member_user_ids: form.memberUserIds.map((userId) => asUserId(userId)),
+							member_user_ids: Arr.map(form.memberUserIds, (userId) => asUserId(userId)),
 						}
 					: undefined),
 			}
 		case "chat": {
 			// Editing keeps the stored channel until a new one is picked.
-			const channelId = form.chatChannelId.trim()
+			const channelId = Str.trim(form.chatChannelId)
 			return {
 				type: "chat",
 				enabled: form.enabled,
@@ -873,7 +995,7 @@ export function buildDestinationUpdateParamsV2(form: DestinationFormState): V2Al
 			}
 		}
 		case "linear": {
-			const teamId = form.linearTeamId.trim()
+			const teamId = Str.trim(form.linearTeamId)
 			return {
 				type: "linear",
 				enabled: form.enabled,
@@ -904,11 +1026,13 @@ export function v2PreviewToResponse(result: V2AlertRulePreviewResult): AlertRule
 		thresholds: Arr.map(result.thresholds, fromV2Threshold),
 		comparator: result.comparator,
 		truncatedToStart: asIsoOrNull(result.truncated_to_start),
-		series: result.series.map(
+		series: Arr.map(
+			result.series,
 			(series) =>
 				new AlertRulePreviewSeries({
 					groupKey: series.group_key,
-					points: series.points.map(
+					points: Arr.map(
+						series.points,
 						(point) =>
 							new AlertRulePreviewPoint({
 								bucket: asIso(point.bucket),
@@ -926,7 +1050,8 @@ export function v2PreviewToResponse(result: V2AlertRulePreviewResult): AlertRule
 					),
 				}),
 		),
-		wouldFire: result.would_fire.map(
+		wouldFire: Arr.map(
+			result.would_fire,
 			(span) =>
 				new AlertRulePreviewFiringSpan({
 					groupKey: span.group_key,
@@ -1004,14 +1129,14 @@ export function v2DeliveryToDocument(delivery: V2AlertDelivery): AlertDeliveryEv
 
 export function computeIncidentStats(incidents: AlertIncidentDocument[]) {
 	const totalTriggered = incidents.length
-	const resolvedIncidents = incidents.filter((i) => i.resolvedAt && i.firstTriggeredAt)
+	const resolvedIncidents = Arr.filter(incidents, (i) => Boolean(i.resolvedAt && i.firstTriggeredAt))
 	const avgResolutionMs =
 		resolvedIncidents.length > 0
-			? resolvedIncidents.reduce((sum, i) => {
+			? Arr.reduce(resolvedIncidents, 0, (sum, i) => {
 					const start = new Date(i.firstTriggeredAt).getTime()
 					const end = new Date(i.resolvedAt!).getTime()
 					return sum + (end - start)
-				}, 0) / resolvedIncidents.length
+				}) / resolvedIncidents.length
 			: 0
 
 	const avgResolution = avgResolutionMs > 0 ? formatResolutionDuration(avgResolutionMs) : EMPTY_VALUE
@@ -1021,7 +1146,7 @@ export function computeIncidentStats(incidents: AlertIncidentDocument[]) {
 		const groupKey = i.groupKey ?? "all"
 		groupCounts[groupKey] = (groupCounts[groupKey] ?? 0) + 1
 	}
-	const topContributors = Object.entries(groupCounts)
+	const topContributors = Rec.toEntries(groupCounts)
 		.sort(([, a], [, b]) => b - a)
 		.slice(0, 5)
 
@@ -1055,6 +1180,13 @@ const startOfDay = (ms: number, timeZone: string | undefined): number => {
 	return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()
 }
 
+/** Time of day when `value` falls on the same local day as `nowMs`, else date and time. */
+export function formatAlertTimeNear(value: string, timeZone: string, nowMs: number): string {
+	return startOfDay(new Date(value).getTime(), timeZone) === startOfDay(nowMs, timeZone)
+		? formatAlertTime(value, timeZone)
+		: formatAlertDateTime(value, timeZone)
+}
+
 /** Day-bucket heading: `Today` / `Yesterday` / `Jun 4, 2026`. */
 function formatAlertDayHeading(value: string, timeZone: string | undefined, nowMs: number): string {
 	const date = new Date(value)
@@ -1080,6 +1212,7 @@ export const eventTypeMeta: Record<AlertEventType, { label: string; tone: Tone }
 	resolve: { label: "Resolved", tone: "ok" },
 	renotify: { label: "Re-notified", tone: "warn" },
 	test: { label: "Test", tone: "info" },
+	acknowledge: { label: "Acknowledged", tone: "info" },
 } satisfies Record<AlertEventType, { label: string; tone: Tone }>
 
 export type DeliveryStatusVariant = Exclude<Tone, "neutral"> | "outline"
@@ -1093,6 +1226,7 @@ export const deliveryStatusMeta: Record<
 	failed: { label: "Failed", variant: "crit" },
 	processing: { label: "Sending", variant: "warn" },
 	queued: { label: "Queued", variant: "outline" },
+	silenced: { label: "Silenced", variant: "outline" },
 } satisfies Record<AlertDeliveryStatus, { label: string; variant: DeliveryStatusVariant }>
 
 export interface DeliveryEventDayGroup {
@@ -1115,7 +1249,7 @@ export function groupDeliveryEventsByDay(
 	for (const event of events) {
 		const key = String(startOfDay(Date.parse(event.scheduledAt), timeZone))
 		const last = groups[groups.length - 1]
-		if (last && last.key === key) {
+		if (last !== undefined && last.key === key) {
 			last.events.push(event)
 		} else {
 			groups.push({

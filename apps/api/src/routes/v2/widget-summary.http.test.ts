@@ -9,7 +9,7 @@ import {
 } from "@maple/domain/http"
 import { MapleApiV2 } from "@maple/domain/http/v2"
 import { QueryEngineExecuteResponse } from "@maple/query-engine"
-import { ConfigProvider, Context, Effect, Layer, ManagedRuntime, Option, Schema } from "effect"
+import { ConfigProvider, Context, Effect, Layer, ManagedRuntime, Option, Schema, String as Str } from "effect"
 import { HttpRouter } from "effect/http"
 import { HttpApiBuilder } from "effect/http-api"
 import { Env } from "@maple/backend/platform/Env"
@@ -66,6 +66,8 @@ const issueDocument = (overrides: Partial<ErrorIssueDocument> = {}): ErrorIssueD
 		id: decodeIssueId("11111111-1111-4111-8111-111111111111"),
 		kind: "error",
 		fingerprintHash: "12345",
+		fingerprintHashes: ["12345"],
+		mergedIntoIssueId: null,
 		serviceName: "api",
 		exceptionType: "TypeError",
 		exceptionMessage: "Cannot read properties of undefined",
@@ -114,7 +116,7 @@ const serviceRow = {
 const warehouseStub = makeWarehouseServiceStub({
 	compiledQuery: (_tenant, compiled) =>
 		compiledQueryOf(compiled).decodeRows(
-			compiledQueryOf(compiled).sql.includes("FROM service_overview_spans") ? [serviceRow] : [],
+			Str.includes("FROM service_overview_spans")(compiledQueryOf(compiled).sql) ? [serviceRow] : [],
 		),
 	compiledQueryFirst: (_tenant, compiled) =>
 		compiledQueryOf(compiled)
@@ -182,6 +184,7 @@ const makeHarness = (options: {
 			getIssue: () => Effect.die(new Error("not used")),
 			listIssueIncidents: () => Effect.die(new Error("not used")),
 			listOpenIncidents: () => Effect.die(new Error("not used")),
+			listIncidentsOfIssues: () => Effect.die(new Error("not used")),
 		} as ErrorIssueReadModelsService),
 	)
 
@@ -199,8 +202,8 @@ const makeHarness = (options: {
 	)
 	const { handler, dispose: disposeHandler } = HttpRouter.toWebHandler(routes, { disableLogger: true })
 	const runtime = ManagedRuntime.make(servicesLive)
-	const org = Schema.decodeUnknownSync(OrgId)("org_widget_e2e")
-	const user = Schema.decodeUnknownSync(UserId)("user_widget_e2e")
+	const org = Schema.decodeSync(OrgId)("org_widget_e2e")
+	const user = Schema.decodeSync(UserId)("user_widget_e2e")
 	const bootstrapKey = (scopes?: ReadonlyArray<string>) =>
 		runtime.runPromise(
 			Effect.gen(function* () {
@@ -341,7 +344,7 @@ describe("GET /v2/widget_summary", () => {
 				compiledQuery: (_tenant, compiled) => {
 					catalogSql = compiledQueryOf(compiled).sql
 					return compiledQueryOf(compiled).decodeRows(
-						compiledQueryOf(compiled).sql.includes("FROM service_overview_spans")
+						Str.includes("FROM service_overview_spans")(compiledQueryOf(compiled).sql)
 							? [serviceRow]
 							: [],
 					)

@@ -5,7 +5,7 @@
 // column declared with `utcDateTime()`/`utcDateTime64()` decodes as a
 // `DateTime.Utc`; the rest still decode as the strings ClickHouse sends.
 
-import { DateTime, Option, Schema, SchemaGetter } from "effect"
+import { DateTime, Option, Schema, SchemaGetter, String as Str } from "effect"
 import * as T from "@maple-dev/effect-orm/clickhouse"
 import * as CH from "@maple-dev/effect-orm/expr"
 import * as Datasources from "@maple/domain/tinybird/datasources"
@@ -42,7 +42,7 @@ const FlooredSecondsString = Schema.String.pipe(
 		encode: SchemaGetter.transform((value: string) =>
 			Option.match(parseUtc(value), {
 				onNone: () => value,
-				onSome: (utc) => DateTime.formatIso(utc).slice(0, 19).replace("T", " "),
+				onSome: (utc) => Str.replace("T", " ")(Str.slice(0, 19)(DateTime.formatIso(utc))),
 			}),
 		),
 	}),
@@ -87,7 +87,7 @@ export interface TraceWindow {
 
 // A bound may compile to a string with nanoseconds, which neither `toDateTime`
 // nor a `DateTime` comparison parses; `toDateTime64(x, 9)` takes every shape.
-const asDateTime64 = (value: CH.Expr<DateTime.Utc>) =>
+export const asDateTime64 = (value: CH.Expr<DateTime.Utc>) =>
 	CH.compileTypedFnCall("toDateTime64", T.dateTime64.schema, value, CH.lit(9))
 
 /** A {@link TraceWindow} from the query's `DateTime64` bound params. */
@@ -104,16 +104,17 @@ export const utcTraceWindow = (start: DateTime.Utc, end: DateTime.Utc): TraceWin
 
 const utcDateTime64Literal = (value: DateTime.Utc): CH.Expr<DateTime.Utc> =>
 	CH.makeExpr(
-		CH.toFragment(CH.lit(DateTime.formatIso(value).replace("T", " ").replace("Z", ""))),
+		CH.toFragment(CH.lit(Str.replace("Z", "")(Str.replace("T", " ")(DateTime.formatIso(value))))),
 		T.dateTime64.schema,
 	)
 
+/** The `trace_index.Bucket` a span starting at `value` lands in. */
+export const traceBucketOf = (value: CH.Expr<DateTime.Utc>) =>
+	CH.compileTypedFnCall(Datasources.TRACE_BUCKET_FN, T.dateTime.schema, asDateTime64(value))
+
 // A span's bucket floors its start, so the lower bound floors too.
 const traceIndexBucketBounds = (bucket: CH.Expr<DateTime.Utc>, window: TraceWindow | undefined) => [
-	window &&
-		bucket.gte(
-			CH.compileTypedFnCall(Datasources.TRACE_BUCKET_FN, T.dateTime.schema, asDateTime64(window.start)),
-		),
+	window && bucket.gte(traceBucketOf(window.start)),
 	window && bucket.lte(asDateTime64(window.end)),
 ]
 
@@ -174,7 +175,7 @@ export const inServiceMapSpans = <Q>(
  * `SpanId`/`ParentSpanId`/`Duration`), each since 0035 a projection of the
  * fact the ingest gateway stamped on the span
  * (`@maple/domain/tinybird/gen-ai-columns`); `''`/0 where the span carries no
- * such fact, and on every row materialized before 0026.
+ * such fact.
  */
 export const AiTraceIndex = Datasources.aiTraceIndex
 
@@ -189,6 +190,9 @@ export const ScannerRequests = Datasources.scannerRequests
 
 /** Runtime and telemetry SDK versions per service and hour (migration 0050). SummingMergeTree. */
 export const ServiceRuntimesHourly = Datasources.serviceRuntimesHourly
+
+/** Per end user, namespace, service and hour (migration 0056). AggregatingMergeTree. */
+export const UserActivityHourly = Datasources.userActivityHourly
 
 /** CI workflow runs (migration 0047): the root span of each `github-actions` trace. */
 export const CiRuns = Datasources.ciRuns
@@ -226,6 +230,8 @@ export const ErrorEventsByTime = Datasources.errorEventsByTime
 
 /** Minute-grain per-fingerprint rollup consumed by the error issue tick. */
 export const ErrorFingerprintsMinutely = Datasources.errorFingerprintsMinutely
+
+export const ErrorFingerprintLineage = Datasources.errorFingerprintLineage
 
 export const MetricsSum = Datasources.metricsSum
 

@@ -7,14 +7,14 @@ import {
 } from "../../components/integrations/gcp-connector-state"
 import { isUnexpectedError } from "@maple/web-data/lib/error-messages"
 import { AsyncData, Command as FoldkitCommand } from "foldkit"
-import { Option } from "effect"
-import * as Keyed from "../../data/keyed"
-import type { LoadFailure } from "../../data/load-failure"
-import { requestKey } from "../../data/request-key"
-import * as Dialog from "../../ui/dialog"
-import * as Field from "../../ui/field"
-import * as Select from "../../ui/select"
-import * as ToggleGroup from "../../ui/toggle-group"
+import { Option, Array as Arr } from "effect"
+import * as Keyed from "@maple/views/data/keyed"
+import type { LoadFailure } from "@maple/views/data/load-failure"
+import { requestKey } from "@maple/views/data/request-key"
+import * as Dialog from "@maple/views/ui/dialog"
+import * as Field from "@maple/views/ui/field"
+import * as Select from "@maple/views/ui/select"
+import * as ToggleGroup from "@maple/views/ui/toggle-group"
 import { type PageContext, PageOutMessage, type PageReturn } from "../contract"
 import {
 	ConfirmRemoval,
@@ -69,9 +69,9 @@ export const metricsAvailable = (model: Model): boolean =>
 export const savedConnector = (model: Model, configure: ConfigureModel): V2GcpConnector | undefined => {
 	const target = configure.target
 	if (target._tag === "New") return undefined
-	return (
-		gcpConnectors(model).find((entry) => entry.id === target.id) ??
-		(configure.created?.id === target.id ? configure.created : undefined)
+	return Option.getOrElse(
+		Arr.findFirst(gcpConnectors(model), (entry) => entry.id === target.id),
+		() => (configure.created?.id === target.id ? configure.created : undefined),
 	)
 }
 
@@ -194,16 +194,18 @@ export const gotScopeType = (model: Model, message: ToggleGroup.Message): Return
 	const configure = model.gcpCard.configure
 	if (configure === null) return { model }
 	const step = ToggleGroup.update(configure.scopeGroup, message)
-	const next = SCOPE_TYPES.find(
+	const found = Arr.findFirst(
+		SCOPE_TYPES,
 		(scopeType) => scopeType !== configure.scopeType && step.model.values.includes(scopeType),
 	)
 	const commands = FoldkitCommand.mapMessages(step.commands ?? [], (inner) =>
 		Message.GotGcpScopeTypeMessage({ message: inner }),
 	)
 	const grouped = withConfigure(model, () => ({
-		scopeGroup: { ...step.model, values: [next ?? configure.scopeType] },
+		scopeGroup: { ...step.model, values: [Option.getOrElse(found, () => configure.scopeType)] },
 	}))
-	if (next === undefined) return { model: grouped, commands }
+	if (Option.isNone(found)) return { model: grouped, commands }
+	const next = found.value
 	return {
 		model: withConfigure(grouped, () => ({ scopeType: next, scopeId: Field.init(), createError: null })),
 		commands,
@@ -328,7 +330,7 @@ export const runtimeToggled = (filter: LogFilterDraft, runtime: GcpLogRuntime): 
 	const runtimes = filter.runtimes ?? []
 	return {
 		runtimes: runtimes.includes(runtime)
-			? runtimes.filter((entry) => entry !== runtime)
+			? Arr.filter(runtimes, (entry) => entry !== runtime)
 			: [...runtimes, runtime],
 	}
 }
@@ -473,11 +475,11 @@ export const gotFlavour = (model: Model, message: ToggleGroup.Message): Return =
 	if (configure === null) return { model }
 	const step = ToggleGroup.update(configure.flavourGroup, message)
 	const flavour = configure.method === "alchemy" ? "alchemy" : "terraform"
-	const next = FLAVOURS.find((value) => value !== flavour && step.model.values.includes(value))
+	const next = Arr.findFirst(FLAVOURS, (value) => value !== flavour && step.model.values.includes(value))
 	return {
 		model: withConfigure(model, () => ({
-			flavourGroup: { ...step.model, values: [next ?? flavour] },
-			method: next ?? configure.method,
+			flavourGroup: { ...step.model, values: [Option.getOrElse(next, () => flavour)] },
+			method: Option.getOrElse(next, () => configure.method),
 		})),
 		commands: FoldkitCommand.mapMessages(step.commands ?? [], (inner) =>
 			Message.GotGcpFlavourMessage({ message: inner }),
@@ -507,7 +509,7 @@ export const statusArrived = (model: Model): Return => {
 	const configure = model.gcpCard.configure
 	const target = configure?.target
 	const listed =
-		target?._tag === "Connection" && gcpConnectors(model).some((entry) => entry.id === target.id)
+		target?._tag === "Connection" && Arr.some(gcpConnectors(model), (entry) => entry.id === target.id)
 	if (listed) return { model: withConfigure(model, () => ({ asked: null })) }
 	// The flow starts with metrics on; a deployment without them turns the switch back off.
 	return target?._tag === "New" && configure?.newFlags.metrics_enabled === true && !metricsAvailable(model)

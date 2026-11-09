@@ -6,11 +6,11 @@ import {
 	SupabaseProjectCallersResponse,
 	SupabaseProjectInsights,
 } from "@maple/domain/http"
-import { Result, Schema } from "effect"
+import { Result, Schema, Array as Arr, Order } from "effect"
 import { expect as expectView, given, Mount, role, scene, text, withViewInputs } from "foldkit/scene"
 import { describe, expect, test } from "vitest"
-import { ResolveThemeColors, ThemeMessage } from "../../../../charts/theme-colors"
-import { toLoadFailure } from "../../../../data/load-failure"
+import { ResolveThemeColors, ThemeMessage } from "@maple/views/charts/theme-colors"
+import { toLoadFailure } from "@maple/views/data/load-failure"
 import type { PageContext } from "../../../contract"
 import { Message } from "./message"
 import type { Model } from "./model"
@@ -27,10 +27,10 @@ const window = { startTime: "2026-10-01 06:00:00", endTime: "2026-10-01 12:00:00
 const pageUpdate = (model: Model, message: Message) => update(model, message, context)
 const view = withViewInputs(pageView, { context })()
 const names = (commands: ReadonlyArray<{ readonly name: string }> | undefined) =>
-	(commands ?? []).map(({ name }) => name)
+	Arr.map(commands ?? [], ({ name }) => name)
 
 const status = (logsEnabled: boolean) =>
-	Schema.decodeUnknownSync(SupabaseIntegrationStatus)({
+	Schema.decodeSync(SupabaseIntegrationStatus)({
 		configured: true,
 		connected: true,
 		organization: { id: "o1", slug: "acme", name: "Acme" },
@@ -59,7 +59,7 @@ const status = (logsEnabled: boolean) =>
 		],
 	})
 
-const insights = Schema.decodeUnknownSync(SupabaseProjectInsights)({
+const insights = Schema.decodeSync(SupabaseProjectInsights)({
 	projectRef: REF,
 	advisors: { error: [], warn: [], info: [] },
 	advisorsCheckedAt: null,
@@ -107,7 +107,7 @@ const quiet = (logsEnabled: boolean): Model => {
 		}),
 		Message.CompletedFetchInsights({ key: model.insights.key ?? "", result: Result.succeed(insights) }),
 	]
-	return answers.reduce((current, message) => pageUpdate(current, message).model, model)
+	return Arr.reduce(answers, model, (current, message) => pageUpdate(current, message).model)
 }
 
 describe("supabase project", () => {
@@ -120,15 +120,18 @@ describe("supabase project", () => {
 			entered.model,
 			Message.CompletedResolveWindow({ window, nowMs: 0, mode: "Load" }),
 		)
-		expect(names(resolved.commands).toSorted()).toEqual(
-			[
-				"FetchSupabaseApiTopPaths",
-				"FetchSupabaseApiTraffic",
-				"FetchSupabaseProjectCallers",
-				"FetchSupabaseProjectLogIssues",
-				"FetchSupabaseProjectRows",
-				"FetchSupabaseProjectTimeseries",
-			].toSorted(),
+		expect(Arr.sort(names(resolved.commands), Order.String)).toEqual(
+			Arr.sort(
+				[
+					"FetchSupabaseApiTopPaths",
+					"FetchSupabaseApiTraffic",
+					"FetchSupabaseProjectCallers",
+					"FetchSupabaseProjectLogIssues",
+					"FetchSupabaseProjectRows",
+					"FetchSupabaseProjectTimeseries",
+				],
+				Order.String,
+			),
 		)
 	})
 
@@ -137,9 +140,9 @@ describe("supabase project", () => {
 			{ update: pageUpdate, view },
 			given(quiet(true)),
 			themeResolved(),
-			expectView(text("Nothing needs attention.")).toExist(),
-			expectView(text("No API requests in this time range.")).toExist(),
-			expectView(text("No warnings or errors in this time range.")).toExist(),
+			expectView(text("Nothing needs attention")).toExist(),
+			expectView(text("No API requests in this window")).toExist(),
+			expectView(text("No warnings or errors in this window")).toExist(),
 			expectView(role("link", { name: "Instrument a service" })).toExist(),
 			expectView(role("link", { name: "View logs" })).toExist(),
 		)
@@ -150,7 +153,7 @@ describe("supabase project", () => {
 			{ update: pageUpdate, view },
 			given(quiet(false)),
 			themeResolved(),
-			expectView(text("No API requests in this time range.")).toBeAbsent(),
+			expectView(text("No API requests in this window")).toBeAbsent(),
 			expectView(role("link", { name: "View logs" })).toBeAbsent(),
 			expectView(role("link", { name: "Open in Supabase" })).toExist(),
 		)
@@ -170,7 +173,7 @@ describe("supabase project", () => {
 			{ update: pageUpdate, view },
 			given(failed),
 			themeResolved(),
-			expectView(text("Nothing needs attention.")).toBeAbsent(),
+			expectView(text("Nothing needs attention")).toBeAbsent(),
 		)
 	})
 

@@ -1,5 +1,5 @@
 import { assert, describe, expect, it } from "@effect/vitest"
-import { Effect, Exit, Fiber, Result } from "effect"
+import { Effect, Exit, Fiber, Result, Array as Arr } from "effect"
 import { TestClock } from "effect/testing"
 import { FetchHttpClient, HttpBody, HttpClient, HttpClientError } from "effect/http"
 import {
@@ -174,6 +174,8 @@ const run = <A, E>(
 	)
 
 const urlOf = (input: string | URL | Request) => (input instanceof Request ? input.url : String(input))
+const bodyOf = (body: RequestInit["body"]): string =>
+	typeof body === "string" ? body : body instanceof Uint8Array ? new TextDecoder().decode(body) : ""
 
 describe("guard", () => {
 	it.effect("issues the request when the URL is public, with redirect: manual", () =>
@@ -237,7 +239,7 @@ describe("guard", () => {
 		Effect.gen(function* () {
 			const seen: Array<{ url: string; method: string | undefined; body: string }> = []
 			const fakeFetch: typeof fetch = async (input, init) => {
-				seen.push({ url: urlOf(input), method: init?.method, body: String(init?.body ?? "") })
+				seen.push({ url: urlOf(input), method: init?.method, body: bodyOf(init?.body) })
 				return seen.length === 1
 					? new Response(null, { status: 307, headers: { location: "https://api2.example.com/y" } })
 					: new Response("ok", { status: 200 })
@@ -247,7 +249,7 @@ describe("guard", () => {
 			)
 			assert.strictEqual(response.status, 200)
 			assert.deepStrictEqual(
-				seen.map((s) => [s.url, s.method, s.body]),
+				Arr.map(seen, (s) => [s.url, s.method, s.body]),
 				[
 					["https://api1.example.com/x", "POST", "payload"],
 					["https://api2.example.com/y", "POST", "payload"],
@@ -365,7 +367,7 @@ describe("guard", () => {
 				Effect.provideService(FetchHttpClient.Fetch, fakeFetch),
 			)
 			assert.strictEqual(signals.length, 2)
-			assert.isTrue(signals.every((signal) => signal.aborted))
+			assert.isTrue(Arr.every(signals, (signal) => signal.aborted))
 		}),
 	)
 
@@ -422,7 +424,7 @@ const redirectOnce = (status: number, location: string) => {
 		seen.push({
 			url: urlOf(input),
 			method: init?.method,
-			body: String(init?.body ?? ""),
+			body: bodyOf(init?.body),
 			apiKey: new Headers(init?.headers).get("x-api-key"),
 		})
 		return seen.length === 1
@@ -441,7 +443,7 @@ const postThroughStrictGuard = (fakeFetch: typeof fetch) =>
 	).pipe(Effect.provide(FetchHttpClient.layer), Effect.provideService(FetchHttpClient.Fetch, fakeFetch))
 
 const hopsOf = (seen: ReadonlyArray<SeenHop>) =>
-	seen.map((hop) => [hop.url, hop.method, hop.body, hop.apiKey])
+	Arr.map(seen, (hop) => [hop.url, hop.method, hop.body, hop.apiKey])
 
 describe("guard with strictRedirects", () => {
 	it.effect("drops every configured header and the body on a cross-origin 302", () =>

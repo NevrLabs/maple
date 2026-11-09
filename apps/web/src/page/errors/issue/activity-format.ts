@@ -1,7 +1,9 @@
 import type { ErrorIssueEventDocument } from "@maple/domain/http"
 import { countLabel, formatRatePerHour } from "@maple/ui/lib/format"
 import { AGENT_ACCENT, TONE_FILL } from "@maple/ui/lib/tone"
-import { DateTime, Option } from "effect"
+import { DateTime, Option, Schema, Array as Arr } from "effect"
+
+const encodeJsonOption = Schema.encodeOption(Schema.fromJsonString(Schema.Unknown))
 
 // The issue timeline's vocabulary: labels, dots, payload text.
 
@@ -30,6 +32,8 @@ export const EVENT_LABEL = {
 	pr_merged: "PR merged",
 	verification_started: "Verifying fix",
 	verification_verdict: "Verification",
+	merge: "Merged",
+	unmerge: "Unmerged",
 } satisfies Record<EventType, string>
 
 export const DOT_CLASS = {
@@ -53,6 +57,8 @@ export const DOT_CLASS = {
 	pr_merged: TONE_FILL.ok,
 	verification_started: IN_FLIGHT_FILL,
 	verification_verdict: IN_FLIGHT_FILL,
+	merge: "bg-muted-foreground",
+	unmerge: "bg-foreground-subtle",
 } satisfies Record<EventType, string>
 
 export const MESSAGE_TYPES: ReadonlySet<EventType> = new Set([
@@ -84,6 +90,8 @@ export const MESSAGE_VERB = {
 	pr_merged: null,
 	verification_started: null,
 	verification_verdict: "checked the fix",
+	merge: null,
+	unmerge: null,
 } satisfies Record<EventType, string | null>
 
 /** `payloadString`: a scalar as text; anything else as JSON. */
@@ -91,7 +99,7 @@ export const payloadString = (value: unknown): string | null => {
 	if (value === null || value === undefined) return null
 	if (typeof value === "string") return value
 	if (typeof value === "number" || typeof value === "boolean") return String(value)
-	return JSON.stringify(value) ?? null
+	return Option.getOrNull(encodeJsonOption(value))
 }
 
 /** "6 hours", "3 days": a duration a person would say out loud. */
@@ -156,6 +164,25 @@ const verdictText = (p: Payload): string => {
 	return note ? `${headline}\n\n${note}` : headline
 }
 
+const mergeText = (p: Payload): string | null => {
+	if (payloadString(p.role) === "source") {
+		const into = payloadString(p.label)
+		return into ? `Merged into ${into}. New occurrences land there.` : "Merged into another issue."
+	}
+	const labels: ReadonlyArray<string> = Arr.isArray(p.labels)
+		? Arr.flatMap(p.labels, (label: unknown) => Arr.fromNullishOr(payloadString(label)))
+		: []
+	return labels.length === 0
+		? null
+		: `Merged in ${countLabel(labels.length, "issue")}: ${Arr.join(labels, ", ")}`
+}
+
+const unmergeText = (p: Payload): string | null => {
+	if (payloadString(p.role) === "source") return "Split back out into its own issue."
+	const label = payloadString(p.label)
+	return label ? `Split out ${label}.` : null
+}
+
 /** `renderPayload`: the row's body text, or none. */
 export const renderPayload = (event: ErrorIssueEventDocument): string | null => {
 	const p = event.payload
@@ -196,6 +223,10 @@ export const renderPayload = (event: ErrorIssueEventDocument): string | null => 
 			return verificationStarted(p)
 		case "verification_verdict":
 			return verdictText(p)
+		case "merge":
+			return mergeText(p)
+		case "unmerge":
+			return unmergeText(p)
 		default:
 			return null
 	}

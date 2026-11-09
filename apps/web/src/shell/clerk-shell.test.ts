@@ -1,12 +1,12 @@
 import { BillingCustomer, BillingSubscription } from "@maple/domain/http"
 import type { V2OnboardingChecklist } from "@maple/domain/http/v2"
-import { Option } from "effect"
+import { Option, Array as Arr } from "effect"
 import type { Html, HtmlBuilder } from "foldkit/html"
 import { expect as expectView, given, role, scene, text } from "foldkit/scene"
 import { describe, expect, test } from "vitest"
 import { isRedirectOnlyRoute } from "../page/chrome"
 import { AppRoute } from "../route"
-import * as Popover from "../ui/popover"
+import * as Popover from "@maple/views/ui/popover"
 import { billingBanners } from "./billing-banners"
 import { Message as ShellMessage, type Message } from "./message"
 import { init } from "./model"
@@ -15,7 +15,7 @@ import * as Checklist from "./onboarding-checklist"
 import * as SupportChannel from "./support-channel"
 
 const names = (result: { readonly commands?: ReadonlyArray<{ readonly name: string }> }) =>
-	(result.commands ?? []).map((command) => command.name)
+	Arr.map(result.commands ?? [], (command) => command.name)
 
 const checklist = (status: V2OnboardingChecklist["status"]): V2OnboardingChecklist => ({
 	object: "onboarding_checklist",
@@ -35,7 +35,7 @@ describe("onboarding reward pill", () => {
 			Checklist.Message.SucceededLoadChecklist({ checklist: checklist("claimable"), nowMs: 0 }),
 		).model,
 		Checklist.Message.LoadedViewer({
-			isAdmin: true,
+			grants: ["billing:manage"],
 			seenKey: "maple-onboarding-reward-seen-v3-org:user",
 			isSeen: false,
 		}),
@@ -63,14 +63,20 @@ describe("onboarding reward pill", () => {
 		expect(Checklist.update(open, Checklist.Message.ClickedDone()).model.isJustClaimed).toBe(false)
 	})
 
-	test("a navigation re-reads the checklist only onto a page with the top bar", () => {
+	test("a navigation re-reads an in-progress checklist only onto a page with the top bar", () => {
 		const base = init({ isMobile: false, theme: "light", pinnedNamespaces: {}, dashboardFavorites: [] })
-		const shell = { ...base, checklist: loaded }
+		const withStatus = (status: V2OnboardingChecklist["status"]) => ({
+			...base,
+			checklist: { ...loaded, checklist: checklist(status) },
+		})
+		const shell = withStatus("in_progress")
 		expect(names({ commands: checklistRefreshOnNavigation(shell, true, true) })).toEqual([
 			"LoadOnboardingChecklist",
 		])
 		expect(checklistRefreshOnNavigation(shell, false, true)).toEqual([])
 		expect(checklistRefreshOnNavigation({ ...base, checklist: Checklist.init() }, true, true)).toEqual([])
+		for (const settled of ["claimable", "claimed", "expired"] as const)
+			expect(checklistRefreshOnNavigation(withStatus(settled), true, true)).toEqual([])
 	})
 
 	test("leaving a retired settings tab's redirect is not a navigation the pill saw", () => {

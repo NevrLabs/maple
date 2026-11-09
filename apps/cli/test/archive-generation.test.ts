@@ -21,8 +21,11 @@ import {
 	generationRoot,
 	generationManifestPath,
 	shardsRoot,
-} from "../src/server/archives/paths"
-import { parseArchiveActivePointer, type ArchiveGenerationManifest } from "../src/server/archives/manifest"
+} from "@maple/local-server/archives/paths"
+import {
+	parseArchiveActivePointer,
+	type ArchiveGenerationManifest,
+} from "@maple/local-server/archives/manifest"
 import {
 	assertArchiveScratchFreeSpace,
 	assertNoArchiveShrink,
@@ -32,16 +35,16 @@ import {
 	reconcileArchiveGeneration,
 	selectActiveGeneration,
 	ttlDaysFromDefinition,
-} from "../src/server/archives/generation"
+} from "@maple/local-server/archives/generation"
 import {
 	advancePhase,
 	listActiveOperationIds,
 	operationDir,
 	writeInitialIntent,
 	type ArchiveOperationPhase,
-} from "../src/server/archives/journal"
-import { CHDB_VERSION, MAPLE_VERSION } from "../src/version"
-import { SCHEMA_FINGERPRINT } from "../src/server/schema-identity"
+} from "@maple/local-server/archives/journal"
+import { CHDB_VERSION, MAPLE_VERSION } from "@maple/local-server/version"
+import { SCHEMA_FINGERPRINT } from "@maple/local-server/schema-identity"
 import {
 	checkpointPinsRoot,
 	checkpointRoot,
@@ -50,10 +53,11 @@ import {
 	newCheckpointId,
 	withMaintenanceLock,
 	type CheckpointId,
-} from "../src/server/checkpoints"
-import { assertCatalogExact, rebuildCatalog } from "../src/server/archives/listing"
-import { RetiredDayAuthority } from "../src/server/archives/retention"
-import { ARCHIVE_SIGNALS } from "../src/server/archives/signals"
+} from "@maple/local-server/checkpoints"
+import { assertCatalogExact, rebuildCatalog } from "@maple/local-server/archives/listing"
+import { RetiredDayAuthority } from "@maple/local-server/archives/retention"
+import { ARCHIVE_SIGNALS } from "@maple/local-server/archives/signals"
+import { Array as Arr, String as Str } from "effect"
 
 // Filesystem-level tests for generation promotion, supersession, and catalog
 // append. These exercise the durable state machine without a restored chDB; the
@@ -74,7 +78,7 @@ const seedCheckpoint = (dataDir: string, checkpointId: CheckpointId, backupBytes
 	const createdAt = "2026-01-01T00:00:00.000Z"
 	const snapshot = checkpointSnapshotDir(dataDir, checkpointId)
 	mkdirSync(join(snapshot, "backup"), { recursive: true })
-	writeFileSync(join(snapshot, "backup", "data.bin"), "x".repeat(backupBytes))
+	writeFileSync(join(snapshot, "backup", "data.bin"), Str.repeat(backupBytes)("x"))
 	writeFileSync(
 		join(snapshot, "manifest.json"),
 		`${JSON.stringify({
@@ -146,7 +150,7 @@ const manifest = (
 			rowCount: archivedRowCount,
 			minEventTimeUnixNano: `${BigInt(Date.parse("2026-06-01T00:00:00.000Z")) * 1_000_000n}`,
 			maxEventTimeUnixNano: `${BigInt(Date.parse("2026-06-01T00:30:00.000Z")) * 1_000_000n}`,
-			sha256: "a".repeat(64),
+			sha256: Str.repeat(64)("a"),
 			bytes: 4096,
 			columns: ["TimestampTime", "ServiceName"],
 			complexDigest: "123456789",
@@ -186,7 +190,7 @@ const seedPublishedOperation = async (
 		checkpointId,
 		shards: [
 			{
-				...baseManifest.shards[0]!,
+				...Arr.getUnsafe(baseManifest.shards, 0),
 				bytes: statSync(shardPath).size,
 				sha256: createHash("sha256").update(readFileSync(shardPath)).digest("hex"),
 			},
@@ -410,10 +414,10 @@ describe("archive generation promotion", () => {
 				new RetiredDayAuthority(dataDir).commit({
 					rangeDate: "2026-06-01",
 					retiredAt: "2026-06-03T00:00:00.000Z",
-					signals: ARCHIVE_SIGNALS.map((signal) => ({
+					signals: Arr.map(ARCHIVE_SIGNALS, (signal) => ({
 						signal: signal.name,
 						generationId: randomUUID(),
-						manifestSha256: "a".repeat(64),
+						manifestSha256: Str.repeat(64)("a"),
 						archivedRowCount: 1,
 						contentDigest: "1:2:3:4",
 					})),
@@ -628,7 +632,9 @@ describe("archive generation promotion", () => {
 			const exactManifest: ArchiveGenerationManifest = {
 				...baseManifest,
 				checkpointId,
-				shards: [{ ...baseManifest.shards[0]!, bytes: shardBytes, sha256: shardSha256 }],
+				shards: [
+					{ ...Arr.getUnsafe(baseManifest.shards, 0), bytes: shardBytes, sha256: shardSha256 },
+				],
 			}
 			await writeInitialIntent({
 				archiveDir,
@@ -754,9 +760,9 @@ describe("archive generation promotion", () => {
 			writeFileSync(catalogPath(archiveDir, "traces"), '{"attacker":true}\n')
 			await reconcileArchiveGeneration(seeded.dataDir, archiveDir, seeded.scratchRoot)
 			assertCatalogExact(archiveDir, "traces")
-			const lines = readFileSync(catalogPath(archiveDir, "traces"), "utf8").trim().split("\n")
+			const lines = Str.split("\n")(Str.trim(readFileSync(catalogPath(archiveDir, "traces"), "utf8")))
 			strictEqual(lines.length, 1)
-			strictEqual((JSON.parse(lines[0]!) as { generationId: string }).generationId, seeded.generationId)
+			strictEqual((JSON.parse(lines[0]) as { generationId: string }).generationId, seeded.generationId)
 		})
 	})
 

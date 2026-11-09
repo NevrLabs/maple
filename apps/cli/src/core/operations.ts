@@ -10,7 +10,7 @@
 // Every operation returns the same type in both modes, so commands and
 // renderers never learn which backend answered.
 
-import { Clock, DateTime, Effect, Option, References, Schema } from "effect"
+import { Clock, DateTime, Effect, Option, References, Schema, Array as Arr, String as Str } from "effect"
 import { CH, computeBucketSecondsForRange, type TracesMetric } from "@maple/query-engine"
 import { prepareRawSql } from "@maple/query-engine/runtime"
 import {
@@ -61,7 +61,13 @@ import {
 	localAccessDenial,
 	readOnlyRejection,
 } from "../lib/failure"
-import type { ErrorRow, MetricSeriesOutput, ServiceMapResult, TopOperationRow } from "../lib/views"
+import type {
+	CompareRow,
+	ErrorRow,
+	MetricSeriesOutput,
+	ServiceMapResult,
+	TopOperationRow,
+} from "../lib/views"
 import { LOCAL_ORG_ID, localDriverError } from "./executor"
 import { Mode, type ModeError } from "./mode"
 import * as Remote from "./remote-ops"
@@ -152,6 +158,11 @@ const localServerFailure =
 				})
 			: error
 	}
+
+/** How an op fails when it may run over either remote transport: the MCP tool or v2. */
+type EitherFailure<Op extends keyof typeof RemoteMcp & keyof typeof Remote> =
+	| Effect.Error<ReturnType<(typeof RemoteMcp)[Op]>>
+	| Effect.Error<ReturnType<(typeof Remote)[Op]>>
 
 /** Run `remote` against the workspace when one is configured, else `local`. */
 const dispatch = <A, E, R, E2, R2>(
@@ -260,7 +271,7 @@ export const searchTraces = (p: {
 			// cursor. The MCP tool searches spans by substring and takes a numeric
 			// offset, but filters no environment, so `--env --offset` stays on v2,
 			// which refuses it.
-			({ v2, mcp }): Effect.Effect<SearchTracesOutput, unknown> =>
+			({ v2, mcp }): Effect.Effect<SearchTracesOutput, EitherFailure<"searchTraces">> =>
 				p.environment === undefined && (p.spanName !== undefined || (p.offset ?? 0) > 0)
 					? RemoteMcp.searchTraces(mcp, p)
 					: Remote.searchTraces(v2, p),
@@ -268,7 +279,7 @@ export const searchTraces = (p: {
 		)
 	})
 
-/** How far back `maple trace <id>` looks when no window is given (after the default 24h misses). */
+/** How far back `maple trace <id>` looks for the trace when no window is given. */
 export const TRACE_LOOKBACK_DAYS = 30
 
 export const inspectTrace = (p: { traceId: string; range?: Range }) =>
@@ -302,7 +313,7 @@ const localFindErrors = (p: { range: Range; service?: string; environment?: stri
 			const issues = yield* executor.compiledQuery(
 				CH.compile(
 					CH.errorIssuesQuery({
-						fingerprintHashes: rows.map((r) => r.fingerprintHash),
+						fingerprintHashes: Arr.map(rows, (r) => r.fingerprintHash),
 						...(p.service ? { services: [p.service] } : undefined),
 						...(p.environment ? { deploymentEnvs: [p.environment] } : undefined),
 						limit: rows.length,
@@ -313,7 +324,7 @@ const localFindErrors = (p: { range: Range; service?: string; environment?: stri
 			)
 			for (const issue of issues) serviceOf.set(issue.fingerprintHash, issue.serviceName)
 		}
-		return rows.map((r): ErrorRow => ({ ...r, serviceName: serviceOf.get(r.fingerprintHash) ?? "" }))
+		return Arr.map(rows, (r): ErrorRow => ({ ...r, serviceName: serviceOf.get(r.fingerprintHash) ?? "" }))
 	})
 
 export const findErrors = (p: { range: Range; service?: string; environment?: string; limit?: number }) =>
@@ -363,7 +374,7 @@ export const searchLogs = (p: {
 		}).pipe(withEnvironment(p.environment)),
 		// A numeric offset needs the MCP tool, which has no environment filter
 		// and no attributes; v2 then explains why --offset is unavailable.
-		({ v2, mcp }): Effect.Effect<SearchLogsOutput, unknown> =>
+		({ v2, mcp }): Effect.Effect<SearchLogsOutput, EitherFailure<"searchLogs">> =>
 			(p.offset ?? 0) > 0 && p.environment === undefined && p.includeAttributes !== true
 				? RemoteMcp.searchLogs(mcp, p)
 				: Remote.searchLogs(v2, p),
@@ -388,7 +399,7 @@ export const mineLogPatterns = (p: {
 		}).pipe(withEnvironment(p.environment)),
 		// The MCP tool clusters a 10k-log sample server-side, as local mode does;
 		// it has no environment filter, so --env falls back to v2's 100-log page.
-		({ v2, mcp }): Effect.Effect<MineLogPatternsOutput, unknown> =>
+		({ v2, mcp }): Effect.Effect<MineLogPatternsOutput, EitherFailure<"mineLogPatterns">> =>
 			p.environment === undefined ? RemoteMcp.mineLogPatterns(mcp, p) : Remote.mineLogPatterns(v2, p),
 		"list_logs",
 	)
@@ -413,23 +424,27 @@ const localServiceMap = (p: { range: Range; service?: string; environment?: stri
 		const edges =
 			p.service === undefined
 				? yield* obsServiceMap({ timeRange: p.range, environment: p.environment })
-				: (yield* executor.compiledQuery(
-						CH.compile(
-							CH.serviceDependenciesInvolvingServiceQuery({
-								serviceName: p.service,
-								deploymentEnv: p.environment,
-							}),
-							params,
+				: yield* Effect.map(
+						executor.compiledQuery(
+							CH.compile(
+								CH.serviceDependenciesInvolvingServiceQuery({
+									serviceName: p.service,
+									deploymentEnv: p.environment,
+								}),
+								params,
+							),
+							{ profile: "aggregation", context: "cli.serviceMapEdges" },
 						),
-						{ profile: "aggregation", context: "cli.serviceMapEdges" },
-					)).map((e): ServiceEdge => ({
-						sourceService: e.sourceService,
-						targetService: e.targetService,
-						callCount: e.callCount,
-						errorCount: e.errorCount,
-						avgDurationMs: e.avgDurationMs,
-						maxDurationMs: e.maxDurationMs,
-					}))
+						(rows) =>
+							Arr.map(rows, (e): ServiceEdge => ({
+								sourceService: e.sourceService,
+								targetService: e.targetService,
+								callCount: e.callCount,
+								errorCount: e.errorCount,
+								avgDurationMs: e.avgDurationMs,
+								maxDurationMs: e.maxDurationMs,
+							})),
+					)
 		const databases = yield* executor.compiledQuery(
 			p.service === undefined
 				? CH.serviceDbEdgesSQL({ deploymentEnv: p.environment }, params)
@@ -515,11 +530,19 @@ export const topOperations = (p: {
 				limit: p.limit,
 			}),
 			(rows) =>
-				rows.map((r): TopOperationRow => ({ ...r, metric: p.metric, unit: metricUnit(p.metric) })),
+				Arr.map(rows, (r): TopOperationRow => ({
+					...r,
+					metric: p.metric,
+					unit: metricUnit(p.metric),
+				})),
 		),
 		({ mcp }) =>
 			Effect.map(RemoteMcp.topOperations(mcp, p), (rows) =>
-				rows.map((r): TopOperationRow => ({ ...r, metric: p.metric, unit: metricUnit(p.metric) })),
+				Arr.map(rows, (r): TopOperationRow => ({
+					...r,
+					metric: p.metric,
+					unit: metricUnit(p.metric),
+				})),
 			),
 		"top_operations",
 	)
@@ -539,7 +562,7 @@ export const listMetrics = (p: { range: Range; service?: string; search?: string
 				limit: p.limit ?? 100,
 			})
 			// chDB returns the flag as 0/1; remote mode already returns a boolean.
-			return result.data.map((m): ListMetricsOutput => ({
+			return Arr.map(result.data, (m): ListMetricsOutput => ({
 				...m,
 				isMonotonic: asBoolean(m.isMonotonic),
 			}))
@@ -575,7 +598,8 @@ const executeRawLocalQuery = Effect.fn("WarehouseExecutor.rawQuery", { kind: "cl
 		"query.context": "cli.rawQuery",
 	})
 	// This span is the database span; the request underneath adds no `http.client` span.
-	const http = warehouseHttpClient(yield* HttpClient.HttpClient)
+	const baseHttp = yield* HttpClient.HttpClient
+	const http = warehouseHttpClient(baseHttp)
 	const rows = yield* executeLocalQuery(sql, baseUrl).pipe(
 		Effect.provideService(HttpClient.HttpClient, http),
 		Effect.mapError((error) => mapWarehouseError("rawQuery", localDriverError(error))),
@@ -597,7 +621,7 @@ const executeRawLocalQuery = Effect.fn("WarehouseExecutor.rawQuery", { kind: "cl
 })
 
 /** True when the SQL uses the workspace's macros (`$__orgFilter`, `$__timeFilter(…)`, …). */
-const usesMacros = (sql: string): boolean => sql.includes("$__")
+const usesMacros = (sql: string): boolean => Str.includes("$__")(sql)
 
 /**
  * Expand the raw-SQL macros exactly as the workspace does, with the local
@@ -614,8 +638,10 @@ const expandLocalMacros = (sql: string, range: Range) =>
 		granularitySeconds: computeBucketSecondsForRange(range.startTime, range.endTime, "rawSql"),
 		workload: "interactive",
 	}).pipe(
-		Effect.map((prepared) => prepared.sql),
-		Effect.mapError((error) => new CliUsageError({ message: `SQL rejected: ${error.message}` })),
+		Effect.mapBoth({
+			onSuccess: (prepared) => prepared.sql,
+			onFailure: (error) => new CliUsageError({ message: `SQL rejected: ${error.message}` }),
+		}),
 	)
 
 /**
@@ -696,7 +722,9 @@ const localTracesTimeseries = (p: {
 		const result = yield* executor.query("custom_traces_timeseries", {
 			start_time: p.range.startTime,
 			end_time: p.range.endTime,
-			...(p.bucketSeconds ? { bucket_seconds: p.bucketSeconds } : undefined),
+			...(p.bucketSeconds !== undefined && p.bucketSeconds > 0
+				? { bucket_seconds: p.bucketSeconds }
+				: undefined),
 			...(p.service ? { service_name: p.service } : undefined),
 			...(p.spanName ? { span_name: p.spanName } : undefined),
 			...(p.errorsOnly ? { errors_only: "1" } : undefined),
@@ -750,7 +778,7 @@ export const compareServiceOverview = (p: { current: Range; previous: Range; env
 const localCompareServiceOverview = (p: { current: Range; previous: Range; environment?: string }) =>
 	Effect.gen(function* () {
 		const executor = yield* WarehouseExecutor
-		const result = yield* executor.query("service_overview_compare", {
+		const result = yield* executor.query<CompareRow>("service_overview_compare", {
 			current_start_time: p.current.startTime,
 			current_end_time: p.current.endTime,
 			previous_start_time: p.previous.startTime,
@@ -771,7 +799,7 @@ const localServiceHasTelemetry = (service: string, range: Range) =>
 			),
 			{ profile: "list", context: "cli.servicePresence" },
 		)
-		return rows.some((r) => r.spanCount > 0)
+		return Arr.some(rows, (r) => r.spanCount > 0)
 	})
 
 /**
@@ -779,7 +807,7 @@ const localServiceHasTelemetry = (service: string, range: Range) =>
  * so unlike `knownServices` it is not limited to the busiest page of services.
  */
 export const serviceHasTelemetry = (service: string, range: Range) =>
-	service.trim() === ""
+	Str.trim(service) === ""
 		? Effect.succeed(false)
 		: dispatch(
 				localServiceHasTelemetry(service, range),
@@ -790,7 +818,10 @@ export const serviceHasTelemetry = (service: string, range: Range) =>
 /** Service names with trace telemetry in the window, busiest first. */
 export const knownServices = (range: Range) =>
 	Effect.map(listServices({ range }), (services) =>
-		[...services].sort((a, b) => b.throughput - a.throughput).map((s) => s.name),
+		Arr.map(
+			[...services].sort((a, b) => b.throughput - a.throughput),
+			(s) => s.name,
+		),
 	)
 
 const NICE_BUCKETS = [60, 300, 600, 900, 1800, 3600, 7200, 21_600, 43_200, 86_400]
@@ -800,7 +831,10 @@ export const bucketSecondsFor = (range: Range, points = 60): number => {
 	const startMs = parseTimestampMs(range.startTime) ?? 0
 	const endMs = parseTimestampMs(range.endTime) ?? startMs
 	const target = (endMs - startMs) / 1000 / points
-	return NICE_BUCKETS.find((b) => b >= target) ?? 86_400
+	return Option.getOrElse(
+		Arr.findFirst(NICE_BUCKETS, (b) => b >= target),
+		() => 86_400,
+	)
 }
 
 export interface MetricSeriesInput {
@@ -836,13 +870,14 @@ const localMetricSeries = (p: MetricSeriesInput) =>
 			),
 			{ profile: "list", context: "cli.metricEntry" },
 		)
-		const entry = catalog.find((m) => m.metricName === p.name)
-		if (entry === undefined) {
+		const found = Arr.findFirst(catalog, (m) => m.metricName === p.name)
+		if (Option.isNone(found)) {
 			return {
 				_tag: "missing",
-				similar: [...new Set(catalog.map((m) => m.metricName))],
+				similar: [...new Set(Arr.map(catalog, (m) => m.metricName))],
 			} satisfies MetricSeriesResult
 		}
+		const entry = found.value
 		const metricType = entry.metricType
 		if (!isMetricType(metricType)) return yield* unplottable(p.name, metricType)
 		const isMonotonic = asBoolean(entry.isMonotonic)
@@ -857,29 +892,41 @@ const localMetricSeries = (p: MetricSeriesInput) =>
 		const params = { ...window, bucketSeconds: p.bucketSeconds, metricName: p.name }
 		const options = { profile: "aggregation", context: "cli.metricSeries" } as const
 		const points = rate
-			? (yield* executor.compiledQuery(
-					CH.compile(
-						CH.metricsTimeseriesRateQuery({
-							metricName: p.name,
-							bucketSeconds: p.bucketSeconds,
-							...series,
-						}),
-						params,
+			? yield* Effect.map(
+					executor.compiledQuery(
+						CH.compile(
+							CH.metricsTimeseriesRateQuery({
+								metric: "rate",
+								metricName: p.name,
+								bucketSeconds: p.bucketSeconds,
+								...series,
+							}),
+							params,
+						),
+						options,
 					),
-					options,
-				)).map((r) => ({
-					bucket: DateTime.formatIso(r.bucket),
-					service: r.groupName,
-					value: r.rateValue,
-				}))
-			: (yield* executor.compiledQuery(
-					CH.compile(CH.metricsTimeseriesQuery({ metricType, ...series }), params),
-					options,
-				)).map((r) => ({
-					bucket: DateTime.formatIso(r.bucket),
-					service: r.groupName,
-					value: r.avgValue,
-				}))
+					(rows) =>
+						Arr.map(rows, (r) => ({
+							bucket: DateTime.formatIso(r.bucket),
+							service: r.groupName,
+							value: r.value,
+						})),
+				)
+			: yield* Effect.map(
+					executor.compiledQuery(
+						CH.compile(
+							CH.metricsTimeseriesQuery({ metric: "avg", metricType, ...series }),
+							params,
+						),
+						options,
+					),
+					(rows) =>
+						Arr.map(rows, (r) => ({
+							bucket: DateTime.formatIso(r.bucket),
+							service: r.groupName,
+							value: r.value,
+						})),
+				)
 		return {
 			_tag: "found",
 			output: {
@@ -908,13 +955,14 @@ const remoteMetricSeries = (client: MapleV2Client, p: MetricSeriesInput) =>
 			service: p.service,
 			limit: 100,
 		})
-		const entry = list.find((m) => m.metricName === p.name)
-		if (entry === undefined) {
+		const found = Arr.findFirst(list, (m) => m.metricName === p.name)
+		if (Option.isNone(found)) {
 			return {
 				_tag: "missing",
-				similar: [...new Set(list.map((m) => m.metricName))],
+				similar: [...new Set(Arr.map(list, (m) => m.metricName))],
 			} satisfies MetricSeriesResult
 		}
+		const entry = found.value
 		const metricType = entry.metricType
 		if (!isMetricType(metricType)) return yield* unplottable(p.name, metricType)
 		const isMonotonic = asBoolean(entry.isMonotonic)

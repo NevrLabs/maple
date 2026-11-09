@@ -1,6 +1,6 @@
 import { assert, describe, expect, it } from "@effect/vitest"
 import { INVESTIGATION_PROGRESS_STEPS, type InvestigationProgress } from "@maple/domain/http"
-import { Duration, Effect, Fiber, Ref } from "effect"
+import { Duration, Effect, Fiber, Ref, Array as Arr, String as Str } from "effect"
 import { TestClock } from "effect/testing"
 
 import {
@@ -38,10 +38,10 @@ describe("stepLabel", () => {
 
 	it("keeps a long argument to one clamped line", () => {
 		const label = stepLabel("sandbox_grep", {
-			pattern: "a".repeat(80),
+			pattern: Str.repeat(80)("a"),
 		})
 		expect(label.length).toBeLessThan(60)
-		expect(label.endsWith("…")).toBe(true)
+		expect(Str.endsWith("…")(label)).toBe(true)
 	})
 
 	it("keeps acronyms upper case", () => {
@@ -74,7 +74,7 @@ describe("makeProgressFeed", () => {
 			yield* settle
 			assert.lengthOf(writes, 1)
 			assert.deepEqual(
-				writes[0]!.steps.map((step) => step.label),
+				Arr.map(Arr.getUnsafe(writes, 0).steps, (step) => step.label),
 				["Search logs"],
 			)
 		}),
@@ -91,7 +91,7 @@ describe("makeProgressFeed", () => {
 			assert.lengthOf(writes, 1)
 			yield* TestClock.adjust(INVESTIGATION_PROGRESS_HEARTBEAT)
 			assert.lengthOf(writes, 2)
-			assert.equal(writes[1]!.stepCount, 3)
+			assert.equal(Arr.getUnsafe(writes, 1).stepCount, 3)
 		}),
 	)
 
@@ -133,6 +133,31 @@ describe("makeProgressFeed", () => {
 			yield* feed.resume
 			yield* TestClock.adjust(INVESTIGATION_PROGRESS_HEARTBEAT)
 			assert.equal(writes.at(-1)!.stepCount, 1)
+		}),
+	)
+
+	/** A report refused after the turn closed the feed must not reopen a feed with no writer. */
+	it.effect("ignores a resume once the feed is closed", () =>
+		Effect.gen(function* () {
+			const { feed, writes } = yield* feedWith()
+			yield* feed.close
+			yield* feed.resume
+			feed.step("search_logs", {})
+			yield* feed.flush
+			yield* TestClock.adjust(Duration.times(INVESTIGATION_PROGRESS_HEARTBEAT, 2))
+			assert.lengthOf(writes, 0)
+		}),
+	)
+
+	it.effect("stays closed when a pause follows the close", () =>
+		Effect.gen(function* () {
+			const { feed, writes } = yield* feedWith()
+			yield* feed.close
+			yield* feed.pause
+			yield* feed.resume
+			feed.step("search_logs", {})
+			yield* feed.flush
+			assert.lengthOf(writes, 0)
 		}),
 	)
 

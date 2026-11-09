@@ -2,7 +2,7 @@ import * as PG from "@maple-dev/effect-orm/postgres"
 import { McpOAuthClients, McpOAuthRefreshTokens, type McpOAuthRefreshTokenRow } from "@maple/db/tables"
 import { McpConnectionNotFoundError, McpConnectionPersistenceError } from "@maple/domain/http"
 import { McpConnectionId, type OrgId, type UserId } from "@maple/domain/primitives"
-import { Clock, Context, Effect, Layer, Option, Schema } from "effect"
+import { Clock, Context, Effect, Layer, Option, Schema, Array as Arr } from "effect"
 import { Database } from "@maple/backend/platform/DatabaseLive"
 import { makeDbExecute, makePersistenceErrorMapper } from "@maple/backend/platform/db-execute"
 import { REFRESH_FAMILY_ABSOLUTE_TTL_MS, revokeRefreshFamily } from "./mcp-oauth-family"
@@ -51,7 +51,7 @@ const decodeConnectionId = Schema.decodeUnknownOption(McpConnectionId)
 /** The family's live token, newest first; families without one have ended. */
 const latestPerFamily = (rows: ReadonlyArray<McpOAuthRefreshTokenRow>, now: number) => {
 	const seen = new Set<string>()
-	return rows.filter((row) => {
+	return Arr.filter(rows, (row) => {
 		if (seen.has(row.familyId)) return false
 		seen.add(row.familyId)
 		return row.familyExpiresAt === null || row.familyExpiresAt > now
@@ -106,7 +106,7 @@ export class McpConnectionsService extends Context.Service<McpConnectionsService
 					),
 				)
 				const live = latestPerFamily(rows, now)
-				const [first, ...rest] = [...new Set(live.map((row) => row.clientId))]
+				const [first, ...rest] = [...new Set(Arr.map(live, (row) => row.clientId))]
 				const clients =
 					first === undefined
 						? []
@@ -117,8 +117,10 @@ export class McpConnectionsService extends Context.Service<McpConnectionsService
 										.where(($) => [$.clientId.in_(first, ...rest)]),
 								),
 							)
-				const clientNames = new Map(clients.map((client) => [client.clientId, client.clientName]))
-				return live.flatMap((row) => Option.toArray(toConnection(row, clientNames)))
+				const clientNames = new Map(
+					Arr.map(clients, (client) => [client.clientId, client.clientName]),
+				)
+				return Arr.flatMap(live, (row) => Option.toArray(toConnection(row, clientNames)))
 			})
 
 			const list = Effect.fn("McpConnectionsService.list")(function* (

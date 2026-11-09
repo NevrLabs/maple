@@ -23,8 +23,11 @@
 
 import { writeFileSync, existsSync, mkdirSync } from "node:fs"
 import { join } from "node:path"
-import { createArchiveGeneration, type ArchiveGenerationFaults } from "../../src/server/archives/generation"
-import { resolveArchiveTuning } from "../../src/server/archives/config"
+import {
+	createArchiveGeneration,
+	type ArchiveGenerationFaults,
+} from "@maple/local-server/archives/generation"
+import { resolveArchiveTuning } from "@maple/local-server/archives/config"
 
 interface Args {
 	boundary: string
@@ -184,7 +187,7 @@ const main = async (): Promise<void> => {
 	}
 }
 
-void main().catch((error) => {
+void main().catch((error: unknown) => {
 	console.error(`crash-worker fatal: ${error instanceof Error ? error.message : String(error)}`)
 	process.exit(6)
 })

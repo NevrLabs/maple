@@ -34,9 +34,14 @@ export interface QueueProducer {
 	) => Effect.Effect<void, QueueSendError>
 }
 
-/** Vendor-agnostic VCS sync jobs (commit backfill + webhook deltas). */
+/** Vendor-agnostic VCS webhook deltas: pushes, pull request and CI events. */
 export class VcsSyncQueueProducer extends Context.Service<VcsSyncQueueProducer, QueueProducer>()(
 	"@maple/backend/platform/VcsSyncQueueProducer",
+) {}
+
+/** Bulk VCS refreshes (branch and commit backfills, dependency scans), kept off the webhook queue. */
+export class VcsBackfillQueueProducer extends Context.Service<VcsBackfillQueueProducer, QueueProducer>()(
+	"@maple/backend/platform/VcsBackfillQueueProducer",
 ) {}
 
 /** PlanetScale webhook deliveries, decoupled from the receiving request. */
@@ -44,6 +49,12 @@ export class PlanetScaleWebhookQueueProducer extends Context.Service<
 	PlanetScaleWebhookQueueProducer,
 	QueueProducer
 >()("@maple/backend/platform/PlanetScaleWebhookQueueProducer") {}
+
+/** Cancelled plans waiting for their review, run off the Autumn webhook's request. */
+export class CancellationReviewQueueProducer extends Context.Service<
+	CancellationReviewQueueProducer,
+	QueueProducer
+>()("@maple/api/platform/CancellationReviewQueueProducer") {}
 
 /** Org audit-log entries on their way to the warehouse. */
 export class AuditEventsQueueProducer extends Context.Service<AuditEventsQueueProducer, QueueProducer>()(
@@ -67,6 +78,10 @@ export interface RateLimiter {
 
 export class ApiV2RateLimit extends Context.Service<ApiV2RateLimit, RateLimiter>()(
 	"@maple/backend/platform/ApiV2RateLimit",
+) {}
+/** Every viewer of one share link together; the per-viewer bucket stays on `ApiV2RateLimit`. */
+export class ShareLinkRateLimit extends Context.Service<ShareLinkRateLimit, RateLimiter>()(
+	"@maple/backend/platform/ShareLinkRateLimit",
 ) {}
 export class CliAuthRateLimit extends Context.Service<CliAuthRateLimit, RateLimiter>()(
 	"@maple/backend/platform/CliAuthRateLimit",
@@ -132,7 +147,7 @@ export interface WorkflowStarter<Params> {
 /** The per-org ClickHouse schema apply, hosted by the api Worker. */
 export class SchemaApplyWorkflow extends Context.Service<
 	SchemaApplyWorkflow,
-	WorkflowStarter<{ readonly orgId: string }>
+	WorkflowStarter<{ readonly orgId: string; readonly runId: string }>
 >()("@maple/backend/platform/SchemaApplyWorkflow") {}
 
 export class WorkflowCancelError extends Schema.TaggedError<WorkflowCancelError>()(

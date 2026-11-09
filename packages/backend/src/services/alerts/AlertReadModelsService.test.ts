@@ -1,6 +1,6 @@
 import { afterEach, assert, describe, expect, it } from "@effect/vitest"
 import { AlertDestinationId, AlertIncidentId, AlertRuleId, OrgId } from "@maple/domain/http"
-import { Effect, Layer, Schema } from "effect"
+import { Effect, Layer, Schema, Array as Arr } from "effect"
 import { Database } from "@maple/backend/platform/DatabaseLive"
 import { cleanupTestDbs, createTestDb, executeSql, type TestDb } from "@maple/backend/platform/test-pglite"
 import {
@@ -106,12 +106,12 @@ describe("AlertReadModelsService", () => {
 
 			const incidents = yield* readModels.listIncidents(ORG)
 			assert.deepStrictEqual(
-				incidents.incidents.map((incident) => incident.id),
+				Arr.map(incidents.incidents, (incident) => incident.id),
 				[INCIDENT_NEW, INCIDENT_OLD],
 			)
 			const open = yield* readModels.listIncidents(ORG, { status: "open", limit: 1 })
 			assert.deepStrictEqual(
-				open.incidents.map((incident) => incident.id),
+				Arr.map(open.incidents, (incident) => incident.id),
 				[INCIDENT_NEW],
 			)
 			assert.strictEqual((yield* readModels.getIncident(ORG, INCIDENT_NEW)).groupKey, "worker")
@@ -124,7 +124,7 @@ describe("AlertReadModelsService", () => {
 			// The incident filter is what the mobile incident timeline reads.
 			const forNew = yield* readModels.listDeliveryEvents(ORG, { incidentId: INCIDENT_NEW })
 			assert.deepStrictEqual(
-				forNew.events.map((event) => event.id),
+				Arr.map(forNew.events, (event) => event.id),
 				[DELIVERY],
 			)
 			const forOld = yield* readModels.listDeliveryEvents(ORG, { incidentId: INCIDENT_OLD })
@@ -133,6 +133,97 @@ describe("AlertReadModelsService", () => {
 			assert.strictEqual(forRule.events.length, 1)
 			assert.deepStrictEqual(contexts, [])
 		}).pipe(Effect.provide(makeLayer(testDb, contexts)))
+	})
+
+	it.effect("reads an unbounded check-history page in widening windows from its cursor", () => {
+		const testDb = createTestDb(createdDbs)
+		const sqls: Array<string> = []
+		const stub = makeWarehouseServiceStub({
+			compiledQuery: (_tenant, compiled) => {
+				const query = compiledQueryOf(compiled)
+				return Effect.sync(() => sqls.push(query.sql)).pipe(
+					Effect.andThen(query.decodeRows([]).pipe(Effect.orDie)),
+				)
+			},
+		})
+		return Effect.gen(function* () {
+			yield* Effect.promise(() => seedReadModels(testDb))
+			const readModels = yield* AlertReadModelsService
+
+			yield* readModels.listRuleChecks(ORG, RULE, {
+				limit: 20,
+				beforeTimestamp: "2026-08-10T00:00:00.000Z",
+				beforeGroupKey: "api",
+			})
+			// 7 days back from the cursor; the empty page widens, but never before the rule's creation.
+			expect(sqls).toHaveLength(2)
+			expect(sqls[0]).toContain("Timestamp >= '2026-08-03 00:00:00")
+			expect(sqls[1]).toContain("Timestamp >= '2026-08-01 10:00:00")
+
+			yield* readModels.listRuleChecks(ORG, RULE, { limit: 20, since: "2026-07-01T00:00:00.000Z" })
+			expect(sqls).toHaveLength(3)
+			expect(sqls[2]).toContain("Timestamp >= '2026-07-01 00:00:00")
+		}).pipe(
+			Effect.provide(
+				readModelRequirements.pipe(
+					Layer.provide(Layer.mergeAll(testDb.layer, Layer.succeed(WarehouseQueryService, stub))),
+				),
+			),
+		)
+	})
+
+	it.effect("stops widening once a check-history page fills", () => {
+		const testDb = createTestDb(createdDbs)
+		const sqls: Array<string> = []
+		const check = (minute: number) => ({
+			timestamp: `2026-08-09 10:0${minute}:00.000`,
+			windowStart: "2026-08-09 09:55:00.000",
+			windowEnd: "2026-08-09 10:00:00.000",
+			groupKey: "",
+			status: "healthy",
+			signalType: "error_rate",
+			comparator: "gt",
+			threshold: 1,
+			observedValue: null,
+			sampleCount: 0,
+			windowMinutes: 5,
+			consecutiveBreaches: 0,
+			consecutiveHealthy: 1,
+			incidentId: null,
+			incidentTransition: "none",
+			evaluationDurationMs: 3,
+			errorMessage: null,
+			errorCategory: "",
+			skipReason: "",
+			level: "",
+		})
+		const stub = makeWarehouseServiceStub({
+			compiledQuery: (_tenant, compiled) => {
+				const query = compiledQueryOf(compiled)
+				return Effect.sync(() => sqls.push(query.sql)).pipe(
+					Effect.andThen(query.decodeRows([check(1), check(2)]).pipe(Effect.orDie)),
+				)
+			},
+		})
+		return Effect.gen(function* () {
+			yield* Effect.promise(() => seedReadModels(testDb))
+			const readModels = yield* AlertReadModelsService
+
+			const page = yield* readModels.listRuleChecks(ORG, RULE, {
+				limit: 2,
+				beforeTimestamp: "2026-08-10T00:00:00.000Z",
+				beforeGroupKey: "api",
+			})
+			// The 7-day read already filled the page, so no wider window is read.
+			expect(sqls).toHaveLength(1)
+			expect(page.checks).toHaveLength(2)
+		}).pipe(
+			Effect.provide(
+				readModelRequirements.pipe(
+					Layer.provide(Layer.mergeAll(testDb.layer, Layer.succeed(WarehouseQueryService, stub))),
+				),
+			),
+		)
 	})
 
 	it.effect("enforces org ownership before warehouse-backed check reads", () => {

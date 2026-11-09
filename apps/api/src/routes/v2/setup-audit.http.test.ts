@@ -1,5 +1,16 @@
 import { afterEach, describe, expect, it } from "@effect/vitest"
-import { ConfigProvider, Context, Effect, Layer, ManagedRuntime, Schema } from "effect"
+import {
+	ConfigProvider,
+	Context,
+	Effect,
+	Layer,
+	ManagedRuntime,
+	Option,
+	Schema,
+	Array as Arr,
+	Record as Rec,
+	String as Str,
+} from "effect"
 import { FetchHttpClient, HttpRouter } from "effect/http"
 import { HttpApiBuilder } from "effect/http-api"
 import { OrgId, UserId } from "@maple/domain/http"
@@ -50,8 +61,8 @@ import { compiledQueryOf } from "@maple/query-engine/execution"
 const createdDbs: TestDb[] = []
 afterEach(() => cleanupTestDbs(createdDbs))
 
-const ORG = Schema.decodeUnknownSync(OrgId)("org_audit_e2e")
-const USER = Schema.decodeUnknownSync(UserId)("user_audit_e2e")
+const ORG = Schema.decodeSync(OrgId)("org_audit_e2e")
+const USER = Schema.decodeSync(UserId)("user_audit_e2e")
 
 const die = () => Effect.die(new Error("not available in this test harness"))
 
@@ -83,11 +94,11 @@ const warehouseStub = (
 		query: () => Effect.die(new Error("unexpected warehouse pipe query")),
 		rawSqlQuery: () => Effect.succeed([]),
 		compiledQuery: (_tenant, compiled) => {
-			const table = Object.keys(rowsByTable).find((name) =>
-				compiledQueryOf(compiled).sql.includes(`FROM ${name}`),
+			const table = Arr.findFirst(Rec.keys(rowsByTable), (name) =>
+				Str.includes(`FROM ${name}`)(compiledQueryOf(compiled).sql),
 			)
 			return compiledQueryOf(compiled)
-				.decodeRows(table === undefined ? [] : rowsByTable[table]!)
+				.decodeRows(Option.isNone(table) ? [] : rowsByTable[table.value])
 				.pipe(Effect.orDie)
 		},
 		compiledQueryFirst: () => Effect.die(new Error("unexpected compiled query")),

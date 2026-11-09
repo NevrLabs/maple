@@ -11,7 +11,8 @@ import type {
 	Finding,
 	RunMetadata,
 } from "@maple/security-audit"
-import { Effect, Layer, Option, Schema } from "effect"
+import { Effect, Layer, Option, Order, Schema, Array as Arr, Record as Rec } from "effect"
+import * as SecureRandom from "effect/crypto/SecureRandom"
 import { TestClock } from "effect/testing"
 import { cleanupTestDbs, createTestDb, type TestDb } from "@maple/backend/platform/test-pglite"
 import { SecurityAuditStore, type SecurityAuditStoreApi } from "./SecurityAuditStore"
@@ -21,9 +22,9 @@ afterEach(() => cleanupTestDbs(trackedDbs))
 /** Saves whose findings carry no estimated severity. */
 const NO_ESTIMATES: ReadonlyMap<string, EstimatedSeverity> = new Map()
 
-const orgA = Schema.decodeUnknownSync(OrgId)("org_a")
-const orgB = Schema.decodeUnknownSync(OrgId)("org_b")
-const user = Schema.decodeUnknownSync(UserId)("user_a")
+const orgA = Schema.decodeSync(OrgId)("org_a")
+const orgB = Schema.decodeSync(OrgId)("org_b")
+const user = Schema.decodeSync(UserId)("user_a")
 /** A spend check no test reaches, for tests about the plan's invocations. */
 const NO_SPEND_LIMIT = { since: 0, limitUsd: Number.MAX_SAFE_INTEGER, sandboxFeeUsd: 0 }
 
@@ -81,7 +82,7 @@ type Score = EstimatedSeverity["overall_severity"]
 /** Estimates by fingerprint, each with that overall severity. */
 const estimates = (entries: Record<string, Score>): ReadonlyMap<string, EstimatedSeverity> =>
 	new Map(
-		Object.entries(entries).map(([fingerprint, overall]) => [
+		Arr.map(Rec.toEntries(entries), ([fingerprint, overall]) => [
 			fingerprint,
 			{
 				likelihood: { score: "medium", reason: "reachable by a member" },
@@ -172,7 +173,7 @@ describe("SecurityAuditStore ledger", () => {
 				yield* scoped.saveLedger(runId, next)
 				const units = yield* scoped.listUnits(runId)
 				assert.deepStrictEqual(
-					units.map((u) => [u.coverageId, u.status, u.wave, u.agentId]),
+					Arr.map(units, (u) => [u.coverageId, u.status, u.wave, u.agentId]),
 					[
 						["u1", "covered", 1, "hunter-u1"],
 						["u3", "in_progress", 2, "hunter-u3"],
@@ -199,7 +200,7 @@ describe("SecurityAuditStore findings lifecycle", () => {
 				yield* scoped.saveFindings(second.runId, [confirmed("f1", "low")], NO_ESTIMATES)
 
 				const findings = yield* scoped.listFindings(first.targetId)
-				const f1 = findings.find((f) => f.fingerprint === "f1")
+				const f1 = Option.getOrUndefined(Arr.findFirst(findings, (f) => f.fingerprint === "f1"))
 				assert.deepStrictEqual(
 					[
 						f1?.status,
@@ -211,7 +212,7 @@ describe("SecurityAuditStore findings lifecycle", () => {
 					],
 					["open", "low", first.runId, second.runId, "sha-1", "sha-2"],
 				)
-				const f2 = findings.find((f) => f.fingerprint === "f2")
+				const f2 = Option.getOrUndefined(Arr.findFirst(findings, (f) => f.fingerprint === "f2"))
 				assert.deepStrictEqual(
 					[f2?.verdict, f2?.overallSeverity, f2?.lastSeenRunId],
 					["rejected", null, first.runId],
@@ -246,7 +247,11 @@ describe("SecurityAuditStore findings lifecycle", () => {
 				)
 				const afterFix = yield* scoped.listFindings(first.targetId)
 				assert.deepStrictEqual(
-					[marked, afterFix.find((f) => f.fingerprint === "fixed")?.fixedRunId],
+					[
+						marked,
+						Option.getOrUndefined(Arr.findFirst(afterFix, (f) => f.fingerprint === "fixed"))
+							?.fixedRunId,
+					],
 					[2, revalidation.runId],
 				)
 
@@ -258,8 +263,8 @@ describe("SecurityAuditStore findings lifecycle", () => {
 				)
 				const findings = yield* scoped.listFindings(first.targetId)
 				assert.deepStrictEqual(
-					Object.fromEntries(
-						findings.map((f) => [f.fingerprint, [f.status, f.fixedRunId, f.lastSeenRef]]),
+					Rec.fromEntries(
+						Arr.map(findings, (f) => [f.fingerprint, [f.status, f.fixedRunId, f.lastSeenRef]]),
 					),
 					{
 						fixed: ["open", null, "sha-3"],
@@ -286,7 +291,7 @@ describe("SecurityAuditStore findings lifecycle", () => {
 				yield* scoped.saveFindings(second.runId, [confirmed("kept")], NO_ESTIMATES)
 				const findings = yield* scoped.listFindings(first.targetId)
 				assert.deepStrictEqual(
-					findings.map((f) => [f.fingerprint, f.firstSeenRunId]),
+					Arr.map(findings, (f) => [f.fingerprint, f.firstSeenRunId]),
 					[["kept", first.runId]],
 				)
 			}),
@@ -336,7 +341,7 @@ describe("SecurityAuditStore estimated severity", () => {
 							readonly fingerprint: string
 							readonly estimatedSeverity: Score | null
 						}>,
-					) => Object.fromEntries(rows.map((f) => [f.fingerprint, f.estimatedSeverity]))
+					) => Rec.fromEntries(Arr.map(rows, (f) => [f.fingerprint, f.estimatedSeverity]))
 					assert.deepStrictEqual(severities(yield* scoped.listRunFindingViews(first.runId)), {
 						lead: "high",
 						conf: null,
@@ -372,7 +377,7 @@ describe("SecurityAuditStore estimated severity", () => {
 					)
 					const rows = yield* scoped.listRunFindingViews(runId)
 					assert.deepStrictEqual(
-						rows.map((f) => f.fingerprint),
+						Arr.map(rows, (f) => f.fingerprint),
 						["f-critical", "e-high", "d-high", "c-low", "b-unestimated", "a-rejected"],
 					)
 				}),
@@ -400,7 +405,7 @@ describe("SecurityAuditStore run findings", () => {
 						.listRunFindingViews(runId)
 						.pipe(
 							Effect.map((rows) =>
-								rows.map((f) => [
+								Arr.map(rows, (f) => [
 									f.fingerprint,
 									f.verdict,
 									f.overallSeverity,
@@ -551,7 +556,7 @@ describe("SecurityAuditStore triage survives a resave", () => {
 				yield* scoped.saveFindings(run.runId, [], NO_ESTIMATES)
 				const findings = yield* scoped.listFindings(run.targetId)
 				assert.deepStrictEqual(
-					findings.map((f) => [f.fingerprint, f.status]),
+					Arr.map(findings, (f) => [f.fingerprint, f.status]),
 					[["triaged", "dismissed"]],
 				)
 			}),
@@ -579,7 +584,7 @@ describe("SecurityAuditStore runs and events", () => {
 				yield* scoped.recordEvent(runId, { _tag: "Note", message: "budget reserved" })
 				const events = yield* scoped.listEvents(runId)
 				assert.deepStrictEqual(
-					events.map((e) => [
+					Arr.map(events, (e) => [
 						e.kind,
 						e.role,
 						e.agentId,
@@ -670,7 +675,7 @@ describe("SecurityAuditStore runs and events", () => {
 	it.effect("refuses a target that names another org's repository", () =>
 		withStore((store) =>
 			Effect.gen(function* () {
-				const repositoryId = Schema.decodeUnknownSync(VcsRepositoryId)(crypto.randomUUID())
+				const repositoryId = Schema.decodeSync(VcsRepositoryId)(SecureRandom.uuidV4Unsafe())
 				const refused = yield* Effect.flip(
 					store.forOrg(orgA).createTarget({
 						repository: "acme/api",
@@ -705,7 +710,7 @@ describe("SecurityAuditStore runs and events", () => {
 				// Org A's run kept its finding.
 				const own = yield* store.forOrg(orgA).listFindings(a.targetId)
 				assert.deepStrictEqual(
-					own.map((f) => f.fingerprint),
+					Arr.map(own, (f) => f.fingerprint),
 					["f1"],
 				)
 			}),
@@ -736,11 +741,11 @@ describe("SecurityAuditStore replays", () => {
 				)
 				const findings = yield* scoped.listFindings(first.targetId)
 				assert.deepStrictEqual(
-					perRun.rows.map((r) => [r.run_id, r.fingerprint]),
+					Arr.map(perRun.rows, (r) => [r.run_id, r.fingerprint]),
 					[[first.runId, "earlier"]],
 				)
 				assert.deepStrictEqual(
-					findings.map((f) => [f.fingerprint, f.firstSeenRunId]),
+					Arr.map(findings, (f) => [f.fingerprint, f.firstSeenRunId]),
 					[["earlier", first.runId]],
 				)
 			}),
@@ -775,7 +780,7 @@ describe("SecurityAuditStore replays", () => {
 				yield* scoped.recordEvent(runId, agent("failed"))
 				const events = yield* scoped.listEvents(runId)
 				assert.deepStrictEqual(
-					events.map((e) => [e.kind, e.agentId, e.outcome]),
+					Arr.map(events, (e) => [e.kind, e.agentId, e.outcome]),
 					[
 						["Agent", "critic-w1", "ok"],
 						["Note", null, null],
@@ -816,7 +821,7 @@ describe("SecurityAuditStore triage", () => {
 					[true, true, Option.some("dismissed")],
 				)
 				assert.deepStrictEqual(
-					findings.map((f) => [f.fingerprint, f.status, f.statusReason, f.statusChangedBy]),
+					Arr.map(findings, (f) => [f.fingerprint, f.status, f.statusReason, f.statusChangedBy]),
 					[
 						["f1", "dismissed", "test fixture only", user],
 						["f2", "open", null, null],
@@ -839,7 +844,7 @@ describe("SecurityAuditStore triage", () => {
 				const findings = yield* scoped.listFindings(first.targetId)
 
 				assert.deepStrictEqual(
-					findings.map((f) => [f.fingerprint, f.status, f.fixedRunId]),
+					Arr.map(findings, (f) => [f.fingerprint, f.status, f.fixedRunId]),
 					[["f1", "open", null]],
 				)
 			}),
@@ -862,11 +867,15 @@ describe("SecurityAuditStore triage", () => {
 					targetId: done.targetId,
 					statuses: ["complete", "incomplete"],
 				})
-				const targets = yield* scoped.listTargets()
+				const targets = yield* scoped.listTargets
 				const foreignTarget = yield* scoped.getTarget(other.targetId)
 
 				assert.deepStrictEqual(
-					[finished.map((r) => r.id), targets.map((t) => t.id), Option.isNone(foreignTarget)],
+					[
+						Arr.map(finished, (r) => r.id),
+						Arr.map(targets, (t) => t.id),
+						Option.isNone(foreignTarget),
+					],
 					[[done.runId], [done.targetId], true],
 				)
 			}),
@@ -911,9 +920,9 @@ describe("SecurityAuditStore tolerant readers", () => {
 
 				assert.deepStrictEqual(
 					[
-						units.map((u) => u.coverageId),
-						runFindings.map((f) => f.fingerprint),
-						findings.map((f) => f.fingerprint),
+						Arr.map(units, (u) => u.coverageId),
+						Arr.map(runFindings, (f) => f.fingerprint),
+						Arr.map(findings, (f) => f.fingerprint),
 					],
 					[["u1"], ["f1", "f2"], ["f1"]],
 				)
@@ -932,11 +941,11 @@ describe("SecurityAuditStore large ledgers", () => {
 				yield* scoped.saveLedger(runId, ledger)
 				yield* scoped.saveLedger(
 					runId,
-					ledger.map((u) => unit(u.coverage_id, "covered", 1)),
+					Arr.map(ledger, (u) => unit(u.coverage_id, "covered", 1)),
 				)
 				const units = yield* scoped.listUnits(runId)
 				assert.deepStrictEqual(
-					[units.length, new Set(units.map((u) => u.status))],
+					[units.length, new Set(Arr.map(units, (u) => u.status))],
 					[1_200, new Set(["covered"])],
 				)
 			}),
@@ -1120,8 +1129,11 @@ describe("SecurityAuditStore lenient run and event reads", () => {
 				assert.deepStrictEqual(
 					[
 						Option.map(run, (r) => [r.metadata, r.reports]),
-						runs.map((r) => r.reports),
-						events.map((e) => e.detail?.message ?? null).toSorted(),
+						Arr.map(runs, (r) => r.reports),
+						Arr.sort(
+							Arr.map(events, (e) => e.detail?.message ?? null),
+							Order.mapInput(Order.String, (message: string | null) => String(message)),
+						),
 					],
 					[Option.some([null, null]), [null], ["kept", null]],
 				)
@@ -1189,7 +1201,7 @@ describe("SecurityAuditStore lenient run and event reads", () => {
 				const older = yield* scoped.listEvents(runId, { limit: 2, beforeAt: newest[0]?.at ?? 0 })
 				const counts = yield* scoped.countUnits(runId)
 				assert.deepStrictEqual(
-					[newest.map((e) => e.id), older.map((e) => e.id), counts],
+					[Arr.map(newest, (e) => e.id), Arr.map(older, (e) => e.id), counts],
 					[["e4", "e5"], ["e2", "e3"], { covered: 2, planned: 1 }],
 				)
 			}),
@@ -1221,7 +1233,7 @@ describe("SecurityAuditStore cancellation", () => {
 					[true, true, true],
 				)
 				assert.deepStrictEqual(
-					events.map((e) => [e.kind, e.detail?.message]),
+					Arr.map(events, (e) => [e.kind, e.detail?.message]),
 					[["Note", `Run cancelled by ${user}`]],
 				)
 			}),
@@ -1250,7 +1262,7 @@ describe("SecurityAuditStore cancellation", () => {
 				yield* scoped.finishRun(runId, { status: "complete" })
 				yield* scoped.finishRun(runId, { status: "failed", error: "interrupted" })
 				const missing = yield* Effect.flip(
-					scoped.finishRun(crypto.randomUUID(), { status: "complete" }),
+					scoped.finishRun(SecureRandom.uuidV4Unsafe(), { status: "complete" }),
 				)
 
 				const run = Option.getOrThrow(yield* scoped.getRun(runId))
@@ -1288,7 +1300,7 @@ describe("SecurityAuditStore unit summaries", () => {
 				const foreign = yield* store.forOrg(orgB).listUnitSummaries(runId)
 
 				assert.deepStrictEqual(
-					units.map((u) => [u.coverageId, u.status, u.wave, u.fields?.subsystem ?? null]),
+					Arr.map(units, (u) => [u.coverageId, u.status, u.wave, u.fields?.subsystem ?? null]),
 					[
 						["u0", "blocked", 1, null],
 						["u1", "candidate", 2, "sub"],
@@ -1337,12 +1349,12 @@ describe("SecurityAuditStore writes after a run finished", () => {
 						run.reports,
 						run.invocationsSpent,
 						(yield* scoped.listUnits(runId)).length,
-						(yield* scoped.listEvents(runId)).map((e) => e.kind),
+						Arr.map(yield* scoped.listEvents(runId), (e) => e.kind),
 					],
 					[0, null, null, 0, 0, ["Note"]],
 				)
 				assert.deepStrictEqual(
-					findings.map((f) => [f.fingerprint, f.status, f.lastSeenRunId, f.overallSeverity]),
+					Arr.map(findings, (f) => [f.fingerprint, f.status, f.lastSeenRunId, f.overallSeverity]),
 					[["f1", "open", prior.runId, "high"]],
 				)
 			}),
@@ -1554,7 +1566,7 @@ describe("SecurityAuditStore org spend limit", () => {
 		withStore((store) =>
 			Effect.gen(function* () {
 				const a = store.forOrg(orgA)
-				const before = yield* a.getSettings()
+				const before = yield* a.getSettings
 				yield* a.saveSettings({
 					monthlySpendLimitUsd: 50,
 					discoveryModel: "deepseek/deepseek-v4.1-flash-1017:nitro",
@@ -1567,8 +1579,8 @@ describe("SecurityAuditStore org spend limit", () => {
 					validationModel: "anthropic/claude-sonnet-5.5",
 					updatedBy: user,
 				})
-				const read = yield* a.getSettings()
-				const otherOrg = yield* store.forOrg(orgB).getSettings()
+				const read = yield* a.getSettings
+				const otherOrg = yield* store.forOrg(orgB).getSettings
 				assert.deepStrictEqual(
 					[
 						Option.isNone(before),

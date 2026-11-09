@@ -1,21 +1,29 @@
 import type { GithubIntegrationStatus, GithubRepoSummary, VcsRepoSyncStatus } from "@maple/domain/http"
 import { EMPTY_VALUE } from "@maple/ui/lib/format"
+import { revealIcon } from "@maple/views/ui/reveal-icon"
 import type { Html, HtmlBuilder } from "foldkit/html"
-import { button } from "../../ui/button"
-import { confirmDialog } from "../../ui/confirm-dialog"
-import { badge } from "../../ui/display"
-import { icon, type IconName } from "../../ui/icon"
-import { item, itemContent, itemMedia } from "../../ui/item"
-import { panel, panelHeader } from "../../ui/panel"
-import * as Popover from "../../ui/popover"
-import { searchInput } from "../../ui/search-input"
-import { spinner } from "../../ui/spinner"
-import { truncatedText } from "../../ui/truncated-text"
+import { listRow } from "@maple/views/ui/list-row"
+import { heading } from "@maple/views/ui/heading"
+import { button } from "@maple/views/ui/button"
+import { confirmDialog } from "@maple/views/ui/confirm-dialog"
+import { badge } from "@maple/views/ui/display"
+import { icon, type IconName } from "@maple/views/ui/icon"
+import { item, itemContent, itemMedia } from "@maple/views/ui/item"
+import { panel, panelHeader } from "@maple/views/ui/panel"
+import * as Popover from "@maple/views/ui/popover"
+import { searchInput } from "@maple/views/ui/search-input"
+import { spinner } from "@maple/views/ui/spinner"
+import { truncatedText } from "@maple/views/ui/truncated-text"
 import { relativeTime } from "../kit/relative-time"
 import { branchPopoverId } from "./github"
 import { Message } from "./message"
 import type { Model } from "./model"
 import { githubStatusOf, trackedBranchOf } from "./update-github"
+import { typography, typographyClass } from "@maple/views/ui/typography"
+import { hstack, hstackClass, vstack } from "@maple/views/ui/stack"
+import { Array as Arr, String as Str, Option } from "effect"
+import { dividedList } from "@maple/views/ui/rule"
+import { textLink } from "@maple/views/ui/text-link"
 
 // `ConnectedView`'s repository panels, `RepoRow` and `BranchSelector`.
 
@@ -31,32 +39,24 @@ export const SYNC_PRESENTATION = {
 }
 
 const repoLink = (h: H, repo: GithubRepoSummary): Html =>
-	h.div(
-		[h.Class("flex items-center gap-2")],
-		[
-			h.a(
-				[
-					h.Href(repo.htmlUrl),
-					h.Target("_blank"),
-					h.Rel("noreferrer"),
-					h.Class(
-						"group inline-flex max-w-full items-center gap-1 truncate text-sm font-medium hover:underline active:underline",
-					),
-				],
-				[
-					h.span([h.Class("truncate"), h.Title(repo.fullName)], [repo.fullName]),
-					icon(h, "ExternalLinkIcon", {
-						size: 12,
-						className:
-							"shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100",
-					}),
-				],
-			),
-			...(repo.isPrivate
-				? [badge(h, { variant: "outline", size: "sm", className: "shrink-0" }, ["Private"])]
-				: []),
-		],
-	)
+	hstack(h, { gap: "2" }, [
+		textLink(
+			h,
+			{
+				href: repo.htmlUrl,
+				tone: "inherit",
+				className: "group max-w-full truncate text-sm font-medium",
+				attributes: [h.Target("_blank"), h.Rel("noreferrer")],
+			},
+			[
+				typography(h, { truncate: true, attributes: [h.Title(repo.fullName)] }, [repo.fullName]),
+				revealIcon(h, "ExternalLinkIcon", { size: 12 }),
+			],
+		),
+		...(repo.isPrivate
+			? [badge(h, { variant: "outline", size: "sm", className: "shrink-0" }, ["Private"])]
+			: []),
+	])
 
 const branchContent = (h: H, model: Model, repo: GithubRepoSummary): ReadonlyArray<Html> => {
 	const query = model.githubCard.branchRepo === repo.id ? model.githubCard.branchQuery : ""
@@ -64,18 +64,19 @@ const branchContent = (h: H, model: Model, repo: GithubRepoSummary): ReadonlyArr
 	const filtered =
 		query === ""
 			? repo.branches
-			: repo.branches.filter((branch) => branch.name.toLowerCase().includes(query.toLowerCase()))
+			: Arr.filter(repo.branches, (branch) =>
+					Str.includes(Str.toLowerCase(query))(Str.toLowerCase(branch.name)),
+				)
 	return [
 		h.div(
 			[h.Class("border-b px-3 py-2.5")],
 			[
-				h.p([h.Class("text-xs font-medium text-foreground")], ["Tracked branch"]),
-				h.p(
-					[h.Class("mt-0.5 text-xs text-muted-foreground")],
-					[
-						"Maple syncs commits from the one branch you track. Changing it re-syncs this repo's commits from the new branch.",
-					],
-				),
+				typography(h, { size: "xs", tone: "foreground", weight: "medium", as: "p" }, [
+					"Tracked branch",
+				]),
+				typography(h, { size: "xs", tone: "muted", as: "p", className: "mt-0.5" }, [
+					"Maple syncs commits from the one branch you track. Changing it re-syncs this repo's commits from the new branch.",
+				]),
 			],
 		),
 		...(repo.branches.length > 8
@@ -97,33 +98,25 @@ const branchContent = (h: H, model: Model, repo: GithubRepoSummary): ReadonlyArr
 		h.div(
 			[h.Class("max-h-56 overflow-y-auto p-1")],
 			filtered.length === 0
-				? [h.p([h.Class("px-2 py-1.5 text-xs text-muted-foreground")], ["No matches."])]
-				: filtered.map((branch) =>
-						h.button(
-							[
-								h.Type("button"),
-								h.OnClick(Message.ClickedBranch({ repoId: repo.id, branch: branch.name })),
-								h.Class(
-									"flex w-full cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs hover:bg-surface-sunken active:bg-surface-sunken",
-								),
-							],
-							[
-								icon(h, "CheckIcon", {
-									size: 14,
-									className: `shrink-0 ${branch.name === tracked ? "text-foreground" : "text-transparent"}`,
-								}),
-								h.span([h.Class("truncate")], [branch.name]),
-								...(branch.isDefault
-									? [
-											badge(
-												h,
-												{ variant: "outline", size: "sm", className: "ml-auto" },
-												["default"],
-											),
-										]
-									: []),
-							],
-						),
+				? [
+						typography(h, { size: "xs", tone: "muted", as: "p", className: "px-2 py-1.5" }, [
+							"No matches.",
+						]),
+					]
+				: Arr.map(filtered, (branch) =>
+						listRow(h, {
+							onClick: Message.ClickedBranch({ repoId: repo.id, branch: branch.name }),
+							density: "compact",
+							className: "cursor-pointer gap-2 rounded-md px-2",
+							leading: icon(h, "CheckIcon", {
+								size: 14,
+								className: branch.name === tracked ? "text-foreground" : "text-transparent",
+							}),
+							title: branch.name,
+							trailing: branch.isDefault
+								? badge(h, { variant: "outline", size: "sm" }, ["default"])
+								: undefined,
+						}),
 					),
 		),
 	]
@@ -142,37 +135,31 @@ const repoRow = (h: H, model: Model, repo: GithubRepoSummary, timeZone: string):
 			h,
 			[
 				repoLink(h, repo),
-				h.div(
-					[h.Class("flex items-center gap-1.5 text-xs")],
-					[
-						h.span([h.Class(presentation.tone)], [presentation.label]),
-						...(repo.syncStatus === "error" &&
-						repo.lastSyncError !== null &&
-						repo.lastSyncError !== ""
+				hstack(h, { gap: "1.5", align: "center", className: "text-xs" }, [
+					h.span([h.Class(presentation.tone)], [presentation.label]),
+					...(repo.syncStatus === "error" &&
+					repo.lastSyncError !== null &&
+					repo.lastSyncError !== ""
+						? [
+								truncatedText(
+									h,
+									{ text: repo.lastSyncError, className: "text-muted-foreground" },
+									["· ", repo.lastSyncError],
+								),
+							]
+						: repo.lastSyncedAt !== null && repo.lastSyncedAt !== 0
 							? [
-									truncatedText(
-										h,
-										{ text: repo.lastSyncError, className: "text-muted-foreground" },
-										["· ", repo.lastSyncError],
-									),
+									typography(h, { tone: "muted" }, [
+										"· ",
+										relativeTime(h, {
+											value: repo.lastSyncedAt,
+											nowMs: model.nowMs,
+											timeZone,
+										}),
+									]),
 								]
-							: repo.lastSyncedAt !== null && repo.lastSyncedAt !== 0
-								? [
-										h.span(
-											[h.Class("text-muted-foreground")],
-											[
-												"· ",
-												relativeTime(h, {
-													value: repo.lastSyncedAt,
-													nowMs: model.nowMs,
-													timeZone,
-												}),
-											],
-										),
-									]
-								: []),
-					],
-				),
+							: []),
+				]),
 			],
 			"gap-0",
 		),
@@ -195,7 +182,7 @@ const repoRow = (h: H, model: Model, repo: GithubRepoSummary, timeZone: string):
 }
 
 const syncCount = (h: H, glyph: Html, count: number, label: string): Html =>
-	h.span([h.Class("flex items-center gap-1")], [glyph, String(count), ` ${label}`])
+	hstack(h, { gap: "1", as: "span" }, [glyph, String(count), ` ${label}`])
 
 const removedRow = (h: H, model: Model, repo: GithubRepoSummary): Html =>
 	item(h, { variant: "flush", size: "lg", tag: "li" }, [
@@ -204,10 +191,9 @@ const removedRow = (h: H, model: Model, repo: GithubRepoSummary): Html =>
 			h,
 			[
 				repoLink(h, repo),
-				h.div(
-					[h.Class("text-xs text-muted-foreground")],
-					["Access removed on GitHub · commit history kept"],
-				),
+				typography(h, { size: "xs", tone: "muted", as: "div" }, [
+					"Access removed on GitHub · commit history kept",
+				]),
 			],
 			"gap-0",
 		),
@@ -231,73 +217,107 @@ export const repositoriesPanels = (
 	status: GithubIntegrationStatus,
 	timeZone: string,
 ): ReadonlyArray<Html> => {
-	const active = status.repositories.filter((repo) => repo.status === "active")
-	const removed = status.repositories.filter((repo) => repo.status === "removed")
-	const synced = active.filter((repo) => repo.syncStatus === "ready").length
-	const syncing = active.filter(
+	const active = Arr.filter(status.repositories, (repo) => repo.status === "active")
+	const removed = Arr.filter(status.repositories, (repo) => repo.status === "removed")
+	const synced = Arr.filter(active, (repo) => repo.syncStatus === "ready").length
+	const syncing = Arr.filter(
+		active,
 		(repo) => repo.syncStatus === "pending" || repo.syncStatus === "backfilling",
 	).length
-	const failed = active.filter((repo) => repo.syncStatus === "error").length
-	const counts = h.div(
-		[h.Class("flex items-center gap-3 text-xs text-muted-foreground")],
-		[
-			...(synced > 0
+	const failed = Arr.filter(active, (repo) => repo.syncStatus === "error").length
+	const discovery = status.repositoryDiscovery
+	const counts = hstack(h, { gap: "3", className: typographyClass({ size: "xs", tone: "muted" }) }, [
+		...(synced > 0
+			? [
+					syncCount(
+						h,
+						icon(h, "CircleCheckIcon", { size: 14, className: "text-severity-info" }),
+						synced,
+						"synced",
+					),
+				]
+			: []),
+		...(syncing > 0 ? [syncCount(h, spinner(h, "text-severity-info", 13), syncing, "syncing")] : []),
+		...(failed > 0
+			? [
+					syncCount(
+						h,
+						icon(h, "CircleWarningIcon", { size: 14, className: "text-severity-error" }),
+						failed,
+						"failed",
+					),
+				]
+			: []),
+	])
+	// A discovery in flight or failed sits above repositories already synced, never in their place.
+	const discoveryNotice: ReadonlyArray<Html> =
+		discovery?._tag === "Pending"
+			? [
+					hstack(
+						h,
+						{ gap: "2.5", align: "center", className: "px-4 py-6 text-sm text-muted-foreground" },
+						[spinner(h, undefined, 16), "Discovering repositories…"],
+					),
+				]
+			: discovery?._tag === "Failed"
 				? [
-						syncCount(
-							h,
-							icon(h, "CircleCheckIcon", { size: 14, className: "text-severity-info" }),
-							synced,
-							"synced",
-						),
+						vstack(h, { gap: "3", align: "start", className: "px-4 py-6 text-sm" }, [
+							typography(h, { tone: "destructive", as: "p" }, [discovery.message]),
+							button(
+								h,
+								{
+									variant: "outline",
+									isDisabled: model.connect.isStarting,
+									attributes: [h.OnClick(Message.ClickedConnect())],
+								},
+								["Reconnect GitHub"],
+							),
+						]),
 					]
-				: []),
-			...(syncing > 0 ? [syncCount(h, spinner(h, "text-severity-info", 13), syncing, "syncing")] : []),
-			...(failed > 0
-				? [
-						syncCount(
-							h,
-							icon(h, "CircleWarningIcon", { size: 14, className: "text-severity-error" }),
-							failed,
-							"failed",
-						),
-					]
-				: []),
-		],
-	)
+				: []
 	return [
 		panel(h, {}, [
 			panelHeader(h, {
 				children: [
-					h.h3(
-						[h.Class("text-sm font-medium")],
-						[
-							"Repositories",
-							h.span([h.Class("ml-1.5 text-muted-foreground")], [String(active.length)]),
-						],
-					),
+					heading(h, { level: 3, variant: "subsection" }, [
+						"Repositories",
+						h.span([h.Class("ml-1.5 text-muted-foreground")], [String(active.length)]),
+					]),
 				],
 				action: active.length > 0 ? counts : undefined,
 			}),
-			active.length === 0 && removed.length === 0
-				? h.div(
-						[h.Class("flex items-center gap-2.5 px-4 py-6 text-sm text-muted-foreground")],
-						[
-							spinner(h, undefined, 16),
-							"Syncing repositories from GitHub… this can take a moment.",
-						],
-					)
-				: h.ul(
-						[h.Class("divide-y")],
-						active.map((repo) => repoRow(h, model, repo, timeZone)),
-					),
+			...discoveryNotice,
+			...(active.length > 0
+				? [
+						dividedList(
+							h,
+							{ as: "ul", bordered: false },
+							Arr.map(active, (repo) => repoRow(h, model, repo, timeZone)),
+						),
+					]
+				: discoveryNotice.length === 0 && removed.length === 0
+					? [
+							h.p(
+								[h.Class("px-4 py-6 text-sm text-muted-foreground")],
+								[
+									"No repositories granted. Change repository access on GitHub to grant Maple at least one.",
+								],
+							),
+						]
+					: []),
 		]),
 		...(removed.length > 0
 			? [
 					panel(h, {}, [
 						panelHeader(h, {
 							children: [
-								h.h3(
-									[h.Class("flex items-center gap-1.5 text-sm font-medium")],
+								heading(
+									h,
+									{
+										level: 3,
+										variant: "subsection",
+										className: hstackClass({ gap: "1.5" }),
+									},
 									[
 										icon(h, "CircleWarningIcon", {
 											size: 16,
@@ -308,24 +328,25 @@ export const repositoriesPanels = (
 								),
 							],
 						}),
-						h.ul(
-							[h.Class("divide-y")],
-							removed.map((repo) => removedRow(h, model, repo)),
+						dividedList(
+							h,
+							{ as: "ul", bordered: false },
+							Arr.map(removed, (repo) => removedRow(h, model, repo)),
 						),
 						h.p(
 							[h.Class("border-t px-4 py-2.5 text-xs text-muted-foreground")],
 							[
 								"Re-enable these in the",
 								" ",
-								h.a(
-									[
-										h.Href("https://github.com/settings/installations"),
-										h.Target("_blank"),
-										h.Rel("noreferrer"),
-										h.Class(
-											"font-medium underline underline-offset-2 hover:text-foreground active:text-foreground",
-										),
-									],
+								textLink(
+									h,
+									{
+										href: "https://github.com/settings/installations",
+										tone: "inherit",
+										className:
+											"inline font-medium underline hover:text-foreground active:text-foreground",
+										attributes: [h.Target("_blank"), h.Rel("noreferrer")],
+									},
 									["Maple GitHub App"],
 								),
 								" ",
@@ -341,33 +362,41 @@ export const repositoriesPanels = (
 /** The repository-delete and branch-change confirmations. */
 export const repoDialogs = (h: H, model: Model): ReadonlyArray<Html> => {
 	const status = githubStatusOf(model)
-	const toDelete = status?.repositories.find((repo) => repo.id === model.githubCard.repoToDelete)
+	const repoName = (repoId: string | null | undefined) =>
+		Option.getOrElse(
+			Option.map(
+				Arr.findFirst(status?.repositories ?? [], (repo) => repo.id === repoId),
+				(repo) => repo.fullName,
+			),
+			() => "",
+		)
 	const pending = model.githubCard.pendingBranch
-	const pendingRepo = status?.repositories.find((repo) => repo.id === pending?.repoId)
-	const strong = (text: string) => h.span([h.Class("font-medium text-foreground")], [text])
+
+	const strong = (text: string) => typography(h, { tone: "foreground", weight: "medium" }, [text])
 	return [
 		confirmDialog(h, {
 			slotId: "github-repo-delete",
 			model: model.githubCard.deleteDialog,
 			toParentMessage: (message) => Message.GotRepoDeleteDialogMessage({ message }),
-			title: "Delete repository from Maple",
+			title: "Delete repository from Maple?",
 			description: [
 				"This permanently removes",
 				" ",
-				strong(toDelete?.fullName ?? ""),
+				strong(repoName(model.githubCard.repoToDelete)),
 				" and all of its synced commits from Maple. This cannot be undone. If you re-enable access in GitHub later, the repository will be re-synced from scratch.",
 			],
-			confirmLabel: "Delete",
+			confirmLabel: "Delete repository",
+			isPending: model.githubCard.deletingRepo !== null,
 			onConfirm: Message.ConfirmedRepoDelete(),
 		}),
 		confirmDialog(h, {
 			slotId: "github-branch-change",
 			model: model.githubCard.branchDialog,
 			toParentMessage: (message) => Message.GotBranchDialogMessage({ message }),
-			title: "Change tracked branch",
+			title: "Change tracked branch?",
 			description: [
 				"This switches ",
-				strong(pendingRepo?.fullName ?? ""),
+				strong(repoName(pending?.repoId)),
 				" to track ",
 				strong(pending?.branch ?? ""),
 				". Maple deletes this repo's currently synced commits and re-syncs the last 90 days from",
@@ -378,6 +407,9 @@ export const repoDialogs = (h: H, model: Model): ReadonlyArray<Html> => {
 			confirmLabel: "Track branch",
 			tone: "default",
 			hasIcon: false,
+			isPending:
+				pending !== null &&
+				Arr.some(model.githubCard.savingBranches, (entry) => entry.repoId === pending.repoId),
 			onConfirm: Message.ConfirmedBranch(),
 		}),
 	]
@@ -389,7 +421,7 @@ const branchSelector = (h: H, model: Model, repo: GithubRepoSummary): Html => {
 		model.githubCard.branchRepo === repo.id
 			? model.githubCard.branchPopover
 			: Popover.init(branchPopoverId(repo.id), { align: "end" })
-	const saving = model.githubCard.savingBranches.some((entry) => entry.repoId === repo.id)
+	const saving = Arr.some(model.githubCard.savingBranches, (entry) => entry.repoId === repo.id)
 	return h.submodel({
 		slotId: branchPopoverId(repo.id),
 		model: popover,
@@ -416,7 +448,7 @@ const branchSelector = (h: H, model: Model, repo: GithubRepoSummary): Html => {
 								],
 							},
 							[
-								h.span([h.Class("text-muted-foreground")], ["branch"]),
+								typography(h, { tone: "muted" }, ["branch"]),
 								h.span(
 									[h.Class("max-w-[10rem] truncate font-medium")],
 									[trackedBranchOf(model, repo) ?? EMPTY_VALUE],

@@ -1,11 +1,11 @@
 import { OrgId } from "@maple/domain"
 import { encodePublicId, PublicIdPrefixes, V2GcpConnector, V2GcpIntegration } from "@maple/domain/http/v2"
-import { Result, Schema } from "effect"
+import { Result, Schema, Array as Arr } from "effect"
 import { describe, expect, test } from "vitest"
-import { toLoadFailure } from "../../data/load-failure"
-import * as Field from "../../ui/field"
-import * as Menu from "../../ui/menu"
-import * as ToggleGroup from "../../ui/toggle-group"
+import { toLoadFailure } from "@maple/views/data/load-failure"
+import * as Field from "@maple/views/ui/field"
+import * as Menu from "@maple/views/ui/menu"
+import * as ToggleGroup from "@maple/views/ui/toggle-group"
 import type { PageContext } from "../contract"
 import { Message } from "./message"
 import type { Model } from "./model"
@@ -15,9 +15,9 @@ const orgId = Schema.decodeSync(OrgId)("org_acme")
 const context: PageContext = { orgId, pinnedNamespace: null, timeZone: "UTC" }
 const step = (model: Model, message: Message) => update(model, message, context)
 const run = (model: Model, messages: ReadonlyArray<Message>) =>
-	messages.reduce((current, message) => step(current, message).model, model)
+	Arr.reduce(messages, model, (current, message) => step(current, message).model)
 const names = (commands: ReadonlyArray<{ readonly name: string }> | undefined) =>
-	(commands ?? []).map(({ name }) => name)
+	Arr.map(commands ?? [], ({ name }) => name)
 
 const publicId = encodePublicId(PublicIdPrefixes.gcpConnector, "00000000-0000-4000-8000-000000000402")
 const createdId = encodePublicId(PublicIdPrefixes.gcpConnector, "00000000-0000-4000-8000-000000000409")
@@ -163,7 +163,7 @@ describe("google cloud connect flow: a new connection", () => {
 			Message.CompletedLoadGcp({
 				key: start.statuses.gcp.key ?? "",
 				result: Result.succeed(
-					Schema.decodeUnknownSync(V2GcpIntegration)({
+					Schema.decodeSync(V2GcpIntegration)({
 						object: "gcp_integration",
 						metrics_available: false,
 						connectors: [],

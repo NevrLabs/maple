@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest"
+import { assert, describe, expect, it } from "vitest"
 
 import type { CloudflareZoneRow } from "@maple/web-data/warehouse/cloudflare-infra"
 import type { RailwayServiceRow } from "@maple/web-data/warehouse/railway-infra"
@@ -14,6 +14,7 @@ import {
 	summarizePods,
 	summarizeRailway,
 } from "./summaries"
+import { Array as Arr, Option } from "effect"
 
 type HostRow = ListHostsResponse["data"][number]
 
@@ -70,15 +71,15 @@ const db = (
 
 describe("summarizeHosts", () => {
 	it("lists saturated hosts busiest first and folds the rest into one line", () => {
-		const hosts = [0.95, 0.99, 0.91, 0.92, 0.3].map((cpu, i) => host(`h${i}`, cpu))
+		const hosts = Arr.map([0.95, 0.99, 0.91, 0.92, 0.3], (cpu, i) => host(`h${i}`, cpu))
 		const { findings, segments } = summarizeHosts(hosts, END)
-		expect(findings.map((f) => f.title)).toEqual([
+		expect(Arr.map(findings, (f) => f.title)).toEqual([
 			"h1 at 99% CPU",
 			"h0 at 95% CPU",
 			"h3 at 92% CPU",
 			"1 more host at 90% or above",
 		])
-		expect(segments.find((s) => s.key === "saturated")?.count).toBe(4)
+		expect(Option.getOrUndefined(Arr.findFirst(segments, (s) => s.key === "saturated"))?.count).toBe(4)
 	})
 
 	it("reports hosts that stopped reporting as one stale finding", () => {
@@ -95,7 +96,7 @@ describe("summarizeCloudflare", () => {
 			zone("quiet.dev", 20, 0.5),
 			zone("api.acme.dev", 10_000, 0.06),
 		])
-		expect(findings.map((f) => f.title)).toEqual(["api.acme.dev returning 6.0% 5xx"])
+		expect(Arr.map(findings, (f) => f.title)).toEqual(["api.acme.dev returning 6.0% 5xx"])
 		expect(findings[0]?.tone).toBe("crit")
 	})
 })
@@ -103,7 +104,7 @@ describe("summarizeCloudflare", () => {
 describe("summarizePlanetScale", () => {
 	it("flags lag and storage separately and puts critical findings first", () => {
 		const { findings } = summarizePlanetScale([db("ledger", 2, 92), db("users", 0.1, null)])
-		expect(findings.map((f) => [f.tone, f.title])).toEqual([
+		expect(Arr.map(findings, (f) => [f.tone, f.title])).toEqual([
 			["crit", "ledger storage at 92%"],
 			["warn", "ledger replica 2.00s behind primary"],
 		])
@@ -113,8 +114,10 @@ describe("summarizePlanetScale", () => {
 describe("summarizePlanetScale CPU", () => {
 	it("flags a CPU spike even when lag and storage are fine", () => {
 		const summary = summarizePlanetScale([{ ...db("ledger", 0, 20), cpuMaxPercent: 95 }])
-		expect(summary.findings.map((f) => [f.tone, f.title])).toEqual([["crit", "ledger CPU peaked at 95%"]])
-		expect(summary.segments.find((s) => s.key === "ok")?.count).toBe(0)
+		expect(Arr.map(summary.findings, (f) => [f.tone, f.title])).toEqual([
+			["crit", "ledger CPU peaked at 95%"],
+		])
+		expect(Option.getOrUndefined(Arr.findFirst(summary.segments, (s) => s.key === "ok"))?.count).toBe(0)
 	})
 })
 
@@ -234,7 +237,8 @@ describe("summarizeGcp", () => {
 
 	it("says which service could not be read instead of counting it as healthy", () => {
 		const [cloudRun] = fleet(0, 0.4)
-		expect(summarizeGcp([cloudRun!, ...gcpFleet([unread("cloudSql"), unread("pubsub")])])).toEqual({
+		assert.isDefined(cloudRun)
+		expect(summarizeGcp([cloudRun, ...gcpFleet([unread("cloudSql"), unread("pubsub")])])).toEqual({
 			resources: "1 workload",
 			segments: [
 				{ key: "ok", count: 1 },
@@ -249,10 +253,11 @@ describe("summarizeGcp", () => {
 
 	it("keeps the workloads it did read beside the service it could not", () => {
 		const [cloudRun] = fleet(80, 0.4)
-		const summary = summarizeGcp([cloudRun!, ...gcpFleet([unread("cloudSql")])])
+		assert.isDefined(cloudRun)
+		const summary = summarizeGcp([cloudRun, ...gcpFleet([unread("cloudSql")])])
 		expect(summary?.headline).toBe("Cloud SQL not read, 1 workload elevated or erroring")
 		expect(summary?.headlineTone).toBe("crit")
-		expect(summary?.findings.map((finding) => finding.key)).toEqual([
+		expect(Arr.map(summary?.findings ?? [], (finding) => finding.key)).toEqual([
 			"gcp:cloudRun:api/acme-prod/europe-west1",
 			"gcp:cloudSql:unread",
 		])
@@ -260,8 +265,10 @@ describe("summarizeGcp", () => {
 
 	it("caps its findings like every source, an unread service before an elevated workload", () => {
 		const [cloudRun, cloudSql] = fleet(80, 0.72)
-		const summary = summarizeGcp([cloudRun!, cloudSql!, ...gcpFleet([unread("pubsub")])])
-		expect(summary?.findings.map((finding) => finding.key)).toEqual([
+		assert.isDefined(cloudRun)
+		assert.isDefined(cloudSql)
+		const summary = summarizeGcp([cloudRun, cloudSql, ...gcpFleet([unread("pubsub")])])
+		expect(Arr.map(summary?.findings ?? [], (finding) => finding.key)).toEqual([
 			"gcp:cloudRun:api/acme-prod/europe-west1",
 			"gcp:pubsub:unread",
 			"gcp:cloudSql:acme-prod:main/acme-prod/europe-west1",
@@ -270,7 +277,7 @@ describe("summarizeGcp", () => {
 			{
 				service: "cloudRun",
 				failed: false,
-				points: ["a", "b", "c", "d"].flatMap((name) => [
+				points: Arr.flatMap(["a", "b", "c", "d"], (name) => [
 					point([name, "acme-prod", "europe-west1"], "gcp.cloud_run.requests", "2xx", 900),
 					point([name, "acme-prod", "europe-west1"], "gcp.cloud_run.requests", "5xx", 100),
 				]),

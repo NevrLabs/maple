@@ -2,10 +2,17 @@ import type { AuditLogService } from "@maple/backend/services/audit/AuditLogServ
 import type { AgentFeedbackService } from "@maple/backend/services/feedback/AgentFeedbackService"
 import type { AlertsService } from "@maple/backend/services/alerts/AlertsService"
 import type { AlertReadModelsService } from "@maple/backend/services/alerts/AlertReadModelsService"
+import type { AlertIncidentAckService } from "@maple/backend/services/alerts/AlertIncidentAckService"
+import type { AlertIncidentPagesService } from "@maple/backend/services/alerts/AlertIncidentPagesService"
 import type { AlertRulesService } from "@maple/backend/services/alerts/AlertRulesService"
+import type { EscalationChainsService } from "@maple/backend/services/alerts/EscalationChainsService"
+import type { AlertMaintenanceWindowsService } from "@maple/backend/services/alerts/AlertMaintenanceWindowsService"
+import type { OnCallSchedulesService } from "@maple/backend/services/alerts/OnCallSchedulesService"
+import type { AlertSilencesService } from "@maple/backend/services/alerts/AlertSilencesService"
 import type { DashboardPersistenceService } from "@maple/backend/services/dashboards/DashboardPersistenceService"
 import type { ErrorActorsService } from "@maple/backend/services/errors/ErrorActorsService"
 import type { ErrorIssueReadModelsService } from "@maple/backend/services/errors/ErrorIssueReadModelsService"
+import type { ErrorIssueMergeService } from "@maple/backend/services/errors/ErrorIssueMergeService"
 import type { ErrorIssueWorkflowService } from "@maple/backend/services/errors/ErrorIssueWorkflowService"
 import type { ErrorPolicyService } from "@maple/backend/services/errors/ErrorPolicyService"
 import type { ErrorsService } from "@maple/backend/services/errors/ErrorsService"
@@ -18,6 +25,7 @@ import type { ScrapeTargetsService } from "@maple/backend/services/integrations/
 import type { VcsCommitService } from "@maple/backend/services/integrations/vcs/VcsCommitService"
 import type { VcsSourceService } from "@maple/backend/services/integrations/vcs/VcsSourceService"
 import type { UptimeMonitorsService } from "@maple/backend/services/uptime/UptimeMonitorsService"
+import type { SlosService } from "@maple/backend/services/slos/SlosService"
 import type { IngestRuleService } from "@maple/backend/services/org/IngestRuleService"
 import type { OrganizationFeatureFlagsService } from "@maple/backend/services/org/OrganizationFeatureFlagsService"
 import type { StatusPagesService } from "@maple/backend/services/status-pages/StatusPagesService"
@@ -26,6 +34,11 @@ import type { SetupAuditService } from "@maple/backend/services/org/SetupAuditSe
 import type { RepoSandboxService } from "@maple/backend/services/sandbox/RepoSandboxService"
 import type { QueryEngineService } from "@maple/backend/services/warehouse/QueryEngineService"
 import type { WarehouseQueryService } from "@maple/backend/services/warehouse/WarehouseQueryService"
+import type { UsersReadService } from "@maple/backend/services/users/UsersReadService"
+import type { SecurityAuditStore } from "@maple/backend/services/security-audit/SecurityAuditStore"
+import type { DependencyScanReader } from "@maple/backend/services/dependency-scan/DependencyScanService"
+import type { RuntimeReleaseCatalog } from "@maple/backend/services/security/RuntimeReleaseCatalog"
+import type { RuntimeAdvisoryCatalog } from "@maple/backend/services/security/RuntimeAdvisoryCatalog"
 import type { CurrentMcpTenant } from "../lib/query-warehouse"
 
 /**
@@ -37,12 +50,20 @@ export type McpToolRuntimeRequirements =
 	| AgentFeedbackService
 	| AlertsService
 	| AuditLogService
+	| DependencyScanReader
 	| AlertReadModelsService
+	| AlertIncidentAckService
+	| AlertIncidentPagesService
 	| AlertRulesService
+	| EscalationChainsService
+	| AlertMaintenanceWindowsService
+	| OnCallSchedulesService
+	| AlertSilencesService
 	| DashboardPersistenceService
 	| ErrorActorsService
 	| ErrorIssueReadModelsService
 	| ErrorIssueWorkflowService
+	| ErrorIssueMergeService
 	| ErrorPolicyService
 	| ErrorsService
 	| IntegrationInventoryService
@@ -52,12 +73,17 @@ export type McpToolRuntimeRequirements =
 	| RailwayMetricsService
 	| RecommendationIssueService
 	| RepoSandboxService
+	| RuntimeAdvisoryCatalog
+	| RuntimeReleaseCatalog
 	| ScrapeTargetsService
+	| SecurityAuditStore
 	| SetupAuditService
+	| SlosService
 	| StatusPageSnapshotBuilder
 	| StatusPagesService
 	| OrganizationFeatureFlagsService
 	| UptimeMonitorsService
+	| UsersReadService
 	| IngestRuleService
 	| VcsCommitService
 	| VcsSourceService

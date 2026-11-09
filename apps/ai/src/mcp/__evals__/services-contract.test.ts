@@ -4,7 +4,7 @@
  * as invalid input naming the parameter.
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
-import { Schema } from "effect"
+import { Schema, Array as Arr } from "effect"
 import {
 	ComparePeriodsOutput,
 	DescribeWarehouseTablesOutput,
@@ -50,9 +50,7 @@ const call = (name: string, params: unknown): Promise<McpToolResult> => {
 
 const WINDOW = { start_time: "2026-09-24 00:00:00", end_time: "2026-09-24 06:00:00" }
 
-const cases: ReadonlyArray<
-	readonly [string, Record<string, unknown>, Schema.Codec<unknown, unknown, never, never>]
-> = [
+const cases: ReadonlyArray<readonly [string, Record<string, unknown>, Schema.Codec<unknown, unknown>]> = [
 	["list_services", WINDOW, ListServicesOutput],
 	["diagnose_service", { ...WINDOW, service: "checkout" }, DiagnoseServiceOutput],
 	["get_service_top_operations", { ...WINDOW, service: "checkout" }, GetServiceTopOperationsOutput],
@@ -68,6 +66,8 @@ const cases: ReadonlyArray<
 	["query_data", { ...WINDOW, source: "traces", kind: "timeseries" }, QueryDataOutput],
 	["describe_warehouse_tables", {}, DescribeWarehouseTablesOutput],
 	["describe_warehouse_tables", { table: "traces" }, DescribeWarehouseTablesOutput],
+	["describe_warehouse_tables", { tables: ["traces", "trace_list_mv"] }, DescribeWarehouseTablesOutput],
+	["describe_warehouse_tables", { table: '["trace_list_mv"]' }, DescribeWarehouseTablesOutput],
 ]
 
 describe("services, metrics and query tools on define", () => {
@@ -76,7 +76,7 @@ describe("services, metrics and query tools on define", () => {
 			const result = await call(name, params)
 			expect(result.isError, markdown(result)).toBeUndefined()
 			// Decoding throws a readable schema error naming the failing path.
-			Schema.decodeUnknownSync(schema)(result.structuredContent)
+			Schema.decodeSync(schema)(result.structuredContent)
 			expect(markdown(result)).not.toContain("__maple_ui")
 		})
 	}
@@ -87,7 +87,7 @@ describe("services, metrics and query tools on define", () => {
 		expect(Schema.decodeUnknownSync(DiagnoseServiceOutput)(result.structuredContent).serviceName).toBe(
 			"checkout",
 		)
-		expect(issuedSql.join("\n")).toContain("checkout")
+		expect(Arr.join(issuedSql, "\n")).toContain("checkout")
 	})
 
 	it("states the real 6-hour query_data default", async () => {
@@ -153,7 +153,7 @@ describe("services, metrics and query tools on define", () => {
 			environments: ["production"],
 		})
 		expect(result.isError, markdown(result)).toBeUndefined()
-		const sql = issuedSql.join("\n")
+		const sql = Arr.join(issuedSql, "\n")
 		expect(sql).toContain("FROM metrics_gauge")
 		expect(sql).toContain("with_deltas")
 		expect(sql).toContain("k8s.pod.name")
@@ -180,7 +180,7 @@ describe("services, metrics and query tools on define", () => {
 			service: "jobs",
 		})
 		expect(result.isError, markdown(result)).toBeUndefined()
-		const sql = issuedSql.join("\n")
+		const sql = Arr.join(issuedSql, "\n")
 		expect(sql).toContain("FROM metrics_gauge")
 		expect(sql).toContain("'worker_busy'")
 		expect(sql).toContain("'jobs'")
@@ -197,7 +197,7 @@ describe("services, metrics and query tools on define", () => {
 			service: "jobs",
 		})
 		expect(result.isError, markdown(result)).toBeUndefined()
-		const sql = issuedSql.join("\n")
+		const sql = Arr.join(issuedSql, "\n")
 		expect(sql).toContain("FROM metric_catalog")
 		expect(sql).toContain("'jobs'")
 		expect(sql).not.toContain("attribute_keys_hourly")
@@ -215,7 +215,7 @@ describe("services, metrics and query tools on define", () => {
 		const result = await call("describe_warehouse_tables", { table: "otel_traces" })
 		expect(result.isError).toBe(true)
 		expect(markdown(result)).toMatch(
-			/^Invalid input \(`table`\): No table named "otel_traces"\. Did you mean "traces"\? Available tables: /,
+			/^Invalid input \(`tables`\): No table named "otel_traces"\. Did you mean "traces"\? Available tables: /,
 		)
 	})
 

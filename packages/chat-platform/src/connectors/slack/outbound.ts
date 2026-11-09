@@ -157,30 +157,40 @@ interface ChannelPageCursor {
  * holds a token without it, and only reinstalling the app grants it.
  */
 const FAILURE_REASONS: ReadonlyMap<string, ChatOutboundFailureReason> = new Map([
-	...[
-		"invalid_auth",
-		"not_authed",
-		"account_inactive",
-		"token_revoked",
-		"token_expired",
-		"missing_scope",
-		"no_permission",
-		"not_allowed_token_type",
-		"team_access_not_granted",
-		"ekm_access_denied",
-	].map((code) => [code, "auth"] as const),
-	...["channel_not_found", "not_in_channel", "is_archived"].map((code) => [code, "not_found"] as const),
-	...[
-		"invalid_blocks",
-		"invalid_blocks_format",
-		// Blocks inside an attachment, an alert card's image among them (one Slack could not fetch).
-		"invalid_attachments",
-		"msg_too_long",
-		"no_text",
-		"too_many_attachments",
-		"invalid_arguments",
-		"restricted_action",
-	].map((code) => [code, "rejected"] as const),
+	...Arr.map(
+		[
+			"invalid_auth",
+			"not_authed",
+			"account_inactive",
+			"token_revoked",
+			"token_expired",
+			"missing_scope",
+			"no_permission",
+			"not_allowed_token_type",
+			"team_access_not_granted",
+			"ekm_access_denied",
+		],
+		(code) => [code, "auth"] as const,
+	),
+	...Arr.map(
+		// The last two answer a direct message: the person turned off the app's messages tab, or left.
+		["channel_not_found", "not_in_channel", "is_archived", "messages_tab_disabled", "user_not_found"],
+		(code) => [code, "not_found"] as const,
+	),
+	...Arr.map(
+		[
+			"invalid_blocks",
+			"invalid_blocks_format",
+			// Blocks inside an attachment, an alert card's image among them (one Slack could not fetch).
+			"invalid_attachments",
+			"msg_too_long",
+			"no_text",
+			"too_many_attachments",
+			"invalid_arguments",
+			"restricted_action",
+		],
+		(code) => [code, "rejected"] as const,
+	),
 ])
 
 /** Slack's two spellings for the same thing, both of which it documents. */
@@ -226,13 +236,15 @@ const jsonRequest = (url: string, payload: SlackApiRequest) =>
 export const slackOutbound: ChatOutbound<HttpClient.HttpClient | ConnectorCredentials> = {
 	connectorId: SLACK_CONNECTOR_ID,
 	limits: { maxMessageChars: MAX_MESSAGE_CHARS, minEditInterval: MIN_EDIT_INTERVAL },
+	directMessages: true,
 	// The bot token is per workspace and arrives under `WORKSPACE_CREDENTIALS`; nothing is
 	// deployment-wide.
 	requiredConfig: [],
 	transport: Effect.gen(function* () {
 		const client = yield* HttpClient.HttpClient
 		// Per call, not here: acquiring the transport must not cost the host its credential read.
-		const token = Effect.map(yield* ConnectorCredentials, (config: ConnectorConfig) =>
+		const credentials = yield* ConnectorCredentials
+		const token = Effect.map(credentials, (config: ConnectorConfig) =>
 			Option.map(decodeSlackCredentials(config.get(WORKSPACE_CREDENTIALS)), (value) =>
 				Redacted.make(value.bot_token),
 			),
@@ -246,7 +258,7 @@ export const slackOutbound: ChatOutbound<HttpClient.HttpClient | ConnectorCreden
 		 * three deep under the first one.
 		 */
 		const attempt = Effect.fn("Slack.request", { kind: "client" })(function* (
-			bearer: Redacted.Redacted<string>,
+			bearer: Redacted.Redacted,
 			operation: ChatOutboundOperation,
 			method: string,
 			request: HttpClientRequest.HttpClientRequest,
@@ -471,7 +483,7 @@ export const slackOutbound: ChatOutbound<HttpClient.HttpClient | ConnectorCreden
 					"maple.chat.destinations.truncated": lastCursor !== undefined && lastCursor !== "",
 				})
 				return Arr.sort(
-					pages.flatMap((page) => page.channels),
+					Arr.flatMap(pages, (page) => page.channels),
 					byName,
 				)
 			}),
@@ -481,6 +493,13 @@ export const slackOutbound: ChatOutbound<HttpClient.HttpClient | ConnectorCreden
 			 * something that shows nothing, the driver's first posted message is the acknowledgement.
 			 */
 			typing: () => Effect.void,
+
+			/**
+			 * `chat.postMessage` takes a user id as its `channel` and opens the direct message itself,
+			 * with only `chat:write`, so there is nothing to call here.
+			 */
+			directMessage: (workspaceId: string, userId: string) =>
+				Effect.succeed({ workspaceId, channelId: userId } satisfies ChatTarget),
 
 			/**
 			 * A Slack thread is not an object — it is every message that carries the anchor's `ts` as

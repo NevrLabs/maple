@@ -4,22 +4,26 @@ import { TONE_TEXT } from "@maple/ui/lib/tone"
 import { cn } from "@maple/ui/lib/utils"
 import { AsyncData } from "foldkit"
 import type { Html, HtmlBuilder } from "foldkit/html"
-import { button } from "../../../ui/button"
-import * as DialogView from "../../../ui/dialog-view"
-import { icon, type IconName } from "../../../ui/icon"
-import { inlineCode } from "../../../ui/inline-code"
-import { panel } from "../../../ui/panel"
-import { skeleton } from "../../../ui/skeleton"
-import * as TabsView from "../../../ui/tabs-view"
-import { truncatedText } from "../../../ui/truncated-text"
+import { button } from "@maple/views/ui/button"
+import * as DialogView from "@maple/views/ui/dialog-view"
+import { icon, type IconName } from "@maple/views/ui/icon"
+import { inlineCode } from "@maple/views/ui/inline-code"
+import { panel } from "@maple/views/ui/panel"
+import { skeleton } from "@maple/views/ui/skeleton"
+import * as TabsView from "@maple/views/ui/tabs-view"
+import { truncatedText } from "@maple/views/ui/truncated-text"
 import type { PageContext } from "../../contract"
 import { codeBlock } from "../../settings/kit/code-block"
 import type { Variable } from "../kit/variables"
 import { Message } from "./message"
 import type { Model } from "./model"
-import { optionsByNameOf, variablesOf } from "./plan"
+import { optionsByNameOf, shareLinkRangeOf, variablesOf } from "./plan"
 import { boardShareOf, chartShareOf, embedUrl, ShareMessage } from "./share"
 import { shareLinkRow } from "./view-share"
+import { typography, typographyClass } from "@maple/views/ui/typography"
+import { hstack } from "@maple/views/ui/stack"
+import { Array as Arr, String as Str } from "effect"
+import { dividedList } from "@maple/views/ui/rule"
 
 // The embed widget dialog.
 
@@ -28,27 +32,33 @@ type H = HtmlBuilder<Message>
 const wrap = (message: ShareMessage) => Message.GotShareMessage({ message })
 
 /** `YYYY-MM-DD HH:MM:SS` in UTC, the only shape the share API accepts. */
-const warehouseDateTime = (ms: number) => new Date(ms).toISOString().slice(0, 19).replace("T", " ")
+const warehouseDateTime = (ms: number) => Str.replace("T", " ")(Str.slice(0, 19)(new Date(ms).toISOString()))
 
 const iframeSnippet = (h: H, model: Model, url: string): Html => {
-	const html = [
-		"<iframe",
-		`  src="${url}"`,
-		'  width="100%"',
-		'  height="400"',
-		'  style="border: 0"',
-		'  loading="lazy"',
-		"></iframe>",
-	].join("\n")
-	const jsx = [
-		"<iframe",
-		`  src="${url}"`,
-		'  width="100%"',
-		"  height={400}",
-		"  style={{ border: 0 }}",
-		'  loading="lazy"',
-		"/>",
-	].join("\n")
+	const html = Arr.join(
+		[
+			"<iframe",
+			`  src="${url}"`,
+			'  width="100%"',
+			'  height="400"',
+			'  style="border: 0"',
+			'  loading="lazy"',
+			"></iframe>",
+		],
+		"\n",
+	)
+	const jsx = Arr.join(
+		[
+			"<iframe",
+			`  src="${url}"`,
+			'  width="100%"',
+			"  height={400}",
+			"  style={{ border: 0 }}",
+			'  loading="lazy"',
+			"/>",
+		],
+		"\n",
+	)
 	const copy = {
 		copy: model.sharing.snippetCopy,
 		toCopyMessage: (message: Parameters<typeof ShareMessage.GotSnippetCopyMessage>[0]["message"]) =>
@@ -64,10 +74,10 @@ const iframeSnippet = (h: H, model: Model, url: string): Html => {
 			labels: ["HTML", "React"],
 			className: "gap-2",
 			wrapList: (list) =>
-				h.div(
-					[h.Class("flex items-center justify-between gap-3")],
-					[h.div([h.Class("font-medium text-xs")], ["Embed in a page"]), list],
-				),
+				hstack(h, { gap: "3", justify: "between" }, [
+					typography(h, { size: "xs", weight: "medium", as: "div" }, ["Embed in a page"]),
+					list,
+				]),
 			panel: (value) =>
 				value === "html"
 					? [codeBlock(h, { code: html, language: "html", ...copy })]
@@ -78,31 +88,25 @@ const iframeSnippet = (h: H, model: Model, url: string): Html => {
 
 const notPublicNotice = (h: H, isOrgOnly: boolean, isBusy: boolean): Html =>
 	panel(h, { tone: "muted", className: "space-y-3 px-3.5 py-3" }, [
-		h.div(
-			[h.Class("flex items-start gap-3")],
-			[
-				icon(h, "GlobeIcon", { size: 16, className: "mt-0.5 shrink-0 text-muted-foreground" }),
-				h.div(
-					[h.Class("space-y-1")],
-					[
-						h.div(
-							[h.Class("font-medium text-sm")],
-							[
-								isOrgOnly
-									? "This dashboard is shared with your organization only"
-									: "This dashboard isn't shared",
-							],
-						),
-						h.p(
-							[h.Class("text-muted-foreground text-xs leading-relaxed")],
-							[
-								"Embeds only work on public dashboards. Making it public lets anyone with the dashboard's link view all of it, not just this chart.",
-							],
-						),
-					],
-				),
-			],
-		),
+		hstack(h, { gap: "3", align: "start" }, [
+			icon(h, "GlobeIcon", {
+				size: 16,
+				className: typographyClass({ tone: "muted", className: "mt-0.5 shrink-0" }),
+			}),
+			h.div(
+				[h.Class("space-y-1")],
+				[
+					typography(h, { size: "sm", weight: "medium", as: "div" }, [
+						isOrgOnly
+							? "This dashboard is shared with your organization only"
+							: "This dashboard isn't shared",
+					]),
+					typography(h, { size: "xs", tone: "muted", as: "p", className: "leading-relaxed" }, [
+						"Embeds only work on public dashboards. Making it public lets anyone with the dashboard's link view all of it, not just this chart.",
+					]),
+				],
+			),
+		]),
 		h.ol(
 			[h.Class("ml-7 list-decimal space-y-0.5 pl-4 text-muted-foreground text-xs leading-relaxed")],
 			[
@@ -178,7 +182,13 @@ const urlOptions = (h: H, model: Model, context: PageContext): Html => {
 			key: "refresh",
 			icon: "ArrowRotateClockwiseIcon",
 			param: "refresh",
-			description: `Seconds: ${REFRESH_INTERVAL_OPTIONS.filter((value) => value > 0).join(", ")}. 0 turns it off`,
+			description: `Seconds: ${Arr.join(
+				Arr.map(
+					Arr.filter(REFRESH_INTERVAL_OPTIONS, (value) => value > 0),
+					String,
+				),
+				", ",
+			)}. 0 turns it off`,
 			example: "&refresh=60",
 		},
 		...(definitions.length === 0
@@ -192,7 +202,7 @@ const urlOptions = (h: H, model: Model, context: PageContext): Html => {
 						unavailable: true,
 					},
 				]
-			: definitions.map((variable) => ({
+			: Arr.map(definitions, (variable) => ({
 					key: `var-${variable.name}`,
 					icon: "BracketsCurlyIcon" as const,
 					param: `var-${variable.name}`,
@@ -206,16 +216,16 @@ const urlOptions = (h: H, model: Model, context: PageContext): Html => {
 			h.div(
 				[],
 				[
-					h.div([h.Class("font-medium text-xs")], ["URL options"]),
-					h.p(
-						[h.Class("text-muted-foreground text-xs")],
-						["Append any of these to the embed link."],
-					),
+					typography(h, { size: "xs", weight: "medium", as: "div" }, ["URL options"]),
+					typography(h, { size: "xs", tone: "muted", as: "p" }, [
+						"Append any of these to the embed link.",
+					]),
 				],
 			),
-			h.ul(
-				[h.Class("divide-y divide-border overflow-hidden rounded-md border")],
-				options.map((option) =>
+			dividedList(
+				h,
+				{ as: "ul", className: "divide-border overflow-hidden" },
+				Arr.map(options, (option) =>
 					h.li(
 						[
 							h.Class(
@@ -226,12 +236,16 @@ const urlOptions = (h: H, model: Model, context: PageContext): Html => {
 							),
 						],
 						[
-							h.span(
-								[h.Class("flex h-5 items-center text-muted-foreground")],
+							hstack(
+								h,
+								{ align: "center", as: "span", className: "h-5 text-muted-foreground" },
 								[icon(h, option.icon, { size: 14 })],
 							),
-							truncatedText(h, { text: option.param, className: "font-medium font-mono" }),
-							h.span([h.Class("text-muted-foreground")], [option.description]),
+							truncatedText(h, {
+								text: option.param,
+								className: typographyClass({ weight: "medium", mono: true }),
+							}),
+							typography(h, { tone: "muted" }, [option.description]),
 							inlineCode(
 								h,
 								{
@@ -265,10 +279,22 @@ const embedContent = (h: H, model: Model, context: PageContext): ReadonlyArray<H
 							...shareLinkRow(
 								h,
 								model,
-								embedUrl(model.sharing.origin, share.token),
+								embedUrl(
+									model.sharing.origin,
+									share.token,
+									shareLinkRangeOf(model, context.timeZone),
+								),
 								"Every existing embed of this chart stops working until it is updated with the new link.",
 							),
-							iframeSnippet(h, model, embedUrl(model.sharing.origin, share.token)),
+							iframeSnippet(
+								h,
+								model,
+								embedUrl(
+									model.sharing.origin,
+									share.token,
+									shareLinkRangeOf(model, context.timeZone),
+								),
+							),
 							urlOptions(h, model, context),
 						]
 					: model.sharing.error !== null

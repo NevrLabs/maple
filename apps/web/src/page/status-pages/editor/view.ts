@@ -1,19 +1,19 @@
 import type { StatusPageComponentStatus } from "@maple/domain"
 import type { V2StatusPage } from "@maple/domain/http/v2"
-import { worstStatus } from "@maple/domain/status-page"
-import { Option } from "effect"
+import { isInformationalGroup, worstStatus } from "@maple/domain/status-page"
+import { Option, Array as Arr } from "effect"
 import { AsyncData, Submodel } from "foldkit"
 import type { Html, HtmlBuilder } from "foldkit/html"
-import type { LoadFailure } from "../../../data/load-failure"
-import { alert, alertDescription, alertTitle } from "../../../ui/alert"
-import { button } from "../../../ui/button"
-import { confirmDialog } from "../../../ui/confirm-dialog"
-import { badge } from "../../../ui/display"
-import { errorState } from "../../../ui/error-state"
-import { icon } from "../../../ui/icon"
-import type { MenuEntry } from "../../../ui/menu-view"
-import { rowActionsMenu } from "../../../ui/row-actions-menu"
-import { skeleton } from "../../../ui/skeleton"
+import type { LoadFailure } from "@maple/views/data/load-failure"
+import { alert, alertDescription, alertTitle } from "@maple/views/ui/alert"
+import { button } from "@maple/views/ui/button"
+import { confirmDialog } from "@maple/views/ui/confirm-dialog"
+import { badge } from "@maple/views/ui/display"
+import { errorState } from "@maple/views/ui/error-state"
+import { icon } from "@maple/views/ui/icon"
+import type { MenuEntry } from "@maple/views/ui/menu-view"
+import { rowActionsMenu } from "@maple/views/ui/row-actions-menu"
+import { skeleton } from "@maple/views/ui/skeleton"
 import type { PageViewInputs } from "../../contract"
 import { dashboardPage } from "../../kit/dashboard-page"
 import { detailActions, detailTitle, detailTitleSkeleton } from "../../kit/detail-header"
@@ -28,13 +28,15 @@ import {
 	hasUnpublishedChanges,
 } from "../shared/derive"
 import { Message } from "./message"
-import type { Model } from "./model"
+import { canBreakGlass, canManage, type Model } from "./model"
 import { componentsOf, incidentsOf, monitorsOf, pageOf, statusReadsReady } from "./reads"
 import { PAGE_MENU_ID, resolveView } from "./update"
 import { canvas } from "./view-canvas"
 import { jsonTab } from "./view-json"
 import { addressLine, liveView } from "./view-live"
 import { appearanceView, breakGlassDialog, deletePageDialog, settingsView } from "./view-settings"
+import { typography, typographyClass } from "@maple/views/ui/typography"
+import { hstack, vstack } from "@maple/views/ui/stack"
 
 // `/status-pages/$pageId`: the header and tabs, then the page as the editor, its Appearance, its
 // Settings, its JSON, or the screen right after it went live.
@@ -44,20 +46,19 @@ type H = HtmlBuilder<Message>
 /** The banner a visitor sees now: the worst component, from what is loaded. */
 const overallOf = (model: Model): StatusPageComponentStatus =>
 	worstStatus(
-		componentsOf(model).map((component) =>
+		Arr.map(Arr.filter(componentsOf(model), (component) => !isInformationalGroup(component.group)), (component) =>
 			componentStatus(component, monitorsOf(model), incidentsOf(model)),
 		),
 	)
 
 /** Where the page stands with visitors: live since when, a draft, or changes on their way. */
 const stateLine = (h: H, model: Model, page: V2StatusPage, timeZone: string): Html => {
-	const className = "text-xs text-muted-foreground"
+	const className = typographyClass({ size: "xs", tone: "muted" })
 	if (page.draft) return h.span([h.Class(className)], ["Draft. Nothing is public until you publish."])
 	if (page.last_publish_error !== null)
-		return h.span(
-			[h.Class("text-xs text-destructive")],
-			[`Last publish failed: ${page.last_publish_error}`],
-		)
+		return typography(h, { size: "xs", tone: "destructive" }, [
+			`Last publish failed: ${page.last_publish_error}`,
+		])
 	if (page.published_at === null) return h.span([h.Class(className)], ["Publishing within a minute"])
 	if (hasUnpublishedChanges(page)) return h.span([h.Class(className)], ["Changes go out within a minute"])
 	return h.span(
@@ -67,7 +68,6 @@ const stateLine = (h: H, model: Model, page: V2StatusPage, timeZone: string): Ht
 				value: page.published_at,
 				nowMs: model.nowMs ?? 0,
 				timeZone,
-				tooltip: "title",
 				prefix: "Live, published",
 			}),
 		],
@@ -83,9 +83,11 @@ const menuEntries = (model: Model, page: V2StatusPage): ReadonlyArray<MenuEntry>
 		// A draft is not public, and without a status domain there is no address to open.
 		isDisabled: page.draft || model.publicBaseUrl === "",
 	},
-	...(model.isAdmin
+	...(canBreakGlass(model)
+		? ([{ _tag: "Item", value: "break-glass", label: "Break-glass token", icon: "KeyIcon" }] as const)
+		: []),
+	...(canManage(model)
 		? ([
-				{ _tag: "Item", value: "break-glass", label: "Break-glass token", icon: "KeyIcon" },
 				{ _tag: "Separator" },
 				{ _tag: "Item", value: "delete", label: "Delete", icon: "TrashIcon", variant: "destructive" },
 			] as const)
@@ -105,7 +107,7 @@ const publishButton = (h: H, model: Model): Html =>
 
 /** A draft's next step is publishing it, so Publish leads and Post incident steps back. */
 const headerActions = (h: H, model: Model, page: V2StatusPage): Html => {
-	const canPublish = model.isAdmin && page.draft
+	const canPublish = canManage(model) && page.draft
 	// The composer opens beside the page, so Post incident lives on the Page tab.
 	const isPageView = resolveView(model.search.view) === "page"
 	return detailActions(h, [
@@ -140,7 +142,7 @@ const TAB_LABELS = {
 	json: "JSON",
 } as const satisfies Record<"page" | Exclude<EditorView, "live">, string>
 
-const TABS = (["page", "appearance", "settings", "json"] as const).map((view) => ({
+const TABS = Arr.map(["page", "appearance", "settings", "json"] as const, (view) => ({
 	view,
 	label: TAB_LABELS[view],
 }))
@@ -150,7 +152,7 @@ const tabs = (h: H, model: Model, page: V2StatusPage): Html => {
 	return linkTabStrip(
 		h,
 		"Status page views",
-		TABS.map((tab) => ({
+		Arr.map(TABS, (tab) => ({
 			key: tab.view,
 			href: statusPageHref(page.id, tab.view === "page" ? undefined : tab.view),
 			label: tab.label,
@@ -219,8 +221,8 @@ const body = (h: H, model: Model, page: V2StatusPage, timeZone: string): Html =>
 					[skeleton(h, "h-48 w-full"), skeleton(h, "h-[560px] w-full")],
 				)
 			const editor = canvas(h, model, page, { nowMs: model.nowMs ?? 0, timeZone })
-			return model.isAdmin && page.draft
-				? h.div([h.Class("flex flex-col gap-4")], [draftCallout(h), editor])
+			return canManage(model) && page.draft
+				? vstack(h, { gap: "4" }, [draftCallout(h), editor])
 				: editor
 		}
 	}
@@ -231,15 +233,22 @@ export const removeComponentCopy = (
 	page: V2StatusPage,
 	component: Readonly<{ monitor_id: string | null }> | undefined,
 ): string =>
-	[
-		page.draft
-			? "It leaves the draft; visitors never see it."
-			: "Visitors stop seeing it within a minute.",
-		...(component?.monitor_id === null || component === undefined ? [] : ["Its monitor keeps running."]),
-	].join(" ")
+	Arr.join(
+		[
+			page.draft
+				? "It leaves the draft; visitors never see it."
+				: "Visitors stop seeing it within a minute.",
+			...(component?.monitor_id === null || component === undefined
+				? []
+				: ["Its monitor keeps running."]),
+		],
+		" ",
+	)
 
 const deleteComponentDialog = (h: H, model: Model, page: V2StatusPage): Html => {
-	const component = componentsOf(model).find((row) => row.id === model.confirmDeleteComponentId)
+	const component = Option.getOrUndefined(
+		Arr.findFirst(componentsOf(model), (row) => row.id === model.confirmDeleteComponentId),
+	)
 	return confirmDialog(h, {
 		slotId: "status-page-delete-component",
 		model: model.deleteComponentDialog,
@@ -273,8 +282,9 @@ const loaded = (h: H, model: Model, page: V2StatusPage, inputs: PageViewInputs):
 									])
 								: h.empty,
 						meta: [
-							h.span(
-								[h.Class("flex flex-wrap items-center gap-x-3 gap-y-1")],
+							hstack(
+								h,
+								{ align: "center", wrap: true, as: "span", className: "gap-x-3 gap-y-1" },
 								[stateLine(h, model, page, timeZone), addressLine(h, model, page)],
 							),
 						],

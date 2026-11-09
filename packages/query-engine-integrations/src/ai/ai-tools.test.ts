@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { Array as Arr, Effect } from "effect"
+import { Array as Arr, Effect, String as Str, Option } from "effect"
 import { compileUnionUnsafe, compileUnsafe, type CompiledQuery } from "@maple-dev/effect-orm/clickhouse"
 import {
 	aiToolDescriptionQuery,
@@ -69,7 +69,7 @@ const decodeRows = <T>(compiled: CompiledQuery<T>, rows: ReadonlyArray<Record<st
 
 /** `OrgId = 'x'` on every level that reads a table — a subquery contributes
  *  nothing to the outer query's scope. */
-const orgPredicateCount = (sql: string) => sql.split("OrgId = 'org_1'").length - 1
+const orgPredicateCount = (sql: string) => Str.split("OrgId = 'org_1'")(sql).length - 1
 
 describe("tool call population", () => {
 	it("reads ai_trace_index alone, filtered to tool calls", () => {
@@ -247,8 +247,8 @@ describe("tool call population", () => {
 		const series = compileUnsafe(aiToolsSeriesQuery(scoped), params).sql
 		// Twice in the series: once for the points, once for the top-N ranking —
 		// otherwise the legend ranks a population the chart is not drawing.
-		expect(series.split("ILIKE '%run%'").length - 1).toBe(2)
-		expect(series.split("IsError = 1").length - 1).toBe(2)
+		expect(Str.split("ILIKE '%run%'")(series).length - 1).toBe(2)
+		expect(Str.split("IsError = 1")(series).length - 1).toBe(2)
 
 		for (const sql of [
 			compileUnionUnsafe(aiToolsTotalsQuery(scoped), totalsParams).sql,
@@ -359,7 +359,9 @@ describe("aiToolsTotalsQuery", () => {
 		// The overview's default is unchanged, and the branches keep their order
 		// whatever order the caller lists them in.
 		const listed = compileUnionUnsafe(aiToolsTotalsQuery({}, ["window", "current"]), totalsParams).sql
-		expect(listed.indexOf("'current' AS period")).toBeLessThan(listed.indexOf("'window' AS period"))
+		expect(Option.getOrThrow(Str.indexOf("'current' AS period")(listed))).toBeLessThan(
+			Option.getOrThrow(Str.indexOf("'window' AS period")(listed)),
+		)
 		expect(listed).not.toContain("'previous' AS period")
 	})
 
@@ -506,8 +508,8 @@ describe("the tool detail reads", () => {
 		expect(sql).toContain("min(numbered_tool_calls.newerCalls) AS callsSince")
 		// The failure filter is the outer level's, above the numbering.
 		expect(sql).toContain("WHERE numbered_tool_calls.isError = 1")
-		expect(sql.indexOf("WHERE numbered_tool_calls.isError = 1")).toBeGreaterThan(
-			sql.indexOf("row_number()"),
+		expect(Option.getOrThrow(Str.indexOf("WHERE numbered_tool_calls.isError = 1")(sql))).toBeGreaterThan(
+			Option.getOrThrow(Str.indexOf("row_number()")(sql)),
 		)
 	})
 
@@ -660,7 +662,7 @@ describe("aiToolErrorPayloadsQuery", () => {
 			"(traces.TraceId, traces.SpanId) IN (tuple('t2', 's2'), tuple('t1', 's1'))",
 		)
 		// The seek is the only subquery, and it reads literals.
-		expect(compiled.sql.split("IN (SELECT").length - 1).toBe(1)
+		expect(Str.split("IN (SELECT")(compiled.sql).length - 1).toBe(1)
 	})
 
 	it("bounds the read by the occurrences' own extent, unpadded", () => {
@@ -794,7 +796,7 @@ describe("aiToolErrorPayload", () => {
 	})
 
 	it("truncates by codepoint and reports the full size in bytes", () => {
-		const long = `"${"é".repeat(AI_TOOL_ERROR_PAYLOAD_MAX + 10)}"`
+		const long = `"${Str.repeat(AI_TOOL_ERROR_PAYLOAD_MAX + 10)("é")}"`
 		const cut = payload({ "gen_ai.tool.call.arguments": "{}", "gen_ai.tool.call.result": long })
 		expect(cut).toMatchObject({ arguments: "{}", argumentsBytes: 2 })
 		// A JSON string decodes to its text; every `é` is two bytes.
@@ -806,23 +808,23 @@ describe("aiToolErrorPayload", () => {
 	it("shows a value the read cut as its raw text, at its true size", () => {
 		// As the read returns a 40 KB JSON result: cut mid-document, so it no
 		// longer parses.
-		const whole = JSON.stringify({ rows: "x".repeat(40_000) })
-		const cut = whole.slice(0, AI_TOOL_ERROR_ATTRIBUTE_MAX)
+		const whole = JSON.stringify({ rows: Str.repeat(40_000)("x") })
+		const cut = Str.slice(0, AI_TOOL_ERROR_ATTRIBUTE_MAX)(whole)
 		const shown = payload(
 			{ "gen_ai.tool.call.arguments": "{}", "gen_ai.tool.call.result": cut },
 			{ "gen_ai.tool.call.result": whole.length },
 		)
 		expect(shown).toMatchObject({ arguments: "{}", argumentsBytes: 2, resultBytes: whole.length })
-		expect(shown.result).toBe(cut.slice(0, AI_TOOL_ERROR_PAYLOAD_MAX))
+		expect(shown.result).toBe(Str.slice(0, AI_TOOL_ERROR_PAYLOAD_MAX)(cut))
 	})
 
 	it("still swaps an OpenInference schema for the arguments when both are cut", () => {
 		// The schema and its dual-written copy are cut to the same prefix, so
 		// they still compare equal and `input.value` still wins.
 		const schema = JSON.stringify({
-			properties: { seat: { description: "d".repeat(AI_TOOL_ERROR_ATTRIBUTE_MAX) } },
+			properties: { seat: { description: Str.repeat(AI_TOOL_ERROR_ATTRIBUTE_MAX)("d") } },
 		})
-		const cut = schema.slice(0, AI_TOOL_ERROR_ATTRIBUTE_MAX)
+		const cut = Str.slice(0, AI_TOOL_ERROR_ATTRIBUTE_MAX)(schema)
 		expect(
 			payload(
 				{ ...updateSeat(cut), "tool.parameters": cut },
@@ -852,9 +854,8 @@ describe("aiToolDescriptionQuery", () => {
 		expect(compiled.sql).toContain(
 			"argMax(ai_trace_index.ToolDescription, ai_trace_index.Timestamp) AS description",
 		)
-		// Rows materialized before migration 0032 read '', and so does a call
-		// whose framework stamps nothing — without this the `argMax` would answer
-		// '' for a tool whose most recent call is one of them.
+		// A call whose framework sends no description reads '' — without this the
+		// `argMax` would answer '' for a tool whose most recent call is one.
 		expect(compiled.sql).toContain("ToolDescription != ''")
 		expect(decodeRows(compiled, [{ description: "Search traces." }])).toEqual([
 			{ description: "Search traces." },

@@ -3,16 +3,20 @@ import { TONE_TEXT } from "@maple/ui/lib/tone"
 import type { Html, HtmlBuilder } from "foldkit/html"
 import { TRIAL_DURATION_DAYS } from "../../lib/billing/plans"
 import { AppRoute, hrefOf } from "../../route"
-import { button, linkButton } from "../../ui/button"
-import { eyebrow } from "../../ui/eyebrow"
-import { panel } from "../../ui/panel"
-import { skeleton } from "../../ui/skeleton"
-import { icon, type IconName } from "../../ui/icon"
-import { input } from "../../ui/input"
-import { label } from "../../ui/label"
+import { button, linkButton } from "@maple/views/ui/button"
+import { heading } from "@maple/views/ui/heading"
+import { eyebrow } from "@maple/views/ui/eyebrow"
+import { panel } from "@maple/views/ui/panel"
+import { skeleton } from "@maple/views/ui/skeleton"
+import { icon, type IconName } from "@maple/views/ui/icon"
+import { input } from "@maple/views/ui/input"
+import { label } from "@maple/views/ui/label"
 import { Message } from "./quick-start"
 import { STEP_BODY_CLASS, STEP_FOOTER_CLASS } from "./step-layout"
 import { isAlreadyInvited, type Team, TeamMessage } from "./quick-start-team"
+import { typography, typographyClass } from "@maple/views/ui/typography"
+import { hstack, vstack } from "@maple/views/ui/stack"
+import { Array as Arr, String as Str } from "effect"
 
 type H = HtmlBuilder<Message>
 
@@ -24,9 +28,16 @@ const invitedList = (h: H, invited: ReadonlyArray<string>): ReadonlyArray<Html> 
 		: [
 				h.ul(
 					[h.AriaLabel("Pending invitations"), h.Class("space-y-2")],
-					invited.map((address) =>
-						h.li(
-							[h.Key(address), h.Class("flex items-center gap-2 text-xs")],
+					Arr.map(invited, (address) =>
+						hstack(
+							h,
+							{
+								gap: "2",
+								align: "center",
+								as: "li",
+								className: "text-xs",
+								attributes: [h.Key(address)],
+							},
 							[
 								icon(h, "CircleCheckIcon", { size: 14, className: "shrink-0 text-primary" }),
 								h.span([h.Class("min-w-0 break-all")], [address]),
@@ -65,109 +76,96 @@ const TOOLS: ReadonlyArray<Tool> = [
 ]
 
 const toolRow = (h: H, tool: Tool): Html =>
-	h.li(
-		[h.Class("flex flex-wrap items-center gap-x-3.5 gap-y-3 px-4 py-4")],
-		[
-			h.span(
-				[
-					h.AriaHidden(true),
-					h.Class(
-						"flex size-10 shrink-0 items-center justify-center rounded-md border border-border",
-					),
+	hstack(h, { align: "center", wrap: true, as: "li", className: "gap-x-3.5 gap-y-3 px-4 py-4" }, [
+		hstack(
+			h,
+			{
+				align: "center",
+				justify: "center",
+				as: "span",
+				className: "size-10 shrink-0 rounded-md border border-border",
+				attributes: [h.AriaHidden(true)],
+			},
+			[icon(h, tool.icon, { size: 20 })],
+		),
+		vstack(h, { gap: "1", shrink: true, grow: true, className: "basis-48" }, [
+			typography(h, { size: "sm", weight: "medium" }, [tool.name]),
+			typography(h, { size: "xs", tone: "muted", className: "leading-snug" }, [tool.line]),
+		]),
+		linkButton(
+			h,
+			{
+				href: tool.href,
+				variant: "outline",
+				size: "sm",
+				className: "max-sm:ml-13.5",
+				attributes: [
+					h.Target("_blank"),
+					h.Rel("noopener"),
+					h.AriaLabel(`${tool.action}: ${tool.name} (opens a new tab)`),
 				],
-				[icon(h, tool.icon, { size: 20 })],
-			),
-			h.div(
-				[h.Class("flex min-w-0 flex-1 basis-48 flex-col gap-1")],
-				[
-					h.span([h.Class("text-sm font-medium")], [tool.name]),
-					h.span([h.Class("text-xs leading-snug text-muted-foreground")], [tool.line]),
-				],
-			),
-			linkButton(
-				h,
-				{
-					href: tool.href,
-					variant: "outline",
-					size: "sm",
-					className: "max-sm:ml-13.5",
-					attributes: [
-						h.Target("_blank"),
-						h.Rel("noopener"),
-						h.AriaLabel(`${tool.action}: ${tool.name} (opens a new tab)`),
-					],
-				},
-				[tool.action, icon(h, "ExternalLinkIcon", { size: 12 })],
-			),
-		],
-	)
+			},
+			[tool.action, icon(h, "ExternalLinkIcon", { size: 12 })],
+		),
+	])
 
 /** `StepTeam`: the tools Maple plugs into, then teammates. Every part is optional. */
-export const teamStep = (h: H, team: Team): Html => {
+export const teamStep = (h: H, team: Team, orgName: string): Html => {
 	const isBusy = team.pending !== null
 	return h.div(
 		[h.Class(STEP_BODY_CLASS)],
 		[
-			h.div(
-				[h.Class("flex flex-col gap-2.5")],
-				[
-					h.h1(
-						[h.Class("font-display text-3xl font-semibold tracking-tight")],
-						["Bring in your team and tools"],
-					),
-					h.p(
-						[h.Class("text-title leading-relaxed text-muted-foreground")],
-						["Maple shows up where you already work. Every one of these is optional."],
-					),
-				],
-			),
+			vstack(h, { gap: "2.5" }, [
+				heading(h, { level: 1, variant: "display" }, ["Bring in your team and tools"]),
+				h.p(
+					[h.Class("text-title leading-relaxed text-muted-foreground")],
+					["Maple shows up where you already work. Every one of these is optional."],
+				),
+			]),
 			// Wrapped, so the column's side padding lands outside the list's border, not inside it.
 			h.div(
 				[],
 				[
-					h.ul(
-						[
-							h.AriaLabel("Tools"),
-							h.Class(
-								"flex flex-col divide-y divide-border overflow-hidden rounded-md border border-border bg-card",
-							),
-						],
-						TOOLS.map((tool) => toolRow(h, tool)),
+					vstack(
+						h,
+						{
+							as: "ul",
+							className:
+								"divide-y divide-border overflow-hidden rounded-md border border-border bg-card",
+							attributes: [h.AriaLabel("Tools")],
+						},
+						Arr.map(TOOLS, (tool) => toolRow(h, tool)),
 					),
 				],
 			),
 			team.isLoaded
-				? h.div(
-						[h.Class("flex flex-col gap-4")],
-						[
-							...(team.unavailableReason === null
-								? []
-								: [
-										h.p(
-											[h.Class("text-sm text-muted-foreground")],
-											[team.unavailableReason],
-										),
+				? vstack(h, { gap: "4" }, [
+						...(team.unavailableReason === null
+							? []
+							: [
+									typography(h, { size: "sm", tone: "muted", as: "p" }, [
+										team.unavailableReason,
 									]),
-							inviteForm(h, team, isBusy),
-							...invitedList(h, team.invited),
-							h.div(
-								[h.AriaLive("polite"), h.AriaAtomic(true), h.Class("min-h-5 text-xs")],
-								[
-									h.p(
-										[
-											h.Class(
-												team.feedback?.isError === true
-													? TONE_TEXT.crit
-													: "text-muted-foreground",
-											),
-										],
-										team.feedback === null ? [] : [team.feedback.message],
-									),
-								],
-							),
-						],
-					)
-				: h.output([h.Class("text-sm text-muted-foreground")], ["Loading your team…"]),
+								]),
+						inviteForm(h, team, isBusy),
+						...invitedList(h, team.invited),
+						h.div(
+							[h.AriaLive("polite"), h.AriaAtomic(true), h.Class("min-h-5 text-xs")],
+							[
+								h.p(
+									[
+										h.Class(
+											team.feedback?.isError === true
+												? TONE_TEXT.crit
+												: "text-muted-foreground",
+										),
+									],
+									team.feedback === null ? [] : [team.feedback.message],
+								),
+							],
+						),
+					])
+				: h.output([h.Class(typographyClass({ size: "sm", tone: "muted" }))], ["Loading your team…"]),
 			h.div(
 				[h.Class(cn(STEP_FOOTER_CLASS, "justify-between"))],
 				[
@@ -176,7 +174,7 @@ export const teamStep = (h: H, team: Team): Html => {
 						{
 							variant: "ghost",
 							isDisabled: isBusy,
-							attributes: [h.OnClick(Message.ClickedBack({ to: "connect" }))],
+							attributes: [h.OnClick(Message.ClickedBack({ to: "live" }))],
 						},
 						[icon(h, "ArrowLeftIcon"), "Back"],
 					),
@@ -187,7 +185,10 @@ export const teamStep = (h: H, team: Team): Html => {
 							isDisabled: isBusy,
 							attributes: [h.OnClick(Message.ClickedContinue({ step: "team" }))],
 						},
-						["Continue", icon(h, "ArrowRightIcon", { size: 16 })],
+						[
+							typography(h, { truncate: true, className: "max-w-64" }, [`Go to ${orgName}`]),
+							icon(h, "ArrowRightIcon", { size: 16 }),
+						],
 					),
 				],
 			),
@@ -221,32 +222,24 @@ const SURFACES: ReadonlyArray<Surface> = [
 
 /** `TeamPreview`: where Maple shows up, as examples. */
 export const teamPreview = (h: H): Html =>
-	h.div(
-		[h.Class("flex flex-col gap-3.5")],
-		[
-			h.div(
-				[h.Class("mb-1 flex flex-col gap-1")],
-				[
-					eyebrow(h, { variant: "label" }, ["Where Maple shows up"]),
-					h.span([h.Class("font-display text-xl font-semibold")], ["Right where the work happens"]),
-				],
-			),
-			...SURFACES.map((surface) =>
-				h.div(
-					[h.Class("flex flex-col gap-2.5 rounded-md border border-border bg-background p-3.5")],
-					[
-						h.div(
-							[h.Class("flex items-center gap-2 text-xs text-muted-foreground")],
-							[icon(h, surface.icon, { size: 14 }), surface.where],
-						),
-						h.span([h.Class("text-ui font-medium")], [surface.title]),
-						h.span([h.Class("text-xs leading-snug text-muted-foreground")], [surface.body]),
-					],
+	vstack(h, { className: "gap-3.5" }, [
+		vstack(h, { gap: "1", className: "mb-1" }, [
+			eyebrow(h, { variant: "label" }, ["Where Maple shows up"]),
+			h.span([h.Class("font-display text-xl font-semibold")], ["Right where the work happens"]),
+		]),
+		...Arr.map(SURFACES, (surface) =>
+			vstack(h, { gap: "2.5", className: "rounded-md border border-border bg-background p-3.5" }, [
+				hstack(
+					h,
+					{ gap: "2", align: "center", className: typographyClass({ size: "xs", tone: "muted" }) },
+					[icon(h, surface.icon, { size: 14 }), surface.where],
 				),
-			),
-			h.span([h.Class("text-2xs text-muted-foreground")], ["Examples of what each one looks like."]),
-		],
-	)
+				h.span([h.Class("text-ui font-medium")], [surface.title]),
+				typography(h, { size: "xs", tone: "muted", className: "leading-snug" }, [surface.body]),
+			]),
+		),
+		typography(h, { size: "2xs", tone: "muted" }, ["Examples of what each one looks like."]),
+	])
 
 /** `PricingSkeleton`: while the customer is still loading. */
 const pricingSkeleton = (h: H): Html =>
@@ -256,7 +249,7 @@ const pricingSkeleton = (h: H): Html =>
 			h.AriaLabel("Loading plans"),
 			h.Class("grid grid-cols-1 sm:grid-cols-2 gap-4 max-w-3xl mx-auto"),
 		],
-		[0, 1].map(() =>
+		Arr.map([0, 1], () =>
 			panel(h, { className: "gap-4 p-6" }, [
 				skeleton(h, "h-5 w-24"),
 				skeleton(h, "h-8 w-32"),
@@ -276,73 +269,70 @@ const pricingSkeleton = (h: H): Html =>
 
 /** `StepPlan` / `StepPlanLayout`: the trial pitch over the pricing cards; it is the first step, so no Back. */
 export const planStep = (h: H, isCustomerLoading: boolean, pricing: Html): Html =>
-	h.div(
-		[h.Class("flex flex-1 flex-col items-center px-6 pb-12 pt-4 sm:px-12 lg:px-16")],
-		[
-			h.div(
-				[h.Class("w-full max-w-5xl")],
-				[
-					h.div(
-						[h.Class("mb-10 flex flex-col items-center gap-2.5 text-center")],
+	vstack(h, { align: "center", grow: true, className: "px-6 pb-12 pt-4 sm:px-12 lg:px-16" }, [
+		h.div(
+			[h.Class("w-full max-w-5xl")],
+			[
+				vstack(h, { gap: "2.5", align: "center", className: "mb-10 text-center" }, [
+					heading(h, { level: 1, variant: "display" }, [
+						`Start your ${TRIAL_DURATION_DAYS}-day free trial`,
+					]),
+					h.p(
+						[h.Class("max-w-lg text-title leading-relaxed text-muted-foreground")],
 						[
-							h.h1(
-								[h.Class("font-display text-3xl font-semibold tracking-tight")],
-								[`Start your ${TRIAL_DURATION_DAYS}-day free trial`],
-							),
-							h.p(
-								[h.Class("max-w-lg text-title leading-relaxed text-muted-foreground")],
-								[
-									`Pick a plan to keep going. Your card is saved now and charged on day ${TRIAL_DURATION_DAYS}; cancel anytime from settings.`,
-								],
-							),
+							`Pick a plan to keep going. Your card is saved now and charged on day ${TRIAL_DURATION_DAYS}; cancel anytime from settings.`,
 						],
 					),
-					isCustomerLoading ? pricingSkeleton(h) : pricing,
-				],
-			),
-		],
-	)
+				]),
+				isCustomerLoading ? pricingSkeleton(h) : pricing,
+			],
+		),
+	])
 
 const inviteForm = (h: H, team: Team, isBusy: boolean): Html =>
 	h.form(
 		[h.Class("space-y-3"), h.OnSubmit(toTeam(TeamMessage.SubmittedInvite()))],
 		[
 			label(h, { attributes: [h.For("onboarding-teammate-email")] }, ["Invite a teammate"]),
-			h.div(
-				[h.Class("flex flex-wrap gap-2")],
-				[
-					input(h, {
-						id: "onboarding-teammate-email",
-						type: "email",
-						className: "min-w-56 flex-1",
-						isDisabled: !team.canManage || isBusy,
-						attributes: [
-							h.Autocomplete("email"),
-							h.Placeholder("teammate@company.com"),
-							h.Value(team.email),
-							h.Required(true),
-							h.AriaDescribedBy("onboarding-invite-help"),
-							h.OnInput((value) => toTeam(TeamMessage.ChangedTeammateEmail({ value }))),
-						],
-					}),
-					button(
-						h,
-						{
-							type: "submit",
-							variant: "outline",
-							isLoading: team.pending === "invite",
-							isDisabled:
-								!team.canManage ||
-								isBusy ||
-								team.email.trim() === "" ||
-								isAlreadyInvited(team),
-						},
-						["Send invitation"],
-					),
-				],
-			),
-			h.p(
-				[h.Id("onboarding-invite-help"), h.Class("text-xs leading-relaxed text-muted-foreground")],
+			hstack(h, { gap: "2", align: "stretch", wrap: true }, [
+				input(h, {
+					id: "onboarding-teammate-email",
+					type: "email",
+					className: "min-w-56 flex-1",
+					isDisabled: !team.canManage || isBusy,
+					attributes: [
+						h.Autocomplete("email"),
+						h.Placeholder("teammate@company.com"),
+						h.Value(team.email),
+						h.Required(true),
+						h.AriaDescribedBy("onboarding-invite-help"),
+						h.OnInput((value) => toTeam(TeamMessage.ChangedTeammateEmail({ value }))),
+					],
+				}),
+				button(
+					h,
+					{
+						type: "submit",
+						variant: "outline",
+						isLoading: team.pending === "invite",
+						isDisabled:
+							!team.canManage ||
+							isBusy ||
+							Str.trim(team.email) === "" ||
+							isAlreadyInvited(team),
+					},
+					["Send invitation"],
+				),
+			]),
+			typography(
+				h,
+				{
+					size: "xs",
+					tone: "muted",
+					as: "p",
+					className: "leading-relaxed",
+					attributes: [h.Id("onboarding-invite-help")],
+				},
 				[
 					isAlreadyInvited(team)
 						? "This teammate already has a pending invitation."

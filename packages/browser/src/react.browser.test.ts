@@ -1,5 +1,5 @@
 // TEST-SEAM: This focused test replaces process-global modules that have no instance-level injection seam.
-import type { ReadableSpan } from "@opentelemetry/sdk-trace-base"
+import type { ReadableSpan } from "@opentelemetry/sdk-trace"
 import { createElement, type ReactNode } from "react"
 import { flushSync } from "react-dom"
 import { createRoot } from "react-dom/client"
@@ -84,13 +84,16 @@ describe("MapleErrorBoundary", () => {
 		vi.spyOn(console, "error").mockImplementation(() => {})
 		flushSync(() =>
 			root.render(
-				createElement(MapleErrorBoundary, {
-					fallback: ({ reset }: { reset: () => void }) => {
-						resetBoundary = reset
-						return createElement("p", null, "fallback")
+				createElement(
+					MapleErrorBoundary,
+					{
+						fallback: ({ reset }: { reset: () => void }) => {
+							resetBoundary = reset
+							return createElement("p", null, "fallback")
+						},
 					},
-					children: createElement(Broken),
-				}),
+					createElement(Broken),
+				),
 			),
 		)
 		expect(container.textContent).toBe("fallback")

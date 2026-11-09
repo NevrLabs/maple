@@ -1,5 +1,5 @@
 import { afterEach, assert, describe, it } from "@effect/vitest"
-import { ConfigProvider, Effect, Layer, Option, Schema } from "effect"
+import { ConfigProvider, Effect, Layer, Option, Schema, Array as Arr } from "effect"
 import { TestClock } from "effect/testing"
 import { OrgId, UserId } from "@maple/domain/http"
 import { ONBOARDING_REWARD_WINDOW_MS } from "@maple/domain/onboarding-checklist"
@@ -30,8 +30,8 @@ import { SupportChannelService } from "@maple/backend/services/support/SupportCh
 const trackedDbs: TestDb[] = []
 afterEach(() => cleanupTestDbs(trackedDbs))
 
-const ORG = Schema.decodeUnknownSync(OrgId)("org_checklist")
-const USER = Schema.decodeUnknownSync(UserId)("user_checklist")
+const ORG = Schema.decodeSync(OrgId)("org_checklist")
+const USER = Schema.decodeSync(UserId)("user_checklist")
 const tenant: TenantContext = { orgId: ORG, userId: USER, roles: ["org:admin"], authMode: "self_hosted" }
 
 const die = () => Effect.die(new Error("not exercised by this test"))
@@ -158,7 +158,7 @@ const stubs = (world: World) =>
 						? Effect.die(new Error("clerk unreachable"))
 						: Effect.succeed(
 								Array.from({ length: world.memberCount }, (_, index) => ({
-									userId: Schema.decodeUnknownSync(UserId)(`user_${index}`),
+									userId: Schema.decodeSync(UserId)(`user_${index}`),
 									email: `member${index}@example.com`,
 									name: null,
 									imageUrl: null,
@@ -166,6 +166,7 @@ const stubs = (world: World) =>
 							),
 				),
 			listOrganizationsOf: die,
+			listMemberActivity: die,
 			resolveMembers: die,
 		}),
 		Layer.succeed(AutumnClient, {
@@ -300,7 +301,9 @@ describe("OnboardingChecklistService.read", () => {
 		const testDb = createTestDb(trackedDbs)
 		return Effect.gen(function* () {
 			const service = yield* OnboardingChecklistService
-			assert.isFalse((yield* service.read(tenant)).steps.some((s) => s.id === "join_slack_channel"))
+			assert.isFalse(
+				Arr.some((yield* service.read(tenant)).steps, (s) => s.id === "join_slack_channel"),
+			)
 			world.supportChannel = "not_created"
 			const offered = (yield* service.read(tenant)).steps.at(-1)
 			assert.deepStrictEqual(offered, { id: "join_slack_channel", completed: false, optional: true })
@@ -332,7 +335,11 @@ describe("OnboardingChecklistService.read", () => {
 			const service = yield* OnboardingChecklistService
 			const report = yield* service.read(tenant)
 			assert.strictEqual(report.status, "in_progress")
-			assert.strictEqual(report.steps.find((step) => step.id === "create_alert_rule")?.completed, false)
+			assert.strictEqual(
+				Option.getOrUndefined(Arr.findFirst(report.steps, (step) => step.id === "create_alert_rule"))
+					?.completed,
+				false,
+			)
 			assert.strictEqual(report.completedCount, 3)
 		}).pipe(Effect.provide(makeLayer(world, testDb)))
 	})
@@ -344,7 +351,11 @@ describe("OnboardingChecklistService.read", () => {
 			yield* connectGithub(testDb, "suspended")
 			const service = yield* OnboardingChecklistService
 			const report = yield* service.read(tenant)
-			assert.strictEqual(report.steps.find((step) => step.id === "connect_github")?.completed, false)
+			assert.strictEqual(
+				Option.getOrUndefined(Arr.findFirst(report.steps, (step) => step.id === "connect_github"))
+					?.completed,
+				false,
+			)
 		}).pipe(Effect.provide(makeLayer(world, testDb)))
 	})
 
@@ -367,7 +378,8 @@ describe("OnboardingChecklistService.read", () => {
 			const service = yield* OnboardingChecklistService
 			const keys = yield* ApiKeysService
 			const mcpStep = (report: { steps: ReadonlyArray<{ id: string; completed: boolean }> }) =>
-				report.steps.find((step) => step.id === "connect_mcp_agent")?.completed
+				Option.getOrUndefined(Arr.findFirst(report.steps, (step) => step.id === "connect_mcp_agent"))
+					?.completed
 
 			assert.strictEqual(mcpStep(yield* service.read(tenant)), false)
 			const created = yield* keys.create(ORG, USER, { name: "cursor", kind: "mcp" })
@@ -551,8 +563,8 @@ describe("OnboardingChecklistService.claim", () => {
 				[Effect.result(service.claim(tenant)), Effect.result(service.claim(tenant))],
 				{ concurrency: 2 },
 			)
-			const won = outcomes.filter((outcome) => outcome._tag === "Success")
-			const lost = outcomes.filter((outcome) => outcome._tag === "Failure")
+			const won = Arr.filter(outcomes, (outcome) => outcome._tag === "Success")
+			const lost = Arr.filter(outcomes, (outcome) => outcome._tag === "Failure")
 			assert.strictEqual(won.length, 1)
 			assert.strictEqual(lost.length, 1)
 			const loser = lost[0]

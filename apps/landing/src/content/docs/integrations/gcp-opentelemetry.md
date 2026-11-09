@@ -85,11 +85,11 @@ These settings decide whether every trace arrives and joins Google's request log
 | Flushing     | Flush the span and log processors when the server span ends. Call `sdk.shutdown()` on `SIGTERM` and keep `node` as PID 1. Cloud Run throttles the container's CPU once the response is sent: with the default batch timers, telemetry arrives 5 to 6 seconds after the request on a warm instance and about 30 seconds after a cold start. |
 | Logs         | Emit application logs over OpenTelemetry, not stdout. Each record carries the trace and span ID of its request, and nothing is stored twice.                                                                                                                                                                                               |
 
-For Node.js 22 with `@opentelemetry/sdk-node`:
+For Node.js 22.22.3+, 24.11.1+ or 26+ with `@opentelemetry/sdk-node`:
 
 ```js
 // tracing.mjs
-import { register } from "node:module"
+import { register } from "import-in-the-middle/register-hooks.mjs"
 import { SpanKind } from "@opentelemetry/api"
 import { NodeSDK } from "@opentelemetry/sdk-node"
 import { getNodeAutoInstrumentations } from "@opentelemetry/auto-instrumentations-node"
@@ -103,7 +103,7 @@ import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-proto"
 import { OTLPMetricExporter } from "@opentelemetry/exporter-metrics-otlp-proto"
 
 // Lets the instrumentations patch ES modules.
-register("@opentelemetry/instrumentation/hook.mjs", import.meta.url)
+register()
 
 // The exporters read OTEL_EXPORTER_OTLP_ENDPOINT and OTEL_EXPORTER_OTLP_HEADERS.
 const spans = new BatchSpanProcessor(new OTLPTraceExporter())
@@ -176,7 +176,7 @@ Limits of this setup:
 
 ## Instrumentation guides
 
-- Languages: [Node.js](/docs/guides/instrumentation-nodejs), [Next.js](/docs/guides/instrumentation-nextjs), [Python](/docs/guides/instrumentation-python), [Go](/docs/guides/instrumentation-go), [Rust](/docs/guides/instrumentation-rust), [Java](/docs/guides/instrumentation-java), [Kotlin](/docs/guides/instrumentation-kotlin), [C# / .NET](/docs/guides/instrumentation-csharp) and [Laravel](/docs/guides/instrumentation-laravel).
+- Languages: [Node.js](/docs/guides/instrumentation-nodejs), [Next.js](/docs/guides/instrumentation-nextjs), [Python](/docs/guides/instrumentation-python), [Go](/docs/guides/instrumentation-go), [Rust](/docs/guides/instrumentation-rust), [Java](/docs/guides/instrumentation-java), [Kotlin](/docs/guides/instrumentation-kotlin), [C# / .NET](/docs/guides/instrumentation-csharp), [Laravel](/docs/guides/instrumentation-laravel) and [Ruby](/docs/guides/instrumentation-ruby).
 - [Kubernetes infrastructure](/docs/infrastructure/kubernetes): the collector that receives OTLP from in-cluster services.
 - [Hosts](/docs/infrastructure/hosts): host metrics from a VM.
 - [Google Cloud](/docs/integrations/gcp): connect, verify and troubleshoot the connection.

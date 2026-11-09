@@ -8,7 +8,7 @@ import { existsSync } from "node:fs"
 import path from "node:path"
 import * as Alchemy from "alchemy"
 import * as Secrets from "alchemy/Secrets"
-import * as Test from "alchemy/Test/Vitest"
+import * as Test from "@alchemy.run/test/Vitest"
 import * as Cloudflare from "@alchemy.run/cloudflare"
 import { Effect, Layer } from "effect"
 import { HttpClientRequest } from "effect/http"
@@ -39,8 +39,8 @@ const TestMapleStack = Layer.effect(
 			workerDev: () => undefined,
 			devEnv: undefined,
 			db: undefined,
-			awsOidc: yield* createMapleAwsOidcKey(),
-			deviceToken: yield* createMapleDeviceTokenKey(),
+			awsOidc: yield* createMapleAwsOidcKey,
+			deviceToken: yield* createMapleDeviceTokenKey,
 		}
 		return context
 	}),

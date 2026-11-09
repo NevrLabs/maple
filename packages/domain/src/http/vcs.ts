@@ -1,4 +1,4 @@
-import { Schema, SchemaGetter } from "effect"
+import { Effect, Schema, SchemaGetter, String as Str } from "effect"
 import { OrgId, UserId } from "../primitives"
 import { PullRequestLinkState } from "./fix-verification"
 
@@ -50,7 +50,7 @@ const GitCommitShaBrand = Schema.String.check(Schema.isPattern(/^[0-9a-f]{40}$/u
 export const GitCommitSha = Schema.String.pipe(
 	// Lowercase before the pattern check so `aBc…` and `ABC…` resolve to the same branded value.
 	Schema.decodeTo(GitCommitShaBrand, {
-		decode: SchemaGetter.transform((s: string) => s.toLowerCase()),
+		decode: SchemaGetter.transform((s: string) => Str.toLowerCase(s)),
 		encode: SchemaGetter.passthrough<string>(),
 	}),
 	Schema.annotate({ identifier: "@maple/GitCommitSha", title: "Git Commit SHA" }),
@@ -81,6 +81,14 @@ export const VcsRepoSelection = Schema.Literals(["all", "selected"]).annotate({
 	title: "VCS Repository Selection",
 })
 export type VcsRepoSelection = Schema.Schema.Type<typeof VcsRepoSelection>
+
+/** Completion of the repository enumeration requested by one connect operation. */
+export const VcsRepositoryDiscovery = Schema.Union([
+	Schema.TaggedStruct("Pending", { requestId: Schema.String }),
+	Schema.TaggedStruct("Complete", { requestId: Schema.String }),
+	Schema.TaggedStruct("Failed", { requestId: Schema.String, message: Schema.String }),
+])
+export type VcsRepositoryDiscovery = Schema.Schema.Type<typeof VcsRepositoryDiscovery>
 
 export const VcsRepoSyncStatus = Schema.Literals(["pending", "backfilling", "ready", "error"]).annotate({
 	identifier: "@maple/VcsRepoSyncStatus",
@@ -116,6 +124,9 @@ export class VcsInstallation extends Schema.Class<VcsInstallation>("VcsInstallat
 	suspendedAt: Schema.NullOr(Schema.Number),
 	/** Whether finished CI workflow runs become traces. On unless the org turned it off. */
 	ciTracesEnabled: Schema.Boolean,
+	repositoryDiscovery: Schema.NullOr(VcsRepositoryDiscovery).pipe(
+		Schema.withConstructorDefault(Effect.succeed(null)),
+	),
 	installedByUserId: UserId,
 	createdAt: Schema.Number,
 	updatedAt: Schema.Number,
@@ -445,6 +456,8 @@ export const InstallationSyncJob = Schema.Struct({
 	provider: VcsProviderId,
 	externalInstallationId: Schema.String,
 	reason: VcsInstallationSyncReason,
+	/** Only this connect's job may acknowledge its repository discovery. */
+	requestId: Schema.optionalKey(Schema.String),
 	deliveryId: Schema.optionalKey(Schema.String),
 })
 export type InstallationSyncJob = Schema.Schema.Type<typeof InstallationSyncJob>

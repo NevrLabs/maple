@@ -1,6 +1,7 @@
+import { timeRangeOf } from "./plan"
 import { OrgId } from "@maple/domain"
 import { DashboardDocument } from "@maple/domain/http"
-import { Option, Result, Schema } from "effect"
+import { Option, Result, Schema, Array as Arr, Record as Rec } from "effect"
 import { describe, expect, test } from "vitest"
 import { PageOutMessage, type PageContext } from "../../contract"
 import * as TimeRangePicker from "../../kit/time-range-picker"
@@ -26,7 +27,7 @@ const NOW = Date.parse("2026-10-01T12:00:00Z")
 
 const pageUpdate = (model: Model, message: Message) => update(model, message, context)
 const names = (commands: ReadonlyArray<{ readonly name: string }> | undefined) =>
-	(commands ?? []).map(({ name }) => name)
+	Arr.map(commands ?? [], ({ name }) => name)
 
 const stat = (id: string, field: string) => ({
 	id,
@@ -54,10 +55,14 @@ const ROUTE = { dashboardId: "dash_platform", search: {} }
 
 /** Entered, clocked and holding the document. */
 const ready = (): Model =>
-	[
-		Message.CompletedReadClock({ nowMs: NOW }),
-		Message.UpdatedDashboard({ orgId, maybeDocument: Option.some(document) }),
-	].reduce((model, message) => pageUpdate(model, message).model, init(ROUTE, context).model)
+	Arr.reduce(
+		[
+			Message.CompletedReadClock({ nowMs: NOW }),
+			Message.UpdatedDashboard({ orgId, maybeDocument: Option.some(document) }),
+		],
+		init(ROUTE, context).model,
+		(model, message) => pageUpdate(model, message).model,
+	)
 
 describe("dashboard view", () => {
 	test("entry reads the clock and loads the chart runtime; the document asks for the shares", () => {
@@ -103,44 +108,65 @@ describe("dashboard view", () => {
 
 	test("an auto-refresh keeps each tile's data on screen and forgets the old window's request", () => {
 		const revealed = pageUpdate(ready(), Message.RevealedWidget({ widgetId: "total-errors" })).model
-		const firstKey = Object.keys(revealed.requests)[0] ?? ""
-		const answered = pageUpdate(revealed, Message.CompletedFetchWidget({ key: firstKey, result: Result.succeed({ data: [] }) })).model
+		const firstKey = Rec.keys(revealed.requests)[0] ?? ""
+		const answered = pageUpdate(
+			revealed,
+			Message.CompletedFetchWidget({ key: firstKey, result: Result.succeed({ data: [] }) }),
+		).model
 		const ticked = pageUpdate(answered, Message.TickedAutoRefresh()).model
 		const refreshed = pageUpdate(ticked, Message.CompletedReadClock({ nowMs: NOW + 60_000 }))
 		expect(names(refreshed.commands)).toContain(FetchWidget.name)
-		const slots = Object.entries(refreshed.model.requests)
-		expect(slots.map(([key]) => key)).not.toContain(firstKey)
-		expect(slots.map(([, slot]) => slot.data._tag)).toEqual(["Refreshing"])
+		const slots = Rec.toEntries(refreshed.model.requests)
+		expect(Arr.map(slots, ([key]) => key)).not.toContain(firstKey)
+		expect(Arr.map(slots, ([, slot]) => slot.data._tag)).toEqual(["Refreshing"])
 	})
 
 	test("a tile whose query changed loads afresh instead of showing the old query's data", () => {
 		const revealed = pageUpdate(ready(), Message.RevealedWidget({ widgetId: "total-errors" })).model
-		const firstKey = Object.keys(revealed.requests)[0] ?? ""
-		const answered = pageUpdate(revealed, Message.CompletedFetchWidget({ key: firstKey, result: Result.succeed({ data: [] }) })).model
+		const firstKey = Rec.keys(revealed.requests)[0] ?? ""
+		const answered = pageUpdate(
+			revealed,
+			Message.CompletedFetchWidget({ key: firstKey, result: Result.succeed({ data: [] }) }),
+		).model
 		const changed = Schema.decodeUnknownSync(DashboardDocument)({
 			...Schema.encodeSync(DashboardDocument)(document),
-			widgets: [{ ...stat("total-errors", "totalErrors"), dataSource: { kind: "route", endpoint: "errors_by_type" } }],
+			widgets: [
+				{
+					...stat("total-errors", "totalErrors"),
+					dataSource: { kind: "route", endpoint: "errors_by_type" },
+				},
+			],
 		})
-		const replanned = pageUpdate(answered, Message.UpdatedDashboard({ orgId, maybeDocument: Option.some(changed) }))
+		const replanned = pageUpdate(
+			answered,
+			Message.UpdatedDashboard({ orgId, maybeDocument: Option.some(changed) }),
+		)
 		expect(names(replanned.commands)).toContain(FetchWidget.name)
-		expect(Object.values(replanned.model.requests).map((slot) => slot.data._tag)).toEqual(["Loading"])
+		expect(Arr.map(Rec.values(replanned.model.requests), (slot) => slot.data._tag)).toEqual(["Loading"])
 	})
 
 	test("an auto-refresh keeps a stat's sparkline data on screen while both refresh", () => {
 		const sparkline = { enabled: true, dataSource: { kind: "route", endpoint: "errors_by_type" } }
 		const withSparkline = Schema.decodeUnknownSync(DashboardDocument)({
 			...Schema.encodeSync(DashboardDocument)(document),
-			widgets: [{ ...stat("total-errors", "totalErrors"), display: { title: "total-errors", sparkline } }],
+			widgets: [
+				{ ...stat("total-errors", "totalErrors"), display: { title: "total-errors", sparkline } },
+			],
 		})
-		const entered = pageUpdate(ready(), Message.UpdatedDashboard({ orgId, maybeDocument: Option.some(withSparkline) })).model
-		const revealed = pageUpdate(entered, Message.RevealedWidget({ widgetId: "total-errors" })).model
-		const statKey = Object.keys(revealed.requests)[0] ?? ""
+		const entered = pageUpdate(
+			ready(),
+			Message.UpdatedDashboard({ orgId, maybeDocument: Option.some(withSparkline) }),
+		).model
+		const revealed = pageUpdate(entered, Message.RevealedWidget({ widgetId: "total-errors" }))
+		// The sparkline does not wait for the stat's value: both are asked for in one pass.
+		expect(names(revealed.commands)).toEqual([FetchWidget.name, FetchWidget.name])
+		const [statKey = "", sparkKey = ""] = Rec.keys(revealed.model.requests)
 		const answer = (model: Model, key: string) =>
-			pageUpdate(model, Message.CompletedFetchWidget({ key, result: Result.succeed({ data: [{ totalErrors: 5 }] }) }))
-		const withStat = answer(revealed, statKey)
-		expect(names(withStat.commands)).toEqual([FetchWidget.name])
-		const sparkKey = Object.keys(withStat.model.requests).find((key) => key !== statKey) ?? ""
-		const settled = answer(withStat.model, sparkKey).model
+			pageUpdate(
+				model,
+				Message.CompletedFetchWidget({ key, result: Result.succeed({ data: [{ totalErrors: 5 }] }) }),
+			)
+		const settled = answer(answer(revealed.model, statKey).model, sparkKey).model
 		const ticked = pageUpdate(settled, Message.TickedAutoRefresh()).model
 		const refreshed = pageUpdate(ticked, Message.CompletedReadClock({ nowMs: NOW + 60_000 }))
 		expect(names(refreshed.commands)).toEqual([FetchWidget.name, FetchWidget.name])
@@ -148,18 +174,114 @@ describe("dashboard view", () => {
 		const nextSparkKey = gate?._tag === "Request" ? gate.request.key : ""
 		expect(nextSparkKey).not.toBe(sparkKey)
 		expect(refreshed.model.requests[nextSparkKey]?.data._tag).toBe("Refreshing")
-		expect(Object.keys(refreshed.model.requests)).toHaveLength(2)
+		expect(Rec.keys(refreshed.model.requests)).toHaveLength(2)
 	})
 
-	test("picking a preset re-plans the tiles and saves the range to the board", () => {
-		const revealed = pageUpdate(ready(), Message.RevealedWidget({ widgetId: "total-errors" })).model
-		const picked = pageUpdate(
-			revealed,
-			Message.GotTimePickerMessage({ message: TimeRangePicker.Message.ClickedPreset({ value: "1h" }) }),
+	test("one tile's answer leaves every other tile's slot as it was, so only that tile redraws", () => {
+		const revealed = Arr.reduce(
+			[
+				Message.RevealedWidget({ widgetId: "total-errors" }),
+				Message.RevealedWidget({ widgetId: "error-rate" }),
+			],
+			ready(),
+			(model, message) => pageUpdate(model, message).model,
 		)
-		expect(picked.model.timeRange).toEqual({ type: "relative", value: "1h" })
-		expect(names(picked.commands)).toContain(FetchWidget.name)
+		const totalGate = revealed.widgets["total-errors"]?.gate
+		const key = totalGate?._tag === "Request" ? totalGate.request.key : ""
+		const answered = pageUpdate(
+			revealed,
+			Message.CompletedFetchWidget({ key, result: Result.succeed({ data: [{ totalErrors: 5 }] }) }),
+		)
+		expect(names(answered.commands)).toEqual([])
+		expect(answered.model.requests[key]?.data._tag).toBe("Success")
+		expect(answered.model.widgets).toBe(revealed.widgets)
+		const refreshed = pageUpdate(
+			pageUpdate(answered.model, Message.TickedAutoRefresh()).model,
+			Message.CompletedReadClock({ nowMs: NOW }),
+		).model
+		// Same clock, same window: the re-plan lands on the same keys and keeps each slot.
+		expect(refreshed.widgets["error-rate"]).toBe(revealed.widgets["error-rate"])
+	})
+
+	const pickPreset = (model: Model, value: string) =>
+		pageUpdate(
+			model,
+			Message.GotTimePickerMessage({ message: TimeRangePicker.Message.ClickedPreset({ value }) }),
+		)
+	const endTimeOf = (model: Model, widgetId: string) => {
+		const gate = model.widgets[widgetId]?.gate
+		return gate?._tag === "Request" ? gate.request.params.endTime : undefined
+	}
+
+	test("a viewer's pick goes to their URL, not the board, and plans on a fresh clock", () => {
+		const revealed = pageUpdate(ready(), Message.RevealedWidget({ widgetId: "total-errors" })).model
+		const picked = pickPreset(revealed, "1h")
+		expect(names(picked.commands)).not.toContain(SaveTimeRange.name)
+		expect(picked.outMessage).toEqual(
+			PageOutMessage.RequestedNavigation({
+				url: "/dashboards/dash_platform?range=1h",
+				isReplace: true,
+			}),
+		)
+		const routed = routeChanged(picked.model, { ...ROUTE, search: { range: "1h" } }, context)
+		// Two hours after entry: the window ends now, not when the page was opened.
+		expect(names(routed.commands)).toEqual(["ReadDashboardClock"])
+		const clocked = pageUpdate(routed.model, Message.CompletedReadClock({ nowMs: NOW + 2 * 3_600_000 }))
+		expect(names(clocked.commands)).toContain(FetchWidget.name)
+		expect(endTimeOf(clocked.model, "total-errors")).toMatch(/^2026-10-01 14:/)
+	})
+
+	test("a viewer's pick of the board's own range still lands in their URL", () => {
+		const board = ready().document?.timeRange
+		const value = board?.type === "relative" ? board.value : ""
+		const picked = pickPreset(ready(), value)
+		expect(picked.outMessage).toEqual(
+			PageOutMessage.RequestedNavigation({
+				url: `/dashboards/dash_platform?range=${value}`,
+				isReplace: true,
+			}),
+		)
+		const routed = routeChanged(picked.model, { ...ROUTE, search: { range: value } }, context).model
+		expect(pickPreset(routed, value).outMessage).toBeUndefined()
+	})
+
+	test("an edit session's pick is also saved as the board's range", () => {
+		const editing = routeChanged(ready(), { ...ROUTE, search: { mode: "edit" } }, context).model
+		const picked = pickPreset(editing, "1h")
 		expect(names(picked.commands)).toContain(SaveTimeRange.name)
+		// The saved board answers through the document; the URL keeps no range in edit mode.
+		expect(picked.outMessage).toBeUndefined()
+	})
+
+	test("an edit session works on the board's range, not a viewer's URL pick", () => {
+		const viewing = routeChanged(ready(), { ...ROUTE, search: { range: "7d", tab: "a" } }, context).model
+		expect(pageUpdate(viewing, Message.ClickedToggleEdit()).outMessage).toEqual(
+			PageOutMessage.RequestedNavigation({
+				url: "/dashboards/dash_platform?mode=edit&tab=a",
+				isReplace: false,
+			}),
+		)
+		const editing = routeChanged(
+			ready(),
+			{ ...ROUTE, search: { mode: "edit", range: "7d" } },
+			context,
+		).model
+		expect(timeRangeOf(editing)).toEqual(editing.document?.timeRange)
+	})
+
+	test("the URL's range wins over the board's, and a range it cannot read falls back to the board's", () => {
+		const fromUrl = routeChanged(ready(), { ...ROUTE, search: { range: "15m" } }, context).model
+		const clocked = pageUpdate(
+			pageUpdate(fromUrl, Message.CompletedReadClock({ nowMs: NOW })).model,
+			Message.RevealedWidget({ widgetId: "total-errors" }),
+		).model
+		const gate = clocked.widgets["total-errors"]?.gate
+		const params = gate?._tag === "Request" ? gate.request.params : {}
+		expect(Date.parse(`${String(params.endTime)}Z`) - Date.parse(`${String(params.startTime)}Z`)).toBe(
+			15 * 60_000,
+		)
+		const garbled = routeChanged(ready(), { ...ROUTE, search: { range: "soon", from: 7 } }, context)
+		expect(names(garbled.commands)).toEqual([])
 	})
 
 	test("Edit flips mode=edit in the URL and keeps the view params", () => {
@@ -193,10 +315,12 @@ describe("dashboard view", () => {
 		// The root runs the Undo, so it still restores after the user left the board.
 		const out = deleted.outMessage
 		const undo = out?._tag === "RequestedToast" ? out.rootAction?.action : undefined
-		expect(undo?._tag === "RestoreDashboardWidgets" && [undo.dashboardId, undo.widgets.map((widget) => widget.id)]).toEqual([
-			ROUTE.dashboardId,
-			["total-errors"],
-		])
+		expect(
+			undo?._tag === "RestoreDashboardWidgets" && [
+				undo.dashboardId,
+				Arr.map(undo.widgets, (widget) => widget.id),
+			],
+		).toEqual([ROUTE.dashboardId, ["total-errors"]])
 	})
 
 	test("a grip dragged past the threshold writes the tiles that moved, once, on release", () => {
@@ -211,15 +335,87 @@ describe("dashboard view", () => {
 		const frame = { gridLeft: 0, gridTop: 0 }
 		const clicked = pageUpdate(pressed, Message.ReleasedPointer())
 		expect(names(clicked.commands)).toEqual([])
-		const dragged = [400, 700].reduce(
+		const dragged = Arr.reduce(
+			[400, 700],
+			pressed,
 			(model, clientX) =>
 				pageUpdate(model, Message.MovedPointer({ clientX, clientY: 100, ...frame })).model,
-			pressed,
 		)
 		expect(dragged.gesture?.isStarted).toBe(true)
 		const released = pageUpdate(dragged, Message.ReleasedPointer())
 		expect(names(released.commands)).toEqual([UpdateWidgetLayouts.name])
 		expect(released.model.gesture).toBeNull()
+	})
+
+	test("a window narrowed into another tier mid-drag cancels the drag instead of saving a projection", () => {
+		const editing = pageUpdate(
+			routeChanged(ready(), { ...ROUTE, search: { mode: "edit" } }, context).model,
+			Message.MeasuredGrid({ width: 1200 }),
+		).model
+		const pressed = pageUpdate(
+			editing,
+			Message.PressedGrip({ widgetId: "total-errors", clientX: 100, clientY: 100 }),
+		).model
+		const dragged = pageUpdate(
+			pressed,
+			Message.MovedPointer({ clientX: 700, clientY: 100, gridLeft: 0, gridTop: 0 }),
+		).model
+		expect(dragged.gesture?.isStarted).toBe(true)
+		const narrowed = pageUpdate(dragged, Message.MeasuredGrid({ width: 500 })).model
+		expect(narrowed.gesture).toBeNull()
+		const released = pageUpdate(narrowed, Message.ReleasedPointer())
+		expect(names(released.commands)).toEqual([])
+	})
+
+	test("a tap whose release was missed does not hijack the next drag", () => {
+		const editing = pageUpdate(
+			routeChanged(ready(), { ...ROUTE, search: { mode: "edit" } }, context).model,
+			Message.MeasuredGrid({ width: 1200 }),
+		).model
+		// The release came before the window listeners attached, so no ReleasedPointer arrives.
+		const tapped = pageUpdate(
+			editing,
+			Message.PressedGrip({ widgetId: "total-errors", clientX: 100, clientY: 100 }),
+		).model
+		const pressed = pageUpdate(
+			tapped,
+			Message.PressedGrip({ widgetId: "error-rate", clientX: 400, clientY: 100 }),
+		).model
+		expect(pressed.gesture?.widgetId).toBe("error-rate")
+		const dragged = pageUpdate(
+			pressed,
+			Message.MovedPointer({ clientX: 1000, clientY: 100, gridLeft: 0, gridTop: 0 }),
+		).model
+		const released = pageUpdate(dragged, Message.ReleasedPointer())
+		expect(names(released.commands)).toEqual([UpdateWidgetLayouts.name])
+		const xOf = (id: string) =>
+			Option.getOrUndefined(
+				Option.map(
+					Arr.findFirst(released.model.layoutWrite?.layout ?? [], (item) => item.i === id),
+					(item) => item.x,
+				),
+			)
+		expect(xOf("total-errors")).toBe(0)
+		expect(xOf("error-rate")).toBeGreaterThan(0)
+	})
+
+	test("a window narrowed during a keyboard move puts the tile back without a write", () => {
+		const editing = pageUpdate(
+			routeChanged(ready(), { ...ROUTE, search: { mode: "edit" } }, context).model,
+			Message.MeasuredGrid({ width: 1200 }),
+		).model
+		const key = (value: string) =>
+			Message.PressedGripKey({
+				widgetId: "total-errors",
+				label: "Total errors",
+				key: value,
+				isShift: false,
+			})
+		const moved = pageUpdate(pageUpdate(editing, key(" ")).model, key("ArrowRight")).model
+		const narrowed = pageUpdate(moved, Message.MeasuredGrid({ width: 500 }))
+		expect(narrowed.model.keyboardMove).toBeNull()
+		expect(names(narrowed.commands)).toEqual([])
+		expect(narrowed.model.gridAnnouncement).toMatch(/^Move cancelled/)
 	})
 
 	test("a tile picked up with Space moves with the arrows; Escape puts it back without a write", () => {
@@ -252,6 +448,14 @@ describe("dashboard view", () => {
 		expect(fromView.outMessage).toEqual(
 			PageOutMessage.RequestedNavigation({
 				url: "/dashboards/dash_platform?mode=edit",
+				isReplace: false,
+			}),
+		)
+		// A viewer's own range stays behind: edit mode works on the board's saved range.
+		const ranged = routeChanged(ready(), { ...ROUTE, search: { range: "7d", tab: "a" } }, context).model
+		expect(pageUpdate(ranged, pick).outMessage).toEqual(
+			PageOutMessage.RequestedNavigation({
+				url: "/dashboards/dash_platform?mode=edit&tab=a",
 				isReplace: false,
 			}),
 		)

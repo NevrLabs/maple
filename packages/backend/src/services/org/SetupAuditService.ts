@@ -28,7 +28,7 @@ import {
 	runSetupAudit,
 } from "@maple/domain/setup-audit"
 import { alertRuleIntervalMinutes, CH, formatWarehouseDateTime } from "@maple/query-engine"
-import { Clock, Context, Effect, Layer, Option } from "effect"
+import { Clock, Context, Effect, Layer, Option, Array as Arr } from "effect"
 import type { TenantContext } from "@maple/backend/services/auth/AuthService"
 import { Database } from "@maple/backend/platform/DatabaseLive"
 import { makeDbExecute } from "@maple/backend/platform/db-execute"
@@ -270,7 +270,7 @@ const make: Effect.Effect<SetupAuditServiceApi, never, SetupAuditServiceRequirem
 
 			const config: ConfigAuditInputs = {
 				telemetry: (rows.onboarding[0]?.firstDataReceivedAt ?? null) === null ? "absent" : "present",
-				alertRules: rows.rules.map((rule) => ({
+				alertRules: Arr.map(rows.rules, (rule) => ({
 					id: rule.id,
 					name: rule.name,
 					enabled: rule.enabled,
@@ -280,35 +280,38 @@ const make: Effect.Effect<SetupAuditServiceApi, never, SetupAuditServiceRequirem
 					lastScheduledAt: rule.lastScheduledAt,
 					createdAt: rule.createdAt,
 				})),
-				alertRuleStates: rows.ruleStates.map((state) => ({
+				alertRuleStates: Arr.map(rows.ruleStates, (state) => ({
 					ruleId: state.ruleId,
 					lastEvaluatedAt: state.lastEvaluatedAt,
 					lastError: state.lastError,
 				})),
-				alertDestinations: rows.destinations.map((destination) => ({
+				alertDestinations: Arr.map(rows.destinations, (destination) => ({
 					id: destination.id,
 					name: destination.name,
 					enabled: destination.enabled,
 					lastTestError: destination.lastTestError,
 				})),
-				errorNotificationPolicy: rows.notificationPolicy[0]
-					? {
-							enabled: rows.notificationPolicy[0].enabled,
-							destinationIds: rows.notificationPolicy[0].destinationIdsJson ?? [],
-						}
-					: null,
-				anomalyDetector: rows.anomalySettings[0]
-					? { enabled: rows.anomalySettings[0].enabled }
-					: null,
+				errorNotificationPolicy:
+					rows.notificationPolicy[0] !== undefined
+						? {
+								enabled: rows.notificationPolicy[0].enabled,
+								destinationIds: rows.notificationPolicy[0].destinationIdsJson ?? [],
+							}
+						: null,
+				anomalyDetector:
+					rows.anomalySettings[0] !== undefined
+						? { enabled: rows.anomalySettings[0].enabled }
+						: null,
 				dashboardCount: rows.dashboardRows[0]?.count ?? 0,
-				samplingPolicy: rows.sampling[0]
-					? {
-							traceSampleRatio: rows.sampling[0].traceSampleRatio,
-							alwaysKeepErrorSpans: rows.sampling[0].alwaysKeepErrorSpans,
-							alwaysKeepSlowSpansMs: rows.sampling[0].alwaysKeepSlowSpansMs,
-						}
-					: null,
-				attributeMappings: rows.mappings.map((mapping) => ({
+				samplingPolicy:
+					rows.sampling[0] !== undefined
+						? {
+								traceSampleRatio: rows.sampling[0].traceSampleRatio,
+								alwaysKeepErrorSpans: rows.sampling[0].alwaysKeepErrorSpans,
+								alwaysKeepSlowSpansMs: rows.sampling[0].alwaysKeepSlowSpansMs,
+							}
+						: null,
+				attributeMappings: Arr.map(rows.mappings, (mapping) => ({
 					id: mapping.id,
 					name: mapping.name,
 					enabled: mapping.enabled,
@@ -318,36 +321,38 @@ const make: Effect.Effect<SetupAuditServiceApi, never, SetupAuditServiceRequirem
 					operation: mapping.operation,
 					updatedAt: mapping.updatedAt,
 				})),
-				clickhouse: clickhouseRow
-					? {
-							syncStatus: clickhouseRow.syncStatus,
-							lastSyncError: clickhouseRow.lastSyncError,
-							schemaVersion: clickhouseRow.schemaVersion,
-							expectedSchemaVersion: clickHouseSchemaVersion,
-						}
-					: null,
-				integrations: rows.connections.map((connection) => ({
+				clickhouse:
+					clickhouseRow !== undefined
+						? {
+								syncStatus: clickhouseRow.syncStatus,
+								lastSyncError: clickhouseRow.lastSyncError,
+								schemaVersion: clickhouseRow.schemaVersion,
+								expectedSchemaVersion: clickHouseSchemaVersion,
+							}
+						: null,
+				integrations: Arr.map(rows.connections, (connection) => ({
 					provider: connection.provider,
 					revokedAt: connection.revokedAt,
 				})),
-				// Keep upstream-unavailable datasets visible even though the poller disabled them.
-				cloudflareAnalytics: rows.cloudflare
-					.filter((state) => state.enabled || cloudflareDatasetUnavailable(state.settingsJson))
-					.map((state) => ({
+				// Keep unavailable datasets visible even though collection is disabled.
+				cloudflareAnalytics: Arr.map(
+					Arr.filter(rows.cloudflare, (state) => state.enabled || cloudflareDatasetUnavailable(state.settingsJson)),
+					(state) => ({
 						dataset: state.dataset,
 						settingsJson: state.settingsJson,
 						zoneName: state.zoneName,
 						lastSuccessAt: state.lastSuccessAt,
 						lastErrorAt: state.lastErrorAt,
 						lastError: state.lastError,
-					})),
-				vcsRepositories: rows.repositories.map((repository) => ({
+					}),
+				),
+				vcsRepositories: Arr.map(rows.repositories, (repository) => ({
 					id: repository.id,
 					fullName: repository.fullName,
 					syncStatus: repository.syncStatus,
 					lastSyncError: repository.lastSyncError,
 				})),
-				scrapeTargets: rows.targets.map((target) => ({
+				scrapeTargets: Arr.map(rows.targets, (target) => ({
 					id: target.id,
 					name: target.name,
 					enabled: target.enabled,
@@ -503,7 +508,7 @@ const make: Effect.Effect<SetupAuditServiceApi, never, SetupAuditServiceRequirem
 			// Trace completeness is the audit's only cross-span join, so it runs after the cheap reads
 			// and sizes its trace sampling from the volume they just reported. It degrades on its own:
 			// a join that times out costs the three TRC checks, not the whole telemetry half.
-			const totalSpans = results.spanShape.reduce((sum, row) => sum + row.weightedSpanCount, 0)
+			const totalSpans = Arr.reduce(results.spanShape, 0, (sum, row) => sum + row.weightedSpanCount)
 			const traceCompleteness = yield* fetchTraceCompleteness(
 				tenant,
 				now,
@@ -522,12 +527,12 @@ const make: Effect.Effect<SetupAuditServiceApi, never, SetupAuditServiceRequirem
 				lookbackHours: LOOKBACK_HOURS,
 				logCorrelationHours: Integrations.AUDIT_LOG_CORRELATION_MAX_HOURS,
 				traceCompleteness,
-				attributeKeys: results.attributeKeys.map((row) => ({
+				attributeKeys: Arr.map(results.attributeKeys, (row) => ({
 					scope: row.scope,
 					key: row.attributeKey,
 					usageCount: row.usageCount,
 				})),
-				serviceUsage: results.usage.map((row) => ({
+				serviceUsage: Arr.map(results.usage, (row) => ({
 					serviceName: row.serviceName,
 					logCount: row.totalLogCount,
 					traceCount: row.totalTraceCount,
@@ -537,7 +542,7 @@ const make: Effect.Effect<SetupAuditServiceApi, never, SetupAuditServiceRequirem
 						row.totalHistogramMetricCount +
 						row.totalExpHistogramMetricCount,
 				})),
-				spanShape: results.spanShape.map((row) => ({
+				spanShape: Arr.map(results.spanShape, (row) => ({
 					serviceName: row.serviceName,
 					spanCount: row.weightedSpanCount,
 					errorCount: row.weightedErrorCount,
@@ -550,7 +555,7 @@ const make: Effect.Effect<SetupAuditServiceApi, never, SetupAuditServiceRequirem
 				})),
 				nativeSpanShape: results.nativeSpanShape,
 				logSeverity: results.logSeverity,
-				metricLabels: results.metricLabels.map((row) => ({
+				metricLabels: Arr.map(results.metricLabels, (row) => ({
 					attributeKey: row.attributeKey,
 					valueCardinality: row.valueCardinality,
 				})),
@@ -572,7 +577,8 @@ const make: Effect.Effect<SetupAuditServiceApi, never, SetupAuditServiceRequirem
 		) {
 			if (recorded === "present") return recorded
 			const report = yield* signals.read(tenant)
-			const hasTelemetry = report.signals.some(
+			const hasTelemetry = Arr.some(
+				report.signals,
 				(signal) =>
 					signal.status === "present" &&
 					(signal.signal === "traces" || signal.signal === "logs" || signal.signal === "metrics"),

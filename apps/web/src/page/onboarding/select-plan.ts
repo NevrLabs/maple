@@ -6,10 +6,13 @@ import { Command, type Update } from "foldkit"
 import type { Html, HtmlBuilder } from "foldkit/html"
 import { defineMessageUnion } from "foldkit/message"
 import type { Resources } from "../../platform/resources"
-import { badge } from "../../ui/display"
-import { icon } from "../../ui/icon"
+import { badge } from "@maple/views/ui/display"
+import { heading } from "@maple/views/ui/heading"
+import { icon } from "@maple/views/ui/icon"
 import * as PricingCards from "./pricing-cards"
 import * as PricingCardsView from "./pricing-cards-view"
+import { layer } from "@maple/views/ui/layer"
+import { hstack, vstack } from "@maple/views/ui/stack"
 
 // `/select-plan`: the trial pitch, or for a returning subscriber whose plan lapsed, the reactivation framing,
 // over the same pricing cards.
@@ -44,50 +47,42 @@ export const update = (model: Model, message: Message): UpdateReturn => {
 
 type H = HtmlBuilder<Message>
 
-const heading = (h: H, isReactivating: boolean): Html =>
-	h.div(
-		[h.Class("text-center flex flex-col items-center")],
-		[
-			...(isReactivating
-				? []
-				: [
-						badge(
-							h,
-							{
-								pill: true,
-								size: "lg",
-								className:
-									"mb-6 gap-2 border-primary-a3 bg-primary-a1 px-3 text-2xs tracking-wider text-primary uppercase sm:text-2xs",
-							},
-							[
-								icon(h, "RocketIcon", { size: 14, className: "size-3.5" }),
-								String(TRIAL_DURATION_DAYS),
-								"-day free trial",
-							],
-						),
-					]),
-			h.h1(
-				[
-					h.Class(
-						"text-3xl md:text-4xl font-semibold tracking-tight text-foreground [text-wrap:balance]",
+const planHeading = (h: H, isReactivating: boolean): Html =>
+	vstack(h, { align: "center", className: "text-center" }, [
+		...(isReactivating
+			? []
+			: [
+					badge(
+						h,
+						{
+							pill: true,
+							size: "lg",
+							className:
+								"mb-6 gap-2 border-primary-a3 bg-primary-a1 px-3 text-2xs tracking-wider text-primary uppercase sm:text-2xs",
+						},
+						[
+							icon(h, "RocketIcon", { size: 14, className: "size-3.5" }),
+							String(TRIAL_DURATION_DAYS),
+							"-day free trial",
+						],
 					),
-				],
-				[isReactivating ? "Pick up where you left off" : "Start your free trial"],
-			),
-			h.p(
-				[
-					h.Class(
-						"font-display text-muted-foreground mt-4 text-sm md:text-base leading-relaxed max-w-lg mx-auto [text-wrap:balance]",
-					),
-				],
-				[
-					isReactivating
-						? "Your data is still here. Choose a plan to start ingesting again. Cancel anytime."
-						: `Try Maple free for ${TRIAL_DURATION_DAYS} days. You won't be charged until the trial ends. Cancel anytime.`,
-				],
-			),
-		],
-	)
+				]),
+		heading(h, { level: 1, variant: "display", className: "text-balance" }, [
+			isReactivating ? "Pick up where you left off" : "Start your free trial",
+		]),
+		h.p(
+			[
+				h.Class(
+					"font-display text-muted-foreground mt-4 text-sm md:text-base leading-relaxed max-w-lg mx-auto [text-wrap:balance]",
+				),
+			],
+			[
+				isReactivating
+					? "Your data is still here. Choose a plan to start ingesting again. Cancel anytime."
+					: `Try Maple free for ${TRIAL_DURATION_DAYS} days. You won't be charged until the trial ends. Cancel anytime.`,
+			],
+		),
+	])
 
 export const view = (h: H, model: Model, customer: BillingCustomer | undefined): Html =>
 	h.main(
@@ -97,12 +92,14 @@ export const view = (h: H, model: Model, customer: BillingCustomer | undefined):
 			),
 		],
 		[
-			h.div(
-				[
-					h.Class(
-						"pointer-events-none absolute inset-0 flex items-center justify-center [mask-image:radial-gradient(ellipse_at_center,transparent_20%,black)]",
-					),
-				],
+			hstack(
+				h,
+				{
+					align: "center",
+					justify: "center",
+					className:
+						"pointer-events-none absolute inset-0 [mask-image:radial-gradient(ellipse_at_center,transparent_20%,black)]",
+				},
 				[
 					h.div(
 						[
@@ -114,23 +111,21 @@ export const view = (h: H, model: Model, customer: BillingCustomer | undefined):
 					),
 				],
 			),
-			h.div(
-				[h.Class("pointer-events-none absolute inset-0")],
+			layer(h, {}, [
+				h.div(
+					[
+						h.Class(
+							"absolute top-[20%] left-[50%] -translate-x-1/2 -translate-y-1/2 size-[40rem] rounded-full bg-primary-a1 blur-[100px]",
+						),
+					],
+					[],
+				),
+			]),
+			vstack(
+				h,
+				{ as: "section", className: "relative mx-auto w-full max-w-5xl gap-10 px-6 md:px-8 z-10" },
 				[
-					h.div(
-						[
-							h.Class(
-								"absolute top-[20%] left-[50%] -translate-x-1/2 -translate-y-1/2 size-[40rem] rounded-full bg-primary-a1 blur-[100px]",
-							),
-						],
-						[],
-					),
-				],
-			),
-			h.section(
-				[h.Class("relative mx-auto flex w-full max-w-5xl flex-col gap-10 px-6 md:px-8 z-10")],
-				[
-					heading(h, hasLapsedPlan(customer)),
+					planHeading(h, hasLapsedPlan(customer)),
 					h.div(
 						[h.Class("mt-4")],
 						[

@@ -1,14 +1,16 @@
+import { WorldDocument } from "@maple/domain/http"
 import { Schema } from "effect"
 import { defineMessageUnion } from "foldkit/message"
-import * as Chart from "../../charts/chart"
-import { ThemeColors } from "../../charts/theme-colors"
-import { LoadFailure } from "../../data/load-failure"
+import * as Chart from "@maple/views/charts/chart"
+import { ThemeColors } from "@maple/views/charts/theme-colors"
+import { LoadFailure } from "@maple/views/data/load-failure"
 import { TimeWindow } from "../../data/time-range"
-import * as ServiceMap from "../../service-map/map/service-map"
-import * as Select from "../../ui/select"
-import * as Tabs from "../../ui/tabs"
-import { SignalPresences } from "../kit/signal-presence"
+import * as ServiceMap from "@maple/views/service-map/map/service-map"
+import * as Select from "@maple/views/ui/select"
+import * as Tabs from "@maple/views/ui/tabs"
+import { SignalPresences } from "@maple/views/data/signal-presence"
 import * as TimeRangePicker from "../kit/time-range-picker"
+import { BatchOutcome } from "./factory/edits"
 import * as Scene3d from "./scene3d"
 import {
 	BranchStatsSchema,
@@ -61,6 +63,13 @@ export const Message = defineMessageUnion({
 	GotEnvironmentSelectMessage: { message: Select.Message },
 	GotTimePickerMessage: { message: TimeRangePicker.Message },
 	GotScene3dMessage: { message: Scene3d.Message },
+	/** The org's world for the 3D viewport; dropped when it answers for another org. */
+	CompletedLoadWorld: { orgId: Schema.String, result: Schema.Result(WorldDocument, LoadFailure) },
+	CompletedSaveWorld: {
+		orgId: Schema.String,
+		batch: Schema.Number,
+		result: Schema.Result(BatchOutcome, LoadFailure),
+	},
 	GotServiceTabsMessage: { message: Tabs.Message },
 	GotChartMessage: { chart: Schema.Literals(["volume", "latency"]), message: Chart.Message },
 })

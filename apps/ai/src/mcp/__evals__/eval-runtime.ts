@@ -1,5 +1,5 @@
 import { ConfigProvider, Effect, Layer, ManagedRuntime, Schema } from "effect"
-import { mcpServicesWithFeatureFlags } from "../../runtime/mcp-service-graph"
+import { mcpServicesWithFeatureFlags } from "../../runtime/mcp-tool-graph"
 import { OrganizationFeatureFlagsService } from "@maple/backend/services/org/OrganizationFeatureFlagsService"
 import { Env } from "@maple/backend/platform/Env"
 import { WorkerEnvironment } from "@maple/infra/worker-runtime"
@@ -29,7 +29,7 @@ const testEnv = (): Record<string, string> => ({
 })
 
 export interface EvalRuntime {
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	// oxlint-disable-next-line typescript/no-explicit-any
 	readonly runtime: ManagedRuntime.ManagedRuntime<any, never>
 	readonly tenant: TenantContext
 	/** The PGlite database behind the runtime, for seeding rows (`executeSql`). */
@@ -65,7 +65,8 @@ export const makeEvalRuntime = (
 	)
 	// `as any`: the residual requirement set is satisfied at runtime (same pattern
 	// as apps/api/src/agent.ts buildSetup).
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	// The lint type checker reads `make(any)` as already `<any, never>`; tsc infers `<unknown, unknown>`.
+	// oxlint-disable-next-line typescript/no-explicit-any, typescript/no-unnecessary-type-assertion
 	const runtime = ManagedRuntime.make(layer as any) as ManagedRuntime.ManagedRuntime<any, never>
 
 	return {
@@ -93,7 +94,7 @@ export const runToolDirect = async (
 	name: string,
 	params: unknown,
 	surface: McpToolSurface = "mcp",
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	// oxlint-disable-next-line typescript/no-explicit-any
 ): Promise<any> => {
 	return rt.runtime.runPromise(
 		McpToolExecutor.pipe(

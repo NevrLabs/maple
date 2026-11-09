@@ -16,7 +16,7 @@
 // Stale-prone post-aggregation predicates (e.g. exact Status) are deliberately
 // not exposed as SQL filters since the DSL has no HAVING clause.
 
-import { DateTime } from "effect"
+import { DateTime, Array as Arr } from "effect"
 import * as CH from "@maple-dev/effect-orm/expr"
 import { compileFnCallCond } from "@maple-dev/effect-orm/clickhouse"
 import * as T from "@maple-dev/effect-orm/clickhouse"
@@ -144,6 +144,8 @@ function tagFilter(
 
 export interface SessionReplaysListOpts {
 	serviceName?: string
+	/** Any of these services: a namespace scope resolved to the services that emitted under it. */
+	serviceNames?: ReadonlyArray<string>
 	browser?: string
 	country?: string
 	deviceType?: string
@@ -158,6 +160,8 @@ export interface SessionReplaysListOpts {
 	userSearch?: string
 	/** Exact match on the identified group (company / team / tenant) name. */
 	groupName?: string
+	/** Exact match on the identified group's id; unlike the name, unique. */
+	groupId?: string
 	/**
 	 * Exact match on the persistent visitor id. This is the join that walks from
 	 * an anonymous marketing session to the signed-in product sessions of the
@@ -318,6 +322,7 @@ function sessionReplaysListBase(opts: SessionReplaysListOpts) {
 			$.StartTime.gte(param.dateTime("startTime")),
 			$.StartTime.lte(param.dateTime("endTime")),
 			CH.when(opts.serviceName, (v: string) => $.ServiceName.eq(v)),
+			opts.serviceNames === undefined ? undefined : CH.inList($.ServiceName, opts.serviceNames),
 			CH.when(opts.browser, (v: string) => $.BrowserName.eq(v)),
 			CH.when(opts.country, (v: string) => $.Country.eq(v)),
 			CH.when(opts.deviceType, (v: string) => $.DeviceType.eq(v)),
@@ -337,6 +342,7 @@ function sessionReplaysListBase(opts: SessionReplaysListOpts) {
 				$.UserName.ilike(`%${v}%`).or($.UserEmail.ilike(`%${v}%`)),
 			),
 			CH.when(opts.groupName, (v: string) => $.GroupName.eq(v)),
+			CH.when(opts.groupId, (v: string) => $.GroupId.eq(v)),
 			CH.whenTrue(opts.hasErrors, () => $.ErrorCount.gt(0)),
 			CH.when(opts.search, (v: string) => $.UrlInitial.ilike(`%${v}%`)),
 			// SessionId is version-invariant, so this is row-level like the rest.
@@ -526,6 +532,8 @@ export interface SessionReplaysFacetsOpts {
 	userSearch?: string
 	/** Exact match on the identified group name — excluded from its own branch. */
 	groupName?: string
+	/** Exact match on the identified group's id. No facet branch, so it narrows every dimension. */
+	groupId?: string
 	/**
 	 * Exact match on the persistent visitor id, mirroring the list query.
 	 *
@@ -561,6 +569,7 @@ export function sessionReplaysFacetsQuery(
 		exclude === "country" ? undefined : CH.when(opts.country, (v: string) => $.Country.eq(v)),
 		exclude === "device" ? undefined : CH.when(opts.deviceType, (v: string) => $.DeviceType.eq(v)),
 		exclude === "group" ? undefined : CH.when(opts.groupName, (v: string) => $.GroupName.eq(v)),
+		CH.when(opts.groupId, (v: string) => $.GroupId.eq(v)),
 		// Like UserId below: no facet branch of its own, so it narrows every dimension.
 		CH.when(opts.userSearch, (v: string) => $.UserName.ilike(`%${v}%`).or($.UserEmail.ilike(`%${v}%`))),
 		// UserId has no facet branch (high cardinality), so it's never excluded — it
@@ -740,6 +749,7 @@ export function sessionReplaysFacetsQuery(
 				CH.when(opts.userId, (v: string) => $.UserId.eq(v)),
 				CH.when(opts.visitorId, (v: string) => $.VisitorId.eq(v)),
 				CH.when(opts.groupName, (v: string) => $.GroupName.eq(v)),
+				CH.when(opts.groupId, (v: string) => $.GroupId.eq(v)),
 				CH.when(opts.userSearch, (v: string) =>
 					$.UserName.ilike(`%${v}%`).or($.UserEmail.ilike(`%${v}%`)),
 				),
@@ -1080,7 +1090,10 @@ export function sessionTraceSummariesQuery(opts: SessionTraceSummariesOpts) {
 				rootSpanKind: CH.anyIf($.SpanKind, isRoot),
 				rootSpanAttributes: CH.toJSONString(
 					CH.mapLiteral(
-						...ROOT_SPAN_ATTR_KEYS.map((key) => [key, CH.mapGet(rootAttributes, key)] as const),
+						...Arr.map(
+							ROOT_SPAN_ATTR_KEYS,
+							(key) => [key, CH.mapGet(rootAttributes, key)] as const,
+						),
 					),
 				),
 				spanCount: CH.count(),

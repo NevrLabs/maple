@@ -10,7 +10,7 @@ import {
 } from "../../page/infra-integrations/proxmox/view-parts"
 import { dashboardPage } from "../../page/kit/dashboard-page"
 import type * as Shell from "../../shell"
-import { segmentedSelect } from "../../ui/segmented-select"
+import { segmentedSelect } from "@maple/views/ui/segmented-select"
 import { PROXMOX_FIXTURE } from "./fixture.generated"
 import { LAB_STATES, Message, type Model, STATE_LABEL } from "./model"
 

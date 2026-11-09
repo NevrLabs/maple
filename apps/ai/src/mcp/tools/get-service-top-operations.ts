@@ -5,23 +5,48 @@ import { formatMetricValue } from "../lib/format-query-result"
 import { toMcpQueryError } from "../lib/map-warehouse-error"
 import * as P from "../lib/params"
 import { doc } from "../lib/tool-doc"
-import { Effect, Schema } from "effect"
+import { Effect, Schema, Array as Arr, String as Str } from "effect"
 import { GetServiceTopOperationsOutput } from "@maple/domain/mcp-outputs"
 import { topOperations } from "@maple/query-engine/observability"
 import { TracesMetric } from "@maple/query-engine"
 import { provideWarehouseExecutorFromTenant } from "@maple/backend/services/warehouse/WarehouseQueryService"
+import {
+	isMissingServiceOperationsRollup,
+	missingWarehouseTable,
+} from "@maple/backend/services/warehouse/missing-table"
 
 const WINDOW = P.timeWindow({ defaultHours: 6, maxHours: MCP_SEARCH_MAX_HOURS })
+
+/** The short latency spellings agents send (`p95`), as the metric they mean. */
+const METRIC_ALIASES = {
+	p50: "p50_duration",
+	median: "p50_duration",
+	p95: "p95_duration",
+	p99: "p99_duration",
+	avg: "avg_duration",
+	errors: "error_rate",
+} as const
+
+/**
+ * A missing operation rollup, by name: an UNKNOWN_TABLE error for any other table is a
+ * real failure, not a reason to rerun on raw spans.
+ */
+const isMissingOperationsRollup = (error: unknown): boolean =>
+	isMissingServiceOperationsRollup(error) &&
+	Str.startsWith("service_operations_")(missingWarehouseTable(error) ?? "")
 
 export function registerGetServiceTopOperationsTool(server: McpToolRegistrar) {
 	server.define({
 		name: "get_service_top_operations",
 		title: "Service Top Operations",
 		description:
-			"Top operations (endpoints/spans) of one service, ranked by the chosen metric. Use after diagnose_service to find which endpoints need attention.",
+			"Every operation of ONE service (span names, HTTP server spans as `METHOD /route`), ranked by the chosen metric. Use after diagnose_service to find which operations need attention. " +
+			"Names work as `span_name` filters in search_traces and query_data; note query_data group_by=span_name groups by the raw span name (`GET`), not `METHOD /route`. " +
+			"For HTTP routes over up to 90 days use route_usage.",
 		parameters: Schema.Struct({
 			service: P.text("The service (exact `service.name`)"),
-			metric: P.optionalOneOf(TracesMetric.literals, "What to rank by (default count)"),
+			metric: P.optionalOneOf(TracesMetric.literals, "What to rank by (default count)", METRIC_ALIASES),
+			environment: P.environment(),
 			...WINDOW.fields,
 			limit: P.limit({ default: 20, max: 500, noun: "operations" }),
 		}),
@@ -36,32 +61,48 @@ export function registerGetServiceTopOperationsTool(server: McpToolRegistrar) {
 			yield* Effect.annotateCurrentSpan({
 				orgId: tenant.orgId,
 				"maple.ai.service": params.service,
+				"maple.ai.environment": params.environment ?? "all",
 				"maple.ai.metric": metric,
 				"maple.ai.limit": params.limit,
 			})
 
-			const operations = yield* topOperations({
-				serviceName: params.service,
-				metric,
-				timeRange: { startTime: st, endTime: et },
-				limit: params.limit,
-			}).pipe(
-				provideWarehouseExecutorFromTenant(tenant),
+			const read = (rawOnly: boolean) =>
+				topOperations({
+					serviceName: params.service,
+					metric,
+					timeRange: { startTime: st, endTime: et },
+					limit: params.limit,
+					rawOnly,
+					...(params.environment === undefined ? undefined : { environment: params.environment }),
+				}).pipe(provideWarehouseExecutorFromTenant(tenant))
+			// A BYO cluster the capability probe could not inspect may lack the operation rollups.
+			const operations = yield* read(false).pipe(
+				Effect.catchIf(isMissingOperationsRollup, () =>
+					Effect.logWarning(
+						"service_operations rollup is absent on this cluster; reading raw traces. Apply ClickHouse schema to restore the fast path.",
+					).pipe(
+						Effect.annotateLogs({ orgId: tenant.orgId }),
+						Effect.andThen(Effect.annotateCurrentSpan("query.rollup.fallback", true)),
+						Effect.andThen(read(true)),
+					),
+				),
 				Effect.mapError(toMcpQueryError("top_operations")),
 			)
 
 			return {
 				timeRange: { start: st, end: et },
 				serviceName: params.service,
+				...(params.environment === undefined ? undefined : { environment: params.environment }),
 				metric,
 				total: operations.length,
-				operations: operations.map((op) => ({ name: op.name, value: op.value })),
+				operations: Arr.map(operations, (op) => ({ name: op.name, value: op.value })),
 			}
 		}),
 		render: (output) => ({
 			title: `Top Operations: ${output.serviceName}`,
 			scope: [
 				["Time range", `${output.timeRange.start} to ${output.timeRange.end}`],
+				["Environment", output.environment],
 				["Metric", output.metric],
 			],
 			...(output.operations.length === 0
@@ -73,7 +114,7 @@ export function registerGetServiceTopOperationsTool(server: McpToolRegistrar) {
 					: [
 							doc.table(
 								["Operation", output.metric],
-								output.operations.map((op) => [
+								Arr.map(output.operations, (op) => [
 									op.name,
 									formatMetricValue(output.metric, op.value),
 								]),
@@ -90,15 +131,13 @@ export function registerGetServiceTopOperationsTool(server: McpToolRegistrar) {
 							doc.next("list_services", {}, "verify the service name"),
 						]
 					: [
-							...output.operations
-								.slice(0, 3)
-								.map((op) =>
-									doc.next(
-										"search_traces",
-										{ service: output.serviceName, span_name: op.name },
-										`find traces for ${op.name}`,
-									),
+							...Arr.map(output.operations.slice(0, 3), (op) =>
+								doc.next(
+									"search_traces",
+									{ service: output.serviceName, span_name: op.name },
+									`find traces for ${op.name}`,
 								),
+							),
 							doc.next(
 								"query_data",
 								{

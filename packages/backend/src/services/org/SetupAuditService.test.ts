@@ -1,5 +1,5 @@
 import { afterEach, assert, describe, it } from "@effect/vitest"
-import { Effect, Layer, Schema } from "effect"
+import { Effect, Layer, Schema, Array as Arr } from "effect"
 import { OrgId, UserId } from "@maple/domain/http"
 import { SETUP_AUDIT_CHECKS } from "@maple/domain/setup-audit"
 import { compiledQueryOf } from "@maple/query-engine/execution"
@@ -22,8 +22,8 @@ import { makeWarehouseServiceStub } from "@maple/backend/testing/warehouse-test-
 const trackedDbs: TestDb[] = []
 afterEach(() => cleanupTestDbs(trackedDbs))
 
-const ORG = Schema.decodeUnknownSync(OrgId)("org_setup_audit")
-const USER = Schema.decodeUnknownSync(UserId)("user_setup_audit")
+const ORG = Schema.decodeSync(OrgId)("org_setup_audit")
+const USER = Schema.decodeSync(UserId)("user_setup_audit")
 const tenant: TenantContext = { orgId: ORG, userId: USER, roles: ["org:admin"], authMode: "self_hosted" }
 
 type Probe = "present" | "absent" | "unavailable"
@@ -154,11 +154,14 @@ describe("SetupAuditService first-data stamping", () => {
 				const report = yield* SetupAuditService.use((audit) => audit.run(tenant))
 				assert.strictEqual(report.dataStatus, "ok")
 				assert.isFalse(report.warehouseAvailable)
-				const skipped = report.checks.filter((row) => row.status === "skip").map((row) => row.id)
-				const needsWarehouse = SETUP_AUDIT_CHECKS.filter((row) => row.needsWarehouse === true)
+				const skipped = Arr.map(
+					Arr.filter(report.checks, (row) => row.status === "skip"),
+					(row) => row.id,
+				)
+				const needsWarehouse = Arr.filter(SETUP_AUDIT_CHECKS, (row) => row.needsWarehouse === true)
 				assert.deepStrictEqual(
 					skipped,
-					needsWarehouse.map((row) => row.id),
+					Arr.map(needsWarehouse, (row) => row.id),
 				)
 				assert.isAbove(report.checks.length, skipped.length)
 				const row = yield* firstDataInDb(testDb)

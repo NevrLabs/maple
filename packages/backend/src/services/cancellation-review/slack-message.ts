@@ -2,9 +2,16 @@
  * The cancellation report as a Slack message. Block Kit, built as plain data so
  * what a reader sees is asserted in a test rather than eyeballed in a channel.
  */
-import type { CancellationReason, CancellationSnapshot } from "@maple/domain/http"
+import type {
+	CancellationCompanyGuess,
+	CancellationModelRead,
+	CancellationReason,
+	CancellationSnapshot,
+	CancellationStripeFeedback,
+} from "@maple/domain/http"
 import type { IntegrationEntry } from "@maple/domain/integration-inventory"
 import { type CancellationSignal, dollars, formatGB, totalGB } from "./signals"
+import { Array as Arr, Order, String as Str } from "effect"
 
 /** Where a person looks the org up. */
 export interface OrgLinks {
@@ -23,6 +30,8 @@ export interface CancellationReportSubject {
 	/** Epoch ms the plan's access ends, when Autumn said. */
 	readonly expiresAt: number | null
 	readonly links: OrgLinks
+	/** The org's browser sessions on Maple's own replays page; null when that org is not known. */
+	readonly sessionsUrl: string | null
 	/** Null when the integrations could not be read. */
 	readonly integrations: ReadonlyArray<IntegrationEntry> | null
 	/** Orgs the members also belong to; null when they could not be read. */
@@ -46,9 +55,16 @@ export interface CancellationReport {
 	readonly snapshot: CancellationSnapshot
 	readonly reason: CancellationReason
 	readonly signals: ReadonlyArray<CancellationSignal>
+	/** The model's second read; null when it did not answer. */
+	readonly modelRead: CancellationModelRead | null
+	/** Null when Stripe could not be read. */
+	readonly stripeFeedback: CancellationStripeFeedback | null
+	/** Sources only the model reads that could not be read, by name. */
+	readonly unreadEvidence: ReadonlyArray<string>
 }
 
 const REASON_LABELS = {
+	same_day_cancel: "Cancelled the day they subscribed",
 	never_activated: "Never got going",
 	stopped_sending: "Stopped sending telemetry",
 	not_engaged: "Nobody was using it",
@@ -66,17 +82,17 @@ const TONE_MARK = {
 
 /** Slack reads `&`, `<` and `>` as markup; an org name is free text. */
 const escape = (text: string): string =>
-	text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
+	Str.replaceAll(">", "&gt;")(Str.replaceAll("<", "&lt;")(Str.replaceAll("&", "&amp;")(text)))
 
 const day = (epochMs: number): string =>
 	new Date(epochMs).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" })
 
 const plural = (count: number, noun: string) =>
 	`${count} ${
-		count === 1 || noun.endsWith("s")
+		count === 1 || Str.endsWith("s")(noun)
 			? noun
 			: /[^aeiou]y$/.test(noun)
-				? `${noun.slice(0, -1)}ies`
+				? `${Str.slice(0, -1)(noun)}ies`
 				: `${noun}s`
 	}`
 
@@ -100,80 +116,80 @@ const planContext = ({ subject, snapshot }: CancellationReport): string => {
 	if (plan.tenureDays !== null) parts.push(`subscribed ${plural(plan.tenureDays, "day")}`)
 	if (subject.contactEmail !== null) parts.push(`contact ${escape(subject.contactEmail)}`)
 	parts.push(`\`${subject.orgId}\``)
-	return parts.join(SEPARATOR)
+	return Arr.join(parts, SEPARATOR)
 }
 
-const linkButtons = (links: OrgLinks) => ({
+const linkButtons = (links: OrgLinks, sessionsUrl: string | null) => ({
 	type: "actions",
-	elements: (
+	elements: Arr.flatMap(
 		[
 			["Clerk", links.clerk],
 			["Stripe", links.stripe],
 			["Autumn", links.autumn],
-		] as const
-	).flatMap(([label, url]) =>
-		url === null
-			? []
-			: [
-					{
-						type: "button",
-						text: { type: "plain_text", text: label },
-						url,
-						action_id: `open_${label.toLowerCase()}`,
-					},
-				],
+			["Sessions", sessionsUrl],
+		] as const,
+		([label, url]) =>
+			url === null
+				? []
+				: [
+						{
+							type: "button",
+							text: { type: "plain_text", text: label },
+							url,
+							action_id: `open_${Str.toLowerCase(label)}`,
+						},
+					],
 	),
 })
 
 const linksText = (links: OrgLinks): string =>
-	[
-		`<${links.clerk}|Clerk>`,
-		...(links.stripe === null ? [] : [`<${links.stripe}|Stripe>`]),
-		`<${links.autumn}|Autumn>`,
-	].join(SEPARATOR)
+	Arr.join(
+		[
+			`<${links.clerk}|Clerk>`,
+			...(links.stripe === null ? [] : [`<${links.stripe}|Stripe>`]),
+			`<${links.autumn}|Autumn>`,
+		],
+		SEPARATOR,
+	)
 
 interface Stat {
 	readonly topic: CancellationSignal["topic"]
 	readonly label: string
-	readonly value: string
+	/** The last 30 days, or the current value for stats with no window. */
+	readonly now: string
+	/** The same figure a month earlier; null where there is none to compare. */
+	readonly before: string | null
 	readonly notes: ReadonlyArray<string>
 }
 
 const gb = (value: number) => (value === 0 ? "0 GB" : formatGB(value))
 
-/** How this window compares with the one before, in the stat's own unit. */
-const trend = (recent: number, prior: number, format: (value: number) => string): string =>
-	recent === prior ? "same as the month before" : `${recent > prior ? "up" : "down"} from ${format(prior)}`
-
-/** One number per section of the snapshot; the signal sentences only colour them. */
+/** One row per section of the snapshot; the signal sentences only colour them. */
 const stats = (snapshot: CancellationSnapshot): ReadonlyArray<Stat> => {
 	const { org, ingest, visits, adoption, billing } = snapshot
 	const out: Array<Stat> = []
 	if (ingest !== null) {
-		const recent = totalGB(ingest.recent)
 		out.push({
 			topic: "telemetry",
-			label: "Telemetry, 30d",
-			value: gb(recent),
+			label: "Telemetry",
+			now: gb(totalGB(ingest.recent)),
+			before: ingest.daysSinceLastData === null ? null : gb(totalGB(ingest.prior)),
 			notes:
 				ingest.daysSinceLastData === null
 					? ["nothing in the last year"]
-					: [
-							trend(recent, totalGB(ingest.prior), gb),
-							...(ingest.daysSinceLastData >= 2
-								? [`last data ${ingest.daysSinceLastData} days ago`]
-								: []),
-						],
+					: ingest.daysSinceLastData >= 2
+						? [`last data ${ingest.daysSinceLastData} days ago`]
+						: [],
 		})
 	}
 	if (visits !== null) {
 		const { recent, prior, daysSinceLastVisit } = visits
 		out.push({
 			topic: "visits",
-			label: "In the app, 30d",
-			value: plural(recent.activeDays, "day"),
+			label: "Days in the app",
+			now: String(recent.activeDays),
+			before: String(prior.activeDays),
 			notes: [
-				trend(recent.activeDays, prior.activeDays, String),
 				...(recent.peakDailyUsers > 0
 					? [
 							`peak ${recent.peakDailyUsers} ${recent.peakDailyUsers === 1 ? "person" : "people"} a day`,
@@ -191,11 +207,9 @@ const stats = (snapshot: CancellationSnapshot): ReadonlyArray<Stat> => {
 		out.push({
 			topic: "members",
 			label: "Members",
-			value: String(org.members),
-			notes: [
-				...(org.members === 1 ? ["single-member org"] : []),
-				...(org.supportChannel ? ["shared support channel"] : []),
-			],
+			now: String(org.members),
+			before: null,
+			notes: org.supportChannel ? ["shared support channel"] : [],
 		})
 	}
 	if (billing !== null) {
@@ -203,17 +217,12 @@ const stats = (snapshot: CancellationSnapshot): ReadonlyArray<Stat> => {
 		out.push({
 			topic: "billing",
 			label: "Last invoice",
-			value: last === null ? "None yet" : dollars(last),
+			now: last === null ? "None yet" : dollars(last),
+			before: last === null || previous === null ? null : dollars(previous),
 			notes: [
-				...(last === null
-					? []
-					: previous === null
-						? ["first invoice"]
-						: previous === 0 && last > 0
-							? ["first paid, $0 before"]
-							: [trend(last, previous, dollars)]),
+				...(last !== null && previous === null ? ["first invoice"] : []),
 				...(billing.overAllowance.length > 0
-					? [`over allowance on ${billing.overAllowance.map(escape).join(", ")}`]
+					? [`over allowance on ${Arr.join(billing.overAllowance, ", ")}`]
 					: []),
 			],
 		})
@@ -221,9 +230,10 @@ const stats = (snapshot: CancellationSnapshot): ReadonlyArray<Stat> => {
 	if (adoption !== null) {
 		out.push({
 			topic: "setup",
-			label: "Set up",
-			value: plural(adoption.dashboards, "dashboard"),
-			notes: [plural(adoption.alertRules, "alert rule")],
+			label: "Dashboards / alerts",
+			now: `${adoption.dashboards} / ${adoption.alertRules}`,
+			before: null,
+			notes: [],
 		})
 	}
 	return out
@@ -234,33 +244,80 @@ const toneOf = (
 	signals: ReadonlyArray<CancellationSignal>,
 	topic: CancellationSignal["topic"],
 ): CancellationSignal["tone"] => {
-	const tones = signals.filter((signal) => signal.topic === topic).map((signal) => signal.tone)
+	const tones = Arr.map(
+		Arr.filter(signals, (signal) => signal.topic === topic),
+		(signal) => signal.tone,
+	)
 	return tones.includes("concern") ? "concern" : tones.includes("healthy") ? "healthy" : "neutral"
 }
 
-const statField = (stat: Stat, tone: CancellationSignal["tone"]) => ({
-	type: "mrkdwn",
-	text: [
-		`${TONE_MARK[tone]}${stat.label}`,
-		`*${stat.value}*`,
-		...(stat.notes.length > 0 ? [stat.notes.join(" · ")] : []),
-	].join("\n"),
+const TONE_EMOJI = {
+	concern: "red_circle",
+	healthy: "large_green_circle",
+	neutral: null,
+} satisfies Record<CancellationSignal["tone"], string | null>
+
+const TONE_ORDER = { concern: 0, healthy: 1, neutral: 2 } satisfies Record<CancellationSignal["tone"], number>
+
+/** Table cells are rich text, not mrkdwn: nothing in them needs escaping. */
+const cell = (elements: ReadonlyArray<Record<string, unknown>>): Record<string, unknown> => ({
+	type: "rich_text",
+	elements: [{ type: "rich_text_section", elements }],
 })
 
-const unread = (snapshot: CancellationSnapshot): ReadonlyArray<string> =>
-	(
-		[
-			["org", snapshot.org],
-			["telemetry", snapshot.ingest],
-			["app visits", snapshot.visits],
-			["setup", snapshot.adoption],
-			["billing", snapshot.billing],
-		] as const
+const bold = (text: string) => cell([{ type: "text", text, style: { bold: true } }])
+
+/** Worrying rows first, then healthy, then the ones with nothing to say. */
+const statsTable = (shown: ReadonlyArray<Stat>, signals: ReadonlyArray<CancellationSignal>) => {
+	const ranked = Arr.sort(
+		Arr.map(shown, (stat) => ({ stat, tone: toneOf(signals, stat.topic) })),
+		Order.mapInput(
+			Order.Number,
+			({ tone }: { readonly tone: CancellationSignal["tone"] }) => TONE_ORDER[tone],
+		),
 	)
-		.filter(([, section]) => section === null)
-		.map(([name]) => name)
+	const rows = Arr.map(ranked, ({ stat, tone }) => {
+		const emoji = TONE_EMOJI[tone]
+		const before = [...(stat.before === null ? [] : [stat.before]), ...stat.notes]
+		return [
+			cell([
+				...(emoji === null
+					? []
+					: [
+							{ type: "emoji", name: emoji },
+							{ type: "text", text: " " },
+						]),
+				{ type: "text", text: stat.label },
+			]),
+			bold(stat.now),
+			{ type: "raw_text", text: before.length > 0 ? Arr.join(before, " · ") : "—" },
+		]
+	})
+	return {
+		type: "table",
+		column_settings: [null, null, { is_wrapped: true }],
+		rows: [[bold("Last 30 days"), bold("Now"), bold("Month before")], ...rows],
+	}
+}
+
+const unread = (snapshot: CancellationSnapshot): ReadonlyArray<string> =>
+	Arr.map(
+		Arr.filter(
+			[
+				["org", snapshot.org],
+				["telemetry", snapshot.ingest],
+				["app visits", snapshot.visits],
+				["setup", snapshot.adoption],
+				["billing", snapshot.billing],
+			] as const,
+			([, section]) => section === null,
+		),
+		([name]) => name,
+	)
 
 const context = (text: string) => ({ type: "context", elements: [{ type: "mrkdwn", text }] })
+/** Text the customer or the model wrote: shown as written, a URL in it never turned into a link. */
+const quoted = (text: string) => ({ type: "context", elements: [{ type: "mrkdwn", text, verbatim: true }] })
 const heading = (text: string) => ({ type: "section", text: { type: "mrkdwn", text: `*${text}*` } })
 
 /** Favicons, because Slack renders neither SVG nor its own app icons in a message. */
@@ -302,27 +359,35 @@ const STATUS_MARK = {
 
 const resourceCounts = (integration: IntegrationEntry): string => {
 	const kinds = groupBy(integration.resources, (resource) => resource.kind)
-	const datasets = [...kinds.keys()].filter(
+	const datasets = Arr.filter(
+		[...kinds.keys()],
 		(kind) => integration.provider === "cloudflare" && !CLOUDFLARE_NAMED_KINDS.has(kind),
 	)
-	return [
-		...[...kinds]
-			.filter(([kind]) => !datasets.includes(kind))
-			.map(([kind, resources]) => plural(resources.length, kind.replaceAll("_", " "))),
-		...(datasets.length > 0 ? [plural(datasets.length, "dataset")] : []),
-	].join(SEPARATOR)
+	return Arr.join(
+		[
+			...Arr.map(
+				Arr.filter([...kinds], ([kind]) => !datasets.includes(kind)),
+				([kind, resources]) => plural(resources.length, Str.replaceAll("_", " ")(kind)),
+			),
+			...(datasets.length > 0 ? [plural(datasets.length, "dataset")] : []),
+		],
+		SEPARATOR,
+	)
 }
 
 /** One row per integration; chat splits into its connectors, which are different products. */
 const integrationRows = (
 	integrations: ReadonlyArray<IntegrationEntry>,
 ): ReadonlyArray<{ readonly key: string; readonly detail: string }> =>
-	integrations.flatMap((integration) => {
+	Arr.flatMap(integrations, (integration) => {
 		if (integration.provider === "chat") {
 			const byConnector = groupBy(integration.resources, (resource) => resource.note ?? "chat")
-			return [...byConnector].map(([connector, workspaces]) => ({
+			return Arr.map([...byConnector], ([connector, workspaces]) => ({
 				key: connector,
-				detail: workspaces.map((workspace) => escape(workspace.name)).join(", "),
+				detail: Arr.join(
+					Arr.map(workspaces, (workspace) => escape(workspace.name)),
+					", ",
+				),
 			}))
 		}
 		const status =
@@ -332,13 +397,17 @@ const integrationRows = (
 		return [
 			{
 				key: integration.provider,
-				detail: [
-					integration.account === null ? null : escape(integration.account),
-					resourceCounts(integration) || null,
-					status,
-				]
-					.filter((part) => part !== null)
-					.join(SEPARATOR),
+				detail: Arr.join(
+					Arr.filter(
+						[
+							integration.account === null ? null : escape(integration.account),
+							resourceCounts(integration) || null,
+							status,
+						],
+						(part) => part !== null,
+					),
+					SEPARATOR,
+				),
 			},
 		]
 	})
@@ -350,7 +419,7 @@ const integrationBlocks = (
 	if (integrations.length === 0) return [heading("Integrations"), context("None connected")]
 	return [
 		heading("Integrations"),
-		...integrationRows(integrations).map(({ key, detail }) => {
+		...Arr.map(integrationRows(integrations), ({ key, detail }) => {
 			const provider = providerOf(key)
 			const text = detail.length > 0 ? `*${provider.label}*  ${detail}` : `*${provider.label}*`
 			return {
@@ -381,14 +450,14 @@ const otherOrgsBlocks = (
 	const hidden = otherOrgs.length - OTHER_ORGS_SHOWN
 	return [
 		heading("Members' other orgs"),
-		...otherOrgs.slice(0, OTHER_ORGS_SHOWN).flatMap((org) => {
+		...Arr.flatMap(otherOrgs.slice(0, OTHER_ORGS_SHOWN), (org) => {
 			const facts = [
 				`Created ${day(org.createdAtMs)}`,
 				...(org.membersCount === null ? [] : [plural(org.membersCount, "member")]),
 				...(org.billing === null
 					? []
 					: [org.billing.plan === null ? "no plan" : `\`${org.billing.plan}\``]),
-				`via ${org.sharedMembers.map(escape).join(", ")}`,
+				`via ${Arr.join(Arr.map(org.sharedMembers, escape), ", ")}`,
 				linksText(org.links),
 			]
 			return [
@@ -396,10 +465,74 @@ const otherOrgsBlocks = (
 					type: "section",
 					text: { type: "mrkdwn", text: `*${escape(org.name)}*  \`${org.orgId}\`` },
 				},
-				context(facts.join(SEPARATOR)),
+				context(Arr.join(facts, SEPARATOR)),
 			]
 		}),
 		...(hidden > 0 ? [context(`And ${hidden} older ${hidden === 1 ? "org" : "orgs"}`)] : []),
+	]
+}
+
+/** Slack refuses a text object past 3000 characters, which would lose the whole report. */
+const MAX_FREE_TEXT = 500
+const clip = (value: string): string =>
+	value.length > MAX_FREE_TEXT ? `${Str.slice(0, MAX_FREE_TEXT - 1)(value)}…` : value
+
+/** Stripe's survey answers are snake_case enum values (`too_expensive`); the comment is free text. */
+const stripeFeedbackText = (feedback: CancellationStripeFeedback | null): string | null => {
+	if (feedback === null || (feedback.feedback === null && feedback.comment === null)) return null
+	return Arr.join(
+		[
+			"*Told Stripe:*",
+			...(feedback.feedback === null ? [] : [Str.replaceAll("_", " ")(feedback.feedback)]),
+			...(feedback.comment === null ? [] : [`“${escape(clip(feedback.comment))}”`]),
+		],
+		" ",
+	)
+}
+
+/** The reason line: the model's when it overrode the rules, which then stay visible beside it. */
+const reasonText = (reason: CancellationReason, modelRead: CancellationModelRead | null): string =>
+	modelRead?.verdict === "override" && modelRead.reason !== null
+		? `*Likely reason:* ${escape(clip(modelRead.reason))}  _(model's read; rules said: ${REASON_LABELS[reason]})_`
+		: `*Likely reason:* ${REASON_LABELS[reason]}`
+
+/** Who the model thinks the customer is: "Acme Robotics, Berlin, DE: what it does (medium: domain, homepage)". */
+const companyText = (company: CancellationCompanyGuess): string =>
+	Arr.join(
+		[
+			`:office: *${escape(clip(company.name))}*`,
+			company.location === null ? "" : `, ${escape(clip(company.location))}`,
+			company.oneLiner === null ? "" : `: ${escape(clip(company.oneLiner))}`,
+			`  _(${company.confidence} confidence${company.basis === "" ? "" : `: ${escape(clip(company.basis))}`})_`,
+		],
+		"",
+	)
+
+/** The model's findings, stated as fact, then its opinion. */
+const modelBlocks = (modelRead: CancellationModelRead | null): ReadonlyArray<Record<string, unknown>> => {
+	if (modelRead === null) return []
+	return [
+		...(modelRead.findings.length === 0
+			? []
+			: [
+					{
+						type: "section",
+						text: {
+							type: "mrkdwn",
+							text: Arr.join(
+								[
+									"*What stands out*",
+									...Arr.map(modelRead.findings, (f) => `• ${escape(clip(f))}`),
+								],
+								"\n",
+							),
+							verbatim: true,
+						},
+					},
+				]),
+		...(modelRead.conclusion === ""
+			? []
+			: [quoted(`:robot_face: *Model's read:* ${escape(clip(modelRead.conclusion))}`)]),
 	]
 }
 
@@ -407,35 +540,46 @@ const otherOrgsBlocks = (
 export const buildCancellationMessage = (
 	report: CancellationReport,
 ): { readonly text: string; readonly blocks: ReadonlyArray<Record<string, unknown>> } => {
-	const { subject, snapshot, reason, signals } = report
+	const { subject, snapshot, reason, signals, modelRead } = report
 	const shown = stats(snapshot)
 	// Sentences about a section with no stat (the plan itself) have nowhere to fold into.
-	const flags = signals.filter((signal) => !shown.some((stat) => stat.topic === signal.topic))
+	const flags = Arr.filter(signals, (signal) => !Arr.some(shown, (stat) => stat.topic === signal.topic))
 
 	const blocks: Array<Record<string, unknown>> = [
-		{ type: "header", text: { type: "plain_text", text: title(report).slice(0, 150), emoji: true } },
+		{ type: "header", text: { type: "plain_text", text: Str.slice(0, 150)(title(report)), emoji: true } },
 		context(planContext(report)),
-		linkButtons(subject.links),
-		{ type: "section", text: { type: "mrkdwn", text: `*Likely reason:* ${REASON_LABELS[reason]}` } },
+		linkButtons(subject.links, subject.sessionsUrl),
+		...(modelRead?.company == null ? [] : [quoted(companyText(modelRead.company))]),
+		// Verbatim: an override's reason is the model's words.
+		{ type: "section", text: { type: "mrkdwn", text: reasonText(reason, modelRead), verbatim: true } },
 	]
+	const told = stripeFeedbackText(report.stripeFeedback)
+	if (told !== null) blocks.push(quoted(told))
+	blocks.push(...modelBlocks(modelRead))
 	if (flags.length > 0) {
 		blocks.push(
-			context(flags.map((signal) => `${TONE_MARK[signal.tone]}${escape(signal.text)}`).join(SEPARATOR)),
+			context(
+				Arr.join(
+					Arr.map(flags, (signal) => `${TONE_MARK[signal.tone]}${escape(signal.text)}`),
+					SEPARATOR,
+				),
+			),
 		)
 	}
 	if (shown.length > 0) {
-		blocks.push({
-			type: "section",
-			fields: shown.map((stat) => statField(stat, toneOf(signals, stat.topic))),
-		})
+		blocks.push(statsTable(shown, signals))
 	}
 	const integrations = integrationBlocks(subject.integrations)
 	if (integrations.length > 0) blocks.push({ type: "divider" }, ...integrations)
 	blocks.push({ type: "divider" }, ...otherOrgsBlocks(subject.otherOrgs))
 
-	const missing = unread(snapshot)
-	if (missing.length > 0) blocks.push(context(`Could not read: ${missing.join(", ")}`))
+	const missing = [...unread(snapshot), ...report.unreadEvidence]
+	if (missing.length > 0) blocks.push(context(`Could not read: ${Arr.join(missing, ", ")}`))
 
 	// Unlike the header's plain text, the fallback is mrkdwn: an org name is escaped here.
-	return { text: `${escape(title(report))} (${REASON_LABELS[reason]})`, blocks }
+	const shownReason =
+		modelRead?.verdict === "override" && modelRead.reason !== null
+			? escape(clip(modelRead.reason))
+			: REASON_LABELS[reason]
+	return { text: `${escape(title(report))} (${shownReason})`, blocks }
 }

@@ -6,13 +6,13 @@ import {
 } from "@maple/domain/http/v2"
 import { Effect, Schema } from "effect"
 import { AsyncData, Command } from "foldkit"
-import { KeyedSchema } from "../../data/keyed"
-import { LoadFailure, toLoadFailure } from "../../data/load-failure"
+import { KeyedSchema } from "@maple/views/data/keyed"
+import { LoadFailure, toLoadFailure } from "@maple/views/data/load-failure"
 import { MapleApiV2Client } from "../../platform/api-clients"
-import * as Dialog from "../../ui/dialog"
-import * as Field from "../../ui/field"
-import * as Menu from "../../ui/menu"
-import * as Select from "../../ui/select"
+import * as Dialog from "@maple/views/ui/dialog"
+import * as Field from "@maple/views/ui/field"
+import * as Menu from "@maple/views/ui/menu"
+import * as Select from "@maple/views/ui/select"
 import { Message } from "./message"
 import { AuthType } from "./prometheus-form-field"
 
@@ -133,7 +133,7 @@ export const ToggleTarget = Command.define("ToggleScrapeTarget", {
 	execute: ({ id, enabled }) =>
 		Effect.gen(function* () {
 			const client = yield* MapleApiV2Client
-			const payload = yield* Schema.decodeUnknownEffect(V2ScrapeTargetUpdateParams)({ enabled })
+			const payload = yield* Schema.decodeEffect(V2ScrapeTargetUpdateParams)({ enabled })
 			yield* client.scrapeTargets.update({ params: { id }, payload })
 		}).pipe(
 			Effect.match({
@@ -179,11 +179,11 @@ export const SaveTarget = Command.define("SaveScrapeTarget", {
 			const { auth_credentials: credentials, ...base } = payload
 			const raw = credentials === undefined ? base : { ...base, auth_credentials: credentials }
 			if (editingId !== null) {
-				const update = yield* Schema.decodeUnknownEffect(V2ScrapeTargetUpdateParams)(raw)
+				const update = yield* Schema.decodeEffect(V2ScrapeTargetUpdateParams)(raw)
 				yield* client.scrapeTargets.update({ params: { id: editingId }, payload: update })
 				return editingId
 			}
-			const create = yield* Schema.decodeUnknownEffect(V2ScrapeTargetCreateParams)(raw)
+			const create = yield* Schema.decodeEffect(V2ScrapeTargetCreateParams)(raw)
 			const created = yield* client.scrapeTargets.create({ payload: create })
 			return created.id
 		}).pipe(

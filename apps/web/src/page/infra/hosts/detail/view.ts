@@ -1,18 +1,19 @@
 import { AsyncData, Submodel } from "foldkit"
 import type { Html, HtmlBuilder } from "foldkit/html"
-import { ResolveThemeColors } from "../../../../charts/theme-colors"
-import { errorState } from "../../../../ui/error-state"
+import { ResolveThemeColors } from "@maple/views/charts/theme-colors"
+import { errorState } from "@maple/views/ui/error-state"
 import type { PageViewInputs } from "../../../contract"
 import { dashboardPage } from "../../../kit/dashboard-page"
 import * as Frame from "../../kit/frame"
 import { pageHeroParts, headerActions } from "../../kit/page-parts"
-import { INFRA_CHART_TOKENS } from "../../../../charts/infra-metric-series"
+import { INFRA_CHART_TOKENS } from "@maple/views/charts/infra-metric-series"
 import { resourceAttributesCardSkeleton } from "../../kit/resource-attributes"
 import { Message } from "./message"
 import type { Model } from "./model"
 import { DEFAULT_PRESET } from "./update"
 import { type HostHeaderParts, hostDetailHeader, hostDetailHeaderLoading } from "./view-header"
 import { hostMetadataPanel, metricsPanel } from "./view-panels"
+import { typography } from "@maple/views/ui/typography"
 
 // `HostDetailPage`.
 
@@ -24,7 +25,7 @@ const header = (h: H, model: Model, inputs: PageViewInputs): HostHeaderParts =>
 	AsyncData.matchData(model.summary.data, {
 		onEmpty: () => hostDetailHeaderLoading(h),
 		onFailure: (failure) => ({
-			title: pageHeroParts(h, { title: h.span([h.Class("font-mono")], [model.hostName]) }).title,
+			title: pageHeroParts(h, { title: typography(h, { mono: true }, [model.hostName]) }).title,
 			actions: [],
 			body: errorState(h, {
 				variant: "inline",

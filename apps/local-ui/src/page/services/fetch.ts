@@ -1,15 +1,16 @@
 import { CH } from "@maple/query-engine"
 import type { TimeBounds } from "../../lib/time"
-import { Effect } from "effect"
+import { Effect, Array as Arr } from "effect"
 import { localParams, queryRows } from "../../data/local-query"
 import type { ServiceCatalogEntry } from "./model"
+import { nonZeroOr } from "@maple/ui/lib/number"
 
 // The service catalog query and `toCatalogEntry`.
 
 /** Sampled counts win when the store estimated them. */
 export const toCatalogEntry = (row: CH.ServiceCatalogOutput, logCount: number): ServiceCatalogEntry => {
-	const spanCount = row.estimatedSpanCount || row.spanCount
-	const errorCount = row.estimatedErrorCount || row.errorCount
+	const spanCount = nonZeroOr(row.estimatedSpanCount, row.spanCount)
+	const errorCount = nonZeroOr(row.estimatedErrorCount, row.errorCount)
 	return {
 		serviceName: row.serviceName,
 		serviceNamespaces: row.serviceNamespaces,
@@ -37,7 +38,11 @@ export const fetchCatalog = (
 			[
 				queryRows(
 					CH.compile(
-						CH.serviceCatalogQuery({ deploymentEnvironment: env, serviceNamespace: ns, limit: 200 }),
+						CH.serviceCatalogQuery({
+							deploymentEnvironment: env,
+							serviceNamespace: ns,
+							limit: 200,
+						}),
 						params,
 					),
 					apiBase,
@@ -46,6 +51,6 @@ export const fetchCatalog = (
 			],
 			{ concurrency: "unbounded" },
 		)
-		const logsByService = new Map(usageRows.map((row) => [row.serviceName, row.totalLogCount]))
-		return catalogRows.map((row) => toCatalogEntry(row, logsByService.get(row.serviceName) ?? 0))
+		const logsByService = new Map(Arr.map(usageRows, (row) => [row.serviceName, row.totalLogCount]))
+		return Arr.map(catalogRows, (row) => toCatalogEntry(row, logsByService.get(row.serviceName) ?? 0))
 	})

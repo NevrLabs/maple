@@ -1,20 +1,20 @@
 import { DashboardDocument } from "@maple/domain/http"
 import { Schema } from "effect"
 import { defineMessageUnion } from "foldkit/message"
-import * as Chart from "../../../charts/chart"
-import { ThemeColors } from "../../../charts/theme-colors"
-import * as Dialog from "../../../ui/dialog"
-import * as Menu from "../../../ui/menu"
-import * as Combobox from "../../../ui/combobox"
-import * as Popover from "../../../ui/popover"
-import * as CopyButton from "../../../ui/copy-button"
-import * as Tabs from "../../../ui/tabs"
+import * as Chart from "@maple/views/charts/chart"
+import { ThemeColors } from "@maple/views/charts/theme-colors"
+import * as Dialog from "@maple/views/ui/dialog"
+import * as Menu from "@maple/views/ui/menu"
+import * as Combobox from "@maple/views/ui/combobox"
+import * as Popover from "@maple/views/ui/popover"
+import * as CopyButton from "@maple/views/ui/copy-button"
+import * as Tabs from "@maple/views/ui/tabs"
 import * as TimeRangePicker from "../../kit/time-range-picker"
 import * as TagEditor from "../kit/tag-editor"
 import * as VariablesManager from "../kit/variables-manager/model"
 import { WidgetFailure } from "../kit/widget-data"
 import { WriteSync } from "../kit/store"
-import { LoadFailure } from "../../../data/load-failure"
+import { LoadFailure } from "@maple/views/data/load-failure"
 import { VersionRow } from "./history"
 import { ShareMessage } from "./share"
 
@@ -23,10 +23,19 @@ const WriteResult = Schema.Result(WriteSync, Schema.String)
 
 export const Message = defineMessageUnion({
 	UpdatedDashboard: { orgId: Schema.String, maybeDocument: Schema.Option(DashboardDocument) },
+	/** The live board sat loading past the timeout (`useCollectionLoadFailed`). */
+	TimedOutLiveDashboard: { orgId: Schema.String },
+	CompletedFetchDashboardFallback: {
+		dashboardId: Schema.String,
+		result: Schema.Result(DashboardDocument, LoadFailure),
+	},
+	/** "Retry sync" on the snapshot banner, or Try again on the load error: reconnect, read again. */
+	ClickedRetrySync: {},
 	CompletedReadClock: { nowMs: Schema.Number },
 	MeasuredGrid: { width: Schema.Number },
 	MeasuredWidget: { widgetId: Schema.String, widthPx: Schema.Number },
 	RevealedWidget: { widgetId: Schema.String },
+	HidWidget: { widgetId: Schema.String },
 	ClickedNarrowRange: { widgetId: Schema.String },
 	CompletedFetchWidget: { key: Schema.String, result: Schema.Result(Schema.Unknown, WidgetFailure) },
 	CompletedFetchVariableOptions: {
@@ -38,6 +47,9 @@ export const Message = defineMessageUnion({
 	ResolvedThemeColors: { colors: ThemeColors },
 	CompletedLoadChartRuntime: {},
 	FailedLoadChartRuntime: { reason: Schema.String },
+	/** "Reload page" on a chart tile whose chart code failed to load. */
+	ClickedReloadPage: {},
+	ReloadedPage: {},
 	GotChartMessage: { widgetId: Schema.String, message: Chart.Message },
 	ClickedSortColumn: { widgetId: Schema.String, field: Schema.String, isText: Schema.Boolean },
 	GotTimePickerMessage: { message: TimeRangePicker.Message },
@@ -60,9 +72,16 @@ export const Message = defineMessageUnion({
 	GotTagEditorMessage: { message: TagEditor.Message },
 	GotVariablesManagerMessage: { message: VariablesManager.Message },
 	ClickedCloseHistory: {},
-	CompletedFetchVersions: { generation: Schema.Number, result: Schema.Result(Schema.Array(VersionRow), LoadFailure) },
+	CompletedFetchVersions: {
+		generation: Schema.Number,
+		nowMs: Schema.Number,
+		result: Schema.Result(Schema.Array(VersionRow), LoadFailure),
+	},
 	ClickedVersion: { versionId: Schema.String },
-	CompletedFetchSnapshot: { versionId: Schema.String, result: Schema.Result(DashboardDocument, LoadFailure) },
+	CompletedFetchSnapshot: {
+		versionId: Schema.String,
+		result: Schema.Result(DashboardDocument, LoadFailure),
+	},
 	ClickedCancelPreview: {},
 	ClickedRestoreVersion: {},
 	GotRestoreDialogMessage: { message: Dialog.Message },
@@ -92,9 +111,14 @@ export const Message = defineMessageUnion({
 	/** Focus left a picked-up tile's grip for somewhere outside it: the tile drops where it is. */
 	BlurredGrip: { widgetId: Schema.String },
 	CompletedWrite: { result: WriteResult },
-	/** "Undo" on the "Widget removed" toast: the removed tile, as it was stored. */
-	/** "Undo" after a group was deleted with its widgets: they come back on the board, the group does not. */
-	CompletedExport: {},
+	/** A drop's write: `generation` says which, so a result for an older drop is ignored. */
+	CompletedLayoutWrite: { generation: Schema.Number, result: WriteResult },
+	/** The persistence banner's Retry: editing comes back, and the next write tells whether it holds. */
+	ClickedRetryPersistence: {},
+	/** The browser came back online while the banner shows: editing comes back as with Retry. */
+	CameBackOnline: {},
+	/** Export JSON's download: `error` is why it could not be written. */
+	CompletedExport: { error: Schema.NullOr(Schema.String) },
 	/** A group's chevron: this viewer's collapse, in the URL. */
 	ClickedSectionChevron: { sectionId: Schema.String, collapsed: Schema.Boolean },
 	ClickedSectionTab: { sectionId: Schema.String, tabId: Schema.String },

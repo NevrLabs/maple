@@ -1,3 +1,4 @@
+import * as Policy from "@maple/domain/policy"
 import { AlertDestinationId } from "@maple/domain/http"
 import {
 	encodePublicId,
@@ -6,7 +7,7 @@ import {
 	type V2ChatDestination,
 	type V2TelegramChat,
 } from "@maple/domain/http/v2"
-import { Result, Schema } from "effect"
+import { Result, Schema, Array as Arr } from "effect"
 import {
 	click,
 	expect as expectView,
@@ -21,13 +22,13 @@ import {
 	withViewInputs,
 } from "foldkit/scene"
 import { describe, expect, test } from "vitest"
-import * as Dialog from "../../../ui/dialog"
-import { MountDialog } from "../../../ui/dialog"
-import * as Combobox from "../../../ui/combobox"
+import * as Dialog from "@maple/views/ui/dialog"
+import { MountDialog } from "@maple/views/ui/dialog"
+import * as Combobox from "@maple/views/ui/combobox"
 import * as ChatConnect from "../shared/chat-connect"
 import * as ChatFields from "./chat-fields"
 import * as LinearFields from "./linear-fields"
-import * as Select from "../../../ui/select"
+import * as Select from "@maple/views/ui/select"
 import {
 	chatConnectDependencies,
 	CreateDestination,
@@ -40,6 +41,8 @@ import {
 	update,
 } from "./dialog"
 import { view as dialogView } from "./view"
+
+const ENGINEER = Policy.grantsOf(["org:engineer"])
 
 const view = withViewInputs(dialogView, { id: "test-destination" })()
 const workspaceWire = (n: number, name: string) => ({
@@ -66,14 +69,14 @@ const channel = (id: string, name: string, isPrivate = false): V2ChatDestination
 	private: isPrivate,
 })
 const names = (commands: ReadonlyArray<{ readonly name: string }> | undefined) =>
-	(commands ?? []).map(({ name }) => name)
+	Arr.map(commands ?? [], ({ name }) => name)
 const opened = () => openNew(init("test-destination")).model
 const CREATED = Schema.decodeSync(AlertDestinationId)("0199a001-0000-7000-8000-0000000000ff")
 
 describe("destination dialog", () => {
 	test("opening a new destination fetches the chat connectors once", () => {
 		const first = openNew(init("test-destination"))
-		expect((first.commands ?? []).map(({ name }) => name)).toContain("FetchChatConnectors")
+		expect(Arr.map(first.commands ?? [], ({ name }) => name)).toContain("FetchChatConnectors")
 	})
 
 	test("a webhook destination is created from its URL", () => {
@@ -312,8 +315,8 @@ describe("destination dialog", () => {
 			click(role("button", { name: /^Linear/ })),
 			expectView(text("Checking your Linear connection…")).toExist(),
 			Command.resolve(
-				LinearFields.FetchIsAdmin,
-				LinearFields.Message.CompletedFetchIsAdmin({ isAdmin: true }),
+				LinearFields.FetchGrants,
+				LinearFields.Message.CompletedFetchGrants({ grants: ENGINEER }),
 			),
 			Command.resolve(
 				LinearFields.FetchStatus,
@@ -349,7 +352,7 @@ describe("destination dialog", () => {
 			{ ...opened(), form: { ...opened().form, type: "webhook" } },
 			Message.ClickedSave(),
 		)
-		expect((saving.commands ?? []).map(({ name }) => name)).toEqual(["CreateAlertDestination"])
+		expect(Arr.map(saving.commands ?? [], ({ name }) => name)).toEqual(["CreateAlertDestination"])
 		expect(update(saving.model, Message.ClickedSave()).commands ?? []).toHaveLength(0)
 		const failed = update(
 			saving.model,
@@ -402,5 +405,33 @@ describe("Google Chat destination form", () => {
 
 	test("keeps the stored webhook when an edit leaves the URL blank", () => {
 		expect(isFormReady({ ...form(""), name: "Ops" }, true)).toBe(true)
+	})
+})
+
+describe("incident.io destination form", () => {
+	const STORED = "01GW2G3V0S59R238FAHPDS1R66"
+	const editing = (alertSourceId: string, token = "") => ({
+		...opened().form,
+		type: "incident-io" as const,
+		name: "Paging",
+		incidentIoAlertSourceId: alertSourceId,
+		incidentIoToken: token,
+		incidentIoStoredAlertSourceId: STORED,
+	})
+
+	test("keeps the stored token while the source stays the same", () => {
+		expect(isFormReady(editing(STORED), true)).toBe(true)
+	})
+
+	test("asks for the token of a different source before saving", () => {
+		expect(isFormReady(editing("01HZZZZZZZZZZZZZZZZZZZZZZZ"), true)).toBe(false)
+		expect(isFormReady(editing("01HZZZZZZZZZZZZZZZZZZZZZZZ", "new-token"), true)).toBe(true)
+	})
+
+	test("a new destination needs a valid id and a token", () => {
+		const fresh = { ...editing(STORED, "tok"), incidentIoStoredAlertSourceId: "" }
+		expect(isFormReady(fresh, false)).toBe(true)
+		expect(isFormReady({ ...fresh, incidentIoToken: "" }, false)).toBe(false)
+		expect(isFormReady({ ...fresh, incidentIoAlertSourceId: "https://api.incident.io/x" }, false)).toBe(false)
 	})
 })

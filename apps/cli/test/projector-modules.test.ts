@@ -1,5 +1,5 @@
 import { describe, it } from "vitest"
-import { Effect, Result } from "effect"
+import { Effect, Result, String as Str } from "effect"
 import { deepStrictEqual, ok, strictEqual } from "node:assert"
 import { copyFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -7,6 +7,7 @@ import { join, resolve } from "node:path"
 import type { SignalProjectionSpec } from "@maple/eventing-core"
 import { loadProjectorModules, resolveProjectorModulePaths } from "../src/server/eventing/projector-modules"
 import { makeRuntime, openStore, run } from "./eventing-test-support"
+import * as Arr from "effect/Array"
 
 const fixture = resolve(import.meta.dir, "fixtures/projector-module.mjs")
 const withRoot = async (use: (root: string) => Promise<void>) => {
@@ -69,13 +70,20 @@ describe("projector modules", () => {
 			}
 			const first = await evaluate(true)
 			strictEqual(first.length, 1)
-			deepStrictEqual(first[0]!.data, { label: "external projector", occurrenceId: "delivery-42" })
+			deepStrictEqual(Arr.getUnsafe(first, 0).data, {
+				label: "external projector",
+				occurrenceId: "delivery-42",
+			})
 			const restarted = await evaluate(false)
-			strictEqual(restarted[0]!.id, first[0]!.id)
+			strictEqual(Arr.getUnsafe(restarted, 0).id, Arr.getUnsafe(first, 0).id)
 			// Saved specs cannot silently lose their implementation on the next start.
 			const store = await openStore(data)
 			try {
-				const missing = Effect.runSync(Effect.result(Effect.try(() => makeRuntime(store))))
+				const missing = Effect.runSync(
+					Effect.result(
+						Effect.try({ try: () => makeRuntime(store), catch: (cause) => String(cause) }),
+					),
+				)
 				ok(Result.isFailure(missing))
 			} finally {
 				await store.close()
@@ -138,7 +146,7 @@ export default { apiVersion: 1, async register(add) {
 				const result = await Effect.runPromise(Effect.result(loadProjectorModules([path])))
 				ok(Result.isFailure(result))
 				strictEqual(result.failure._tag, "@maple/cli/ProjectorModuleError")
-				ok(result.failure.message.includes(path))
+				ok(Str.includes(path)(result.failure.message))
 			}
 		})
 	})

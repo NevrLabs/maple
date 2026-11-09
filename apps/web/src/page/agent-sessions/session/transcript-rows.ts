@@ -3,6 +3,8 @@ import { previewOf } from "./clamped-text"
 import type { SessionData } from "./derive"
 import type { Model } from "./model"
 import { disclosed, messageBody } from "./payload-view"
+import { Array as Arr } from "effect"
+import { codePointAt } from "@maple/strings"
 
 // The transcript's rows and the markdown bodies they show, shared by the view and the parse it asks for.
 
@@ -26,25 +28,30 @@ export const transcriptRows = (model: Model, data: SessionData): ReadonlyArray<T
 /** Assistant rows that continue the previous speaker: same depth, same model, no failure between. */
 export const continuedKeys = (rows: ReadonlyArray<TranscriptRow>): ReadonlySet<string> => {
 	const keys = new Set<string>()
-	rows.reduce<Readonly<{ depth: number; model: string | undefined }> | undefined>((speaker, row) => {
-		if (row.kind === "assistant") {
-			const model = spanModel(row.span)
-			if (speaker !== undefined && speaker.depth === row.depth && speaker.model === model)
-				keys.add(row.key)
-			return row.failed || model === undefined ? undefined : { depth: row.depth, model }
-		}
-		return row.kind === "tool" || row.kind === "thinking" || row.kind === "structure"
-			? speaker
-			: undefined
-	}, undefined)
+	Arr.reduce<TranscriptRow, Readonly<{ depth: number; model: string | undefined }> | undefined>(
+		rows,
+		undefined,
+		(speaker, row) => {
+			if (row.kind === "assistant") {
+				const model = spanModel(row.span)
+				if (speaker !== undefined && speaker.depth === row.depth && speaker.model === model)
+					keys.add(row.key)
+				return row.failed || model === undefined ? undefined : { depth: row.depth, model }
+			}
+			return row.kind === "tool" || row.kind === "thinking" || row.kind === "structure"
+				? speaker
+				: undefined
+		},
+	)
 	return keys
 }
 
 /** FNV-1a over the text: the markdown cache's key, short whatever the body's size. */
 export const textHash = (text: string): string => {
-	const hash = Array.from(text).reduce(
-		(acc, char) => Math.imul(acc ^ (char.codePointAt(0) ?? 0), 16_777_619) >>> 0,
+	const hash = Arr.reduce(
+		Array.from(text),
 		2_166_136_261,
+		(acc, char) => Math.imul(acc ^ codePointAt(char, 0), 16_777_619) >>> 0,
 	)
 	return `${hash.toString(36)}:${text.length}`
 }
@@ -58,7 +65,7 @@ export const shownMarkdown = (model: Model, key: string, text: string): Readonly
 
 /** Every markdown text the transcript has on the page. */
 export const markdownTexts = (model: Model, rows: ReadonlyArray<TranscriptRow>): ReadonlyArray<string> =>
-	rows.flatMap((row) => {
+	Arr.flatMap(rows, (row) => {
 		switch (row.kind) {
 			case "user":
 			case "prompt":

@@ -1,6 +1,16 @@
-// BOUNDARY: Test doubles preserve opaque values so the consuming boundary can be exercised.
+// BOUNDARY-FILE: Test doubles preserve opaque values so the consuming boundary can be exercised.
 import { afterEach, assert, describe, it } from "@effect/vitest"
-import { Cause, ConfigProvider, Effect, Exit, Layer, Option, Schema } from "effect"
+import {
+	Cause,
+	ConfigProvider,
+	Effect,
+	Exit,
+	Layer,
+	Option,
+	Schema,
+	Array as Arr,
+	String as Str,
+} from "effect"
 import { IngestKeyEncryptionError, IngestKeyPersistenceError, OrgId, UserId } from "@maple/domain/http"
 import { hashIngestKey } from "@maple/db"
 import { Database, DatabaseError } from "@maple/backend/platform/DatabaseLive"
@@ -79,8 +89,8 @@ describe("OrgIngestKeysService", () => {
 			const keys = yield* OrgIngestKeysService
 			const result = yield* keys.getOrCreate(asOrgId("org_a"), asUserId("user_a"))
 
-			assert.isTrue(result.publicKey.startsWith("maple_pk_"))
-			assert.isTrue(result.privateKey.startsWith("maple_sk_"))
+			assert.isTrue(Str.startsWith("maple_pk_")(result.publicKey))
+			assert.isTrue(Str.startsWith("maple_sk_")(result.privateKey))
 			assert.isFalse(Number.isNaN(Date.parse(result.publicRotatedAt)))
 			assert.isFalse(Number.isNaN(Date.parse(result.privateRotatedAt)))
 		}).pipe(Effect.provide(makeLayer(testDb)))
@@ -344,7 +354,7 @@ describe("OrgIngestKeysService", () => {
 	it.effect("getOrCreateMany resolves every org with one SELECT and creates only missing rows", () => {
 		const testDb = createTestDb(trackedDbs)
 		const user = asUserId("user_a")
-		const seededOrgs = ["org_a", "org_b", "org_c"].map(asOrgId)
+		const seededOrgs = Arr.map(["org_a", "org_b", "org_c"], asOrgId)
 		const newOrg = asOrgId("org_d")
 		const orgs = [...seededOrgs, newOrg]
 		const coldBatch = makeStatementRecorder()
@@ -371,10 +381,10 @@ describe("OrgIngestKeysService", () => {
 			assert.deepStrictEqual(warmBatch.verbs(), [])
 			assert.strictEqual(keys.size, 4)
 			assert.deepStrictEqual(
-				seededOrgs.map((orgId) => keys.get(orgId)?.publicKey),
-				seeded.map((response) => response.publicKey),
+				Arr.map(seededOrgs, (orgId) => keys.get(orgId)?.publicKey),
+				Arr.map(seeded, (response) => response.publicKey),
 			)
-			assert.isTrue(keys.get(newOrg)?.publicKey.startsWith("maple_pk_"))
+			assert.isTrue(Str.startsWith("maple_pk_")(keys.get(newOrg)?.publicKey ?? ""))
 		})
 	})
 })

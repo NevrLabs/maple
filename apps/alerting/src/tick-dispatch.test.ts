@@ -1,6 +1,7 @@
 import { describe, expect, it } from "@effect/vitest"
-import { Effect } from "effect"
+import { Effect, String as Str } from "effect"
 import { authorizeTickRequest, dispatchTick, SELF_BINDING, TICK_PATH } from "./tick-dispatch"
+import * as Arr from "effect/Array"
 
 const TOKEN = "secret-token"
 const ENV = { INTERNAL_SERVICE_TOKEN: TOKEN }
@@ -110,7 +111,7 @@ describe("dispatchTick", () => {
 			const { binding, seen } = fakeBinding(204)
 			yield* dispatchTick("*/5 * * * *", "anomaly", { ...ENV, [SELF_BINDING]: binding })
 			expect(seen).toHaveLength(1)
-			const tick = yield* authorizeTickRequest(seen[0]!, ENV)
+			const tick = yield* authorizeTickRequest(Arr.getUnsafe(seen, 0), ENV)
 			expect(tick).toMatchObject({ cron: "*/5 * * * *", lane: "anomaly" })
 		}),
 	)
@@ -156,12 +157,12 @@ describe("dispatchTick", () => {
 	it.effect("names what killed the placed invocation, from the answer it left", () =>
 		Effect.gen(function* () {
 			const binding = fakeBinding(500, {
-				body: `  Worker exceeded resource limits ${"x".repeat(1_000_000)}`,
+				body: `  Worker exceeded resource limits ${Str.repeat(1_000_000)("x")}`,
 				headers: { "cf-ray": "8f00aa11bb22cc33-IAD" },
 			}).binding
 			const error = yield* dispatchFailure({ ...ENV, [SELF_BINDING]: binding })
 			expect(error.ray).toBe("8f00aa11bb22cc33-IAD")
-			expect(error.body?.startsWith("Worker exceeded resource limits")).toBe(true)
+			expect(Str.startsWith("Worker exceeded resource limits")(error.body ?? "")).toBe(true)
 			expect(error.body?.length).toBe(300)
 			expect(error.message).toBe("Placed tick answered 500")
 		}),

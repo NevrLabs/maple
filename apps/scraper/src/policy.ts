@@ -1,5 +1,6 @@
 import { Duration } from "effect"
 import type { ScrapeFailureReason } from "./ScrapeError"
+import { codeUnitAt } from "@maple/strings"
 
 /** Upper bound on exponential backoff so a target keeps probing for recovery. */
 export const MAX_BACKOFF = Duration.minutes(5)
@@ -20,6 +21,7 @@ export const classifyTargetStatus = (status: number): ScrapeFailureReason => {
 	if (status === 429 || status === 503) return "rate_limited"
 	if (status === 401 || status === 403) return "auth_failed"
 	if (status >= 500) return "target_error"
+	if (status >= 400) return "target_rejected"
 	return "scrape_failed"
 }
 
@@ -62,6 +64,8 @@ export const backoffLogMessage = (reason: ScrapeFailureReason): string => {
 			return "Scrape delivery blocked by the ingest gateway, backing off"
 		case "target_error":
 			return "Scrape target returning server errors, backing off"
+		case "target_rejected":
+			return "Scrape target rejecting the request, backing off"
 		case "scrape_failed":
 			return "Scrape failed, backing off"
 	}
@@ -76,7 +80,7 @@ export const startJitterMs = (key: string, baseMs: number): number => {
 	if (baseMs <= 0) return 0
 	let hash = 0x811c9dc5
 	for (let i = 0; i < key.length; i++) {
-		hash ^= key.charCodeAt(i)
+		hash ^= codeUnitAt(key, i)
 		hash = Math.imul(hash, 0x01000193)
 	}
 	return (hash >>> 0) % baseMs

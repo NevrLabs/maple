@@ -3,15 +3,19 @@ import { formatErrorRate, formatLatency, formatNumber, formatPercent } from "@ma
 import { resolveSeriesColors } from "@maple/ui/lib/semantic-series-colors"
 import { cn } from "@maple/ui/lib/utils"
 import type { Html, HtmlBuilder } from "foldkit/html"
-import * as BarChart from "../../../../charts/bar-chart"
-import * as Chart from "../../../../charts/chart"
-import type { ThemeColors } from "../../../../charts/theme-colors"
-import { chartLoading, chartPlotArea } from "../../../../ui/chart-state"
+import { textLink } from "@maple/views/ui/text-link"
+import * as BarChart from "@maple/views/charts/bar-chart"
+import * as Chart from "@maple/views/charts/chart"
+import type { ThemeColors } from "@maple/views/charts/theme-colors"
+import { chartLoading, chartPlotArea } from "@maple/views/ui/chart-state"
 import { ERROR_RATE_LIMIT } from "../health"
 import { STATUS_CLASSES, trafficRows, trafficShares } from "./derive"
 import { Message } from "./message"
 import type { Model } from "./model"
 import { keyedBody, MANAGE_HREF, panelEmpty, panelLink, sectionPanel } from "../panel"
+import { typography } from "@maple/views/ui/typography"
+import { Array as Arr } from "effect"
+import { hstack, vstack } from "@maple/views/ui/stack"
 
 // "API requests": the gateway's requests by status class, its totals, and the busiest paths.
 
@@ -21,70 +25,65 @@ const PLOT_HEIGHT = 220
 const STATUS_COLORS = resolveSeriesColors([...STATUS_CLASSES])
 
 const total = (h: H, value: string, label: string, className?: string): Html =>
-	h.div(
-		[h.Class("flex flex-col items-end gap-0.5")],
-		[
-			h.span(
-				[h.Class(cn("font-mono text-lg font-semibold tabular-nums text-foreground", className))],
-				[value],
-			),
-			h.span([h.Class("text-2xs text-muted-foreground")], [label]),
-		],
-	)
+	vstack(h, { gap: "0.5", align: "end" }, [
+		h.span(
+			[h.Class(cn("font-mono text-lg font-semibold tabular-nums text-foreground", className))],
+			[value],
+		),
+		typography(h, { size: "2xs", tone: "muted" }, [label]),
+	])
 
 const totals = (h: H, traffic: SupabaseApiTrafficResponse): Html =>
-	h.div(
-		[h.Class("flex items-start gap-6")],
-		[
-			total(h, formatNumber(traffic.requests), "requests"),
-			total(
-				h,
-				formatErrorRate(traffic.errorRate5xx),
-				"5xx",
-				traffic.errorRate5xx >= ERROR_RATE_LIMIT ? "text-severity-error" : undefined,
-			),
-			total(h, formatLatency(traffic.p95OriginMs), "p95 origin time"),
-		],
-	)
+	hstack(h, { gap: "6", align: "start" }, [
+		total(h, formatNumber(traffic.requests), "requests"),
+		total(
+			h,
+			formatErrorRate(traffic.errorRate5xx),
+			"5xx",
+			traffic.errorRate5xx >= ERROR_RATE_LIMIT ? "text-severity-error" : undefined,
+		),
+		total(h, formatLatency(traffic.p95OriginMs), "p95 origin time"),
+	])
 
 const legend = (h: H, traffic: SupabaseApiTrafficResponse, isOpen: boolean): Html =>
-	h.div(
-		[h.Class("flex flex-wrap items-center justify-between gap-3 px-4 pb-3")],
-		[
-			h.div(
-				[h.Class("flex flex-wrap items-center gap-4")],
-				trafficShares(traffic.buckets).map(({ status, share }) =>
-					h.span(
-						[
-							h.Key(status),
-							h.Class(
-								"inline-flex items-center gap-1.5 font-mono text-2xs text-muted-foreground",
-							),
-						],
-						[
-							h.span([
-								h.Class("size-2 rounded-xs"),
-								h.Style({
-									"background-color":
-										STATUS_COLORS.get(status) ?? "var(--muted-foreground)",
-								}),
-							]),
-							`${status} ${formatPercent(share)}`,
-						],
-					),
+	hstack(h, { gap: "3", align: "center", justify: "between", wrap: true, className: "px-4 pb-3" }, [
+		hstack(
+			h,
+			{ gap: "4", align: "center", wrap: true },
+			Arr.map(trafficShares(traffic.buckets), ({ status, share }) =>
+				hstack(
+					h,
+					{
+						gap: "1.5",
+						align: "center",
+						inline: true,
+						as: "span",
+						className: "font-mono text-2xs text-muted-foreground",
+						attributes: [h.Key(status)],
+					},
+					[
+						h.span([
+							h.Class("size-2 rounded-xs"),
+							h.Style({
+								"background-color": STATUS_COLORS.get(status) ?? "var(--muted-foreground)",
+							}),
+						]),
+						`${status} ${formatPercent(share)}`,
+					],
 				),
 			),
-			h.button(
-				[
-					h.Type("button"),
-					h.AriaExpanded(isOpen),
-					h.OnClick(Message.ClickedToggleTopPaths()),
-					h.Class("text-2xs text-muted-foreground hover:text-foreground active:text-foreground"),
-				],
-				[isOpen ? "Hide top paths" : "Top paths →"],
-			),
-		],
-	)
+		),
+		textLink(
+			h,
+			{
+				onClick: Message.ClickedToggleTopPaths(),
+				tone: "muted",
+				className: "text-2xs",
+				attributes: [h.AriaExpanded(isOpen)],
+			},
+			[isOpen ? "Hide top paths" : "Top paths →"],
+		),
+	])
 
 const bars = (
 	h: H,
@@ -118,10 +117,10 @@ const PATH_ROW = "flex items-center gap-4 border-t border-border-subtle px-4 py-
 
 const topPathsList = (h: H, paths: SupabaseApiTopPathsResponse): Html =>
 	paths.paths.length === 0
-		? panelEmpty(h, ["No paths in this time range."])
+		? panelEmpty(h, ["No paths in this window"])
 		: h.div(
 				[h.AriaLabel("Top paths")],
-				paths.paths.map((path) =>
+				Arr.map(paths.paths, (path) =>
 					h.div(
 						[h.Key(`${path.method} ${path.path}`), h.Class(PATH_ROW)],
 						[
@@ -169,7 +168,7 @@ const trafficBody = (
 ): Html => {
 	if (traffic.requests === 0)
 		return isLogsEnabled
-			? panelEmpty(h, ["No API requests in this time range."])
+			? panelEmpty(h, ["No API requests in this window"])
 			: panelEmpty(h, [
 					"API traffic comes from this project's logs. Turn on Logs for it to see requests here. ",
 					panelLink(h, MANAGE_HREF, "Manage projects"),
@@ -177,7 +176,7 @@ const trafficBody = (
 	return h.div(
 		[],
 		[
-			h.div([h.Class("flex justify-end px-4 pt-3")], [totals(h, traffic)]),
+			hstack(h, { align: "stretch", justify: "end", className: "px-4 pt-3" }, [totals(h, traffic)]),
 			h.div([h.Class("px-4 py-3")], [bars(h, model, traffic, theme, timeZone)]),
 			legend(h, traffic, model.isTopPathsOpen),
 			...(model.isTopPathsOpen

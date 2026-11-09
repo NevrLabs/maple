@@ -7,6 +7,7 @@
  */
 import type { CancellationReason, CancellationSnapshot, CancellationVolume } from "@maple/domain/http"
 import { WINDOW_DAYS } from "./snapshot"
+import { Array as Arr } from "effect"
 
 export interface CancellationSignal {
 	/** The part of the snapshot the sentence is about; the report files it under that stat. */
@@ -44,6 +45,10 @@ const billJumped = (billing: NonNullable<CancellationSnapshot["billing"]>): bool
 
 type Visits = NonNullable<CancellationSnapshot["visits"]>
 
+/** Cancelled within a day of subscribing, or of creating the org when the start is unknown. */
+const cancelledSameDay = ({ plan, org }: CancellationSnapshot): boolean =>
+	(plan.tenureDays ?? org?.ageDays ?? null) === 0
+
 const unvisited = (visits: Visits): boolean =>
 	visits.daysSinceLastVisit === null || visits.daysSinceLastVisit >= UNVISITED_AFTER_DAYS
 
@@ -59,6 +64,9 @@ export const ruleReason = (snapshot: CancellationSnapshot): CancellationReason =
 	const { plan, org, ingest, visits, billing } = snapshot
 	// Past due on a plan the org itself scheduled to cancel is a choice, with a late invoice.
 	if (plan.pastDue && plan.phase === "ended") return "payment_failure"
+
+	// Decided before any usage could say why; the windows hold nothing of theirs.
+	if (cancelledSameDay(snapshot)) return "same_day_cancel"
 
 	if (ingest !== null) {
 		const activeDays = ingest.recent.activeDays + ingest.prior.activeDays
@@ -172,7 +180,11 @@ export const deriveSignals = (snapshot: CancellationSnapshot): ReadonlyArray<Can
 			)
 		}
 		if (billing.overAllowance.length > 0) {
-			add("billing", "concern", `Past the included allowance on ${billing.overAllowance.join(", ")}`)
+			add(
+				"billing",
+				"concern",
+				`Past the included allowance on ${Arr.join(billing.overAllowance, ", ")}`,
+			)
 		}
 	}
 
@@ -189,7 +201,9 @@ export const deriveSignals = (snapshot: CancellationSnapshot): ReadonlyArray<Can
 		}
 	}
 
-	if (plan.tenureDays !== null && plan.tenureDays < 14) {
+	if (cancelledSameDay(snapshot)) {
+		add("plan", "concern", "Cancelled the day they subscribed")
+	} else if (plan.tenureDays !== null && plan.tenureDays < 14) {
 		add("plan", "concern", `Subscribed for only ${days(plan.tenureDays)}`)
 	}
 	if (org?.members === 1) add("members", "neutral", "Single-member org")

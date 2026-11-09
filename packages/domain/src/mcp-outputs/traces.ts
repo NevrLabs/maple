@@ -30,6 +30,8 @@ export const SearchTracesFilters = Schema.Struct({
 	maxDurationMs: Schema.optionalKey(Schema.Number),
 	httpMethod: Schema.optionalKey(Schema.String),
 	spanName: Schema.optionalKey(Schema.String),
+	/** How `spanName` matched: the exact name, or a case-insensitive substring after an exact miss. */
+	spanNameMatch: Schema.optionalKey(Schema.Literals(["exact", "contains"])),
 	traceId: Schema.optionalKey(Schema.String),
 	attributeKey: Schema.optionalKey(Schema.String),
 	attributeValue: Schema.optionalKey(Schema.String),
@@ -39,6 +41,8 @@ export const SearchTracesFilters = Schema.Struct({
 
 export const SearchTracesOutput = Schema.Struct({
 	timeRange: OutputTimeRange,
+	/** Set when the window before this time did not finish: only from here to the end was read. */
+	coveredFrom: Schema.optionalKey(Schema.String),
 	pagination: Schema.optionalKey(OutputPagination),
 	traces: Schema.Array(TraceSummaryRow),
 	filters: SearchTracesFilters,
@@ -198,6 +202,8 @@ export const LogSearchFilters = Schema.Struct({
 export const SearchLogsOutput = Schema.Struct({
 	timeRange: OutputTimeRange,
 	totalCount: Schema.Number,
+	/** `totalCount` is only what the pages so far show: the exact count did not finish. */
+	totalIsLowerBound: Schema.optionalKey(Schema.Boolean),
 	pagination: Schema.optionalKey(OutputPagination),
 	logs: Schema.Array(LogEntryRow),
 	filters: Schema.optionalKey(LogSearchFilters),

@@ -1,8 +1,9 @@
 import type { Html, HtmlBuilder } from "foldkit/html"
-import * as Select from "../../../ui/select"
-import { view as selectView, type SelectOption } from "../../../ui/select-view"
+import * as Select from "@maple/views/ui/select"
+import { view as selectView, type SelectOption } from "@maple/views/ui/select-view"
 import { Message } from "./message"
 import type { Model } from "./model"
+import { Array as Arr, Option } from "effect"
 
 type H = HtmlBuilder<Message>
 
@@ -23,16 +24,15 @@ export const pageSelect = (
 		toView: (parts: ReadonlyArray<Html>) => Html
 	}>,
 ): Html => {
-	const index = options.findIndex((option) => option.value === value)
-	const current =
-		model.selects[id] ?? Select.init(id, { value, selectedIndex: index === -1 ? null : index })
+	const index = Arr.findFirstIndex(options, (option) => option.value === value)
+	const current = model.selects[id] ?? Select.init(id, { value, selectedIndex: Option.getOrNull(index) })
 	return h.submodel({
 		slotId: `widget-editor-select-${id}`,
 		model: { ...current, value },
 		view: selectView,
 		toParentMessage: (message) => Message.GotSelectMessage({ id, message }),
 		viewInputs: {
-			entries: options.map((item) => ({ _tag: "Item" as const, item })),
+			entries: Arr.map(options, (item) => ({ _tag: "Item" as const, item })),
 			size: inputs.size,
 			className: inputs.className,
 			ariaLabel: inputs.ariaLabel,

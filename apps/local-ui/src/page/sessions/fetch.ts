@@ -1,7 +1,7 @@
 import { CH } from "@maple/query-engine"
 import type { TimeBounds } from "../../lib/time"
 import type { DateTime } from "effect"
-import { Effect } from "effect"
+import { Effect, Option, Array as Arr } from "effect"
 import { localParams, queryRows } from "../../data/local-query"
 import type { SessionFacets, SessionRow } from "./model"
 
@@ -72,7 +72,7 @@ export const fetchSessionPage = (
 			),
 			apiBase,
 		),
-		(rows) => rows.map(toRow),
+		(rows) => Arr.map(rows, toRow),
 	)
 
 export const nextCursor = (page: ReadonlyArray<SessionRow>): SessionCursor | undefined => {
@@ -97,12 +97,18 @@ export const fetchSessionFacets = (filters: SessionFilters, bounds: TimeBounds, 
 		),
 		(rows): SessionFacets => {
 			const pick = (facetType: string) =>
-				rows.filter((row) => row.facetType === facetType && row.name).map((row) => ({ name: row.name, count: row.count }))
+				Arr.map(
+					Arr.filter(rows, (row) => row.facetType === facetType && row.name !== ""),
+					(row) => ({ name: row.name, count: row.count }),
+				)
 			return {
 				service: pick("service"),
 				browser: pick("browser"),
 				device: pick("device"),
-				errorCount: rows.find((row) => row.facetType === "error")?.count ?? 0,
+				errorCount: Option.match(
+					Arr.findFirst(rows, (row) => row.facetType === "error"),
+					{ onNone: () => 0, onSome: (row) => row.count },
+				),
 			}
 		},
 	)

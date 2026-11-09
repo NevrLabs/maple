@@ -4,13 +4,13 @@ import {
 	V2PlanetScaleOrganizationList,
 	V2PlanetScaleSelectOrganizationRequest,
 } from "@maple/domain/http/v2"
-import { Effect, Schema } from "effect"
+import { Effect, Schema, Array as Arr, String as Str } from "effect"
 import { AsyncData, Command } from "foldkit"
-import { KeyedSchema } from "../../data/keyed"
-import { LoadFailure, toLoadFailure } from "../../data/load-failure"
+import { KeyedSchema } from "@maple/views/data/keyed"
+import { LoadFailure, toLoadFailure } from "@maple/views/data/load-failure"
 import { MapleApiV2Client } from "../../platform/api-clients"
-import * as Dialog from "../../ui/dialog"
-import * as Field from "../../ui/field"
+import * as Dialog from "@maple/views/ui/dialog"
+import * as Field from "@maple/views/ui/field"
 import { derivePlanetScaleSetup } from "../../components/integrations/planetscale-setup-steps"
 import { Message } from "./message"
 
@@ -73,10 +73,10 @@ export const isWatchExpired = (card: PlanetscaleCardModel, nowMs: number): boole
 
 /** Comma or newline separated globs, trimmed. */
 export const parsePatternList = (value: string): ReadonlyArray<string> =>
-	value
-		.split(/[\n,]/)
-		.map((pattern) => pattern.trim())
-		.filter((pattern) => pattern.length > 0)
+	Arr.filter(
+		Arr.map(Str.split(/[\n,]/)(value), (pattern) => Str.trim(pattern)),
+		(pattern) => pattern.length > 0,
+	)
 
 export const FetchOrganizations = Command.define("FetchPlanetscaleOrganizations", {
 	args: { key: Schema.String },
@@ -104,7 +104,7 @@ export const SelectOrganization = Command.define("SelectPlanetscaleOrganization"
 			const client = yield* MapleApiV2Client
 			const withInclude = includeBranches.length > 0 ? { include_branches: includeBranches } : {}
 			const withExclude = excludeBranches.length > 0 ? { exclude_branches: excludeBranches } : {}
-			const payload = yield* Schema.decodeUnknownEffect(V2PlanetScaleSelectOrganizationRequest)({
+			const payload = yield* Schema.decodeEffect(V2PlanetScaleSelectOrganizationRequest)({
 				organization,
 				...withInclude,
 				...withExclude,
@@ -125,7 +125,7 @@ export const SetMetricsToken = Command.define("SetPlanetscaleMetricsToken", {
 	execute: ({ tokenId, tokenSecret }) =>
 		Effect.gen(function* () {
 			const client = yield* MapleApiV2Client
-			const payload = yield* Schema.decodeUnknownEffect(V2PlanetScaleMetricsTokenRequest)({
+			const payload = yield* Schema.decodeEffect(V2PlanetScaleMetricsTokenRequest)({
 				token_id: tokenId,
 				token_secret: tokenSecret,
 			})

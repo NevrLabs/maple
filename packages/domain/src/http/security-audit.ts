@@ -1,5 +1,5 @@
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api"
-import { Schema } from "effect"
+import { Schema, String as Str } from "effect"
 import { ExecutionProfile } from "@maple/security-audit/ecosystems"
 import { AuditReportsRecord, Finding, UnitStatus } from "@maple/security-audit/schema"
 import { IsoDateTimeString, UserId } from "../primitives"
@@ -42,7 +42,7 @@ export const SecurityAuditBranch = Schema.String.check(
 		message:
 			"Expected a branch name of letters, digits and . _ / + -, not starting with - / or . and without '..', '//' or '@{'",
 	}),
-	Schema.makeFilter((value: string) => !value.endsWith("/") && !value.endsWith(".lock"), {
+	Schema.makeFilter((value: string) => !Str.endsWith("/")(value) && !Str.endsWith(".lock")(value), {
 		description: "a branch name",
 		message: "Expected a branch name that does not end in '/' or '.lock'",
 	}),
@@ -482,6 +482,8 @@ export class SecurityAuditCreditsUsedUpError extends HttpTaggedError<SecurityAud
 		message: Schema.String,
 		/** When the org's AI credits reset to their grant. */
 		resetsAt: IsoDateTimeString,
+		/** The org's paid overage reached the cap an admin set, rather than running out of credits. */
+		capReached: Schema.optionalKey(Schema.Boolean),
 	},
 	{
 		status: 402,

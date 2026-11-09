@@ -11,6 +11,7 @@ import {
 	mapGcpTimeSeries,
 	type GcpTopGroup,
 } from "./mapping"
+import { Array as Arr, Option } from "effect"
 
 const startMs = Date.UTC(2026, 9, 8, 12, 0, 0)
 const endMs = startMs + 5 * 60_000
@@ -18,8 +19,8 @@ const at = (minutes: number) => new Date(startMs + minutes * 60_000).toISOString
 
 const find = (type: string): { readonly group: GcpMetricGroup; readonly metric: GcpMetric } => {
 	for (const group of GCP_METRIC_GROUPS) {
-		const metric = group.metrics.find((candidate) => candidate.type === type)
-		if (metric !== undefined) return { group, metric }
+		const metric = Arr.findFirst(group.metrics, (candidate) => candidate.type === type)
+		if (Option.isSome(metric)) return { group, metric: metric.value }
 	}
 	throw new Error(`${type} is not a curated metric`)
 }
@@ -72,11 +73,11 @@ describe("mapGcpTimeSeries", () => {
 			},
 		])
 		expect(sumRows).toEqual([])
-		expect(gaugeRows.map((row) => [row.timestamp, row.start_timestamp, row.value])).toEqual([
+		expect(Arr.map(gaugeRows, (row) => [row.timestamp, row.start_timestamp, row.value])).toEqual([
 			["2026-10-08 12:01:00.000", "2026-10-08 12:01:00.000", 0],
 			["2026-10-08 12:02:00.000", "2026-10-08 12:02:00.000", 2.5],
 		])
-		expect(gaugeRows[0]!.metric_attributes).toEqual({ "gcp.metric.labels.state": "idle" })
+		expect(gaugeRows[0].metric_attributes).toEqual({ "gcp.metric.labels.state": "idle" })
 	})
 
 	it("keeps the points that end inside (start, end]", () => {
@@ -84,13 +85,13 @@ describe("mapGcpTimeSeries", () => {
 			{
 				metric: {},
 				resource: { labels: { database_id: "acme-prod:main", region: "us-central1" } },
-				points: [0, 1, 5, 6].map((minute) => ({
+				points: Arr.map([0, 1, 5, 6], (minute) => ({
 					interval: { endTime: at(minute) },
 					value: { doubleValue: minute },
 				})),
 			},
 		])
-		expect(gaugeRows.map((row) => row.value)).toEqual([1, 5])
+		expect(Arr.map(gaugeRows, (row) => row.value)).toEqual([1, 5])
 	})
 
 	it("turns a distribution into p50/p95/p99 gauges, in seconds", () => {
@@ -116,7 +117,7 @@ describe("mapGcpTimeSeries", () => {
 				],
 			},
 		])
-		expect(gaugeRows.map((row) => [row.metric_attributes, Number(row.value.toFixed(6))])).toEqual([
+		expect(Arr.map(gaugeRows, (row) => [row.metric_attributes, Number(row.value.toFixed(6))])).toEqual([
 			[{ quantile: "0.5" }, 0.1],
 			[{ quantile: "0.95" }, 0.19],
 			[{ quantile: "0.99" }, 0.198],
@@ -140,11 +141,11 @@ describe("mapGcpTimeSeries", () => {
 			series,
 		]).sumRows
 		const [sent] = map("compute.googleapis.com/instance/network/sent_bytes_count", [series]).sumRows
-		expect([received, sent].map((row) => [row!.metric_name, row!.metric_attributes])).toEqual([
+		expect(Arr.map([received, sent], (row) => [row.metric_name, row.metric_attributes])).toEqual([
 			["gcp.gce.network.io", { "network.io.direction": "receive" }],
 			["gcp.gce.network.io", { "network.io.direction": "transmit" }],
 		])
-		expect(received!.resource_attributes).toMatchObject({
+		expect(received.resource_attributes).toMatchObject({
 			"service.name": "web-1",
 			"host.name": "web-1",
 			"gcp.gce.instance.name": "web-1",
@@ -177,14 +178,16 @@ describe("mapGcpTimeSeries", () => {
 		}
 		// Read twice: once for its quantiles, once for its count.
 		const latencies = (name: string) => {
-			const group = GCP_METRIC_GROUPS.find((one) => one.resourceType === "cloudsql_instance_database")!
-			const metric = group.metrics.find((one) => one.name === name)!
+			const group = Option.getOrThrow(
+				Arr.findFirst(GCP_METRIC_GROUPS, (one) => one.resourceType === "cloudsql_instance_database"),
+			)
+			const metric = Option.getOrThrow(Arr.findFirst(group.metrics, (one) => one.name === name))
 			return mapGcpTimeSeries({ group, metric, startMs, endMs }, [series])
 		}
 		const [queries] = latencies("gcp.cloud_sql.queries").sumRows
 		expect(queries).toMatchObject({ metric_name: "gcp.cloud_sql.queries", value: 40 })
 		const durations = latencies("gcp.cloud_sql.query.duration").gaugeRows
-		expect(durations.map((row) => [row.metric_attributes.quantile, row.value])).toEqual([
+		expect(Arr.map(durations, (row) => [row.metric_attributes.quantile, row.value])).toEqual([
 			["0.5", 0.0005],
 			["0.95", 0.00095],
 			["0.99", 0.00099],
@@ -202,7 +205,7 @@ describe("mapGcpTimeSeries", () => {
 			"cloud.region",
 			"gcp.resource.labels.database_id",
 		]) {
-			expect(queries!.resource_attributes[key], key).toBe(instance[key])
+			expect(queries.resource_attributes[key], key).toBe(instance[key])
 		}
 	})
 
@@ -216,9 +219,9 @@ describe("mapGcpTimeSeries", () => {
 			series(""),
 			series("checkout-lb"),
 		])
-		expect(sumRows.map((row) => row.resource_attributes["gcp.resource.labels.url_map_name"])).toEqual([
-			"checkout-lb",
-		])
+		expect(
+			Arr.map(sumRows, (row) => row.resource_attributes["gcp.resource.labels.url_map_name"]),
+		).toEqual(["checkout-lb"])
 	})
 })
 
@@ -380,7 +383,7 @@ describe("mapGcpResource", () => {
 })
 
 describe("gcpTopSeries", () => {
-	const statements = GCP_METRIC_GROUPS.find((group) => group.top !== undefined)!
+	const statements = Option.getOrThrow(Arr.findFirst(GCP_METRIC_GROUPS, (group) => group.top !== undefined))
 	const group: GcpTopGroup = { ...statements, top: { ...statements.top!, limit: 2 } }
 	const series = (instance: string, hash: string, microseconds: number): GcpTimeSeries => ({
 		metric: { labels: { query_hash: hash } },
@@ -404,9 +407,10 @@ describe("gcpTopSeries", () => {
 		]
 		const kept = gcpTopSeries(group, all)
 		expect(
-			all
-				.filter((item) => kept.has(gcpTopKey(group, item)))
-				.map((item) => item.metric.labels?.query_hash),
+			Arr.map(
+				Arr.filter(all, (item) => kept.has(gcpTopKey(group, item))),
+				(item) => item.metric.labels?.query_hash,
+			),
 		).toEqual(["b", "c", "a"])
 		// The key is the resource and the item, whichever metric's series it is.
 		expect(
@@ -420,7 +424,9 @@ describe("gcpTopSeries", () => {
 	})
 
 	it("stores a point per window, its counter's start at the window's start", () => {
-		const metric = statements.metrics.find((candidate) => candidate.name === statements.top!.by)!
+		const metric = Option.getOrThrow(
+			Arr.findFirst(statements.metrics, (candidate) => candidate.name === statements.top!.by),
+		)
 		const { sumRows } = mapGcpTimeSeries({ group, metric, startMs, endMs }, [
 			{
 				...series("orders-db", "a", 2_000_000),

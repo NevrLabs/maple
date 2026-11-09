@@ -1,4 +1,4 @@
-// BOUNDARY: This module owns unparsed external values and narrows them before domain use.
+// BOUNDARY-FILE: This module owns unparsed external values and narrows them before domain use.
 import {
 	AlertDestinationId,
 	ErrorNotificationPolicyDocument,
@@ -35,7 +35,7 @@ import {
 } from "@maple/db/tables"
 import { Array as Arr, Clock, Context, Effect, HashSet, Layer, Option, Schema } from "effect"
 import { Database } from "@maple/backend/platform/DatabaseLive"
-import { requireAdmin } from "@maple/backend/services/auth/auth"
+import * as Policy from "@maple/domain/policy"
 import { evaluateEscalationPolicy as evaluateRoutingPolicy } from "@maple/backend/services/alerts/escalation-policy"
 import { makeErrorDatabaseExecute } from "./error-persistence"
 
@@ -123,10 +123,11 @@ const mergeNotificationPolicy = (
 	updatedBy: userId,
 })
 
+const decodeUserIdSync = Schema.decodeUnknownSync(UserIdSchema)
+
 const make: Effect.Effect<ErrorPolicyServiceApi, never, Database> = Effect.gen(function* () {
 	const database = yield* Database
 	const dbExecute = makeErrorDatabaseExecute(database, "ErrorPolicyService")
-	const decodeUserIdSync = Schema.decodeUnknownSync(UserIdSchema)
 
 	// Mirrors the column defaults on `error_notification_policies` — an org with no
 	// row must behave exactly like an org that just got one. Notifications are
@@ -157,7 +158,7 @@ const make: Effect.Effect<ErrorPolicyServiceApi, never, Database> = Effect.gen(f
 		// Per entry: one unreadable id must not hide the valid destinations next to it.
 		Option.match(decodeStoredJsonArray(raw), {
 			onNone: () => [],
-			onSome: (parsed) => Arr.getSomes(parsed.map((value) => decodeAlertDestinationId(value))),
+			onSome: (parsed) => Arr.getSomes(Arr.map(parsed, (value) => decodeAlertDestinationId(value))),
 		})
 
 	const notificationRowToDocument = (row: ErrorNotificationPolicyRow) =>
@@ -203,11 +204,12 @@ const make: Effect.Effect<ErrorPolicyServiceApi, never, Database> = Effect.gen(f
 		"ErrorPolicyService.upsertNotificationPolicy",
 	)(function* (orgId, userId, roles, request) {
 		yield* Effect.annotateCurrentSpan({ orgId })
-		yield* requireAdmin(
+		yield* Policy.check(
 			roles,
-			() =>
+			"error_policy:manage",
+			(denial) =>
 				new ErrorForbiddenError({
-					message: "Only org admins can manage error notification policy",
+					message: denial.message,
 				}),
 		)
 		const timestamp = yield* Clock.currentTimeMillis
@@ -230,7 +232,7 @@ const make: Effect.Effect<ErrorPolicyServiceApi, never, Database> = Effect.gen(f
 						const unknown = Arr.filter(requested, (id) => !HashSet.has(ownedIds, id))
 						if (unknown.length > 0) {
 							return yield* new ErrorNotificationUnknownDestinationError({
-								message: `Unknown alert destination${unknown.length === 1 ? "" : "s"} for this org: ${unknown.join(", ")}`,
+								message: `Unknown alert destination${unknown.length === 1 ? "" : "s"} for this org: ${Arr.join(unknown, ", ")}`,
 								destinationIds: unknown,
 							})
 						}
@@ -283,7 +285,8 @@ const make: Effect.Effect<ErrorPolicyServiceApi, never, Database> = Effect.gen(f
 		"ErrorPolicyService.getEscalationPolicy",
 	)(function* (orgId) {
 		yield* Effect.annotateCurrentSpan({ orgId })
-		return escalationRowToDocument(yield* loadEscalationPolicyRow(orgId))
+		const row = yield* loadEscalationPolicyRow(orgId)
+		return escalationRowToDocument(row)
 	})
 
 	const upsertEscalationPolicy: ErrorPolicyServiceApi["upsertEscalationPolicy"] = Effect.fn(
@@ -295,16 +298,14 @@ const make: Effect.Effect<ErrorPolicyServiceApi, never, Database> = Effect.gen(f
 
 		if (request.rules !== undefined) {
 			const rules = request.rules
-			const duplicate = rules.find(
-				(rule, index) => rules.findIndex((other) => other.severity === rule.severity) !== index,
+			const duplicate = Arr.findFirst(rules, (rule, index) =>
+				Arr.some(Arr.take(rules, index), (other) => other.severity === rule.severity),
 			)
-			if (duplicate !== undefined) {
-				return yield* Effect.fail(
-					new ErrorValidationError({
-						message: "Escalation policy has duplicate severity rules",
-						details: [duplicate.severity],
-					}),
-				)
+			if (Option.isSome(duplicate)) {
+				return yield* new ErrorValidationError({
+					message: "Escalation policy has duplicate severity rules",
+					details: [duplicate.value.severity],
+				})
 			}
 
 			// Reject destination IDs that don't belong to this org at write time.
@@ -324,12 +325,10 @@ const make: Effect.Effect<ErrorPolicyServiceApi, never, Database> = Effect.gen(f
 				const owned = HashSet.fromIterable(Arr.map(ownedRows, (row) => row.id))
 				const unknown = Arr.filter(referencedIds, (id) => !HashSet.has(owned, id))
 				if (unknown.length > 0) {
-					return yield* Effect.fail(
-						new ErrorValidationError({
-							message: "Escalation policy references unknown destinations",
-							details: unknown,
-						}),
-					)
+					return yield* new ErrorValidationError({
+						message: "Escalation policy references unknown destinations",
+						details: unknown,
+					})
 				}
 			}
 		}
@@ -411,7 +410,7 @@ const make: Effect.Effect<ErrorPolicyServiceApi, never, Database> = Effect.gen(f
 			severity: request.severity,
 			source: request.source,
 			...(!(request.confidence === undefined) ? { confidence: request.confidence } : undefined),
-			enabledDestinationIds: new Set(enabledRows.map((row) => row.id)),
+			enabledDestinationIds: new Set(Arr.map(enabledRows, (row) => row.id)),
 		})
 		return new EscalationPolicyEvaluationDocument({
 			outcome: decision.outcome,
@@ -432,7 +431,7 @@ const make: Effect.Effect<ErrorPolicyServiceApi, never, Database> = Effect.gen(f
 					.orderBy(["createdAt", "desc"]),
 			),
 		)
-		return new IssueEscalationAttemptsResponse({ attempts: rows.map(escalationAttemptDocument) })
+		return new IssueEscalationAttemptsResponse({ attempts: Arr.map(rows, escalationAttemptDocument) })
 	})
 
 	const listRecentEscalations: ErrorPolicyServiceApi["listRecentEscalations"] = Effect.fn(
@@ -448,7 +447,7 @@ const make: Effect.Effect<ErrorPolicyServiceApi, never, Database> = Effect.gen(f
 					.limit(limit ?? 25),
 			),
 		)
-		return new IssueEscalationAttemptsResponse({ attempts: rows.map(escalationAttemptDocument) })
+		return new IssueEscalationAttemptsResponse({ attempts: Arr.map(rows, escalationAttemptDocument) })
 	})
 
 	return {

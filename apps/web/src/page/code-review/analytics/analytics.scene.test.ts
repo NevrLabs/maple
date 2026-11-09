@@ -1,7 +1,7 @@
-import { Result } from "effect"
+import { Result, Array as Arr } from "effect"
 import { expect as expectView, given, Mount, role, scene, text, withViewInputs } from "foldkit/scene"
 import { describe, expect, test } from "vitest"
-import { ResolveThemeColors, ThemeMessage } from "../../../charts/theme-colors"
+import { ResolveThemeColors, ThemeMessage } from "@maple/views/charts/theme-colors"
 import { FrameMessage } from "../kit/frame"
 import { analyticsOf, context, names, NOW, PAYMENTS, window } from "../kit/test-fixtures"
 import { Message } from "./message"
@@ -54,11 +54,14 @@ describe("code review analytics", () => {
 	})
 
 	test("after a Reload an author pick reads under the kept window; only a new preset re-resolves", () => {
-		const reloaded = pageUpdate(answered(windowed().model, 3, ["ada-l"]), frame(FrameMessage.ClickedReload())).model
+		const reloaded = pageUpdate(
+			answered(windowed().model, 3, ["ada-l"]),
+			frame(FrameMessage.ClickedReload()),
+		).model
 		const filtered = navigated(reloaded, { author: "ada-l" })
 		expect(names(filtered.commands)).toEqual(["FetchCodeReviewAnalytics"])
 		const moved = navigated(filtered.model, { author: "ada-l", timePreset: "1h" })
-		expect(moved.commands?.map(({ name, args }) => [name, args?.["mode"]])).toEqual([
+		expect(Arr.map(moved.commands ?? [], ({ name, args }) => [name, args?.["mode"]])).toEqual([
 			["ResolveCodeReviewWindow", "Refresh"],
 		])
 	})
@@ -82,7 +85,7 @@ describe("code review analytics", () => {
 			{ update: pageUpdate, view },
 			given(model),
 			themeResolved(),
-			expectView(text("No reviews in this window")).toExist(),
+			expectView(text("No reviews match these filters")).toExist(),
 			expectView(role("button", { name: "Clear filters" })).toExist(),
 		)
 		const cleared = pageUpdate(model, Message.ClickedClearFilters())

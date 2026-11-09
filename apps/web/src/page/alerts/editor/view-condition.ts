@@ -7,14 +7,14 @@ import {
 } from "@maple/web-data/alerts/form-utils"
 import { cn } from "@maple/ui/lib/utils"
 import { createLazy, type Html, type HtmlBuilder } from "foldkit/html"
-import { button } from "../../../ui/button"
-import { card } from "../../../ui/card"
-import { eyebrow } from "../../../ui/eyebrow"
-import { field, fieldLabel } from "../../../ui/field"
-import { icon } from "../../../ui/icon"
-import * as RadioGroup from "../../../ui/radio-group"
-import { statusDot } from "../../../ui/status-dot"
-import type * as Select from "../../../ui/select"
+import { button } from "@maple/views/ui/button"
+import { card } from "@maple/views/ui/card"
+import { eyebrow } from "@maple/views/ui/eyebrow"
+import { field, fieldLabel } from "@maple/views/ui/field"
+import { icon } from "@maple/views/ui/icon"
+import * as RadioGroup from "@maple/views/ui/radio-group"
+import { statusDot } from "@maple/views/ui/status-dot"
+import type * as Select from "@maple/views/ui/select"
 import { stableSlice } from "../../kit/stable-slice"
 import { COMPARATOR_WORDS, comparatorWords, recoveryLabel } from "./derive"
 import { draftTimingOf } from "./derive-rows"
@@ -30,6 +30,9 @@ import { Message, type TextField } from "./message"
 import type { Model } from "./model"
 import { fieldStateOf, idsOf, numberField, wasNote } from "./view-fields"
 import { formSelect } from "./view-select"
+import { typography } from "@maple/views/ui/typography"
+import { hstack } from "@maple/views/ui/stack"
+import { Array as Arr, String as Str, Option } from "effect"
 
 // `RuleConditionFields`: the rule's condition row.
 
@@ -46,7 +49,7 @@ type ConditionView = Pick<Model, "mountedForm" | "savedForm"> &
 	}>
 
 /** `COMPARATOR_ITEMS`, in `comparatorLabels` order. */
-const COMPARATOR_ITEMS = [...COMPARATOR_WORDS].map(([value, label]) => ({ value, label }))
+const COMPARATOR_ITEMS = Arr.map([...COMPARATOR_WORDS], ([value, label]) => ({ value, label }))
 
 const SEVERITY_OPTIONS: ReadonlyArray<{
 	value: AlertSeverity
@@ -63,7 +66,7 @@ const SEVERITY_OPTIONS: ReadonlyArray<{
 	{
 		value: "critical",
 		label: "Critical",
-		selected: "border-severity-error/60 bg-severity-error-a2 text-severity-error",
+		selected: "border-severity-error-a4 bg-severity-error-a2 text-severity-error",
 		dot: "bg-severity-error",
 	},
 ]
@@ -75,7 +78,7 @@ const severityPicker = (h: H, value: AlertSeverity): Html => {
 	const config: RadioGroup.RadioGroupViewConfig<Message> = {
 		model: RadioGroup.init(value),
 		toParentMessage: (message) => Message.GotRadioMessage({ group: "severity", message }),
-		items: SEVERITY_OPTIONS.map((option) => ({
+		items: Arr.map(SEVERITY_OPTIONS, (option) => ({
 			value: option.value,
 			id: `rule-severity-${option.value}`,
 			inputId: `rule-severity-${option.value}-input`,
@@ -91,7 +94,7 @@ const severityPicker = (h: H, value: AlertSeverity): Html => {
 				h.DataAttribute("filled", ""),
 				h.Role("radiogroup"),
 			],
-			SEVERITY_OPTIONS.flatMap((option) => {
+			Arr.flatMap(SEVERITY_OPTIONS, (option) => {
 				const isSelected = value === option.value
 				return RadioGroup.radio(
 					h,
@@ -121,7 +124,10 @@ const severityPicker = (h: H, value: AlertSeverity): Html => {
 
 /** `TierLabel`: the fixed severity of a row once a rule has two tiers. */
 const tierLabel = (h: H, severity: AlertSeverity): Html => {
-	const option = SEVERITY_OPTIONS.find((candidate) => candidate.value === severity) ?? SEVERITY_OPTIONS[0]
+	const option = Option.getOrElse(
+		Arr.findFirst(SEVERITY_OPTIONS, (candidate) => candidate.value === severity),
+		() => SEVERITY_OPTIONS[0],
+	)
 	const ids = idsOf(`rule-tier-${severity}`, false)
 	return field(h, { className: "items-stretch gap-1.5", state: fieldStateOf("", undefined) }, [
 		fieldLabel(h, { ids, state: fieldStateOf("", undefined) }, "Severity"),
@@ -141,7 +147,7 @@ const tierLabel = (h: H, severity: AlertSeverity): Html => {
 
 /** The saved value of a field when the draft changed it (`was`). */
 const wasOf = (saved: RuleForm | null, form: RuleForm, pick: (form: RuleForm) => string): string | null =>
-	saved !== null && pick(saved).trim() !== pick(form).trim() ? pick(saved) : null
+	saved !== null && Str.trim(pick(saved)) !== Str.trim(pick(form)) ? pick(saved) : null
 
 const comparatorRow = (h: H, model: ConditionView, form: RuleForm, saved: RuleForm | null): Html => {
 	const comparatorWas = wasOf(saved, form, (f) => f.comparator)
@@ -197,22 +203,19 @@ const criticalRow = (
 	h.div(
 		[h.Class("grid items-start gap-4 border-t pt-3 md:grid-cols-3")],
 		[
-			h.div(
-				[h.Class("flex items-center justify-between gap-2")],
-				[
-					tierLabel(h, "critical"),
-					button(
-						h,
-						{
-							variant: "ghost",
-							size: "sm",
-							className: "mt-6 px-2 text-xs text-muted-foreground",
-							attributes: [h.OnClick(Message.ClickedRemoveCriticalTier())],
-						},
-						["Remove"],
-					),
-				],
-			),
+			hstack(h, { gap: "2", justify: "between" }, [
+				tierLabel(h, "critical"),
+				button(
+					h,
+					{
+						variant: "ghost",
+						size: "sm",
+						className: "mt-6 px-2 text-xs text-muted-foreground",
+						attributes: [h.OnClick(Message.ClickedRemoveCriticalTier())],
+					},
+					["Remove"],
+				),
+			]),
 			numberField(h, {
 				id: "rule-critical-threshold",
 				label: "Threshold",
@@ -224,7 +227,7 @@ const criticalRow = (
 			numberField(h, {
 				id: "rule-critical-recovery",
 				label: recovery,
-				ariaLabel: `Critical ${recovery.toLowerCase()}`,
+				ariaLabel: `Critical ${Str.toLowerCase(recovery)}`,
 				placeholder: "Threshold",
 				description: "A critical that recovers drops back to warning.",
 				unit,
@@ -236,7 +239,7 @@ const criticalRow = (
 
 /** `windowDescription`: what a check reads and how often the scheduler runs one. */
 const windowDescription = (form: RuleForm): string => {
-	const minutes = Number(form.windowMinutes.trim())
+	const minutes = Number(Str.trim(form.windowMinutes))
 	if (!Number.isFinite(minutes) || minutes <= 0) return "Each check looks at this much data."
 	const every = formIntervalMinutes(form)
 	return `Each check looks at this much data, checked every ${every === 1 ? "minute" : `${every} min`}.`
@@ -255,15 +258,17 @@ const intervalPicker = (
 	const config: RadioGroup.RadioGroupViewConfig<Message> = {
 		model: RadioGroup.init(selected),
 		toParentMessage: (message) => Message.GotRadioMessage({ group: "interval", message }),
-		items: options.map((option) => ({
+		items: Arr.map(options, (option) => ({
 			value: option.value,
 			id: `rule-interval-${option.value}`,
 			inputId: `rule-interval-${option.value}-input`,
 		})),
 	}
-	const current = options.find((option) => option.value === selected)
+	const current = Arr.findFirst(options, (option) => option.value === selected)
 	return field(h, { className: "items-stretch gap-1.5", state: filledState }, [
-		h.span([h.Id("rule-interval-label"), h.Class("text-sm font-medium")], ["Check every"]),
+		typography(h, { size: "sm", weight: "medium", attributes: [h.Id("rule-interval-label")] }, [
+			"Check every",
+		]),
 		...slowdownNotice(h, model, form),
 		h.div(
 			[
@@ -274,7 +279,7 @@ const intervalPicker = (
 				h.DataAttribute("filled", ""),
 				h.Role("radiogroup"),
 			],
-			options.flatMap((option) => {
+			Arr.flatMap(options, (option) => {
 				const isSelected = option.value === selected
 				const isBlocked = option.isLongerThanWindow || option.isTooSlow
 				return RadioGroup.radio(
@@ -287,7 +292,7 @@ const intervalPicker = (
 						isSelected
 							? isBlocked
 								? "border-severity-warn/60 bg-severity-warn-a2 text-severity-warn"
-								: "border-primary/50 bg-primary-a2 text-foreground"
+								: "border-primary-a4 bg-primary-a2 text-foreground"
 							: "text-muted-foreground hover:bg-surface-sunken active:bg-surface-sunken hover:text-foreground active:text-foreground",
 						!isSelected && isBlocked && "text-foreground-subtle",
 					),
@@ -315,16 +320,18 @@ const intervalPicker = (
 				)
 			}),
 		),
-		h.p([h.Class("text-xs text-muted-foreground")], [intervalNote(form, current, timing)]),
+		typography(h, { size: "xs", tone: "muted", as: "p" }, [intervalNote(form, current, timing)]),
 	])
 }
 
 const slowdownOf = (model: Model): Pick<ConditionView, "slowedMinutes"> => {
 	const row =
 		model.editingRuleId === null
-			? undefined
-			: model.rules?.find((rule) => rule.id === model.editingRuleId)
-	return { slowedMinutes: row?.slowed_interval_minutes ?? null }
+			? Option.none()
+			: Arr.findFirst(model.rules ?? [], (rule) => rule.id === model.editingRuleId)
+	return {
+		slowedMinutes: Option.getOrNull(Option.flatMapNullishOr(row, (rule) => rule.slowed_interval_minutes)),
+	}
 }
 
 /** Saving resets a slowdown, so say so while the picked interval is shorter than it. */
@@ -332,12 +339,16 @@ const slowdownNotice = (h: H, model: ConditionView, form: RuleForm): ReadonlyArr
 	model.slowedMinutes === null || formIntervalMinutes(form) >= model.slowedMinutes
 		? []
 		: [
-				h.div(
-					[
-						h.Class(
-							"flex flex-wrap items-center justify-between gap-2 rounded-md border border-severity-warn-a4 bg-severity-warn-a2 px-3 py-2 text-xs",
-						),
-					],
+				hstack(
+					h,
+					{
+						gap: "2",
+						align: "center",
+						justify: "between",
+						wrap: true,
+						className:
+							"rounded-md border border-severity-warn-a4 bg-severity-warn-a2 px-3 py-2 text-xs",
+					},
 					[
 						h.span(
 							[],
@@ -364,10 +375,11 @@ const slowdownNotice = (h: H, model: ConditionView, form: RuleForm): ReadonlyArr
 
 const intervalNote = (
 	form: RuleForm,
-	option: ReturnType<typeof intervalOptions>[number] | undefined,
+	found: Option.Option<ReturnType<typeof intervalOptions>[number]>,
 	timing: AlertQueryTiming | null,
 ): string => {
-	if (option === undefined) return ""
+	if (Option.isNone(found)) return ""
+	const option = found.value
 	if (option.isLongerThanWindow) return "Longer than the window, so data between checks would go unread."
 	if (form.signalType === "raw_query" && timing?.failure === "query_too_much_memory") {
 		return "It ran out of memory with the most any interval allows, so checking less often will not help."
@@ -430,7 +442,7 @@ const checksSection = (
 								id: "rule-breaches-out-of",
 								label: "Out of the last",
 								placeholder: "In a row",
-								unit: form.breachesOutOf.trim().length > 0 ? "checks" : null,
+								unit: Str.trim(form.breachesOutOf).length > 0 ? "checks" : null,
 								onInput: changed("breachesOutOf"),
 								...values((f) => f.breachesOutOf),
 							}),

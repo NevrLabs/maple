@@ -1,11 +1,20 @@
 import { describe, expect, it } from "vitest"
-import type {
+import {
+	AiCreditDay,
+	AiCreditUsageResponse,
 	BillingBalance,
+	BillingControls,
 	BillingCustomer,
 	BillingSubscription,
-	BillingUsage,
+	BillingSpendLimit,
+	BillingUsageFeature,
 	CatalogPlan,
+	CatalogPlanItem,
+	CatalogPlanItemPrice,
+	CatalogPlanPrice,
 	DailySpendResponse,
+	DailyVolume,
+	type BillingUsage,
 } from "@maple/domain/http"
 import {
 	buildCumulativeSeries,
@@ -16,58 +25,105 @@ import {
 	rateCaption,
 	usageMeter,
 } from "./spend"
+import { maximumInvoiceCents, uncappedFeatures } from "./controls"
+import { Array as Arr, Option, Record as Rec } from "effect"
 
 // Mock builders construct only the consumed subset of each domain schema.
 const CYCLE_START = Date.UTC(2026, 6, 1)
 const CYCLE_END = Date.UTC(2026, 7, 1)
 const NOW = Date.UTC(2026, 6, 29, 12)
 
-const startupPlan = {
-	id: "startup",
-	name: "Startup",
-	price: { amount: 39, interval: "month" },
-	items: [
-		{ featureId: "logs", included: 100, price: { amount: 0.3 } },
-		{ featureId: "traces", included: 100, price: { amount: 0.3 } },
-		{ featureId: "metrics", included: 100, price: { amount: 0.3 } },
-		{ featureId: "browser_sessions", included: 5_000, price: { amount: 0.002 } },
-		// Billed per 1,000 events: `amount` is the price of one billing block.
-		{ featureId: "product_events", included: 1_000_000, price: { amount: 0.005, billingUnits: 1_000 } },
-	],
-} as CatalogPlan
+const item = (featureId: string, included: number, amount: number, billingUnits?: number) =>
+	new CatalogPlanItem({
+		featureId,
+		included,
+		price: new CatalogPlanItemPrice(billingUnits === undefined ? { amount } : { amount, billingUnits }),
+	})
+
+const startupPlanWith = (items: ReadonlyArray<CatalogPlanItem>) =>
+	new CatalogPlan({
+		id: "startup",
+		name: "Startup",
+		price: new CatalogPlanPrice({ amount: 39, interval: "month" }),
+		items,
+	})
+
+const startupPlan = startupPlanWith([
+	item("logs", 100, 0.3),
+	item("traces", 100, 0.3),
+	item("metrics", 100, 0.3),
+	item("browser_sessions", 5_000, 0.002),
+	// Billed per 1,000 events: `amount` is the price of one billing block.
+	item("product_events", 1_000_000, 0.005, 1_000),
+	// One credit is one dollar: $10 included, then $1 per credit.
+	item("ai_credits", 10, 1),
+])
+
+type SubscriptionInput = Pick<BillingSubscription, "planId" | "status"> & Partial<BillingSubscription>
 
 const buildCustomer = (
 	overrides: {
-		subscriptions?: Partial<BillingSubscription>[]
+		subscriptions?: ReadonlyArray<SubscriptionInput>
 		balances?: Record<string, Partial<BillingBalance>>
+		overageCaps?: Record<string, number>
 	} = {},
 ): BillingCustomer =>
-	({
+	new BillingCustomer({
 		id: "cus_1",
-		subscriptions: overrides.subscriptions ?? [
-			{
-				planId: "startup",
-				status: "active",
-				addOn: false,
-				currentPeriodStart: CYCLE_START,
-				currentPeriodEnd: CYCLE_END,
-			},
-		],
-		balances: overrides.balances ?? {
-			logs: { granted: 100 },
-			traces: { granted: 100 },
-			metrics: { granted: 100 },
-			browser_sessions: { granted: 5_000 },
-			product_events: { granted: 1_000_000 },
-		},
-	}) as BillingCustomer
+		billingControls:
+			overrides.overageCaps === undefined
+				? null
+				: new BillingControls({
+						spendLimits: Arr.map(
+							Rec.toEntries(overrides.overageCaps),
+							([featureId, overageLimit]) =>
+								new BillingSpendLimit({
+									featureId,
+									enabled: true,
+									limitType: "absolute",
+									overageLimit,
+								}),
+						),
+					}),
+		subscriptions: Arr.map(
+			overrides.subscriptions ?? [
+				{
+					planId: "startup",
+					status: "active",
+					addOn: false,
+					currentPeriodStart: CYCLE_START,
+					currentPeriodEnd: CYCLE_END,
+				},
+			],
+			(subscription) => new BillingSubscription(subscription),
+		),
+		balances: Rec.fromEntries(
+			Arr.map(
+				Rec.toEntries(
+					overrides.balances ?? {
+						logs: { granted: 100 },
+						traces: { granted: 100 },
+						metrics: { granted: 100 },
+						browser_sessions: { granted: 5_000 },
+						product_events: { granted: 1_000_000 },
+					},
+				),
+				([featureId, balance]) => [featureId, new BillingBalance(balance)],
+			),
+		),
+	})
 
-const usage = {
-	logs: { sum: 390 },
-	traces: { sum: 140 },
-	metrics: { sum: 160 },
-	browser_sessions: { sum: 26_700 },
-} as BillingUsage["total"]
+const usageOf = (sums: Record<string, number>): BillingUsage["total"] =>
+	Rec.fromEntries(
+		Arr.map(Rec.toEntries(sums), ([featureId, sum]) => [featureId, new BillingUsageFeature({ sum })]),
+	)
+
+const usage = usageOf({
+	logs: 390,
+	traces: 140,
+	metrics: 160,
+	browser_sessions: 26_700,
+})
 
 const model = () => buildSpendModel({ customer: buildCustomer(), plans: [startupPlan], usage, nowMs: NOW })
 
@@ -107,7 +163,7 @@ describe("buildSpendModel", () => {
 		const result = buildSpendModel({
 			customer,
 			plans: [startupPlan],
-			usage: { logs: { sum: 40 } } as BillingUsage["total"],
+			usage: usageOf({ logs: 40 }),
 			nowMs: paidStart + 2 * day,
 		})
 		if (result === null) throw new Error("expected a model")
@@ -116,6 +172,60 @@ describe("buildSpendModel", () => {
 		// 320 GB + 40 GB/2 days × 28 days = 880 GB, 780 GB over at $0.30.
 		// Pacing the whole balance over 2 days would have projected 4,800 GB.
 		expect(result.projectedCents).toBe(3_900 + 23_400)
+	})
+
+	it("never projects past the base fee when every overage cap is zero", () => {
+		const day = 86_400_000
+		const customer = buildCustomer({
+			subscriptions: [
+				{
+					planId: "startup",
+					status: "active",
+					addOn: false,
+					currentPeriodStart: CYCLE_START,
+					currentPeriodEnd: CYCLE_START + 30 * day,
+				},
+			],
+			balances: { logs: { granted: 100 }, traces: { granted: 100 } },
+			overageCaps: { logs: 0, traces: 0, metrics: 0, browser_sessions: 0, product_events: 0 },
+		})
+		// 90 GB of logs in the first day paces to 2,700 GB: $780 uncapped.
+		const result = buildSpendModel({
+			customer,
+			plans: [startupPlan],
+			usage: usageOf({ logs: 90, traces: 10 }),
+			nowMs: CYCLE_START + day,
+		})
+		if (result === null) throw new Error("expected a model")
+
+		expect(result.projectedCents).toBe(3_900)
+	})
+
+	it("projects a capped feature up to its cap", () => {
+		const day = 86_400_000
+		const customer = buildCustomer({
+			subscriptions: [
+				{
+					planId: "startup",
+					status: "active",
+					addOn: false,
+					currentPeriodStart: CYCLE_START,
+					currentPeriodEnd: CYCLE_START + 30 * day,
+				},
+			],
+			balances: { logs: { granted: 100 } },
+			overageCaps: { logs: 200 },
+		})
+		const result = buildSpendModel({
+			customer,
+			plans: [startupPlan],
+			usage: usageOf({ logs: 90 }),
+			nowMs: CYCLE_START + day,
+		})
+		if (result === null) throw new Error("expected a model")
+
+		// 200 GB cap × $0.30 on top of the $39 base.
+		expect(result.projectedCents).toBe(3_900 + 6_000)
 	})
 
 	it("names the top cost driver by overage dollars, not by volume", () => {
@@ -139,16 +249,16 @@ describe("buildSpendModel", () => {
 				},
 			}),
 			plans: [startupPlan],
-			usage: {
-				metrics: { sum: 433.98 },
-				browser_sessions: { sum: 401_015 },
+			usage: usageOf({
+				metrics: 433.98,
+				browser_sessions: 401_015,
 				// No balance for this one: the aggregate is all we have.
-				product_events: { sum: 1_576 },
-			} as BillingUsage["total"],
+				product_events: 1_576,
+			}),
 			nowMs: NOW,
 		})
 		if (result === null) throw new Error("expected a model")
-		const byId = Object.fromEntries(result.features.map((feature) => [feature.featureId, feature]))
+		const byId = Rec.fromEntries(Arr.map(result.features, (feature) => [feature.featureId, feature]))
 		expect(byId.metrics?.used).toBe(379.75)
 		expect(byId.metrics?.overageUnits).toBeCloseTo(279.75)
 		expect(byId.browser_sessions?.used).toBe(101_928)
@@ -160,7 +270,7 @@ describe("buildSpendModel", () => {
 		const result = buildSpendModel({
 			customer: buildCustomer(),
 			plans: [startupPlan],
-			usage: { logs: { sum: 10 } } as BillingUsage["total"],
+			usage: usageOf({ logs: 10 }),
 			nowMs: NOW,
 		})
 		expect(result?.topDriver).toBeNull()
@@ -168,13 +278,13 @@ describe("buildSpendModel", () => {
 	})
 
 	it("adds an active add-on to the base fee", () => {
-		const byoc = {
+		const byoc = new CatalogPlan({
 			id: "bringyourowncloud",
 			name: "Bring Your Own Cloud",
 			addOn: true,
-			price: { amount: 99 },
+			price: new CatalogPlanPrice({ amount: 99 }),
 			items: [],
-		} as CatalogPlan
+		})
 
 		const result = buildSpendModel({
 			customer: buildCustomer({
@@ -195,7 +305,7 @@ describe("buildSpendModel", () => {
 		})
 
 		expect(result?.baseCents).toBe(13_800)
-		expect(result?.addOns.map((plan) => plan.id)).toEqual(["bringyourowncloud"])
+		expect(Arr.map(result?.addOns ?? [], (plan) => plan.id)).toEqual(["bringyourowncloud"])
 	})
 
 	it("marks a legacy plan absent from the catalog as partial", () => {
@@ -214,12 +324,14 @@ describe("buildSpendModel", () => {
 		const result = buildSpendModel({
 			customer: buildCustomer(),
 			plans: [startupPlan],
-			usage: { product_events: { sum: 1_400_000 } } as BillingUsage["total"],
+			usage: usageOf({ product_events: 1_400_000 }),
 			nowMs: NOW,
 		})
 		if (result === null) throw new Error("expected a model")
 
-		const events = result.features.find((feature) => feature.featureId === "product_events")
+		const events = Option.getOrUndefined(
+			Arr.findFirst(result.features, (feature) => feature.featureId === "product_events"),
+		)
 		if (events === undefined) throw new Error("expected product_events")
 		// 400,000 events over × $0.005 / 1,000 = $2, NOT 400,000 × $0.005.
 		expect(events.overageUnits).toBe(400_000)
@@ -239,14 +351,13 @@ describe("buildSpendModel", () => {
 				product_events: { unlimited: true },
 			},
 		})
-		const plan = {
-			...startupPlan,
-			items: startupPlan.items.filter((item) => item.featureId !== "metrics"),
-		}
+		const plan = startupPlanWith(
+			Arr.filter(startupPlan.items, (planItem) => planItem.featureId !== "metrics"),
+		)
 		const result = buildSpendModel({ customer, plans: [plan], usage, nowMs: NOW })
 		if (result === null) throw new Error("expected a model")
-		const captions = Object.fromEntries(
-			result.features.map((feature) => [feature.featureId, rateCaption(feature)]),
+		const captions = Rec.fromEntries(
+			Arr.map(result.features, (feature) => [feature.featureId, rateCaption(feature)]),
 		)
 		expect(captions).toEqual({
 			logs: "No overage",
@@ -254,14 +365,15 @@ describe("buildSpendModel", () => {
 			metrics: "Rate unavailable",
 			browser_sessions: "$0.002/session",
 			product_events: "Included",
+			ai_credits: "$1/credit",
 		})
 	})
 
 	it("labels rates the way the price list quotes them", () => {
 		const result = model()
 		if (result === null) throw new Error("expected a model")
-		const labels = Object.fromEntries(
-			result.features.map((feature) => [feature.featureId, formatRateLabel(feature)]),
+		const labels = Rec.fromEntries(
+			Arr.map(result.features, (feature) => [feature.featureId, formatRateLabel(feature)]),
 		)
 		expect(labels).toEqual({
 			logs: "$0.30/GB",
@@ -269,7 +381,9 @@ describe("buildSpendModel", () => {
 			metrics: "$0.30/GB",
 			browser_sessions: "$0.002/session",
 			product_events: "$5/1M events",
+			ai_credits: "$1/credit",
 		})
+		expect(featureUnit("ai_credits")).toBe("credits")
 		expect(featureUnit("product_events")).toBe("events")
 		expect(featureUnit("browser_sessions")).toBe("sessions")
 		expect(featureUnit("logs")).toBe("GB")
@@ -288,13 +402,13 @@ describe("buildSpendModel", () => {
 })
 
 describe("costBreakdown", () => {
-	const byoc = {
+	const byoc = new CatalogPlan({
 		id: "bringyourowncloud",
 		name: "Bring Your Own Cloud",
 		addOn: true,
-		price: { amount: 99, interval: "month" },
+		price: new CatalogPlanPrice({ amount: 99, interval: "month" }),
 		items: [],
-	} as CatalogPlan
+	})
 	const withAddOn = (addOn: Partial<BillingSubscription>) =>
 		buildSpendModel({
 			customer: buildCustomer({
@@ -319,12 +433,12 @@ describe("costBreakdown", () => {
 		if (result === null) throw new Error("expected a model")
 		const lines = costBreakdown(result)
 
-		expect(lines.map((line) => [line.label, line.cents])).toEqual([
+		expect(Arr.map(lines, (line) => [line.label, line.cents])).toEqual([
 			["Startup plan", 3_900],
 			["Bring your own cloud add-on", 9_900],
 			["Usage overage", result.overageCents],
 		])
-		expect(lines.reduce((sum, line) => sum + (line.cents ?? 0), 0)).toBe(result.spendCents)
+		expect(Arr.reduce(lines, 0, (sum, line) => sum + (line.cents ?? 0))).toBe(result.spendCents)
 		expect(lines[2]?.detail).toBe(
 			"Logs, traces, metrics and browser sessions past what's included, per feature in Usage",
 		)
@@ -360,7 +474,7 @@ describe("costBreakdown", () => {
 
 		expect(result.partial).toBe(true)
 		expect(result.baseCents).toBe(3_900)
-		expect(costBreakdown(result).map((line) => [line.label, line.cents])).toEqual([
+		expect(Arr.map(costBreakdown(result), (line) => [line.label, line.cents])).toEqual([
 			["Startup plan", 3_900],
 			["retired_addon add-on", null],
 			["Usage overage", result.overageCents],
@@ -383,12 +497,12 @@ describe("costBreakdown", () => {
 			}),
 			plans: [
 				startupPlan,
-				{
+				new CatalogPlan({
 					id: "usage_addon",
 					name: "Usage add-on",
 					addOn: true,
-					items: [{ featureId: "logs", included: 10 }],
-				} as CatalogPlan,
+					items: [new CatalogPlanItem({ featureId: "logs", included: 10 })],
+				}),
 			],
 			usage,
 			nowMs: NOW,
@@ -410,23 +524,27 @@ describe("costBreakdown", () => {
 		})
 		if (result === null) throw new Error("expected a model")
 
-		expect(costBreakdown(result).map((line) => line.cents)).toEqual([null, result.overageCents])
+		expect(Arr.map(costBreakdown(result), (line) => line.cents)).toEqual([null, result.overageCents])
 	})
 })
 
 describe("buildCumulativeSeries", () => {
 	const daily = (days: ReadonlyArray<{ date: string; logsGB: number }>): DailySpendResponse =>
-		({
-			days: days.map((day) => ({
-				date: day.date,
-				logsGB: day.logsGB,
-				tracesGB: 0,
-				metricsGB: 0,
-				browserSessions: 0,
-			})),
+		new DailySpendResponse({
+			days: Arr.map(
+				days,
+				(day) =>
+					new DailyVolume({
+						date: day.date,
+						logsGB: day.logsGB,
+						tracesGB: 0,
+						metricsGB: 0,
+						browserSessions: 0,
+					}),
+			),
 			cycleStart: CYCLE_START,
 			cycleEnd: CYCLE_END,
-		}) as DailySpendResponse
+		})
 
 	// A model whose metered logs total equals the series' own sum, so these tests
 	// exercise the accrual walk itself rather than the scaling above it.
@@ -434,7 +552,7 @@ describe("buildCumulativeSeries", () => {
 		const result = buildSpendModel({
 			customer: buildCustomer(),
 			plans: [startupPlan],
-			usage: { logs: { sum: loggedGB } } as BillingUsage["total"],
+			usage: usageOf({ logs: loggedGB }),
 			nowMs: NOW,
 		})
 		if (result === null) throw new Error("expected a model")
@@ -455,9 +573,9 @@ describe("buildCumulativeSeries", () => {
 			model: spendModel,
 		})
 
-		expect(series.map((point) => point.logs)).toEqual([0, 6, 24])
+		expect(Arr.map(series, (point) => point.logs)).toEqual([0, 6, 24])
 		// The base fee is owed on day 1, so it's a flat band, never a slope.
-		expect(series.map((point) => point.base)).toEqual([39, 39, 39])
+		expect(Arr.map(series, (point) => point.base)).toEqual([39, 39, 39])
 		expect(series[2]?.total).toBe(63)
 	})
 
@@ -473,7 +591,7 @@ describe("buildCumulativeSeries", () => {
 			model: spendModel,
 		})
 
-		expect(series.map((point) => point.logs)).toEqual([15, 15, 30])
+		expect(Arr.map(series, (point) => point.logs)).toEqual([15, 15, 30])
 	})
 
 	it("stops the actual bands at today and carries the projection to the cycle end", () => {
@@ -489,15 +607,15 @@ describe("buildCumulativeSeries", () => {
 			model: spendModel,
 		})
 
-		expect(series.map((point) => point.future)).toEqual([false, false, true, true])
+		expect(Arr.map(series, (point) => point.future)).toEqual([false, false, true, true])
 		// Future days carry no bands: a flat line to the end of the cycle would
 		// read as "spend stops here" rather than "these days haven't happened".
-		expect(series.map((point) => point.base)).toEqual([39, 39, null, null])
-		expect(series.map((point) => point.total)).toEqual([39, 39, null, null])
+		expect(Arr.map(series, (point) => point.base)).toEqual([39, 39, null, null])
+		expect(Arr.map(series, (point) => point.total)).toEqual([39, 39, null, null])
 
 		// Exactly two projection anchors — today's actual total and the projected
 		// total on the last day — so the dashed segment is a straight line.
-		expect(series.map((point) => point.projected)).toEqual([
+		expect(Arr.map(series, (point) => point.projected)).toEqual([
 			null,
 			39,
 			null,
@@ -516,7 +634,7 @@ describe("buildCumulativeSeries", () => {
 			model: spendModel,
 		})
 
-		expect(series.map((point) => point.projected)).toEqual([null, 39])
+		expect(Arr.map(series, (point) => point.projected)).toEqual([null, 39])
 	})
 
 	it("scales the warehouse shape onto the metered total, so the chart matches the KPI", () => {
@@ -557,20 +675,103 @@ describe("usageMeter", () => {
 			nowMs: NOW,
 		})
 		if (result === null) throw new Error("expected a model")
-		return Object.fromEntries(result.features.map((feature) => [feature.featureId, usageMeter(feature)]))
+		return Rec.fromEntries(
+			Arr.map(result.features, (feature) => [feature.featureId, usageMeter(feature)]),
+		)
 	}
 
 	it("leaves an unlimited feature's bar empty instead of full", () => {
-		const result = meters({ logs: { granted: 100 }, product_events: { unlimited: true } }, {
-			logs: { sum: 50 },
-			product_events: { sum: 2_000_000 },
-		} as BillingUsage["total"])
+		const result = meters(
+			{ logs: { granted: 100 }, product_events: { unlimited: true } },
+			usageOf({
+				logs: 50,
+				product_events: 2_000_000,
+			}),
+		)
 		expect(result.product_events).toEqual({ included: 0, overage: 0 })
 		expect(result.logs).toEqual({ included: 50, overage: 0 })
 	})
 
 	it("splits the bar at the allotment once usage runs past it", () => {
-		const result = meters({ logs: { granted: 100 } }, { logs: { sum: 400 } } as BillingUsage["total"])
+		const result = meters({ logs: { granted: 100 } }, usageOf({ logs: 400 }))
 		expect(result.logs).toEqual({ included: 25, overage: 75 })
+	})
+})
+
+describe("AI credits", () => {
+	const dataBalances = {
+		logs: { granted: 100 },
+		traces: { granted: 100 },
+		metrics: { granted: 100 },
+		browser_sessions: { granted: 5_000 },
+		product_events: { granted: 1_000_000 },
+	}
+	const withAi = (aiUsed: number, overageCaps: Record<string, number> = {}) => {
+		const result = buildSpendModel({
+			customer: buildCustomer({
+				balances: {
+					...dataBalances,
+					ai_credits: { granted: 10, usage: aiUsed, overageAllowed: true },
+				},
+				overageCaps,
+			}),
+			plans: [startupPlan],
+			usage: usageOf({ ai_credits: aiUsed }),
+			nowMs: NOW,
+		})
+		if (result === null) throw new Error("expected a model")
+		return result
+	}
+	const aiRow = (result: NonNullable<ReturnType<typeof buildSpendModel>>) =>
+		Option.getOrThrow(Arr.findFirst(result.features, (feature) => feature.featureId === "ai_credits"))
+
+	it("bills AI credits past the included $10 at $1 each, in the cycle total", () => {
+		const within = withAi(4.2)
+		const over = withAi(14.5)
+		expect(aiRow(within).overageCents).toBe(0)
+		expect(aiRow(over).overageCents).toBe(450)
+		expect(over.spendCents - within.spendCents).toBe(450)
+		expect(over.topDriver?.featureId).toBe("ai_credits")
+		expect(costBreakdown(over).at(-1)?.detail).toContain("AI credits")
+	})
+
+	it("leaves the maximum invoice unbounded until AI overage has a cap too", () => {
+		const dataCaps = { logs: 100, traces: 100, metrics: 100, browser_sessions: 1_000, product_events: 0 }
+		const uncapped = withAi(0, dataCaps)
+		expect(Arr.map(uncappedFeatures(uncapped, undefined), (feature) => feature.featureId)).toContain(
+			"ai_credits",
+		)
+		const capped = withAi(0, { ...dataCaps, ai_credits: 25 })
+		const customer = buildCustomer({
+			balances: { ...dataBalances, ai_credits: { granted: 10, overageAllowed: true } },
+			overageCaps: { ...dataCaps, ai_credits: 25 },
+		})
+		// $39 base, 300 GB at $0.30, 1,000 sessions at $0.002, and $25 of AI credits.
+		expect(maximumInvoiceCents(capped, customer)).toBe(3_900 + 9_000 + 200 + 2_500)
+	})
+
+	it("draws the AI band from the daily AI spend, accruing only past the included credits", () => {
+		const series = buildCumulativeSeries({
+			daily: new DailySpendResponse({
+				days: Arr.map(
+					["2026-07-01", "2026-07-02", "2026-07-03"],
+					(date) =>
+						new DailyVolume({ date, logsGB: 0, tracesGB: 0, metricsGB: 0, browserSessions: 0 }),
+				),
+				cycleStart: CYCLE_START,
+				cycleEnd: CYCLE_END,
+			}),
+			aiDaily: new AiCreditUsageResponse({
+				bySource: [],
+				days: [
+					new AiCreditDay({ date: "2026-07-01", credits: 8 }),
+					new AiCreditDay({ date: "2026-07-03", credits: 6 }),
+				],
+			}),
+			model: withAi(14),
+		})
+		// 8 is included, 14 crosses the $10 allowance by $4.
+		expect(Arr.map(series, (point) => point.ai_credits)).toEqual([0, 0, 4])
+		expect(series[2]?.total).toBe(39 + 4)
 	})
 })

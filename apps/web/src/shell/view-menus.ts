@@ -1,14 +1,13 @@
 import { selfhostIdentity } from "../platform/selfhost-session"
-import { cn } from "@maple/ui/lib/utils"
-import { spinnerStyles } from "@maple/ui/styles/ui/spinner"
 import { initialsFrom } from "@maple/ui/lib/initials"
-import { Option } from "effect"
+import { Option, Array as Arr } from "effect"
 import { AsyncData } from "foldkit"
 import type { Html, HtmlBuilder } from "foldkit/html"
-import { kbd } from "../ui/display"
-import { menuGroup, menuItem, menuLabel, menuSeparator, menuShortcut } from "../ui/dropdown-menu"
-import { icon, iconColor } from "../ui/icon"
-import { switchControl } from "../ui/switch"
+import { kbd } from "@maple/views/ui/display"
+import { menuGroup, menuItem, menuLabel, menuSeparator, menuShortcut } from "@maple/views/ui/dropdown-menu"
+import { spinner } from "@maple/views/ui/spinner"
+import { icon, iconColor } from "@maple/views/ui/icon"
+import { switchControl } from "@maple/views/ui/switch"
 import { popupIdOf } from "./menus"
 import { MountNamespaceSearch } from "./mounts"
 import { hasNamespaceSearch, namespaceRows, namespaceSearchRow, noNamespacesMatch } from "./namespace-search"
@@ -17,6 +16,9 @@ import type { Model, ShellClerk } from "./model"
 import { partitionSubItems } from "./nav"
 import { shellNavGroups, surfacesOf } from "./view-nav"
 import { pinnedNamespaceOf, userAvatar, userImageOf, userNameOf } from "./view-sidebar"
+import { typography } from "@maple/views/ui/typography"
+import { hstack } from "@maple/views/ui/stack"
+import { identityLabel } from "@maple/views/ui/identity-label"
 
 // The open menu's content: GuestMenu, SupportMenu, the self-hosted org switcher's namespace list
 // and the collapsed rail's section menus.
@@ -34,7 +36,7 @@ const items = (
 	entries: ReadonlyArray<Item>,
 	offset = 0,
 ): ReadonlyArray<Html> =>
-	entries.map((entry, index) => {
+	Arr.map(entries, (entry, index) => {
 		const id = `${popupIdOf(menu)}-item-${offset + index}`
 		return menuItem(
 			h,
@@ -67,29 +69,23 @@ const keyboardShortcuts = (h: HtmlBuilder<Message>): Item => ({
 
 /** `ThemeToggle`: a plain row, not an item, so flipping the switch keeps the menu open. */
 const themeToggle = (h: HtmlBuilder<Message>, model: Model): Html =>
-	h.div(
-		[h.Class("flex items-center gap-2 rounded-md px-2 py-2 text-xs select-none")],
-		[
-			icon(h, model.theme === "dark" ? "MoonIcon" : "SunIcon", {
-				size: 16,
-				className: "shrink-0 text-muted-foreground",
+	hstack(h, { gap: "2", align: "center", className: "rounded-md px-2 py-2 text-xs select-none" }, [
+		icon(h, model.theme === "dark" ? "MoonIcon" : "SunIcon", {
+			size: 16,
+			className: "shrink-0 text-muted-foreground",
+		}),
+		h.span([], ["Dark mode"]),
+		hstack(h, { gap: "2", as: "span", className: "ml-auto" }, [
+			kbd(h, undefined, ["T"]),
+			...switchControl(h, {
+				id: "shell-theme-switch",
+				inputId: "shell-theme-switch-input",
+				isChecked: model.theme === "dark",
+				ariaLabel: "Toggle dark mode",
+				onToggle: Message.ClickedThemeSwitch(),
 			}),
-			h.span([], ["Dark mode"]),
-			h.span(
-				[h.Class("ml-auto flex items-center gap-2")],
-				[
-					kbd(h, undefined, ["T"]),
-					...switchControl(h, {
-						id: "shell-theme-switch",
-						inputId: "shell-theme-switch-input",
-						isChecked: model.theme === "dark",
-						ariaLabel: "Toggle dark mode",
-						onToggle: Message.ClickedThemeSwitch(),
-					}),
-				],
-			),
-		],
-	)
+		]),
+	])
 
 const guestMenu = (h: HtmlBuilder<Message>, model: Model, menu: Menu): ReadonlyArray<Html> => [
 	// NevrLabs selfhost: who this session is (OIDC name/email and role; "Root" for the break-glass password).
@@ -138,7 +134,12 @@ const supportMenu = (h: HtmlBuilder<Message>, menu: Menu, isClerk: boolean): Rea
 		items(h, menu, [
 			// The channel is created in Maple's Slack for a Clerk org; self-hosted has neither.
 			...(isClerk
-				? [{ content: [icon(h, "SlackIcon"), "Shared Slack channel"], onSelect: Message.ClickedSupportChannel() }]
+				? [
+						{
+							content: [icon(h, "SlackIcon"), "Shared Slack channel"],
+							onSelect: Message.ClickedSupportChannel(),
+						},
+					]
 				: []),
 			{
 				content: [icon(h, "DiscordIcon"), "Community Discord"],
@@ -164,7 +165,7 @@ const namespaceItem = (
 	maybeNamespace: Option.Option<string>,
 	isPinned: boolean,
 ): Item => ({
-	content: [h.span([h.Class("truncate")], [label]), ...(isPinned ? [checkIcon(h)] : [])],
+	content: [typography(h, { truncate: true }, [label]), ...(isPinned ? [checkIcon(h)] : [])],
 	onSelect: Message.ClickedNamespace({ maybeNamespace }),
 })
 
@@ -178,30 +179,33 @@ const namespaceList = (h: HtmlBuilder<Message>, model: Model, menu: Menu): Reado
 	const isLoading = AsyncData.isIdle(model.namespaces) || AsyncData.isLoading(model.namespaces)
 	if (isLoading && observed.length === 0)
 		return [
-			h.div(
-				[h.Class("flex items-center gap-1.5 px-2 py-1.5 text-xs text-muted-foreground")],
-				[
-					icon(h, "LoaderIcon", {
-						className: cn(spinnerStyles, "size-3.5"),
-						attributes: [h.AriaLabel("Loading"), h.Role("status")],
-					}),
-					" Loading namespaces…",
-				],
+			hstack(
+				h,
+				{ gap: "1.5", align: "center", className: "px-2 py-1.5 text-xs text-muted-foreground" },
+				[spinner(h, "size-3.5", undefined, true), " Loading namespaces…"],
 			),
 		]
 	if (observed.length === 0 && Option.isNone(pinned))
-		return [h.div([h.Class("px-2 py-1.5 text-xs text-muted-foreground")], ["No namespaces detected"])]
+		return [
+			typography(h, { size: "xs", tone: "muted", as: "div", className: "px-2 py-1.5" }, [
+				"No namespaces detected",
+			]),
+		]
 	const rows = namespaceRows(observed, pinned, model.namespaceQuery)
 	const entries: ReadonlyArray<Item> = [
-		...(rows.isFiltered ? [] : [namespaceItem(h, "All namespaces", Option.none(), Option.isNone(pinned))]),
-		...rows.matches.map((name) => namespaceItem(h, name, Option.some(name), Option.contains(pinned, name))),
+		...(rows.isFiltered
+			? []
+			: [namespaceItem(h, "All namespaces", Option.none(), Option.isNone(pinned))]),
+		...Arr.map(rows.matches, (name) =>
+			namespaceItem(h, name, Option.some(name), Option.contains(pinned, name)),
+		),
 		...Option.match(rows.unseenPin, {
 			onNone: () => [],
 			onSome: (name): ReadonlyArray<Item> => [
 				{
 					content: [
-						h.span([h.Class("truncate")], [name]),
-						h.span([h.Class("ml-2 text-xs text-muted-foreground")], ["no recent data"]),
+						typography(h, { truncate: true }, [name]),
+						typography(h, { size: "xs", tone: "muted", className: "ml-2" }, ["no recent data"]),
 						checkIcon(h),
 					],
 					onSelect: Message.ClickedNamespace({ maybeNamespace: Option.some(name) }),
@@ -239,9 +243,12 @@ const navSectionMenu = (
 	currentPath: string,
 	clerk: ShellClerk | null,
 ): ReadonlyArray<Html> => {
-	const item = shellNavGroups(clerk)
-		.flatMap((group) => group.items)
-		.find((candidate) => candidate.title === title)
+	const item = Option.getOrUndefined(
+		Arr.findFirst(
+			Arr.flatMap(shellNavGroups(clerk), (group) => group.items),
+			(candidate) => candidate.title === title,
+		),
+	)
 	if (item?.subItems === undefined) return []
 	const { shown, hidden } = partitionSubItems(item.subItems, surfacesOf(model), currentPath)
 	const toItem = (sub: (typeof shown)[number]): Item => ({
@@ -253,36 +260,60 @@ const navSectionMenu = (
 	})
 	const labelId = `${popupIdOf(menu)}-label`
 	return [
-		menuGroup(h, labelId, [menuLabel(h, labelId, [item.title]), ...items(h, menu, shown.map(toItem))]),
+		menuGroup(h, labelId, [
+			menuLabel(h, labelId, [item.title]),
+			...items(h, menu, Arr.map(shown, toItem)),
+		]),
 		...(hidden.length > 0
-			? [menuSeparator(h), menuGroup(h, undefined, items(h, menu, hidden.map(toItem), shown.length))]
+			? [
+					menuSeparator(h),
+					menuGroup(h, undefined, items(h, menu, Arr.map(hidden, toItem), shown.length)),
+				]
 			: []),
 	]
 }
 
 /** `UserMenu` (Clerk): who is signed in, the theme, Account, Settings, shortcuts, Log out. */
-const clerkUserMenu = (h: HtmlBuilder<Message>, model: Model, menu: Menu, clerk: ShellClerk): ReadonlyArray<Html> => {
+const clerkUserMenu = (
+	h: HtmlBuilder<Message>,
+	model: Model,
+	menu: Menu,
+	clerk: ShellClerk,
+): ReadonlyArray<Html> => {
 	const name = userNameOf(clerk)
-	const email = Option.getOrElse(Option.flatMapNullishOr(clerk.maybeUser, (user) => user.email), () => "")
+	const email = Option.getOrElse(
+		Option.flatMapNullishOr(clerk.maybeUser, (user) => user.email),
+		() => "",
+	)
 	const labelId = `${popupIdOf(menu)}-label`
 	return [
 		menuGroup(h, labelId, [
 			menuLabel(h, labelId, [
-				h.div(
-					[h.Class("flex items-center gap-2 py-1 text-left text-sm")],
-					[
-						userAvatar(h, initialsFrom(name), "size-8 rounded-md text-xs", { url: userImageOf(clerk), label: name }),
-						h.div(
-							[h.Class("grid flex-1 text-left text-sm leading-tight")],
-							[
-								h.span([h.Class("truncate font-medium"), h.Title(name)], [name]),
-								...(email === ""
-									? []
-									: [h.span([h.Class("truncate text-muted-foreground text-xs"), h.Title(email)], [email])]),
-							],
-						),
-					],
-				),
+				hstack(h, { gap: "2", align: "center", className: "py-1 text-left text-sm" }, [
+					userAvatar(h, initialsFrom(name), "size-8 rounded-md text-xs", {
+						url: userImageOf(clerk),
+						label: name,
+					}),
+					identityLabel(h, [
+						typography(h, { weight: "medium", truncate: true, attributes: [h.Title(name)] }, [
+							name,
+						]),
+						...(email === ""
+							? []
+							: [
+									typography(
+										h,
+										{
+											size: "xs",
+											tone: "muted",
+											truncate: true,
+											attributes: [h.Title(email)],
+										},
+										[email],
+									),
+								]),
+					]),
+				]),
 			]),
 		]),
 		menuSeparator(h),
@@ -301,7 +332,12 @@ const clerkUserMenu = (h: HtmlBuilder<Message>, model: Model, menu: Menu, clerk:
 		menuGroup(
 			h,
 			undefined,
-			items(h, menu, [{ content: [icon(h, "LogoutIcon"), "Log out"], onSelect: Message.ClickedLogOut() }], 3),
+			items(
+				h,
+				menu,
+				[{ content: [icon(h, "LogoutIcon"), "Log out"], onSelect: Message.ClickedLogOut() }],
+				3,
+			),
 		),
 	]
 }

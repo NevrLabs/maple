@@ -1,11 +1,13 @@
+import { ok } from "node:assert"
 import { beforeEach, describe, expect, it } from "bun:test"
-import { Effect, Schema } from "effect"
+import { Effect, Schema, String as Str } from "effect"
 import { FetchHttpClient } from "effect/http"
 import { WarehouseQueryError } from "@maple/domain/http/warehouse-errors"
 import { CliUsageError } from "../lib/errors"
 import { describeFailure } from "../lib/failure"
 import { makeMcpClient } from "./mcp-client"
 import * as RemoteMcp from "./remote-mcp-ops"
+import * as Arr from "effect/Array"
 
 // As in remote-ops.test.ts, assert the OUTBOUND request: the tool name and
 // argument spelling are the contract with the server, and they are what drifts.
@@ -37,7 +39,7 @@ const fetchStub = Object.assign(
 		const text = await request.clone().text()
 		requests.push({
 			url: request.url,
-			method: request.method.toUpperCase(),
+			method: Str.toUpperCase(request.method),
 			authorization: request.headers.get("authorization"),
 			accept: request.headers.get("accept"),
 			body: text.length > 0 ? decodeBody(JSON.parse(text)) : {},
@@ -89,13 +91,14 @@ describe("remote MCP transport", () => {
 
 		expect(requests).toHaveLength(1)
 		const [request] = requests
-		expect(request!.url).toBe("https://api.maple.test/mcp")
-		expect(request!.method).toBe("POST")
-		expect(request!.authorization).toBe("Bearer maple_ak_testtoken")
+		ok(request !== undefined)
+		expect(request.url).toBe("https://api.maple.test/mcp")
+		expect(request.method).toBe("POST")
+		expect(request.authorization).toBe("Bearer maple_ak_testtoken")
 		// The server answers 406 unless both are acceptable.
-		expect(request!.accept).toContain("application/json")
-		expect(request!.accept).toContain("text/event-stream")
-		expect(request!.body).toEqual({
+		expect(request.accept).toContain("application/json")
+		expect(request.accept).toContain("text/event-stream")
+		expect(request.body).toEqual({
 			jsonrpc: "2.0",
 			id: 1,
 			method: "tools/call",
@@ -157,7 +160,10 @@ describe("remote MCP operations map onto local output shapes", () => {
 			}),
 		}
 		const out = await run((mcp) => RemoteMcp.findSlowTraces(mcp, { range: RANGE, limit: 5 }))
-		expect(requests[0]!.body.params).toMatchObject({ name: "find_slow_traces", arguments: { limit: 5 } })
+		expect(Arr.getUnsafe(requests, 0).body.params).toMatchObject({
+			name: "find_slow_traces",
+			arguments: { limit: 5 },
+		})
 		expect(out.timeRange).toEqual(RANGE)
 		expect(out.stats).toEqual({ p50Ms: 10, p95Ms: 90, minMs: 1, maxMs: 120 })
 		expect(out.traces[0]).toMatchObject({
@@ -183,7 +189,7 @@ describe("remote MCP operations map onto local output shapes", () => {
 		const out = await run((mcp) =>
 			RemoteMcp.searchTraces(mcp, { range: RANGE, spanName: "checkout", limit: 20, offset: 20 }),
 		)
-		expect(requests[0]!.body.params).toMatchObject({
+		expect(Arr.getUnsafe(requests, 0).body.params).toMatchObject({
 			name: "search_traces",
 			arguments: { span_name: "checkout", offset: 20, limit: 20 },
 		})
@@ -196,7 +202,7 @@ describe("remote MCP operations map onto local output shapes", () => {
 			body: toolResult({ timeRange: TIME_RANGE, totalSampled: 0, sampleSize: 10000, patterns: [] }),
 		}
 		await run((mcp) => RemoteMcp.mineLogPatterns(mcp, { range: RANGE, severity: "WARNING" }))
-		expect(requests[0]!.body.params).toMatchObject({
+		expect(Arr.getUnsafe(requests, 0).body.params).toMatchObject({
 			name: "mine_log_patterns",
 			arguments: { severity: "WARN" },
 		})

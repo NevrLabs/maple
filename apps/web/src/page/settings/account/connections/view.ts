@@ -1,20 +1,25 @@
 import { Submodel } from "foldkit"
 import type { Html, HtmlBuilder } from "foldkit/html"
-import { button } from "../../../../ui/button"
-import { confirmDialog } from "../../../../ui/confirm-dialog"
-import { badge } from "../../../../ui/display"
-import { icon } from "../../../../ui/icon"
-import { settingRow } from "../../../../ui/setting-row"
+import { button } from "@maple/views/ui/button"
+import { confirmDialog } from "@maple/views/ui/confirm-dialog"
+import { badge } from "@maple/views/ui/display"
+import { icon } from "@maple/views/ui/icon"
+import { settingRow } from "@maple/views/ui/setting-row"
 import { accountSectionSkeleton } from "../../kit/account-skeleton"
 import { settingsSection, settingsSections } from "../../kit/section"
 import type { AccountUser } from "../user"
 import { Message, type Model } from "./model"
 import { PROVIDERS, providerOf } from "./update"
+import { hstack } from "@maple/views/ui/stack"
+import { Array as Arr, Option } from "effect"
+import { typography } from "@maple/views/ui/typography"
 
 type H = HtmlBuilder<Message>
 
 const providerRow = (h: H, model: Model, user: AccountUser, provider: (typeof PROVIDERS)[number]): Html => {
-	const account = user.externalAccounts.find((entry) => entry.provider === provider.id)
+	const account = Option.getOrUndefined(
+		Arr.findFirst(user.externalAccounts, (entry) => entry.provider === provider.id),
+	)
 	const isBusy = model.busy === provider.id
 	const ids = {
 		control: `connection-${provider.id}`,
@@ -24,24 +29,18 @@ const providerRow = (h: H, model: Model, user: AccountUser, provider: (typeof PR
 	return settingRow(h, {
 		ids,
 		className: "p-4",
-		icon: h.div([h.Class("text-muted-foreground")], [icon(h, provider.icon, { size: 18 })]),
-		label: h.span(
-			[h.Class("flex items-center gap-1.5")],
-			[
-				provider.label,
-				...(account !== undefined && !account.isVerified
-					? [badge(h, { variant: "outline", className: "text-muted-foreground" }, ["Incomplete"])]
-					: []),
-			],
-		),
-		description: h.span(
-			[h.Class("block truncate")],
-			[
-				account === undefined
-					? `Connect your ${provider.label} account`
-					: account.emailAddress || account.username || "Connected",
-			],
-		),
+		icon: typography(h, { tone: "muted", as: "div" }, [icon(h, provider.icon, { size: 18 })]),
+		label: hstack(h, { gap: "1.5", as: "span" }, [
+			provider.label,
+			...(account !== undefined && !account.isVerified
+				? [badge(h, { variant: "outline", className: "text-muted-foreground" }, ["Incomplete"])]
+				: []),
+		]),
+		description: typography(h, { truncate: true, className: "block" }, [
+			account === undefined
+				? `Connect your ${provider.label} account`
+				: account.emailAddress || account.username || "Connected",
+		]),
 		control:
 			account === undefined
 				? [
@@ -81,7 +80,7 @@ const providerRow = (h: H, model: Model, user: AccountUser, provider: (typeof PR
 						button(
 							h,
 							{
-								variant: "ghost",
+								variant: "outline",
 								size: "sm",
 								isDisabled: isBusy,
 								attributes: [
@@ -115,7 +114,7 @@ const loaded = (h: H, model: Model, user: AccountUser): Html => {
 			[
 				h.div(
 					[h.Class("divide-y")],
-					PROVIDERS.map((provider) => providerRow(h, model, user, provider)),
+					Arr.map(PROVIDERS, (provider) => providerRow(h, model, user, provider)),
 				),
 			],
 		),
@@ -132,7 +131,6 @@ const loaded = (h: H, model: Model, user: AccountUser): Html => {
 	])
 }
 
-export const view = Submodel.defineView<Model, Message, Readonly<Record<never, never>>>(
-	(model, _inputs, h) =>
-		!model.isLoaded || model.user === null ? accountSectionSkeleton(h) : loaded(h, model, model.user),
+export const view = Submodel.defineView<Model, Message, Readonly<Record<never, never>>>((model, _inputs, h) =>
+	!model.isLoaded || model.user === null ? accountSectionSkeleton(h) : loaded(h, model, model.user),
 )

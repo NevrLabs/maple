@@ -30,7 +30,7 @@ const decodeTargetTypeSync = Schema.decodeUnknownSync(ScrapeTargetType)
 const SCRAPER_SYSTEM_USER = Schema.decodeSync(UserId)("system-prometheus-scraper")
 const decodeScrapeResultsEffect = Schema.decodeUnknownEffect(ScrapeResultReportList)
 const decodeLabelsEffect = Schema.decodeUnknownEffect(Schema.Record(Schema.String, Schema.String))
-const EMPTY_LABELS = Schema.decodeUnknownSync(Schema.Record(Schema.String, Schema.String))({})
+const EMPTY_LABELS = Schema.decodeSync(Schema.Record(Schema.String, Schema.String))({})
 /** PlanetScale's data plane authenticates with the signed URL, never a header. */
 const NO_AUTH_HEADERS: Record<string, string> = {}
 const NO_SUB_TARGETS: ReadonlyArray<PlanetScaleSubTarget> = []
@@ -220,7 +220,7 @@ export const ScraperInternalRouter = HttpRouter.use((router) =>
 				// metrics are billed and warehouse-routed identically to the org's
 				// own OTLP traffic. Resolved for every org in one batch.
 				const keysByOrg = yield* ingestKeys.getOrCreateMany(
-					rows.map((row) => row.orgId),
+					Arr.map(rows, (row) => row.orgId),
 					SCRAPER_SYSTEM_USER,
 				)
 				// Rows are independent; most of the cost is one PlanetScale discovery

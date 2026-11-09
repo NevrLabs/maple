@@ -3,9 +3,10 @@ import { health, HEALTH_COLOR } from "../../components/service-map/three/spatial
 import type { Node3D } from "../../components/service-map/three/types"
 import { SERVICE_MAP_3D_TOPOLOGY } from "../service-map-3d/fixture"
 import type { Html, HtmlBuilder } from "foldkit/html"
-import { input } from "../../ui/input"
-import { statusDot } from "../../ui/status-dot"
+import { input } from "@maple/views/ui/input"
+import { statusDot } from "@maple/views/ui/status-dot"
 import { Message, type Model } from "./update"
+import { Array as Arr, Order, String as Str } from "effect"
 
 // `ServiceInventory` with nothing selected: the searchable list sorted by error rate.
 
@@ -75,12 +76,15 @@ const header = (h: H, model: Model): Html =>
 	)
 
 export const inventory = (h: H, model: Model): Html => {
-	const needle = model.query.trim().toLowerCase()
-	const sorted = topology.nodes
-		.filter((node) => `${node.label} ${node.namespace} ${node.kind}`.includes(needle))
-		.toSorted((a, b) => b.errorRate - a.errorRate)
+	const needle = Str.toLowerCase(Str.trim(model.query))
+	const sorted = Arr.sort(
+		Arr.filter(topology.nodes, (node) =>
+			Str.includes(needle)(`${node.label} ${node.namespace} ${node.kind}`),
+		),
+		Order.flip(Order.mapInput(Order.Number, (node: { readonly errorRate: number }) => node.errorRate)),
+	)
 	const countOf = (level: "elevated" | "degraded") =>
-		topology.nodes.filter((node) => health(node.errorRate) === level).length
+		Arr.filter(topology.nodes, (node) => health(node.errorRate) === level).length
 	const degraded = countOf("elevated")
 	const failing = countOf("degraded")
 	return h.aside(
@@ -124,7 +128,7 @@ export const inventory = (h: H, model: Model): Html => {
 								),
 							]
 						: []),
-					...sorted.map((node) => row(h, node)),
+					...Arr.map(sorted, (node) => row(h, node)),
 				],
 			),
 			h.p(

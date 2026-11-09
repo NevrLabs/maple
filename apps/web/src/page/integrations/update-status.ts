@@ -1,7 +1,7 @@
-import { Option } from "effect"
+import { Option, Array as Arr } from "effect"
 import type { Command } from "foldkit"
-import * as Keyed from "../../data/keyed"
-import { requestKey } from "../../data/request-key"
+import * as Keyed from "@maple/views/data/keyed"
+import { requestKey } from "@maple/views/data/request-key"
 import type { Resources } from "../../platform/resources"
 import type { PageContext, PageReturn } from "../contract"
 import {
@@ -145,17 +145,14 @@ export const requestStatus = (
 
 /** Runs steps in order, threading the Model and collecting their Commands and last OutMessage. */
 export const chain = (model: Model, steps: ReadonlyArray<(model: Model) => Return>): Return =>
-	steps.reduce<Return>(
-		(acc, next) => {
-			const result = next(acc.model)
-			return {
-				model: result.model,
-				commands: [...(acc.commands ?? []), ...(result.commands ?? [])],
-				outMessage: result.outMessage ?? acc.outMessage,
-			}
-		},
-		{ model },
-	)
+	Arr.reduce<(typeof steps)[number], Return>(steps, { model }, (acc, next) => {
+		const result = next(acc.model)
+		return {
+			model: result.model,
+			commands: [...(acc.commands ?? []), ...(result.commands ?? [])],
+			outMessage: result.outMessage ?? acc.outMessage,
+		}
+	})
 
 export const STATUS_NAMES: ReadonlyArray<keyof Statuses> = [
 	"cloudflare",

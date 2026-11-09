@@ -1,12 +1,14 @@
 import { McpInvalidInputError, type McpToolRegistrar } from "./types"
-import { Effect, Schema } from "effect"
+import { Effect, Schema, String as Str } from "effect"
 import { CreateAlertRuleOutput } from "@maple/domain/mcp-outputs"
+import { MAX_RAW_SQL_ALERT_GROUPS } from "@maple/domain/raw-sql"
 import { toMcpHttpError } from "../lib/map-http-error"
 import { CurrentMcpTenant } from "../lib/query-warehouse"
 import { AlertRulesService } from "@maple/backend/services/alerts/AlertRulesService"
 import {
 	ALERT_EVALUATION_INTERVALS,
 	AlertRuleUpsertRequest,
+	MAX_ALERT_WINDOW_MINUTES,
 	QueryBuilderQueryDraftSchema,
 	type AlertComparator,
 	type AlertSignalType,
@@ -16,6 +18,8 @@ import {
 	ALERT_REDUCERS,
 	ALERT_SEVERITIES,
 	ALERT_SIGNAL_TYPES,
+	ANOMALY_SIGNAL_TYPES,
+	ANOMALY_SIGNALS_DESCRIPTION,
 	renderRuleWrite,
 	ruleConfigWarnings,
 	ruleWriteInputErrors,
@@ -66,7 +70,7 @@ export const CreateAlertRuleParameters = Schema.Struct({
 	name: P.text("Rule name"),
 	destination_ids: P.resourceIdList(
 		"alertDestination",
-		"Destination IDs to notify (use list_alert_destinations to find IDs). Pass an empty list for none",
+		"Required, at least one: destination IDs to notify, from list_alert_destinations",
 		{ blankIsEmpty: true },
 	),
 	template: P.optionalOneOf(
@@ -80,7 +84,9 @@ export const CreateAlertRuleParameters = Schema.Struct({
 	threshold: P.optionalNumber(
 		"The value compared against. Units: error_rate and apdex are 0-1 ratios, latency is milliseconds, throughput is requests per minute. Overrides the template's.",
 	),
-	window_minutes: P.optionalNumber("Evaluation window in minutes (default: 5)"),
+	window_minutes: P.optionalNumber(
+		`Evaluation window in minutes, at most ${MAX_ALERT_WINDOW_MINUTES} (default: 5)`,
+	),
 	evaluation_interval_minutes: P.optionalNullableNumberOneOf(
 		ALERT_EVALUATION_INTERVALS,
 		'Minutes between checks, at most window_minutes. A raw_query rule checked less often gets a longer query time limit: 5s under 5 min, 15s at 5, 25s at 10 or more. Omit (or pass "auto") to derive it: a fifth of the window, 1 to 5.',
@@ -93,7 +99,7 @@ export const CreateAlertRuleParameters = Schema.Struct({
 	// Custom-mode params (used when template is 'custom' or omitted)
 	signal_type: P.optionalOneOf(
 		ALERT_SIGNAL_TYPES,
-		"What the rule measures. builder_query takes query_builder_draft, raw_query takes raw_query_sql. " +
+		"What the rule measures. builder_query takes query_builder_draft, raw_query takes raw_query_sql, anomaly pages on the anomaly detector's incidents (see anomaly_signals). " +
 			// Load-bearing caveat, not filler: without it an agent will happily create a
 			// rule that can never fire. Compressed, not dropped.
 			"All other signals are computed over ROOT spans only: a service that fails on child spans but returns success from its entry point " +
@@ -103,6 +109,7 @@ export const CreateAlertRuleParameters = Schema.Struct({
 		ALERT_COMPARATORS,
 		"How the observed value is compared with threshold (breach when `value <comparator> threshold`). Ignored when a template is set.",
 	),
+	anomaly_signals: P.optionalOneOfList(ANOMALY_SIGNAL_TYPES, ANOMALY_SIGNALS_DESCRIPTION),
 	group_by: P.optionalList(
 		"Evaluate one value per group. Built-in tokens: service.name, span.name, status.code, http.method, severity; attribute keys as attr.<key> (e.g. attr.http.route).",
 	),
@@ -123,7 +130,7 @@ export const CreateAlertRuleParameters = Schema.Struct({
 		"The query to evaluate, in the query-builder draft shape dashboard custom-query widgets use ({ id, name, dataSource, aggregation, whereClause, groupBy, ... }). Required for signal_type=builder_query.",
 	),
 	raw_query_sql: P.optionalText(
-		"ClickHouse SQL returning a numeric `value` column and optional `group` / `samples` columns (`samples` is the event count behind each row; it feeds minimum_sample_count). A query returning no rows is a no-data check, not a healthy one. Must reference $__orgFilter and $__timeFilter(col); $__startTime, $__endTime and $__interval_s are also available. Required for signal_type=raw_query.",
+		`ClickHouse SQL returning a numeric \`value\` column and optional \`group\` / \`samples\` columns (\`samples\` is the event count behind each row; it feeds minimum_sample_count). A query returning no rows is a no-data check, not a healthy one. Must reference $__orgFilter and $__timeFilter(col); $__startTime, $__endTime and $__interval_s are also available. At most ${MAX_RAW_SQL_ALERT_GROUPS} distinct groups. Required for signal_type=raw_query.`,
 	),
 	raw_query_reducer: P.optionalOneOf(
 		ALERT_REDUCERS,
@@ -137,6 +144,10 @@ export const CreateAlertRuleParameters = Schema.Struct({
 	notification_body: P.optionalText(
 		"Custom notification body template (Markdown). Supports {{ variable }} substitution and " +
 			'{{#if key}}…{{/if}} blocks, e.g. "*Severity:* {{ severity }}\\n*Observed:* {{ observed.summary }}". Omit for the built-in format.',
+	),
+	escalation_chain_id: P.optionalResourceId(
+		"escalationChain",
+		"Escalation chain an incident starts on top of destination_ids, paging step by step until acknowledged (from list_escalation_chains)",
 	),
 })
 
@@ -158,8 +169,10 @@ export const buildAlertRuleRequest = Effect.fnUntraced(function* (
 			? undefined
 			: ALERT_TEMPLATES[params.template]
 	const signalType = template?.signalType ?? params.signal_type
-	const comparator = template?.comparator ?? params.comparator
-	const threshold = params.threshold ?? template?.defaultThreshold
+	// An anomaly rule's comparator and tier values are pinned by the server; these are placeholders.
+	const anomaly = signalType === "anomaly"
+	const comparator = anomaly ? "gte" : (template?.comparator ?? params.comparator)
+	const threshold = anomaly ? 0 : (params.threshold ?? template?.defaultThreshold)
 
 	if (signalType === undefined) {
 		return yield* invalid(
@@ -184,7 +197,7 @@ export const buildAlertRuleRequest = Effect.fnUntraced(function* (
 	}
 
 	const apdexThresholdMs = params.apdex_threshold_ms ?? template?.apdexThresholdMs
-	if (signalType === "apdex" && !apdexThresholdMs) {
+	if (signalType === "apdex" && (apdexThresholdMs ?? 0) === 0) {
 		return yield* invalid(
 			"signal_type=apdex requires apdex_threshold_ms (milliseconds defining satisfactory response time).",
 			"apdex_threshold_ms",
@@ -205,13 +218,13 @@ export const buildAlertRuleRequest = Effect.fnUntraced(function* (
 				"raw_query_sql",
 			)
 		}
-		if (!params.raw_query_sql.includes("$__orgFilter")) {
+		if (!Str.includes("$__orgFilter")(params.raw_query_sql)) {
 			return yield* invalid(
 				"raw_query_sql must reference $__orgFilter for org scoping",
 				"raw_query_sql",
 			)
 		}
-		if (!params.raw_query_sql.includes("$__timeFilter(")) {
+		if (!Str.includes("$__timeFilter(")(params.raw_query_sql)) {
 			return yield* invalid(
 				"raw_query_sql must reference $__timeFilter(...) to bound alert reads",
 				"raw_query_sql",
@@ -225,10 +238,16 @@ export const buildAlertRuleRequest = Effect.fnUntraced(function* (
 	// service scope are mutually exclusive, so an inherited groupBy must step aside
 	// for a caller-supplied service; an explicit group_by is left to be rejected on its own terms.
 	const effectiveGroupBy = groupBy ?? (services === undefined ? template?.groupBy : undefined)
+	const severity = params.severity ?? "warning"
+	// A chain lives on a tier, so a rule with one is sent as its single tier.
+	const escalationChainId =
+		params.escalation_chain_id === undefined
+			? undefined
+			: yield* P.decodeResourceId("escalationChain", "escalation_chain_id")(params.escalation_chain_id)
 
 	return {
 		name: params.name,
-		severity: params.severity ?? "warning",
+		severity,
 		signalType,
 		comparator,
 		threshold,
@@ -237,11 +256,26 @@ export const buildAlertRuleRequest = Effect.fnUntraced(function* (
 			? undefined
 			: { evaluationIntervalMinutes: params.evaluation_interval_minutes }),
 		destinationIds: params.destination_ids,
+		...(escalationChainId === undefined
+			? undefined
+			: {
+					thresholds: [
+						{
+							severity,
+							value: threshold,
+							upper: null,
+							recoveryValue: null,
+							destinationIds: params.destination_ids,
+							escalationChainId,
+						},
+					],
+				}),
 		...(params.enabled === undefined ? undefined : { enabled: params.enabled }),
 		...(services === undefined ? undefined : { serviceNames: services }),
 		...(params.environments === undefined || params.environments.length === 0
 			? undefined
 			: { environments: params.environments }),
+		...(params.anomaly_signals === undefined ? undefined : { anomalySignals: params.anomaly_signals }),
 		...(effectiveGroupBy === undefined ? undefined : { groupBy: effectiveGroupBy }),
 		...(params.minimum_sample_count === undefined
 			? undefined
@@ -288,7 +322,7 @@ export function registerCreateAlertRuleTool(server: McpToolRegistrar) {
 		// repeating them here cost tokens twice for one fact.
 		description:
 			"Create an alert rule. Pick a `template` for the common cases; otherwise pass signal_type, comparator and threshold yourself. " +
-			"Use list_alert_destinations for destination_ids.",
+			"destination_ids is required (at least one, from list_alert_destinations). escalation_chain_id adds step-by-step paging on top.",
 		parameters: CreateAlertRuleParameters,
 		aliases: { service_names: "services" },
 		output: CreateAlertRuleOutput,

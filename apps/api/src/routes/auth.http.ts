@@ -7,7 +7,7 @@ import {
 	MapleApi,
 	UnauthorizedError,
 } from "@maple/domain/http"
-import { Effect, Option } from "effect"
+import { Effect, Option, String as Str } from "effect"
 import { HttpServerRequest } from "effect/http"
 import { ApiKeysService } from "@maple/backend/services/org/ApiKeysService"
 import { AuthService } from "@maple/backend/services/auth/AuthService"
@@ -17,8 +17,8 @@ import { PreviewSignInService } from "@maple/backend/services/auth/PreviewSignIn
 
 const bearerToken = (header: string | undefined) => {
 	if (!header) return undefined
-	const [scheme, token] = header.split(" ")
-	return scheme?.toLowerCase() === "bearer" ? token : undefined
+	const [scheme, token] = Str.split(" ")(header)
+	return Str.toLowerCase(scheme) === "bearer" ? token : undefined
 }
 
 export const HttpAuthPublicLive = HttpApiBuilder.group(MapleApi, "authPublic", (handlers) =>
@@ -37,7 +37,7 @@ export const HttpAuthPublicLive = HttpApiBuilder.group(MapleApi, "authPublic", (
 				}),
 			)
 			.handle("cliDevicePoll", ({ payload }) => cliAuth.poll(payload.deviceCode))
-			.handle("previewSignInStatus", () => previewSignIn.status())
+			.handle("previewSignInStatus", () => previewSignIn.status)
 			.handle("previewSignIn", ({ payload }) => previewSignIn.signIn(payload.key))
 	}),
 )

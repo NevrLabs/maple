@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "@effect/vitest"
-import { ConfigProvider, Context, Effect, Layer, ManagedRuntime, Schema } from "effect"
+import { ConfigProvider, Context, Effect, Layer, ManagedRuntime, Schema, Array as Arr } from "effect"
 import { HttpRouter } from "effect/http"
 import { HttpApiBuilder } from "effect/http-api"
 import { OrgId, UserId } from "@maple/domain/http"
@@ -34,9 +34,9 @@ import {
 const createdDbs: TestDb[] = []
 afterEach(() => cleanupTestDbs(createdDbs))
 
-const ORG = Schema.decodeUnknownSync(OrgId)("org_mobile_e2e")
-const OTHER_ORG = Schema.decodeUnknownSync(OrgId)("org_mobile_other")
-const USER = Schema.decodeUnknownSync(UserId)("user_mobile_e2e")
+const ORG = Schema.decodeSync(OrgId)("org_mobile_e2e")
+const OTHER_ORG = Schema.decodeSync(OrgId)("org_mobile_other")
+const USER = Schema.decodeSync(UserId)("user_mobile_e2e")
 const TOKEN = "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90"
 /** ActivityKit's two extra tokens: one starts an activity, one updates it. */
 const START_TOKEN = "b1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90"
@@ -179,7 +179,7 @@ describe("v2 mobile devices", () => {
 					return yield* devices.listForOrg(ORG)
 				}),
 			)
-			expect(forOrg.map((device) => device.token)).toEqual([TOKEN])
+			expect(Arr.map(forOrg, (device) => device.token)).toEqual([TOKEN])
 
 			const removed = await harness.request("DELETE", `/v2/mobile_devices/${TOKEN}`, key.secret)
 			expect(removed.status).toBe(200)
@@ -238,7 +238,7 @@ describe("v2 mobile devices", () => {
 					return yield* activities.listActive(ORG, incidentId)
 				}),
 			)
-			expect(running.map((row) => row.pushToken)).toEqual([ACTIVITY_TOKEN])
+			expect(Arr.map(running, (row) => row.pushToken)).toEqual([ACTIVITY_TOKEN])
 
 			// iOS rotated the token: the same (device, incident) is updated, not
 			// duplicated.
@@ -290,10 +290,12 @@ describe("v2 mobile devices", () => {
 					const devices = yield* MobileDevicesService
 					const [device] = yield* devices.listForOrg(ORG)
 					// Writes are org-scoped: another org naming this device id touches nothing.
-					yield* devices.disable(OTHER_ORG, device!.id, "Unregistered")
-					yield* devices.markPushed(OTHER_ORG, [device!.id])
-					expect((yield* devices.listForOrg(ORG)).map((listed) => listed.id)).toEqual([device!.id])
-					yield* devices.disable(ORG, device!.id, "Unregistered")
+					yield* devices.disable(OTHER_ORG, device.id, "Unregistered")
+					yield* devices.markPushed(OTHER_ORG, [device.id])
+					expect(Arr.map(yield* devices.listForOrg(ORG), (listed) => listed.id)).toEqual([
+						device.id,
+					])
+					yield* devices.disable(ORG, device.id, "Unregistered")
 					expect(yield* devices.listForOrg(ORG)).toEqual([])
 				}),
 			)

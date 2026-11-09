@@ -3,7 +3,6 @@ import {
 	classifyAiSpan,
 	formatCost,
 	payload,
-	spanCost,
 	spanFailed,
 	type SpanToolCall,
 	spanTtftMs,
@@ -12,25 +11,29 @@ import { formatTimestampInTimezone } from "@maple/web-data/lib/timezone-format"
 import { formatDuration, formatNumber } from "@maple/ui/lib/format"
 import { shortId } from "@maple/ui/lib/ids"
 import { TONE_SOFT } from "@maple/ui/lib/tone"
-import { Option } from "effect"
+import { Option, Array as Arr, String as Str } from "effect"
 import { AsyncData, Submodel } from "foldkit"
 import type { Html, HtmlBuilder } from "foldkit/html"
-import { badge } from "../../../ui/display"
-import { emptyMessage } from "../../../ui/empty"
-import { icon } from "../../../ui/icon"
-import { keyValue, keyValueList } from "../../../ui/key-value"
-import { skeleton } from "../../../ui/skeleton"
-import { truncatedText } from "../../../ui/truncated-text"
-import type { Message as PanelMessage } from "../../traces/detail/span-panel/message"
-import type { PanelState } from "../../traces/detail/span-panel/model"
-import { attributesSection } from "../../traces/detail/span-panel/attributes"
-import { copyableValue } from "../../traces/detail/span-panel/copy"
-import { errorSection } from "../../traces/detail/span-panel/error-section"
-import { spanLogs } from "../../traces/detail/span-panel/view-tabs"
+import { badge } from "@maple/views/ui/display"
+import { emptyMessage } from "@maple/views/ui/empty"
+import { icon } from "@maple/views/ui/icon"
+import { keyValue, keyValueList } from "@maple/views/ui/key-value"
+import { skeleton } from "@maple/views/ui/skeleton"
+import { truncatedText } from "@maple/views/ui/truncated-text"
+import type { Message as PanelMessage } from "@maple/views/traces/span-panel/message"
+import type { PanelState } from "@maple/views/traces/span-panel/model"
+import { attributesSection } from "@maple/views/traces/span-panel/attributes"
+import { copyableValue } from "@maple/views/traces/span-panel/copy"
+import { errorSection } from "@maple/views/traces/span-panel/error-section"
+import { spanLogs } from "@maple/views/traces/span-panel/view-tabs"
+import { docsUrl } from "../../../lib/docs"
 import { Message as SessionMessage, type Message } from "./message"
 import type { Model } from "./model"
 import { payloadCard } from "./span-popover-messages"
 import { toolIo } from "./tool-io"
+import { timestamp } from "@maple/views/ui/timestamp"
+import { typographyClass } from "@maple/views/ui/typography"
+import { hstack, hstackClass, vstack, vstackClass } from "@maple/views/ui/stack"
 
 // The span expansion's Tool calls, Details and Logs tabs.
 // Details and Logs draw the trace span panel's parts over the popover's own `PanelState`.
@@ -48,31 +51,28 @@ const toolCallCard = (
 	h.div(
 		[h.Class("min-w-0 overflow-hidden rounded-md border border-border-subtle")],
 		[
-			h.div(
-				[h.Class("flex items-center gap-2 bg-surface-sunken px-2.5 py-1.5")],
-				[
-					h.span([h.AriaHidden(true), h.Class("size-1.5 shrink-0 rounded-xs bg-chart-4")], []),
-					h.span([h.Class("shrink-0 font-medium font-mono text-chart-4 text-xs")], ["tool"]),
-					...(call.name === undefined
-						? []
-						: [
-								truncatedText(h, {
-									text: call.name,
-									mono: true,
-									className: "text-foreground text-xs",
-								}),
-							]),
-					...(call.id === undefined
-						? []
-						: [
-								truncatedText(h, {
-									text: call.id,
-									mono: true,
-									className: "ml-auto max-w-40 shrink-0 text-2xs text-foreground-subtle",
-								}),
-							]),
-				],
-			),
+			hstack(h, { gap: "2", align: "center", className: "bg-surface-sunken px-2.5 py-1.5" }, [
+				h.span([h.AriaHidden(true), h.Class("size-1.5 shrink-0 rounded-xs bg-chart-4")], []),
+				h.span([h.Class("shrink-0 font-medium font-mono text-chart-4 text-xs")], ["tool"]),
+				...(call.name === undefined
+					? []
+					: [
+							truncatedText(h, {
+								text: call.name,
+								mono: true,
+								className: typographyClass({ size: "xs", tone: "foreground" }),
+							}),
+						]),
+				...(call.id === undefined
+					? []
+					: [
+							truncatedText(h, {
+								text: call.id,
+								mono: true,
+								className: "ml-auto max-w-40 shrink-0 text-2xs text-foreground-subtle",
+							}),
+						]),
+			]),
 			...(call.description === undefined
 				? []
 				: [
@@ -111,7 +111,7 @@ const failureBanner = <M>(b: HtmlBuilder<M>, span: AiSessionSpan): Html => {
 		],
 		[
 			b.div(
-				[b.Class("flex flex-wrap items-center gap-2")],
+				[b.Class(hstackClass({ gap: "2", wrap: true }))],
 				[
 					icon(b, "CircleWarningIcon", { size: 14, className: "shrink-0 text-severity-error" }),
 					b.span([b.Class("font-medium text-ui text-severity-error")], ["This call failed"]),
@@ -123,7 +123,7 @@ const failureBanner = <M>(b: HtmlBuilder<M>, span: AiSessionSpan): Html => {
 				],
 			),
 			b.p(
-				[b.Class("text-muted-foreground text-xs leading-relaxed")],
+				[b.Class(typographyClass({ size: "xs", tone: "muted", className: "leading-relaxed" }))],
 				[
 					"The pills here are the attributes the failure was read from; the span carries no status message.",
 				],
@@ -132,7 +132,7 @@ const failureBanner = <M>(b: HtmlBuilder<M>, span: AiSessionSpan): Html => {
 	)
 }
 
-type PanelInputs = Readonly<{ span: AiSessionSpan; timeZone: string }>
+type PanelInputs = Readonly<{ span: AiSessionSpan; timeZone: string; nowMs: number }>
 
 /** A failed span leads with its failure: the status message, or the attributes it was read from. */
 const failureView = Submodel.defineView<PanelState, PanelMessage, PanelInputs>((state, { span }, p) =>
@@ -173,7 +173,7 @@ const identityRows = (p: P, state: PanelState, span: AiSessionSpan, timeZone: st
 	return keyValueList(
 		p,
 		{ layout: "grid", divided: true, className: "rounded-md border border-border-subtle px-2.5" },
-		rows.flatMap(([label, value]) =>
+		Arr.flatMap(rows, ([label, value]) =>
 			value === undefined
 				? []
 				: [
@@ -199,7 +199,7 @@ const spanAttributesView = Submodel.defineView<PanelState, PanelMessage, PanelIn
 	AsyncData.matchData(state.detail.data, {
 		onEmpty: () =>
 			p.div(
-				[p.Class("flex flex-col gap-2")],
+				[p.Class(vstackClass({ gap: "2" }))],
 				[
 					skeleton(p, "h-4 w-32"),
 					skeleton(p, "h-24 w-full"),
@@ -229,17 +229,20 @@ const resourceAttributesView = Submodel.defineView<PanelState, PanelMessage, Pan
 
 /** `LogsSection`: the trace panel's span logs, read once the tab is open. */
 const logsView = Submodel.defineView<PanelState, PanelMessage, PanelInputs>((state, { timeZone }, p) =>
-	p.div([p.Class("overflow-hidden rounded-md border border-border-subtle")], [spanLogs(p, state, timeZone)]),
+	p.div(
+		[p.Class("overflow-hidden rounded-md border border-border-subtle")],
+		[spanLogs(p, state, timeZone, docsUrl("logs"))],
+	),
 )
 
 /** The call's own settings and identity, shown only where the span reported them. */
 const metaStripView = Submodel.defineView<PanelState, PanelMessage, PanelInputs>(
-	(state, { span, timeZone }, p) => {
+	(state, { span, timeZone, nowMs }, p) => {
 		const ttftMs = spanTtftMs(span)
-		const cost = spanCost(span)
+		const cost = span.genAi.mapleCost
 		const pairs: ReadonlyArray<readonly [string, Html | string | number | undefined]> = [
 			["provider", span.genAi.providerName],
-			["started", formatTimestampInTimezone(span.timestamp, { timeZone, withMilliseconds: true })],
+			["started", timestamp(p, { value: span.timestamp, timeZone, nowMs, withMilliseconds: true })],
 			["ttft", ttftMs === undefined ? undefined : formatDuration(ttftMs)],
 			[
 				"max_tokens",
@@ -253,14 +256,17 @@ const metaStripView = Submodel.defineView<PanelState, PanelMessage, PanelInputs>
 		return p.div(
 			[p.Class("flex flex-wrap items-baseline gap-x-4 gap-y-1 py-2.5")],
 			[
-				...pairs.flatMap(([label, value]) =>
+				...Arr.flatMap(pairs, ([label, value]) =>
 					value === undefined
 						? []
 						: [
 								p.span(
-									[p.Class("flex items-baseline gap-1.5")],
+									[p.Class(hstackClass({ gap: "1.5", align: "baseline" }))],
 									[
-										p.span([p.Class("text-2xs text-muted-foreground")], [label]),
+										p.span(
+											[p.Class(typographyClass({ size: "2xs", tone: "muted" }))],
+											[label],
+										),
 										p.span(
 											[p.Class("font-mono text-foreground text-xs")],
 											[typeof value === "number" ? String(value) : value],
@@ -285,7 +291,7 @@ const metaStripView = Submodel.defineView<PanelState, PanelMessage, PanelInputs>
 							p,
 							state,
 							{ id: "meta:trace", value: span.traceId, label: "Trace ID" },
-							["trace ", shortId(span.traceId, "trace"), "…", span.traceId.slice(-4)],
+							["trace ", shortId(span.traceId, "trace"), "…", Str.slice(-4)(span.traceId)],
 						),
 					],
 				),
@@ -295,7 +301,7 @@ const metaStripView = Submodel.defineView<PanelState, PanelMessage, PanelInputs>
 )
 
 export const metaStrip = (h: H, model: Model, span: AiSessionSpan, timeZone: string): Html =>
-	panelPart(h, model, "meta", metaStripView, { span, timeZone })
+	panelPart(h, model, "meta", metaStripView, { span, timeZone, nowMs: model.nowMs })
 
 const panelPart = (
 	h: H,
@@ -323,36 +329,38 @@ export const detailsSection = (
 	toolCalls: ReadonlyArray<SpanToolCall>,
 	options: Readonly<{ timeZone: string; keyPrefix: string }>,
 ): Html => {
-	const inputs = { span, timeZone: options.timeZone }
+	const inputs = { span, timeZone: options.timeZone, nowMs: model.nowMs }
 	const isFailed = spanFailed(span)
 	const failedToolResult =
 		isFailed && classifyAiSpan(span) === "tool"
-			? toolCalls.find((call) => call.own)?.resultText
+			? Option.getOrUndefined(
+					Option.flatMapNullishOr(
+						Arr.findFirst(toolCalls, (call) => call.own),
+						(call) => call.resultText,
+					),
+				)
 			: undefined
-	return h.div(
-		[h.Class("flex flex-col gap-3 pb-1")],
-		[
-			...(isFailed ? [panelPart(h, model, "failure", failureView, inputs)] : []),
-			...(failedToolResult === undefined
-				? []
-				: [
-						payloadCard(h, model, {
-							label: "result",
-							name: toolCalls[0]?.name,
-							meta: span.statusCode === "Error" ? "span status Error" : undefined,
-							body: failedToolResult,
-							key: `${options.keyPrefix}:failed-result`,
-						}),
-					]),
-			panelPart(h, model, "identity", identityView, inputs),
-			panelPart(h, model, "span-attributes", spanAttributesView, inputs),
-			panelPart(h, model, "resource-attributes", resourceAttributesView, inputs),
-		],
-	)
+	return vstack(h, { gap: "3", className: "pb-1" }, [
+		...(isFailed ? [panelPart(h, model, "failure", failureView, inputs)] : []),
+		...(failedToolResult === undefined
+			? []
+			: [
+					payloadCard(h, model, {
+						label: "result",
+						name: toolCalls[0]?.name,
+						meta: span.statusCode === "Error" ? "span status Error" : undefined,
+						body: failedToolResult,
+						key: `${options.keyPrefix}:failed-result`,
+					}),
+				]),
+		panelPart(h, model, "identity", identityView, inputs),
+		panelPart(h, model, "span-attributes", spanAttributesView, inputs),
+		panelPart(h, model, "resource-attributes", resourceAttributesView, inputs),
+	])
 }
 
 export const logsSection = (h: H, model: Model, span: AiSessionSpan, timeZone: string): Html =>
-	panelPart(h, model, "logs", logsView, { span, timeZone })
+	panelPart(h, model, "logs", logsView, { span, timeZone, nowMs: model.nowMs })
 
 /** The Tool calls tab: a failed span condemns only the call it executed (`call.own`). */
 export const toolCallsSection = (
@@ -362,11 +370,12 @@ export const toolCallsSection = (
 	toolCalls: ReadonlyArray<SpanToolCall>,
 	keyPrefix: string,
 ): Html => {
-	if (toolCalls.length === 0) return emptyMessage(h, {}, ["No tool calls were captured on this span."])
+	if (toolCalls.length === 0) return emptyMessage(h, {}, ["No tool calls were captured on this span"])
 	const isFailed = spanFailed(span)
-	return h.div(
-		[h.Class("flex flex-col gap-3 pb-1")],
-		toolCalls.map((call, index) =>
+	return vstack(
+		h,
+		{ gap: "3", className: "pb-1" },
+		Arr.map(toolCalls, (call, index) =>
 			toolCallCard(h, model, call, {
 				isFailed: isFailed && call.own,
 				statusCode: span.statusCode,

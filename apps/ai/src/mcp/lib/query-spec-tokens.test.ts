@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest"
-import { Schema } from "effect"
+import { Schema, Array as Arr } from "effect"
 import { QuerySpec } from "@maple/domain/query-engine"
 import {
 	describeInvalidQuerySpec,
+	resolveTokenAliases,
 	tokensFor,
 	type QuerySpecKind,
 	type QuerySpecSource,
@@ -74,7 +75,7 @@ describe("query-spec token table matches the domain schemas", () => {
 		it(`${source}/${kind}: the table is not missing a token the schema accepts`, () => {
 			// Union of every token used anywhere, so a widened schema shows up as a
 			// value this combination now accepts but the table does not list.
-			const allMetrics = new Set(COMBOS.flatMap(([s, k]) => tokensFor(s, k).metrics))
+			const allMetrics = new Set(Arr.flatMap(COMBOS, ([s, k]) => tokensFor(s, k).metrics))
 			for (const metric of allMetrics) {
 				if (metrics.includes(metric)) continue
 				const groupBy = kind === "timeseries" ? { groupBy: [groupBys[0]] } : { groupBy: groupBys[0] }
@@ -142,5 +143,49 @@ describe("describeInvalidQuerySpec", () => {
 			groupBy: "http_method",
 		})
 		expect(result?.message).toContain("Invalid metric")
+	})
+})
+
+describe("resolveTokenAliases", () => {
+	it("never rewrites a token the source and kind already accept", () => {
+		const resolved = resolveTokenAliases({ source: "traces", kind: "breakdown", group_by: "span_name" })
+		expect(resolved).toMatchObject({ group_by: "span_name", errorsOnly: false, decisions: [] })
+	})
+
+	it("keeps an explicit attribute_key rather than replacing it with the token", () => {
+		const resolved = resolveTokenAliases({
+			source: "traces",
+			kind: "breakdown",
+			group_by: "http.route",
+			attribute_key: "user.id",
+		})
+		expect(resolved).toMatchObject({ group_by: "http.route", attribute_key: "user.id" })
+	})
+
+	it("leaves a dotted group_by alone where no attribute grouping exists, so validation names the options", () => {
+		const resolved = resolveTokenAliases({ source: "logs", kind: "timeseries", group_by: "http.route" })
+		expect(resolved.group_by).toBe("http.route")
+		const invalid = describeInvalidQuerySpec({
+			source: "logs",
+			kind: "timeseries",
+			metric: undefined,
+			groupBy: resolved.group_by,
+		})
+		expect(invalid?.message).toContain('Invalid group_by "http.route"')
+	})
+
+	it("reads error_count as a count of error spans on traces only", () => {
+		expect(
+			resolveTokenAliases({ source: "traces", kind: "timeseries", metric: "error_count" }),
+		).toMatchObject({
+			metric: "count",
+			errorsOnly: true,
+		})
+		expect(
+			resolveTokenAliases({ source: "logs", kind: "timeseries", metric: "error_count" }),
+		).toMatchObject({
+			metric: "error_count",
+			errorsOnly: false,
+		})
 	})
 })

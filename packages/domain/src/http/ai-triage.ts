@@ -1,5 +1,5 @@
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api"
-import { Option, Schema, SchemaGetter } from "effect"
+import { Option, Schema, SchemaGetter, Array as Arr, String as Str } from "effect"
 import { IsoDateTimeString, UserId } from "../primitives"
 import { SessionAuthorization } from "./current-tenant"
 import { IssueSeverity } from "./errors"
@@ -205,7 +205,7 @@ export const normalizeTriageSubmission = (
 ): { readonly report: AiTriageResult; readonly filled: ReadonlyArray<string> } => {
 	const filled: Array<string> = []
 	const text = (value: string | undefined, field: string): string => {
-		const trimmed = value?.trim()
+		const trimmed = value === undefined ? undefined : Str.trim(value)
 		if (trimmed !== undefined && trimmed.length > 0) return trimmed
 		filled.push(field)
 		return MISSING_PROSE
@@ -231,7 +231,7 @@ export const normalizeTriageSubmission = (
 	// Indexed paths, because `evidence[0].logPatterns` is one of the four keys prod actually saw
 	// missing. Recording the entry as present while silently completing the arrays inside it would
 	// hide the omission this list exists to measure.
-	const evidence = (submission.evidence ?? []).map((entry, index) => {
+	const evidence = Arr.map(submission.evidence ?? [], (entry, index) => {
 		const supplied = <A>(value: A | undefined, key: string, fallback: A): A => {
 			if (value !== undefined) return value
 			filled.push(`evidence[${index}].${key}`)

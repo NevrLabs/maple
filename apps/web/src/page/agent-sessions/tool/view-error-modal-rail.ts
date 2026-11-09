@@ -1,20 +1,24 @@
+import { formatNumber } from "@maple/ui/lib/format"
 import { unwrapToolErrorText, type VariantDifference } from "../../../lib/agent-sessions/tool-error-display"
 import { sessionRowId } from "@maple/agent-sessions"
-import { rowSelectedClass } from "@maple/ui/styles/ui/list-row"
 import { cn } from "@maple/ui/lib/utils"
-import { formatToolCount } from "@maple/web-data/lib/tool-analytics"
 import { AsyncData } from "foldkit"
 import type { Html, HtmlBuilder } from "foldkit/html"
 import { AppRoute, hrefOf } from "../../../route"
 import { orderedSearch } from "../../../route/tanstack-search"
-import { errorState } from "../../../ui/error-state"
-import { eyebrow } from "../../../ui/eyebrow"
-import { icon } from "../../../ui/icon"
-import { meter } from "../../../ui/meter"
-import { skeleton } from "../../../ui/skeleton"
+import { errorState } from "@maple/views/ui/error-state"
+import { eyebrow } from "@maple/views/ui/eyebrow"
+import { icon } from "@maple/views/ui/icon"
+import { meter } from "@maple/views/ui/meter"
+import { pressable } from "@maple/views/ui/pressable"
+import { selectableRow } from "@maple/views/ui/selectable-row"
+import { skeleton } from "@maple/views/ui/skeleton"
 import { relativeTime } from "../../kit/relative-time"
 import { type ErrorDetail, Message, type Model } from "./error-modal-model"
 import type { ModalInputs } from "./view-error-modal"
+import { typography } from "@maple/views/ui/typography"
+import { hstack, vstack } from "@maple/views/ui/stack"
+import { Array as Arr, String as Str } from "effect"
 
 // The rail of `ToolErrorModal`: the variants a group folded, where it happens, which sessions hit it.
 
@@ -23,23 +27,21 @@ type BreakdownRow = ErrorDetail["breakdown"][number]
 
 const RAIL_TITLE = "font-mono text-xs font-medium text-foreground"
 
-const variantText = (
-	h: H,
-	message: string,
-	difference: VariantDifference | undefined,
-): ReadonlyArray<Html> =>
+const variantText = (h: H, message: string, difference: VariantDifference | undefined): ReadonlyArray<Html> =>
 	difference === undefined || difference.middle === ""
-		? [h.span([h.Class("truncate text-muted-foreground")], [unwrapToolErrorText(message).text])]
+		? [typography(h, { tone: "muted", truncate: true }, [unwrapToolErrorText(message).text])]
 		: [
-				h.span(
-					[h.Class("min-w-0 truncate whitespace-pre text-muted-foreground")],
-					[difference.before],
+				typography(h, { tone: "muted", truncate: true, className: "min-w-0 whitespace-pre" }, [
+					difference.before,
+				]),
+				typography(
+					h,
+					{ tone: "foreground", weight: "medium", className: "shrink-0 whitespace-pre" },
+					[difference.middle],
 				),
-				h.span([h.Class("shrink-0 whitespace-pre font-medium text-foreground")], [difference.middle]),
-				h.span(
-					[h.Class("min-w-0 truncate whitespace-pre text-muted-foreground")],
-					[difference.after],
-				),
+				typography(h, { tone: "muted", truncate: true, className: "min-w-0 whitespace-pre" }, [
+					difference.after,
+				]),
 			]
 
 /** The raw texts a group folded, where there is more than one; one narrows the samples. */
@@ -50,102 +52,91 @@ const variantsSection = (
 	differences: ReadonlyMap<string, VariantDifference>,
 	selected: string | undefined,
 ): Html => {
-	const max = Math.max(1, ...detail.variants.map((row) => row.calls))
-	const isOnlyIndex = [...differences.values()].every((difference) => /^\[\d+\]$/.test(difference.middle))
-	return h.section(
-		[h.Class("flex flex-col gap-2 border-b border-border p-4")],
-		[
-			h.div(
-				[h.Class("flex items-baseline gap-2 pb-1")],
+	const max = Math.max(1, ...Arr.map(detail.variants, (row) => row.calls))
+	const isOnlyIndex = Arr.every([...differences.values()], (difference) =>
+		/^\[\d+\]$/.test(difference.middle),
+	)
+	return vstack(h, { gap: "2", as: "section", className: "border-b border-border p-4" }, [
+		hstack(h, { gap: "2", align: "baseline", className: "pb-1" }, [
+			h.span([h.Class(RAIL_TITLE)], ["Variants"]),
+			typography(
+				h,
+				{ size: "2xs", tone: "subtle", mono: true, numeric: true, className: "leading-3.5" },
+				[formatNumber(total), " raw messages"],
+			),
+		]),
+		...Arr.map(detail.variants, (row) => {
+			const isSelected = row.message === selected
+			return pressable(
+				h,
+				{
+					onClick: Message.ClickedVariant({ variant: isSelected ? undefined : row.message }),
+					isSelected,
+					className: cn(
+						"-mx-2 flex h-8 shrink-0 items-center gap-2.5 rounded-md px-2 text-left font-mono text-xs transition-colors",
+						isSelected ? "bg-primary-a2" : "hover:bg-surface-sunken active:bg-surface-sunken",
+					),
+					attributes: [h.Key(row.message), h.Title(unwrapToolErrorText(row.message).text)],
+				},
 				[
-					h.span([h.Class(RAIL_TITLE)], ["Variants"]),
+					hstack(
+						h,
+						{
+							align: "baseline",
+							shrink: true,
+							grow: true,
+							as: "span",
+							className: "w-0 overflow-hidden whitespace-pre",
+						},
+						variantText(h, row.message, differences.get(row.message)),
+					),
+					meter(h, {
+						value: row.calls,
+						max,
+						minVisible: 4,
+						tone: "crit",
+						className: "w-12 shrink-0 rounded-xs bg-muted",
+					}),
 					h.span(
-						[h.Class("font-mono text-2xs leading-3.5 tabular-nums text-foreground-subtle")],
-						[formatToolCount(total), " raw messages"],
+						[h.Class("w-7 shrink-0 text-right tabular-nums text-foreground")],
+						[formatNumber(row.calls)],
 					),
 				],
-			),
-			...detail.variants.map((row) => {
-				const isSelected = row.message === selected
-				return h.button(
-					[
-						h.Key(row.message),
-						h.AriaPressed(String(isSelected)),
-						h.Class(
-							cn(
-								"-mx-2 flex h-8 shrink-0 items-center gap-2.5 rounded-md px-2 text-left font-mono text-xs transition-colors",
-								isSelected ? "bg-primary-a2" : "hover:bg-surface-sunken active:bg-surface-sunken",
-							),
-						),
-						h.Title(unwrapToolErrorText(row.message).text),
-						h.Type("button"),
-						h.OnClick(Message.ClickedVariant({ variant: isSelected ? undefined : row.message })),
-					],
-					[
-						h.span(
-							[
-								h.Class(
-									"flex w-0 min-w-0 flex-1 items-baseline overflow-hidden whitespace-pre",
-								),
-							],
-							variantText(h, row.message, differences.get(row.message)),
-						),
-						meter(h, {
-							value: row.calls,
-							max,
-							minVisible: 4,
-							tone: "crit",
-							className: "w-12 shrink-0 rounded-xs bg-muted",
-						}),
-						h.span(
-							[h.Class("w-7 shrink-0 text-right tabular-nums text-foreground")],
-							[formatToolCount(row.calls)],
-						),
-					],
-				)
-			}),
-			h.p(
-				[h.Class("pt-1 font-mono text-2xs leading-[15px] text-foreground-subtle")],
-				[
-					isOnlyIndex
-						? "Grouped because only the array index differs."
-						: "Grouped because only masked values differ.",
-					" ",
-					"Select one to filter samples.",
-				],
-			),
-		],
-	)
+			)
+		}),
+		h.p(
+			[h.Class("pt-1 font-mono text-2xs leading-3.75 text-foreground-subtle")],
+			[
+				isOnlyIndex
+					? "Grouped because only the array index differs."
+					: "Grouped because only masked values differ.",
+				" ",
+				"Select one to filter samples.",
+			],
+		),
+	])
 }
 
 const whereItHappens = (h: H, rows: ReadonlyArray<BreakdownRow>, isLoading: boolean): Html =>
-	h.section(
-		[h.Class("flex flex-col gap-3.5 border-b border-border p-4")],
-		[
-			h.span([h.Class(RAIL_TITLE)], ["Where it happens"]),
-			...(isLoading && rows.length === 0
-				? [
-						h.div(
-							[h.Class("flex flex-col gap-2")],
-							[skeleton(h, "h-3 w-3/4"), skeleton(h, "h-3 w-1/2")],
-						),
-					]
-				: [
-						breakdown(
-							h,
-							"Model",
-							fold(rows, (row) => row.model),
-							"unattributed",
-						),
-						breakdown(
-							h,
-							"Service",
-							fold(rows, (row) => row.service),
-							"unknown",
-						),
-					]),
-		],
-	)
+	vstack(h, { as: "section", className: "gap-3.5 border-b border-border p-4" }, [
+		h.span([h.Class(RAIL_TITLE)], ["Where it happens"]),
+		...(isLoading && rows.length === 0
+			? [vstack(h, { gap: "2" }, [skeleton(h, "h-3 w-3/4"), skeleton(h, "h-3 w-1/2")])]
+			: [
+					breakdown(
+						h,
+						"Model",
+						fold(rows, (row) => row.model),
+						"unattributed",
+					),
+					breakdown(
+						h,
+						"Service",
+						fold(rows, (row) => row.service),
+						"unknown",
+					),
+				]),
+	])
 
 /**
  * The session a failure belongs to: the trace view filtered to this tool, and the failed call
@@ -176,7 +167,7 @@ export const sessionLink = (
 			),
 		],
 		[
-			h.span([h.Class("truncate")], [sessionRowId(options.sessionId)]),
+			typography(h, { truncate: true }, [sessionRowId(options.sessionId)]),
 			icon(h, "ExternalLinkIcon", {
 				size: 10,
 				className: "shrink-0 text-muted-foreground",
@@ -188,7 +179,6 @@ export const sessionLink = (
 const sessionRowClass = (isSelected: boolean) =>
 	cn(
 		"group flex w-full shrink-0 items-center gap-3 border-b border-border-subtle pr-4 pl-4 text-left transition-colors",
-		rowSelectedClass(isSelected),
 		!isSelected && "hover:bg-surface-sunken active:bg-surface-sunken",
 	)
 
@@ -198,143 +188,128 @@ const LAST_CLASS = "w-14 shrink-0 text-right font-mono text-2xs tabular-nums tex
 const sessionsSection = (h: H, model: Model, inputs: ModalInputs, detail: ErrorDetail): Html => {
 	const { group, session: selected, nowMs, timeZone } = inputs
 	const isLoading = !AsyncData.hasData(model.detail.data) && !AsyncData.isFailure(model.detail.data)
-	return h.section(
-		[h.Class("flex flex-col")],
-		[
-			h.div(
-				[h.Class("flex items-baseline gap-2 px-4 pt-4 pb-2.5")],
-				[
-					h.span([h.Class(RAIL_TITLE)], ["Sessions"]),
-					h.span(
-						[h.Class("font-mono text-2xs leading-3.5 tabular-nums text-foreground-subtle")],
-						[formatToolCount(group.sessions)],
-					),
-				],
-			),
-			eyebrow(
+	return vstack(h, { as: "section" }, [
+		hstack(h, { gap: "2", align: "baseline", className: "px-4 pt-4 pb-2.5" }, [
+			h.span([h.Class(RAIL_TITLE)], ["Sessions"]),
+			typography(
 				h,
-				{
-					variant: "mono",
-					as: "div",
-					className: "flex h-8 shrink-0 items-center gap-3 border-y border-border px-4",
-				},
-				[
-					h.span([h.Class("grow")], ["Session"]),
-					h.span([h.Class("w-10 shrink-0 text-right")], ["Hits"]),
-					h.span([h.Class("w-14 shrink-0 text-right")], ["Last"]),
-				],
+				{ size: "2xs", tone: "subtle", mono: true, numeric: true, className: "leading-3.5" },
+				[formatNumber(group.sessions)],
 			),
-			h.button(
-				[
-					h.AriaPressed(String(selected === undefined)),
-					h.Class(cn(sessionRowClass(selected === undefined), "h-10")),
-					h.Type("button"),
-					h.OnClick(Message.ClickedSession({ session: undefined })),
-				],
-				[
-					h.span([h.Class("grow font-mono text-xs font-medium text-foreground")], ["All sessions"]),
-					h.span(
-						[h.Class("w-10 shrink-0 text-right font-mono text-xs tabular-nums text-foreground")],
-						[formatToolCount(group.calls)],
-					),
-					relativeTime(h, {
-						value: group.lastSeen,
-						nowMs,
-						timeZone,
-						variant: "orDate",
-						tooltip: "title",
-						className: LAST_CLASS,
-					}),
-				],
-			),
-			...(isLoading && detail.sessions.length === 0
-				? [
-						h.div(
-							[h.Class("flex flex-col gap-1.5 px-4 py-3")],
-							[skeleton(h, "h-10"), skeleton(h, "h-10")],
-						),
-					]
-				: detail.sessions.map((row) => {
-						const isSelected = row.sessionId === selected
-						return h.div(
-							[h.Key(row.sessionId), h.Class(cn(sessionRowClass(isSelected), "h-[52px]"))],
-							[
-								h.button(
-									[
-										h.AriaPressed(String(isSelected)),
-										h.AriaLabel(`Show samples in ${sessionRowId(row.sessionId)}`),
-										h.Class(
-											"absolute inset-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring",
-										),
-										h.Type("button"),
-										h.OnClick(
-											Message.ClickedSession({
-												session: isSelected ? undefined : row.sessionId,
-											}),
-										),
-									],
-									[],
-								),
-								h.span(
-									[h.Class("flex w-0 min-w-0 grow flex-col items-start gap-1")],
-									[
-										sessionLink(h, {
-											tool: inputs.tool,
-											sessionId: row.sessionId,
-											className: "max-w-full font-mono text-xs",
-										}),
-										h.span(
-											[
-												h.Class(
-													"w-full truncate font-mono text-2xs leading-3.5 text-foreground-subtle",
-												),
-											],
-											[
-												row.service === ""
-													? row.agentName === ""
-														? row.vendorId
-														: row.agentName
-													: row.service,
-											],
-										),
-									],
-								),
-								h.span(
-									[
-										h.Class(
-											"w-10 shrink-0 text-right font-mono text-xs tabular-nums text-foreground",
-										),
-									],
-									[formatToolCount(row.hits)],
-								),
-								relativeTime(h, {
-									value: row.lastSeen,
-									nowMs,
-									timeZone,
-									variant: "orDate",
-									tooltip: "title",
-									className: LAST_CLASS,
-								}),
-							],
-						)
-					})),
-			h.div(
-				[h.Class("flex h-9 shrink-0 items-center gap-2 px-4 font-mono text-xs")],
-				[
-					h.span(
-						[h.Class("text-muted-foreground")],
+		]),
+		eyebrow(
+			h,
+			{
+				variant: "mono",
+				as: "div",
+				className: "flex h-8 shrink-0 items-center gap-3 border-y border-border px-4",
+			},
+			[
+				h.span([h.Class("grow")], ["Session"]),
+				h.span([h.Class("w-10 shrink-0 text-right")], ["Hits"]),
+				h.span([h.Class("w-14 shrink-0 text-right")], ["Last"]),
+			],
+		),
+		pressable(
+			h,
+			{
+				onClick: Message.ClickedSession({ session: undefined }),
+				isSelected: selected === undefined,
+				selectedLane: selected === undefined,
+				className: cn(sessionRowClass(selected === undefined), "h-10"),
+			},
+			[
+				h.span([h.Class("grow font-mono text-xs font-medium text-foreground")], ["All sessions"]),
+				h.span(
+					[h.Class("w-10 shrink-0 text-right font-mono text-xs tabular-nums text-foreground")],
+					[formatNumber(group.calls)],
+				),
+				relativeTime(h, {
+					value: group.lastSeen,
+					nowMs,
+					timeZone,
+					variant: "orDate",
+					className: LAST_CLASS,
+				}),
+			],
+		),
+		...(isLoading && detail.sessions.length === 0
+			? [vstack(h, { gap: "1.5", className: "px-4 py-3" }, [skeleton(h, "h-10"), skeleton(h, "h-10")])]
+			: Arr.map(detail.sessions, (row) => {
+					const isSelected = row.sessionId === selected
+					return selectableRow(
+						h,
+						{
+							isSelected,
+							className: cn(sessionRowClass(isSelected), "h-[52px]"),
+							attributes: [h.Key(row.sessionId)],
+						},
 						[
-							"Showing ",
-							formatToolCount(detail.sessions.length),
-							" of ",
-							formatToolCount(group.sessions),
+							pressable(
+								h,
+								{
+									onClick: Message.ClickedSession({
+										session: isSelected ? undefined : row.sessionId,
+									}),
+									isSelected,
+									label: `Show samples in ${sessionRowId(row.sessionId)}`,
+									stretched: true,
+								},
+								[],
+							),
+							vstack(
+								h,
+								{ gap: "1", align: "start", shrink: true, as: "span", className: "w-0 grow" },
+								[
+									sessionLink(h, {
+										tool: inputs.tool,
+										sessionId: row.sessionId,
+										className: "max-w-full font-mono text-xs",
+									}),
+									h.span(
+										[
+											h.Class(
+												"w-full truncate font-mono text-2xs leading-3.5 text-foreground-subtle",
+											),
+										],
+										[
+											row.service === ""
+												? row.agentName === ""
+													? row.vendorId
+													: row.agentName
+												: row.service,
+										],
+									),
+								],
+							),
+							h.span(
+								[
+									h.Class(
+										"w-10 shrink-0 text-right font-mono text-xs tabular-nums text-foreground",
+									),
+								],
+								[formatNumber(row.hits)],
+							),
+							relativeTime(h, {
+								value: row.lastSeen,
+								nowMs,
+								timeZone,
+								variant: "orDate",
+								className: LAST_CLASS,
+							}),
 						],
-					),
-					h.span([h.Class("text-foreground-subtle")], ["by hits"]),
-				],
-			),
-		],
-	)
+					)
+				})),
+		hstack(h, { gap: "2", align: "center", className: "h-9 shrink-0 px-4 font-mono text-xs" }, [
+			typography(h, { tone: "muted" }, [
+				"Showing ",
+				formatNumber(detail.sessions.length),
+				" of ",
+				formatNumber(group.sessions),
+			]),
+			typography(h, { tone: "subtle" }, ["by hits"]),
+		]),
+	])
 }
 
 /** The rail: the facts read's failure in its place, or what the read found. */
@@ -368,14 +343,11 @@ export const railView = (
 /** The group's pairs folded to one key, the three busiest first. */
 const fold = (rows: ReadonlyArray<BreakdownRow>, keyOf: (row: BreakdownRow) => string) =>
 	[
-		...rows
-			.reduce(
-				(totals, row) => totals.set(keyOf(row), (totals.get(keyOf(row)) ?? 0) + row.calls),
-				new Map<string, number>(),
-			)
-			.entries(),
+		...Arr.reduce(rows, new Map<string, number>(), (totals, row) =>
+			totals.set(keyOf(row), (totals.get(keyOf(row)) ?? 0) + row.calls),
+		).entries(),
 	]
-		.sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+		.sort((a, b) => (b[1] !== a[1] ? b[1] - a[1] : Str.localeCompare(b[0])(a[0])))
 		.slice(0, 3)
 
 const breakdown = (
@@ -385,47 +357,50 @@ const breakdown = (
 	blank: string,
 ): Html => {
 	const max = rows[0]?.[1] ?? 1
-	return h.div(
-		[h.Class("flex flex-col gap-1.5")],
-		[
-			eyebrow(h, { variant: "mono", className: "leading-3.5" }, [label]),
-			...rows.map(([key, calls], index) =>
-				h.div(
-					[h.Key(key), h.Class("flex items-center gap-2.5 font-mono text-xs leading-4")],
-					[
-						h.span(
-							[
-								h.Class(
-									cn(
-										"w-0 min-w-0 flex-1 truncate",
-										index === 0 ? "text-foreground" : "text-muted-foreground",
-										key === "" && "italic",
-									),
+	return vstack(h, { gap: "1.5" }, [
+		eyebrow(h, { variant: "mono", className: "leading-3.5" }, [label]),
+		...Arr.map(rows, ([key, calls], index) =>
+			hstack(
+				h,
+				{
+					gap: "2.5",
+					align: "center",
+					className: "font-mono text-xs leading-4",
+					attributes: [h.Key(key)],
+				},
+				[
+					h.span(
+						[
+							h.Class(
+								cn(
+									"w-0 min-w-0 flex-1 truncate",
+									index === 0 ? "text-foreground" : "text-muted-foreground",
+									key === "" && "italic",
 								),
-							],
-							[key === "" ? blank : key],
-						),
-						meter(h, {
-							value: calls,
-							max,
-							minVisible: 4,
-							fillClassName: "bg-muted-foreground",
-							className: "w-14 shrink-0 rounded-xs bg-muted",
-						}),
-						h.span(
-							[
-								h.Class(
-									cn(
-										"w-10 shrink-0 text-right tabular-nums",
-										index === 0 ? "text-foreground" : "text-muted-foreground",
-									),
+							),
+						],
+						[key === "" ? blank : key],
+					),
+					meter(h, {
+						value: calls,
+						max,
+						minVisible: 4,
+						fillClassName: "bg-muted-foreground",
+						className: "w-14 shrink-0 rounded-xs bg-muted",
+					}),
+					h.span(
+						[
+							h.Class(
+								cn(
+									"w-10 shrink-0 text-right tabular-nums",
+									index === 0 ? "text-foreground" : "text-muted-foreground",
 								),
-							],
-							[formatToolCount(calls)],
-						),
-					],
-				),
+							),
+						],
+						[formatNumber(calls)],
+					),
+				],
 			),
-		],
-	)
+		),
+	])
 }

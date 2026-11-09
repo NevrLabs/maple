@@ -79,7 +79,7 @@ const CODE_STATUS: ReadonlyArray<AlertTierStatus> = ["clear", "hold", "breach"]
 
 /** One tick as a small int: two bits per tier, warning low, critical high. */
 export const encodeTick = (levels: ReadonlyArray<AlertTierLevel>): number =>
-	levels.reduce((code, level) => code | (STATUS_CODE[level.status] << shiftOf(level.severity)), 0)
+	Arr.reduce(levels, 0, (code, level) => code | (STATUS_CODE[level.status] << shiftOf(level.severity)))
 
 const tierStatusAt = (code: number, severity: AlertSeverity): AlertTierStatus =>
 	CODE_STATUS[(code >> shiftOf(severity)) & 0b11] ?? "clear"
@@ -125,7 +125,7 @@ export const resolveActiveSeverity = (
 	const currentRank = current === null ? 0 : ALERT_SEVERITY_RANK[current]
 	const ordered = [...severities].sort((a, b) => ALERT_SEVERITY_RANK[b] - ALERT_SEVERITY_RANK[a])
 	for (const severity of ordered) {
-		const breaches = recent.filter((code) => tierStatusAt(code, severity) === "breach").length
+		const breaches = Arr.filter(recent, (code) => tierStatusAt(code, severity) === "breach").length
 		if (tierStatusAt(newest, severity) === "breach" && breaches >= policy.breachesToOpen) return severity
 		if (currentRank >= ALERT_SEVERITY_RANK[severity]) {
 			const cleared = trailingRun(history, (code) => tierStatusAt(code, severity) === "clear")
@@ -173,7 +173,10 @@ export const tierFor = (
 	tiers: Arr.NonEmptyReadonlyArray<AlertThresholdTier>,
 	severity: AlertSeverity,
 ): AlertThresholdTier =>
-	tiers.find((tier) => tier.severity === severity) ?? Arr.headNonEmpty(Arr.sort(tiers, alertSeverityOrder))
+	Option.getOrElse(
+		Arr.findFirst(tiers, (tier) => tier.severity === severity),
+		() => Arr.headNonEmpty(Arr.sort(tiers, alertSeverityOrder)),
+	)
 
 /**
  * The rule tier an incident at `severity` reads as: its own, else the one the rule kept
@@ -189,6 +192,8 @@ export const maxSeverity = (a: AlertSeverity | null, b: AlertSeverity | null): A
 
 /** The highest tier a tick breached, for the audit trail; null when none did. */
 export const highestBreachedLevel = (levels: ReadonlyArray<AlertTierLevel>): AlertSeverity | null =>
-	levels
-		.filter((level) => level.status === "breach")
-		.reduce<AlertSeverity | null>((highest, level) => maxSeverity(highest, level.severity), null)
+	Arr.reduce<AlertTierLevel, AlertSeverity | null>(
+		Arr.filter(levels, (level) => level.status === "breach"),
+		null,
+		(highest, level) => maxSeverity(highest, level.severity),
+	)

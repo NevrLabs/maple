@@ -1,5 +1,5 @@
 import { AlertIncidentDocument, AlertRuleDocument } from "@maple/domain/http"
-import { Schema } from "effect"
+import { Schema, Array as Arr, String as Str } from "effect"
 import { describe, expect, it } from "vitest"
 
 import type { AlertRuleStateRow } from "../collections/alerts"
@@ -15,7 +15,7 @@ const NOW = Date.parse("2026-10-16T00:00:00.000Z")
 function rule(id: string, overrides: Record<string, unknown> = {}): AlertRuleDocument {
 	return decodeRule({
 		id,
-		name: `rule ${id.slice(-1)}`,
+		name: `rule ${Str.slice(-1)(id)}`,
 		notes: null,
 		notificationTemplate: null,
 		enabled: true,
@@ -86,7 +86,7 @@ describe("ruleHeadroom", () => {
 		)
 
 		const rounded = (n: number | null) => (n === null ? null : Math.round(n * 100) / 100)
-		expect(rows.map((row) => [row.rule.id, row.groupKey, rounded(row.closeness)])).toEqual([
+		expect(Arr.map(rows, (row) => [row.rule.id, row.groupKey, rounded(row.closeness)])).toEqual([
 			[RULE_A, "web", 0.8],
 			// A floor: 10 needed, 40 seen.
 			[RULE_B, null, 0.25],
@@ -102,6 +102,15 @@ describe("ruleHeadroom", () => {
 			]),
 		)
 		expect(rows).toEqual([])
+	})
+
+	it("leaves out a value from a window under the minimum sample count, which can't fire", () => {
+		const fewSamples = { ...state(RULE_A, "api", 0.063), last_status: "skipped", last_sample_count: 4 }
+		const rows = ruleHeadroom(
+			[rule(RULE_A, { minimumSampleCount: 20 })],
+			new Map([[RULE_A, [fewSamples, state(RULE_A, "web", 0.01)]]]),
+		)
+		expect(Arr.map(rows, (row) => [row.groupKey, row.value])).toEqual([["web", 0.01]])
 	})
 })
 
@@ -129,7 +138,13 @@ describe("quietForMs", () => {
 			lastNotifiedAt: null,
 			holdReason: null,
 			heldSince: null,
+			acknowledgedAt: null,
+			acknowledgedByUserId: null,
+			acknowledgedByName: null,
+			acknowledgedVia: null,
 			errorIssueId: null,
+			silenceId: null,
+			silencedAt: null,
 		})
 
 	it("counts from the latest resolve", () => {

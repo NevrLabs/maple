@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
-import { Schema } from "effect"
+import { Schema, String as Str } from "effect"
 import {
 	GetSessionTracesOutput,
 	GetSessionTranscriptOutput,
@@ -85,9 +85,9 @@ const eventRow = (seq: number, type: string, extra: Record<string, unknown>) => 
 })
 
 const fixtures: FixtureRule[] = [
-	{ match: (sql) => sql.includes(MISSING_SESSION_ID), rows: [] },
+	{ match: (sql) => Str.includes(MISSING_SESSION_ID)(sql), rows: [] },
 	{
-		match: (sql) => sql.includes("session_events") && sql.includes("TargetSelector"),
+		match: (sql) => Str.includes("session_events")(sql) && Str.includes("TargetSelector")(sql),
 		rows: [
 			eventRow(1, "click", { targetSelector: "button#pay", targetText: "Pay now" }),
 			eventRow(2, "network", {
@@ -96,15 +96,17 @@ const fixtures: FixtureRule[] = [
 				netStatus: 500,
 				netDurationMs: 120,
 			}),
+			// Mobile SDKs send no URL on a screen view, only the screen name.
+			eventRow(3, "navigation", { url: "", message: "Saved Chats" }),
 		],
 	},
 	// An event-refined list: the replay row's ErrorCount is 0, as most SDKs leave it.
 	{
-		match: (sql) => sql.includes("session_replays") && sql.includes("matchCount"),
+		match: (sql) => Str.includes("session_replays")(sql) && Str.includes("matchCount")(sql),
 		rows: [{ ...replayRow, errorCount: "0", matchCount: "5" }],
 	},
 	{
-		match: (sql) => sql.includes("session_events"),
+		match: (sql) => Str.includes("session_events")(sql),
 		rows: [{ sessionId: SESSION_ID, activeTimeMs: "4000", idleTimeMs: "1000", eventCount: "2" }],
 	},
 	{
@@ -123,7 +125,7 @@ const fixtures: FixtureRule[] = [
 			},
 		],
 	},
-	{ match: (sql) => sql.includes("session_replays"), rows: [replayRow] },
+	{ match: (sql) => Str.includes("session_replays")(sql), rows: [replayRow] },
 ]
 
 let rt: EvalRuntime
@@ -196,6 +198,11 @@ describe("get_session_transcript", () => {
 		const bad = await call("get_session_transcript", { session_id: SESSION_ID, event_types: ["clicks"] })
 		expect(bad.isError).toBe(true)
 		expect(markdown(bad)).toContain("`event_types`")
+	})
+
+	it("names a mobile screen view by its screen name", async () => {
+		const result = await call("get_session_transcript", { session_id: SESSION_ID })
+		expect(markdown(result)).toContain("NAV   → Saved Chats")
 	})
 })
 

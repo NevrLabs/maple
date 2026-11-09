@@ -1,4 +1,5 @@
 import {
+	ErrorIssueAffectedUsersResponse,
 	ErrorIssueEventsResponse,
 	ErrorIssueId,
 	ErrorIssuePullRequestsResponse,
@@ -10,17 +11,18 @@ import {
 } from "@maple/domain/http"
 import { V2AnomalyIncident, V2ErrorIssueDetail, V2Investigation } from "@maple/domain/http/v2"
 import { Schema } from "effect"
-import { ChartRuntime } from "../../../charts/chart-runtime"
-import { ThemeColors } from "../../../charts/theme-colors"
-import { KeyedSchema } from "../../../data/keyed"
-import { LoadFailure } from "../../../data/load-failure"
+import * as Chart from "@maple/views/charts/chart"
+import { ChartRuntime } from "@maple/views/charts/chart-runtime"
+import { ThemeColors } from "@maple/views/charts/theme-colors"
+import { KeyedSchema } from "@maple/views/data/keyed"
+import { LoadFailure } from "@maple/views/data/load-failure"
 import { TimeWindow } from "../../../data/time-range"
 import { ErrorIssueSearch } from "../../../route/search"
-import * as Combobox from "../../../ui/combobox"
-import * as CopyButton from "../../../ui/copy-button"
-import * as Dialog from "../../../ui/dialog"
-import * as Menu from "../../../ui/menu"
-import * as Select from "../../../ui/select"
+import * as Combobox from "@maple/views/ui/combobox"
+import * as CopyButton from "@maple/views/ui/copy-button"
+import * as Dialog from "@maple/views/ui/dialog"
+import * as Menu from "@maple/views/ui/menu"
+import * as Select from "@maple/views/ui/select"
 import * as TimeRangePicker from "../../kit/time-range-picker"
 
 // The issue detail page.
@@ -40,6 +42,8 @@ export const Model = Schema.Struct({
 	leaseNowMs: Schema.Number,
 	detail: keyed(V2ErrorIssueDetail),
 	events: keyed(ErrorIssueEventsResponse),
+	/** The rail's Affected users group, over the window. */
+	affectedUsers: keyed(ErrorIssueAffectedUsersResponse),
 	investigations: keyed(Schema.Array(V2Investigation)),
 	pullRequests: keyed(ErrorIssuePullRequestsResponse),
 	verifications: keyed(ErrorIssueVerificationsResponse),
@@ -55,11 +59,14 @@ export const Model = Schema.Struct({
 	severitySelect: Select.Model,
 	fingerprintCopy: CopyButton.Model,
 	issueIdCopy: CopyButton.Model,
+	/** The agent handoff panel's "Copy prompt". */
+	promptCopy: CopyButton.Model,
+	chart: Chart.Model,
 	chartRuntime: ChartRuntime,
 	themeColors: Schema.NullOr(ThemeColors),
 	/** `PageRefreshProvider`: Reloads so far (non-zero stops snapping) and the 600 ms spinner. */
 	/** The rail writes in flight, one entry per write kind. */
-	busy: Schema.Array(Schema.Literals(["state", "severity", "claim", "heartbeat", "release"])),
+	busy: Schema.Array(Schema.Literals(["state", "severity", "claim", "heartbeat", "release", "unmerge"])),
 	/** The severity raise waiting on "Notify escalation destinations?". */
 	/** `startingInvestigation`: the create is in flight. */
 	isStartingInvestigation: Schema.Boolean,

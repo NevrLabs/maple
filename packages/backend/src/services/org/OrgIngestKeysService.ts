@@ -18,7 +18,18 @@ import {
 import * as PG from "@maple-dev/effect-orm/postgres"
 import { OrgIngestKeys, type OrgIngestKeyRow, Sources } from "@maple/db/tables"
 import { defaultSourceRow } from "./source-rows"
-import { Array as Arr, Clock, Context, Effect, Layer, Option, Redacted, Result, Schema } from "effect"
+import {
+	DateTime,
+	Array as Arr,
+	Clock,
+	Context,
+	Effect,
+	Layer,
+	Option,
+	Redacted,
+	Result,
+	Schema,
+} from "effect"
 import {
 	decryptAes256Gcm,
 	encryptAes256Gcm,
@@ -142,9 +153,11 @@ export class OrgIngestKeysService extends Context.Service<OrgIngestKeysService>(
 				return new IngestKeysResponse({
 					publicKey: row.publicKey,
 					privateKey,
-					publicRotatedAt: decodeIsoDateTimeStringSync(new Date(row.publicRotatedAt).toISOString()),
+					publicRotatedAt: decodeIsoDateTimeStringSync(
+						DateTime.formatIso(DateTime.makeUnsafe(row.publicRotatedAt)),
+					),
 					privateRotatedAt: decodeIsoDateTimeStringSync(
-						new Date(row.privateRotatedAt).toISOString(),
+						DateTime.formatIso(DateTime.makeUnsafe(row.privateRotatedAt)),
 					),
 				})
 			})
@@ -207,11 +220,9 @@ export class OrgIngestKeysService extends Context.Service<OrgIngestKeysService>(
 
 				const row = yield* selectRow(orgId)
 				if (Option.isNone(row)) {
-					return yield* Effect.fail(
-						new IngestKeyPersistenceError({
-							message: "Failed to create org ingest keys",
-						}),
-					)
+					return yield* new IngestKeyPersistenceError({
+						message: "Failed to create org ingest keys",
+					})
 				}
 				yield* ingestKeysMemo.set(orgId, row.value, now + ORG_INGEST_KEYS_MEMO_TTL_MS)
 
@@ -266,13 +277,13 @@ export class OrgIngestKeysService extends Context.Service<OrgIngestKeysService>(
 
 				const withoutRow = Arr.difference(
 					misses,
-					selected.map((row) => row.orgId),
+					Arr.map(selected, (row) => row.orgId),
 				)
 				const created = yield* Effect.forEach(withoutRow, (orgId) =>
 					ensureRow(orgId, userId).pipe(Effect.map((row) => [orgId, row] as const)),
 				)
 				const responses = yield* Effect.forEach(
-					[...memoHits, ...selected.map((row) => [row.orgId, row] as const), ...created],
+					[...memoHits, ...Arr.map(selected, (row) => [row.orgId, row] as const), ...created],
 					([orgId, row]) =>
 						toResponse(row).pipe(Effect.map((response) => [orgId, response] as const)),
 				)
@@ -309,11 +320,9 @@ export class OrgIngestKeysService extends Context.Service<OrgIngestKeysService>(
 
 				const row = yield* selectRow(orgId)
 				if (Option.isNone(row)) {
-					return yield* Effect.fail(
-						new IngestKeyPersistenceError({
-							message: "Failed to load rerolled public ingest key",
-						}),
-					)
+					return yield* new IngestKeyPersistenceError({
+						message: "Failed to load rerolled public ingest key",
+					})
 				}
 				yield* ingestKeysMemo.set(orgId, row.value, now + ORG_INGEST_KEYS_MEMO_TTL_MS)
 
@@ -351,11 +360,9 @@ export class OrgIngestKeysService extends Context.Service<OrgIngestKeysService>(
 
 				const row = yield* selectRow(orgId)
 				if (Option.isNone(row)) {
-					return yield* Effect.fail(
-						new IngestKeyPersistenceError({
-							message: "Failed to load rerolled private ingest key",
-						}),
-					)
+					return yield* new IngestKeyPersistenceError({
+						message: "Failed to load rerolled private ingest key",
+					})
 				}
 				yield* ingestKeysMemo.set(orgId, row.value, now + ORG_INGEST_KEYS_MEMO_TTL_MS)
 

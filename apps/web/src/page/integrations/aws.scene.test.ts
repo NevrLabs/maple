@@ -3,12 +3,13 @@ import { Timestamp, type V2AwsConnection, type V2AwsIntegration } from "@maple/d
 import { AwsAccountId, AwsConnectionId } from "@maple/domain/primitives"
 import { AwsMetricStream } from "@maple/domain/aws"
 import { AWS_METRIC_NAMESPACES } from "@maple/domain/primitives"
-import { Result, Schema } from "effect"
+import { Result, Schema, Array as Arr } from "effect"
 import { AsyncData } from "foldkit"
 import { expect as expectView, given, scene, text, withViewInputs } from "foldkit/scene"
 import { describe, expect, test } from "vitest"
-import * as Field from "../../ui/field"
+import * as Field from "@maple/views/ui/field"
 import { PageOutMessage, type PageContext } from "../contract"
+import { isMetricsPanelOpen, isSavingMetricsOf, metricsErrorOf } from "./aws"
 import { Message } from "./message"
 import type { Model } from "./model"
 import { init, update } from "./update"
@@ -21,7 +22,7 @@ const context: PageContext = { orgId, pinnedNamespace: null, timeZone: "UTC" }
 const pageUpdate = (model: Model, message: Message) => update(model, message, context)
 const view = withViewInputs(pageView, { context })()
 const names = (commands: ReadonlyArray<{ readonly name: string }> | undefined) =>
-	(commands ?? []).map(({ name }) => name)
+	Arr.map(commands ?? [], ({ name }) => name)
 
 const connectionId = Schema.decodeSync(AwsConnectionId)("018f2b3c-4d5e-4f70-8192-a3b4c5d6e7f8")
 
@@ -87,11 +88,15 @@ describe("aws card", () => {
 		expect(overviewOf(model.statuses, model.nowMs, "aws")).toMatchObject({ issue: "Metrics off" })
 
 		const opened = pageUpdate(model, Message.ClickedAwsMetrics({ id: connectionId })).model
-		const edited = [
-			Message.ToggledAwsRegion({ id: connectionId, region: "eu-central-1" }),
-			Message.ToggledAwsRegion({ id: connectionId, region: "us-east-1" }),
-			Message.ToggledAwsNamespace({ id: connectionId, namespace: "AWS/SQS" }),
-		].reduce((next, message) => pageUpdate(next, message).model, opened)
+		const edited = Arr.reduce(
+			[
+				Message.ToggledAwsRegion({ id: connectionId, region: "eu-central-1" }),
+				Message.ToggledAwsRegion({ id: connectionId, region: "us-east-1" }),
+				Message.ToggledAwsNamespace({ id: connectionId, namespace: "AWS/SQS" }),
+			],
+			opened,
+			(next, message) => pageUpdate(next, message).model,
+		)
 		const sent = pageUpdate(edited, Message.SubmittedAwsMetrics({ id: connectionId }))
 		const [update] = sent.commands ?? []
 		expect(update?.name).toBe("UpdateAwsMetricStream")
@@ -99,7 +104,7 @@ describe("aws card", () => {
 			id: connectionId,
 			metricStream: {
 				regions: ["eu-central-1"],
-				namespaces: AWS_METRIC_NAMESPACES.filter((namespace) => namespace !== "AWS/SQS"),
+				namespaces: Arr.filter(AWS_METRIC_NAMESPACES, (namespace) => namespace !== "AWS/SQS"),
 			},
 		})
 		// A second submit while saving sends nothing.
@@ -110,11 +115,13 @@ describe("aws card", () => {
 		const saved = pageUpdate(
 			sent.model,
 			Message.CompletedAwsMetricStream({
+				id: connectionId,
 				connection: connection({ verified_at, metric_stream: stream }),
 				error: null,
 			}),
 		)
-		expect(saved.model.awsCard.metricsId).toBeNull()
+		expect(isMetricsPanelOpen(saved.model.awsCard.metrics, connectionId)).toBe(false)
+		expect(saved.model.awsCard.metrics).toMatchObject({ selection: { regions: ["eu-central-1"] } })
 		expect(saved.model.awsCard.setupId).toBe(connectionId)
 		expect(names(saved.commands)).toContain("LoadAwsSetup")
 		expect(names(saved.commands)).toContain("LoadIntegrationsAwsStatus")
@@ -128,7 +135,9 @@ describe("aws card", () => {
 		).model
 		const sent = pageUpdate(none, Message.SubmittedAwsMetrics({ id: connectionId }))
 		expect(names(sent.commands)).toEqual([])
-		expect(sent.model.awsCard.metricsError).toBe("Pick at least one region and one service.")
+		expect(metricsErrorOf(sent.model.awsCard.metrics, connectionId)).toBe(
+			"Pick at least one region and one service.",
+		)
 	})
 
 	test("a stream saved while the setup is open reads the script again", () => {
@@ -152,9 +161,11 @@ describe("aws card", () => {
 				}),
 			}),
 		).model
+		const saving = pageUpdate(loaded, Message.SubmittedAwsMetrics({ id: connectionId })).model
 		const saved = pageUpdate(
-			loaded,
+			saving,
 			Message.CompletedAwsMetricStream({
+				id: connectionId,
 				connection: connection({ verified_at, metric_stream: stream }),
 				error: null,
 			}),
@@ -171,11 +182,54 @@ describe("aws card", () => {
 		const sent = pageUpdate(opened, Message.SubmittedAwsMetrics({ id: connectionId })).model
 		const failed = pageUpdate(
 			sent,
-			Message.CompletedAwsMetricStream({ connection: null, error: "Not allowed." }),
+			Message.CompletedAwsMetricStream({ id: connectionId, connection: null, error: "Not allowed." }),
 		).model
-		expect(failed.awsCard.metricsId).toBe(connectionId)
-		expect(failed.awsCard.metricsError).toBe("Not allowed.")
-		expect(failed.awsCard.isSavingMetrics).toBe(false)
+		expect(isMetricsPanelOpen(failed.awsCard.metrics, connectionId)).toBe(true)
+		expect(metricsErrorOf(failed.awsCard.metrics, connectionId)).toBe("Not allowed.")
+		expect(isSavingMetricsOf(failed.awsCard.metrics, connectionId)).toBe(false)
+	})
+
+	describe("a save answered after the editor moved to another connection", () => {
+		const otherId = Schema.decodeSync(AwsConnectionId)("018f2b3c-4d5e-4f70-8192-a3b4c5d6e7f9")
+		const moved = () => {
+			const verified_at = Schema.decodeSync(Timestamp)("2026-10-21T12:05:00.000Z")
+			const model = withStatus(entered(), [
+				connection({ verified_at }),
+				connection({ id: otherId, verified_at }),
+			])
+			const opened = pageUpdate(model, Message.ClickedAwsMetrics({ id: connectionId })).model
+			const sent = pageUpdate(opened, Message.SubmittedAwsMetrics({ id: connectionId })).model
+			const other = pageUpdate(sent, Message.ClickedAwsMetrics({ id: otherId })).model
+			return pageUpdate(other, Message.ToggledAwsRegion({ id: otherId, region: "eu-central-1" })).model
+		}
+
+		test("its failure is a toast, and the other connection's pick stays as it was", () => {
+			const failed = pageUpdate(
+				moved(),
+				Message.CompletedAwsMetricStream({
+					id: connectionId,
+					connection: null,
+					error: "Not allowed.",
+				}),
+			)
+			expect(failed.outMessage).toMatchObject({ _tag: "RequestedToast", type: "error" })
+			expect(metricsErrorOf(failed.model.awsCard.metrics, otherId)).toBeNull()
+			expect(isMetricsPanelOpen(failed.model.awsCard.metrics, otherId)).toBe(true)
+		})
+
+		test("its success keeps the other panel open and does not open the first one's setup", () => {
+			const saved = pageUpdate(
+				moved(),
+				Message.CompletedAwsMetricStream({
+					id: connectionId,
+					connection: connection({ metric_stream: stream }),
+					error: null,
+				}),
+			)
+			expect(isMetricsPanelOpen(saved.model.awsCard.metrics, otherId)).toBe(true)
+			expect(saved.model.awsCard.setupId).toBeNull()
+			expect(names(saved.commands)).toContain("LoadIntegrationsAwsStatus")
+		})
 	})
 
 	test("a new connection opens its setup and re-reads the status", () => {
@@ -399,8 +453,10 @@ describe("aws card", () => {
 			Message.CompletedLoadAws({ key: statusKey(context, "aws"), result: Result.succeed(status) }),
 		)
 		expect(names(elsewhere.commands)).not.toContain("LoadAwsIngest")
-		const loads = (arrived.commands ?? []).filter((command) => command.name === "LoadAwsIngest")
-		expect(loads.map((command) => command.args)).toEqual([{ key: expect.any(String), id: connectionId }])
+		const loads = Arr.filter(arrived.commands ?? [], (command) => command.name === "LoadAwsIngest")
+		expect(Arr.map(loads, (command) => command.args)).toEqual([
+			{ key: expect.any(String), id: connectionId },
+		])
 		const key = arrived.model.awsCard.ingest[connectionId]?.key ?? ""
 		const loaded = pageUpdate(
 			arrived.model,

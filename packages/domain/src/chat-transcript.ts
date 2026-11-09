@@ -16,7 +16,9 @@
  * timestamp, so the value is whatever the caller passes. `history()` passes the row's stored
  * `created_at`; a tail can only pass receive time. Message *content* is identical either way.
  */
-import type { ChatEvent, ChatMessage, ChatTaskRef, ChatTaskState, ChatToolCall } from "./chat-session"
+import { ChatToolCall } from "./chat-session"
+import type { ChatEvent, ChatMessage, ChatTaskRef, ChatTaskState } from "./chat-session"
+import { Array as Arr, Option, String as Str } from "effect"
 
 /**
  * A transcript being folded, event by event.
@@ -146,22 +148,27 @@ const foldInto = (
 		}
 		case "tool-call": {
 			const message = open(event.messageId)
-			message.toolCalls.push({
-				id: event.callId,
-				name: event.name,
-				input: event.input,
-				// Where the prose stood when the model asked for this call. `ChatMessage` keeps text
-				// and calls in two flat fields, so this offset is the only record of how the turn
-				// actually unfolded — the client re-interleaves from it on a cold load.
-				textOffset: message.text.length,
-				...(event.proposed === true ? { proposed: true } : undefined),
-				...(event.label === undefined ? undefined : { label: event.label }),
-			} as ChatToolCall)
+			message.toolCalls.push(
+				new ChatToolCall({
+					id: event.callId,
+					name: event.name,
+					input: event.input,
+					// Where the prose stood when the model asked for this call. `ChatMessage` keeps text
+					// and calls in two flat fields, so this offset is the only record of how the turn
+					// actually unfolded — the client re-interleaves from it on a cold load.
+					textOffset: message.text.length,
+					...(event.proposed === true ? { proposed: true } : undefined),
+					...(event.label === undefined ? undefined : { label: event.label }),
+				}),
+			)
 			break
 		}
 		case "tool-result": {
 			const message = open(event.messageId)
-			const index = message.toolCalls.findIndex((call) => call.id === event.callId)
+			const index = Option.getOrElse(
+				Arr.findFirstIndex(message.toolCalls, (call) => call.id === event.callId),
+				() => -1,
+			)
 			const call = message.toolCalls[index]
 			// Logs written before the adapter dropped it hold the approval gate's own refusal as a
 			// proposal's result; it is not a decision. Can go once those sessions have aged out.
@@ -173,11 +180,11 @@ const foldInto = (
 				break
 			}
 			if (call !== undefined) {
-				message.toolCalls[index] = {
+				message.toolCalls[index] = new ChatToolCall({
 					...call,
 					output: event.output,
 					...(event.isError === true ? { isError: true } : undefined),
-				} as ChatToolCall
+				})
 			}
 			break
 		}
@@ -187,7 +194,7 @@ const foldInto = (
 			// the retraction that accounts for it, so `retractChars` can legitimately exceed what
 			// actually landed.
 			const message = open(event.messageId)
-			message.text = message.text.slice(0, Math.max(0, message.text.length - event.retractChars))
+			message.text = Str.slice(0, Math.max(0, message.text.length - event.retractChars))(message.text)
 			break
 		}
 		case "turn-end":
@@ -203,13 +210,13 @@ const foldInto = (
 const settleUnfinished = (drafts: Drafts, messageId: string, nested?: Map<string, Drafts>): void => {
 	const message = drafts.byId.get(messageId)
 	if (message === undefined) return
-	message.toolCalls = message.toolCalls.map((call) => {
+	message.toolCalls = Arr.map(message.toolCalls, (call) => {
 		if (call.output !== undefined || call.proposed === true || call.stopped === true) return call
 		const child = nested?.get(call.id)
-		child?.messages.forEach((draft) => settleUnfinished(child, draft.id))
+		if (child !== undefined) Arr.forEach(child.messages, (draft) => settleUnfinished(child, draft.id))
 		const task =
 			call.task?.status === "running" ? { ...call.task, status: "aborted" as const } : call.task
-		return { ...call, stopped: true, ...(task === undefined ? undefined : { task }) } as ChatToolCall
+		return new ChatToolCall({ ...call, stopped: true, ...(task === undefined ? undefined : { task }) })
 	})
 }
 
@@ -246,8 +253,12 @@ const foldTaskEvent = (
 ): void => {
 	const parent = top.byId.get(ref.parentMessageId)
 	if (!parent) return
-	const index = parent.toolCalls.findIndex((call) => call.id === ref.id)
-	if (index < 0) return
+	const index = Option.getOrElse(
+		Arr.findFirstIndex(parent.toolCalls, (call) => call.id === ref.id),
+		() => -1,
+	)
+	const existing = parent.toolCalls[index]
+	if (existing === undefined) return
 
 	const child = nested.get(ref.id) ?? makeDrafts()
 	nested.set(ref.id, child)
@@ -255,8 +266,12 @@ const foldTaskEvent = (
 
 	// `ChatToolCall` is the readonly wire type, so the call is rebuilt rather than mutated. Keying
 	// the nested transcript by task id rather than by object identity is what makes that safe.
+	// Plain on purpose: `task.messages` must stay the live `child.messages`, which a class
+	// constructor would copy. Like the top-level drafts, the HTTP edge rebuilds real instances.
+	// @effect-diagnostics-next-line schemaClassObjectLiteral:off
 	parent.toolCalls[index] = {
-		...parent.toolCalls[index],
+		...existing,
+		// @effect-diagnostics-next-line schemaClassObjectLiteral:off
 		task: {
 			id: ref.id,
 			agent: ref.agent,
@@ -265,5 +280,5 @@ const foldTaskEvent = (
 			// further, so no `task` field is ever present on them.
 			messages: child.messages,
 		},
-	} as ChatToolCall
+	}
 }

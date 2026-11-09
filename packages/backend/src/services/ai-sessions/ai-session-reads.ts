@@ -35,7 +35,7 @@ import {
 	type ListAiSessionsRequest,
 } from "@maple/domain/http"
 import { traceSessionTraceId } from "@maple/domain/gen-ai"
-import { Array as Arr, Effect } from "effect"
+import { Array as Arr, Effect, Option, Order, Record as Rec } from "effect"
 import { CH, formatWarehouseDateTime, parseWarehouseDateTime } from "@maple/query-engine"
 import * as Integrations from "@maple/query-engine-integrations"
 // The warehouse's own tenant type, which both callers satisfy: the HTTP
@@ -219,28 +219,35 @@ export const listAiSessions = Effect.fn("AiSessionReads.list")(function* (
 	// the window to show fifty sessions — the whole of a list read for an org
 	// with long agent runs, and past the profile's memory on a later page. A
 	// sort or filter on usage needs every session netted either way.
+	const rankedPage = Effect.gen(function* () {
+		const ranked = yield* warehouse.compiledQuery(
+			tenant,
+			CH.compile(Integrations.aiSessionRankQuery(opts), window),
+			{ profile: "list", context: "aiSessionsRank" },
+		)
+		if (!Arr.isReadonlyArrayNonEmpty(ranked)) return []
+		return yield* readPage(
+			Integrations.aiSessionPageQuery({
+				...opts,
+				sessionIds: Arr.map(ranked, (row) => row.sessionId),
+			}),
+			{
+				orgId: tenant.orgId,
+				// Fixed-width literals, so they order as the instants do.
+				fanOutStart: Arr.min(
+					Arr.map(ranked, (row) => row.agentStart),
+					Order.String,
+				),
+				fanOutEnd: Arr.max(
+					Arr.map(ranked, (row) => row.agentEnd),
+					Order.String,
+				),
+				endTime: payload.endTime,
+			},
+		)
+	})
 	const page = Integrations.aiSessionPageRanksOnIndex(opts)
-		? yield* Effect.gen(function* () {
-				const ranked = yield* warehouse.compiledQuery(
-					tenant,
-					CH.compile(Integrations.aiSessionRankQuery(opts), window),
-					{ profile: "list", context: "aiSessionsRank" },
-				)
-				if (ranked.length === 0) return []
-				return yield* readPage(
-					Integrations.aiSessionPageQuery({
-						...opts,
-						sessionIds: ranked.map((row) => row.sessionId),
-					}),
-					{
-						orgId: tenant.orgId,
-						// Fixed-width literals, so they order as the instants do.
-						fanOutStart: ranked.map((row) => row.agentStart).reduce((a, b) => (a < b ? a : b)),
-						fanOutEnd: ranked.map((row) => row.agentEnd).reduce((a, b) => (a > b ? a : b)),
-						endTime: payload.endTime,
-					},
-				)
-			})
+		? yield* rankedPage
 		: yield* readPage(Integrations.aiSessionPageQuery(opts), window)
 	// Rows returned, not rows asked for — annotated before the empty answer
 	// leaves, so a window that ranks nothing is visible as such.
@@ -251,7 +258,7 @@ export const listAiSessions = Effect.fn("AiSessionReads.list")(function* (
 	// The page's order is the order shown. The row's bounds are the
 	// agent spans' extent, which the details replace with the true one.
 	return new ListAiSessionsResponse({
-		data: page.map((row) => ({
+		data: Arr.map(page, (row) => ({
 			sessionId: row.sessionId,
 			vendorId: row.vendorId,
 			vendorVersion: row.vendorVersion,
@@ -303,8 +310,9 @@ export const readAiSessionDetails = Effect.fn("AiSessionReads.details")(function
 		...countedFilters(payload),
 		sessionIds: payload.sessionIds,
 	})
-	const sliced = yield* Effect.all(
-		slices.map((slice) =>
+	const sliced = yield* Effect.forEach(
+		slices,
+		(slice) =>
 			warehouse.compiledQuery(
 				tenant,
 				CH.compile(query, {
@@ -315,7 +323,6 @@ export const readAiSessionDetails = Effect.fn("AiSessionReads.details")(function
 				}),
 				{ profile: "list", context: "aiSessionsDetails" },
 			),
-		),
 		{ concurrency: DETAILS_SLICE_CONCURRENCY },
 	)
 	const rows = Integrations.mergeAiSessionDetails(sliced)
@@ -344,7 +351,10 @@ export const readAiSessionFacets = Effect.fn("AiSessionReads.facets")(function* 
 	})
 	// One UNION ALL result carrying every dimension, split by facetType.
 	const pick = (facetType: Integrations.AiSessionFacetType) =>
-		rows.filter((row) => row.facetType === facetType).map((row) => ({ name: row.name, count: row.count }))
+		Arr.map(
+			Arr.filter(rows, (row) => row.facetType === facetType),
+			(row) => ({ name: row.name, count: row.count }),
+		)
 	return new ListAiSessionsFacetsResponse({
 		vendors: pick("vendor"),
 		services: pick("service"),
@@ -374,12 +384,14 @@ export const readAiSessionDistributions = Effect.fn("AiSessionReads.distribution
 		{ profile: "list", context: "aiSessionsDistributions" },
 	)
 	const distribution = (measure: Integrations.AiSessionDistributionMeasure) => {
-		const row = rows.find((candidate) => candidate.measure === measure)
-		if (row === undefined) return { buckets: [], p50: 0, p95: 0 }
+		const found = Arr.findFirst(rows, (candidate) => candidate.measure === measure)
+		if (Option.isNone(found)) return { buckets: [], p50: 0, p95: 0 }
+		const row = found.value
 		return {
-			buckets: Object.entries(row.buckets)
-				.map(([floor, count]) => ({ floor: Number(floor), count }))
-				.sort((a, b) => a.floor - b.floor),
+			buckets: Arr.map(Rec.toEntries(row.buckets), ([floor, count]) => ({
+				floor: Number(floor),
+				count,
+			})).sort((a, b) => a.floor - b.floor),
 			p50: row.p50,
 			p95: row.p95,
 		}
@@ -619,14 +631,19 @@ export const readAiToolsTotals = Effect.fn("AiSessionReads.toolsTotals")(functio
 	// nothing, so these two carry that contract unchanged. A period
 	// the caller did not ask for has no branch and no row, and is
 	// absent from the response rather than zeroed.
-	const current = rows.find((row) => row.period === "current")
-	const allSessions = rows.find((row) => row.period === "window")?.sessions
+	const current = Arr.findFirst(rows, (row) => row.period === "current")
+	const allSessions = Option.getOrUndefined(
+		Option.map(
+			Arr.findFirst(rows, (row) => row.period === "window"),
+			(row) => row.sessions,
+		),
+	)
 	return new AiToolsTotalsResponse({
 		current: aggregateOf(rows, "current"),
 		...(periods.includes("previous") && { previous: aggregateOf(rows, "previous") }),
 		...(allSessions !== undefined && { allSessions }),
-		firstSeen: current?.firstSeen ?? "",
-		lastSeen: current?.lastSeen ?? "",
+		firstSeen: Option.match(current, { onNone: () => "", onSome: (row) => row.firstSeen }),
+		lastSeen: Option.match(current, { onNone: () => "", onSome: (row) => row.lastSeen }),
 		...(description !== "" && { description }),
 	})
 })
@@ -650,7 +667,7 @@ export const readAiToolsBreakdowns = Effect.fn("AiSessionReads.toolsBreakdowns")
 		),
 		{ profile: "aggregation", context: "aiToolsBreakdowns" },
 	)
-	return new AiToolsBreakdownsResponse({ tools: rows.map(breakdownItem) })
+	return new AiToolsBreakdownsResponse({ tools: Arr.map(rows, breakdownItem) })
 })
 
 export const readAiToolErrors = Effect.fn("AiSessionReads.toolErrors")(function* (
@@ -680,13 +697,13 @@ export const readAiToolErrors = Effect.fn("AiSessionReads.toolErrors")(function*
 		{ profile: "aggregation", context: "aiToolsErrors" },
 	)
 	return new AiToolErrorsResponse({
-		data: rows.map((row) => ({
+		data: Arr.map(rows, (row) => ({
 			...row,
 			// A map on the wire, a series on the page: the ISO buckets
 			// are fixed width, so they sort as the instants do.
-			trend: Object.entries(row.trend)
-				.map(([bucket, calls]) => ({ bucket, calls }))
-				.sort((a, b) => (a.bucket < b.bucket ? -1 : a.bucket > b.bucket ? 1 : 0)),
+			trend: Arr.map(Rec.toEntries(row.trend), ([bucket, calls]) => ({ bucket, calls })).sort((a, b) =>
+				a.bucket < b.bucket ? -1 : a.bucket > b.bucket ? 1 : 0,
+			),
 		})),
 	})
 })
@@ -800,13 +817,14 @@ export const readAiToolErrorSamples = Effect.fn("AiSessionReads.toolErrorSamples
 				{ profile: "list", context: "aiToolsErrorPayloads" },
 			)
 	const payloadBySpan = new Map(
-		payloads.map(
+		Arr.map(
+			payloads,
 			(row) => [`${row.traceId}:${row.spanId}`, Integrations.aiToolErrorPayload(row)] as const,
 		),
 	)
 	return new AiToolErrorSamplesResponse({
 		...(nextCursor !== undefined && { nextCursor }),
-		occurrences: occurrences.map((row) => {
+		occurrences: Arr.map(occurrences, (row) => {
 			// A call whose span the payload read did not return — raw
 			// retention is shorter than nothing here, but a span that
 			// was never exported is real — still belongs on the list:
@@ -881,8 +899,9 @@ const aggregateOf = (
 	rows: ReadonlyArray<Integrations.AiToolsTotalsOutput>,
 	period: AiToolsPeriod,
 ): AiToolsAggregate => {
-	const row = rows.find((candidate) => candidate.period === period)
-	if (row === undefined) return NO_TOOLS_AGGREGATE
+	const found = Arr.findFirst(rows, (candidate) => candidate.period === period)
+	if (Option.isNone(found)) return NO_TOOLS_AGGREGATE
+	const row = found.value
 	return {
 		calls: row.calls,
 		sessions: row.sessions,
@@ -925,27 +944,20 @@ const emptySummary = () =>
 	})
 
 /**
- * A set of spans' usage under the deepest-reporter rule: the model-call spans'
- * figures when any model call reported, the plain sum otherwise. See
- * `summaryMeasures` in the query module for why it returns both. Applied to
- * the session's own row for the totals, and to each turn row for the turn —
- * never to the turn rows summed, since a turn span's roll-up and its model
- * calls can land in different rows.
+ * A set of spans' usage: the gateway stamps it on the model calls alone, so a
+ * plain sum is per call. Applied to the session's own row for the totals, and
+ * to each turn row for the turn.
  */
 const usageOf = (row: Integrations.AiSessionTotalsOutput | Integrations.AiSessionSummaryOutput) => {
-	const perCall = row.llmInputTokens + row.llmOutputTokens + row.llmCacheReadTokens > 0
-	const reporting: AiSessionTokenReporting = perCall
-		? "per-call"
-		: row.inputTokens + row.outputTokens + row.cacheReadTokens > 0
-			? "roll-up"
-			: "none"
-	const tokens: AiSessionTokenTotals = perCall
-		? { input: row.llmInputTokens, output: row.llmOutputTokens, cacheRead: row.llmCacheReadTokens }
-		: { input: row.inputTokens, output: row.outputTokens, cacheRead: row.cacheReadTokens }
-	// Cost follows the same rule, but only once something reported one: a
-	// per-call session whose calls carry no price still has a session cost if
-	// the wrapper stamped one.
-	const cost = row.costReporters === 0 ? undefined : perCall && row.llmCost > 0 ? row.llmCost : row.cost
+	const tokens: AiSessionTokenTotals = {
+		input: row.inputTokens,
+		output: row.outputTokens,
+		cacheRead: row.cacheReadTokens,
+	}
+	const reporting: AiSessionTokenReporting =
+		tokens.input + tokens.output + tokens.cacheRead > 0 ? "per-call" : "none"
+	// Nothing reported a cost is "not measured", not "free".
+	const cost = row.costReporters === 0 ? undefined : row.cost
 	return { reporting, tokens, cost }
 }
 
@@ -960,7 +972,7 @@ const foldSummary = (
 	const kept = rows.slice(0, AI_SESSION_SUMMARY_MAX_TURNS)
 	const usage = usageOf(totals)
 
-	const turns: AiSessionTurnSummary[] = kept.map((row) => {
+	const turns: AiSessionTurnSummary[] = Arr.map(kept, (row) => {
 		const turnUsage = usageOf(row)
 		return {
 			turnKey: row.turnKey,

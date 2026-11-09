@@ -19,6 +19,7 @@ import { compile } from "@maple-dev/effect-orm/sql"
 import * as T from "@maple-dev/effect-orm/clickhouse"
 import { applyRedactions, chRedactChain, MSG_TEXT_REDACTIONS } from "./fingerprint"
 import { MAPLE_AI_STAMP_ATTRS } from "../gen-ai"
+import { Array as Arr } from "effect"
 
 const sql = (expr: Expr<unknown>): string => compile(expr.toFragment())
 
@@ -48,7 +49,7 @@ const GENAI_STATUS_MESSAGE_MAX = 400
  *  `FailedToolCallResult` and `StatusMessage`. */
 const GENAI_ERROR_FINGERPRINT_CHARS = 400
 
-const statusMessage = leftUTF8(CH.dynamicColumn<string>("StatusMessage"), GENAI_STATUS_MESSAGE_MAX)
+const statusMessage = leftUTF8(CH.dynamicColumn("StatusMessage"), GENAI_STATUS_MESSAGE_MAX)
 const failedToolCallResult = attr(MAPLE_AI_STAMP_ATTRS.toolErrorResult)
 const input = number(MAPLE_AI_STAMP_ATTRS.inputTokens)
 const cacheRead = number(MAPLE_AI_STAMP_ATTRS.cacheReadTokens)
@@ -93,9 +94,13 @@ export const genAiErrorFingerprintText = (row: {
 	readonly statusMessage: string
 }): string =>
 	applyRedactions(
-		Array.from(row.failedToolCallResult !== "" ? row.failedToolCallResult : row.statusMessage)
-			.slice(0, GENAI_ERROR_FINGERPRINT_CHARS)
-			.join(""),
+		Arr.join(
+			Array.from(row.failedToolCallResult !== "" ? row.failedToolCallResult : row.statusMessage).slice(
+				0,
+				GENAI_ERROR_FINGERPRINT_CHARS,
+			),
+			"",
+		),
 		MSG_TEXT_REDACTIONS,
 	)
 

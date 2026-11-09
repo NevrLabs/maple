@@ -2,11 +2,12 @@ import type { V2PlanetScaleIntegration } from "@maple/domain/http/v2"
 import { countLabel } from "@maple/ui/lib/format"
 import { AsyncData } from "foldkit"
 import type { Html, HtmlBuilder } from "foldkit/html"
+import { heading } from "@maple/views/ui/heading"
 import { derivePlanetScaleSetup, metricsAuthOf } from "../../components/integrations/planetscale-setup-steps"
-import { button } from "../../ui/button"
-import * as Field from "../../ui/field"
-import { icon } from "../../ui/icon"
-import { input } from "../../ui/input"
+import { button } from "@maple/views/ui/button"
+import * as Field from "@maple/views/ui/field"
+import { icon } from "@maple/views/ui/icon"
+import { input } from "@maple/views/ui/input"
 import {
 	type CheckRow,
 	choiceTiles,
@@ -32,6 +33,9 @@ import { Message } from "./message"
 import type { Model } from "./model"
 import type { PlanetscaleMetricsMethod } from "./planetscale"
 import { branchFields, branchPreviewOf, orgChoices } from "./view-planetscale-picker"
+import { typography, typographyClass } from "@maple/views/ui/typography"
+import { hstack, vstack, vstackClass } from "@maple/views/ui/stack"
+import { Array as Arr, String as Str } from "effect"
 
 // PlanetScale in the connect flow: authorize (optionally a metrics token), pick the organization
 // and branches, then watch access, the inventory and the first metrics land.
@@ -89,57 +93,33 @@ const connectButton = (h: H, model: Model, label: string, variant: "default" | "
 
 const authorizePart = (h: H, model: Model, status: V2PlanetScaleIntegration | null): Html => {
 	if (status === null || (!status.connected && !status.pending_org_selection))
-		return h.div(
-			[h.Class("flex flex-col gap-3")],
-			[
-				h.p(
-					[h.Class("text-sm text-muted-foreground")],
-					[
-						"PlanetScale opens in a new window. Approve read access for your organization. If the grant covers several organizations, you pick one on the next step.",
-					],
-				),
-				connectButton(h, model, "Continue with PlanetScale", "default"),
-			],
-		)
+		return vstack(h, { gap: "3" }, [
+			typography(h, { size: "sm", tone: "muted", as: "p" }, [
+				"PlanetScale opens in a new window. Approve read access for your organization. If the grant covers several organizations, you pick one on the next step.",
+			]),
+			connectButton(h, model, "Continue with PlanetScale", "default"),
+		])
 	if (status.revoked_at !== null)
-		return h.div(
-			[h.Class("flex flex-col gap-3")],
-			[
-				h.p(
-					[h.Class("text-sm text-muted-foreground")],
-					[
-						"The authorization was revoked in PlanetScale, so Maple can no longer read this organization.",
-					],
-				),
-				connectButton(h, model, "Reconnect PlanetScale", "default"),
-			],
-		)
+		return vstack(h, { gap: "3" }, [
+			typography(h, { size: "sm", tone: "muted", as: "p" }, [
+				"The authorization was revoked in PlanetScale, so Maple can no longer read this organization.",
+			]),
+			connectButton(h, model, "Reconnect PlanetScale", "default"),
+		])
 	if (status.detected_permissions?.readDatabases === false)
-		return h.div(
-			[h.Class("flex flex-col gap-3")],
-			[
-				h.p(
-					[h.Class("text-sm text-muted-foreground")],
-					[
-						`The grant for ${status.organization ?? "this organization"} was approved without the read_databases scope, so Maple cannot list databases, branches or query insights. Keep every box checked when PlanetScale asks.`,
-					],
-				),
-				connectButton(h, model, "Reconnect with read_databases", "default"),
-			],
-		)
-	return h.div(
-		[h.Class("flex items-center justify-between gap-3")],
-		[
-			h.span(
-				[h.Class("inline-flex items-center gap-2 text-sm")],
-				[
-					icon(h, "CircleCheckIcon", { size: 14, className: "text-severity-info" }),
-					status.organization === null ? "Authorized" : `Authorized for ${status.organization}`,
-				],
-			),
-			connectButton(h, model, "Reconnect", "outline"),
-		],
-	)
+		return vstack(h, { gap: "3" }, [
+			typography(h, { size: "sm", tone: "muted", as: "p" }, [
+				`The grant for ${status.organization ?? "this organization"} was approved without the read_databases scope, so Maple cannot list databases, branches or query insights. Keep every box checked when PlanetScale asks.`,
+			]),
+			connectButton(h, model, "Reconnect with read_databases", "default"),
+		])
+	return hstack(h, { gap: "3", justify: "between" }, [
+		hstack(h, { gap: "2", align: "center", inline: true, as: "span", className: "text-sm" }, [
+			icon(h, "CircleCheckIcon", { size: 14, className: "text-severity-info" }),
+			status.organization === null ? "Authorized" : `Authorized for ${status.organization}`,
+		]),
+		connectButton(h, model, "Reconnect", "outline"),
+	])
 }
 
 const tokenField = (
@@ -176,22 +156,29 @@ const tokenField = (
 
 const tokenForm = (h: H, model: Model, status: V2PlanetScaleIntegration, isAttached: boolean): Html => {
 	const card = model.planetscaleCard
-	const isReady = card.tokenId.value.trim() !== "" && card.tokenSecret.value.trim() !== ""
+	const isReady = Str.trim(card.tokenId.value) !== "" && Str.trim(card.tokenSecret.value) !== ""
 	const tokensUrl =
 		status.organization === null
 			? "https://app.planetscale.com"
 			: `https://app.planetscale.com/${encodeURIComponent(status.organization)}/settings/service-tokens`
 	return h.form(
-		[h.Class("flex flex-col gap-4"), h.OnSubmit(Message.SubmittedPlanetscaleToken())],
+		[h.Class(vstackClass({ gap: "4" })), h.OnSubmit(Message.SubmittedPlanetscaleToken())],
 		[
-			h.div(
-				[h.Class("flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground")],
+			hstack(
+				h,
+				{
+					gap: "2",
+					align: "center",
+					justify: "between",
+					wrap: true,
+					className: typographyClass({ size: "xs", tone: "muted" }),
+				},
 				[
 					h.span(
 						[],
 						[
 							"Give the token one permission on every database you want metrics for: ",
-							h.span([h.Class("font-mono text-foreground")], ["read_metrics_endpoints"]),
+							typography(h, { tone: "foreground", mono: true }, ["read_metrics_endpoints"]),
 						],
 					),
 					whereToFind(h, "Create a token in PlanetScale", tokensUrl),
@@ -207,28 +194,25 @@ const tokenForm = (h: H, model: Model, status: V2PlanetScaleIntegration, isAttac
 					}),
 				],
 			),
-			h.div(
-				[h.Class("flex flex-wrap items-center gap-2")],
-				[
-					button(h, { type: "submit", isDisabled: !isReady, isLoading: card.isSavingToken }, [
-						icon(h, "KeyIcon", { size: 14 }),
-						card.tokenError === null ? "Check and save token" : "Check token again",
-					]),
-					...(isAttached
-						? [
-								button(
-									h,
-									{
-										variant: "outline",
-										isDisabled: card.isSavingToken,
-										attributes: [h.OnClick(Message.ClickedPlanetscaleReplaceToken())],
-									},
-									["Cancel"],
-								),
-							]
-						: []),
-				],
-			),
+			hstack(h, { gap: "2", wrap: true }, [
+				button(h, { type: "submit", isDisabled: !isReady, isLoading: card.isSavingToken }, [
+					icon(h, "KeyIcon", { size: 14 }),
+					card.tokenError === null ? "Check and save token" : "Check token again",
+				]),
+				...(isAttached
+					? [
+							button(
+								h,
+								{
+									variant: "outline",
+									isDisabled: card.isSavingToken,
+									attributes: [h.OnClick(Message.ClickedPlanetscaleReplaceToken())],
+								},
+								["Cancel"],
+							),
+						]
+					: []),
+			]),
 		],
 	)
 }
@@ -238,52 +222,44 @@ const metricsPart = (h: H, model: Model, status: V2PlanetScaleIntegration): Html
 	const method = metricsMethodOf(model, status)
 	const select = (next: PlanetscaleMetricsMethod) =>
 		isAttached ? undefined : Message.SelectedPlanetscaleMetricsMethod({ method: next })
-	return h.div(
-		[h.Class("flex flex-col gap-3 border-t border-border pt-5")],
-		[
-			h.h3([h.Class("text-sm font-medium")], ["Branch metrics"]),
-			choiceTiles(h, [
-				{
-					title: "PlanetScale metrics API",
-					description: "Maple polls it on this grant every 5 minutes. Nothing to paste.",
-					tag: "Recommended",
-					isSelected: method === "api",
-					onSelect: select("api"),
-				},
-				{
-					title: "Service token",
-					description:
-						"Scrapes the Prometheus endpoints instead. Needs a token with one permission.",
-					isSelected: method === "service_token",
-					onSelect: select("service_token"),
-				},
-			]),
-			...(method !== "service_token"
-				? []
-				: isAttached && !model.planetscaleCard.isReplacingToken
-					? [
-							h.div(
-								[h.Class("flex items-center justify-between gap-3")],
-								[
-									h.span(
-										[h.Class("text-sm text-muted-foreground")],
-										["A service token is attached. Branch metrics are scraped with it."],
-									),
-									button(
-										h,
-										{
-											variant: "outline",
-											size: "sm",
-											attributes: [h.OnClick(Message.ClickedPlanetscaleReplaceToken())],
-										},
-										["Use a different token"],
-									),
-								],
+	return vstack(h, { gap: "3", className: "border-t border-border pt-5" }, [
+		heading(h, { level: 3, variant: "subsection" }, ["Branch metrics"]),
+		choiceTiles(h, [
+			{
+				title: "PlanetScale metrics API",
+				description: "Maple polls it on this grant every 5 minutes. Nothing to paste.",
+				tag: "Recommended",
+				isSelected: method === "api",
+				onSelect: select("api"),
+			},
+			{
+				title: "Service token",
+				description: "Scrapes the Prometheus endpoints instead. Needs a token with one permission.",
+				isSelected: method === "service_token",
+				onSelect: select("service_token"),
+			},
+		]),
+		...(method !== "service_token"
+			? []
+			: isAttached && !model.planetscaleCard.isReplacingToken
+				? [
+						hstack(h, { gap: "3", justify: "between" }, [
+							typography(h, { size: "sm", tone: "muted" }, [
+								"A service token is attached. Branch metrics are scraped with it.",
+							]),
+							button(
+								h,
+								{
+									variant: "outline",
+									size: "sm",
+									attributes: [h.OnClick(Message.ClickedPlanetscaleReplaceToken())],
+								},
+								["Use a different token"],
 							),
-						]
-					: [tokenForm(h, model, status, isAttached)]),
-		],
-	)
+						]),
+					]
+				: [tokenForm(h, model, status, isAttached)]),
+	])
 }
 
 /** The databases the inventory found, as chips under the status row. */
@@ -296,7 +272,7 @@ const databaseChips = (h: H, model: Model): ReadonlyArray<Html> => {
 		: [
 				foundChips(
 					h,
-					databases.slice(0, 8).map((db) => ({
+					Arr.map(databases.slice(0, 8), (db) => ({
 						label: db.name,
 						detail: countLabel(db.branches.length, "branch", "branches"),
 					})),
@@ -426,14 +402,11 @@ const chooseStep = (h: H, model: Model): Html => {
 		h,
 		[
 			stepCard(h, { icon: "PlanetScaleIcon", title: "Organization" }, [
-				h.p(
-					[h.Class("text-sm text-muted-foreground")],
-					[
-						orgCount !== null && orgCount > 1
-							? `Your grant covers ${orgCount} organizations. One source watches one organization.`
-							: "The organization this grant covers. One source watches one organization.",
-					],
-				),
+				typography(h, { size: "sm", tone: "muted", as: "p" }, [
+					orgCount !== null && orgCount > 1
+						? `Your grant covers ${orgCount} organizations. One source watches one organization.`
+						: "The organization this grant covers. One source watches one organization.",
+				]),
 				orgChoices(h, model),
 			]),
 			stepCard(h, { icon: "BranchForkIcon", title: "Which branches?" }, [
@@ -484,7 +457,7 @@ const liveStep = (h: H, model: Model): Html => {
 	const rows: ReadonlyArray<CheckRow> =
 		setup === null
 			? [{ state: "waiting", title: "Waiting for PlanetScale's status" }]
-			: setup.checks.map((check) =>
+			: Arr.map(setup.checks, (check) =>
 					check.id === "access" && check.state === "failed"
 						? { ...check, extra: connectButton(h, model, "Reconnect", "outline") }
 						: check,

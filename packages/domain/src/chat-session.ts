@@ -14,7 +14,7 @@
  * *model* stream, while this is a *session* stream that also carries user turns, approval gates and
  * turn lifecycle. `apps/api/src/chat/events.ts` is the only place the two are mapped.
  */
-import { Option, Schema } from "effect"
+import { Option, Schema, String as Str } from "effect"
 import {
 	ActorId,
 	AuthMode,
@@ -45,20 +45,25 @@ export const makeChatSessionId = (orgId: string, tabId: string): ChatSessionId =
  * resolvable org, so callers must reject it rather than treat the whole string as the org.
  */
 export const orgIdFromChatSessionId = (sessionId: string): string | undefined => {
-	const index = sessionId.indexOf(":")
-	return index <= 0 ? undefined : sessionId.slice(0, index)
+	return Str.indexOf(":")(sessionId).pipe(
+		Option.filter((index) => index > 0),
+		Option.map((index) => Str.slice(0, index)(sessionId)),
+		Option.getOrUndefined,
+	)
 }
 
 /** Everything after the first `:`. The tab-id prefix encodes the conversation mode. */
 export const tabIdFromChatSessionId = (sessionId: string): string => {
-	const index = sessionId.indexOf(":")
-	return index === -1 ? "" : sessionId.slice(index + 1)
+	return Option.match(Str.indexOf(":")(sessionId), {
+		onNone: () => "",
+		onSome: (index) => Str.slice(index + 1)(sessionId),
+	})
 }
 
 /** Recover the investigation id from an `inv-<id>` tab. `undefined` for other modes. */
 export const investigationIdFromChatSessionId = (sessionId: string): string | undefined => {
 	const tab = tabIdFromChatSessionId(sessionId)
-	return tab.startsWith("inv-") ? tab.slice("inv-".length) : undefined
+	return Str.startsWith("inv-")(tab) ? Str.slice("inv-".length)(tab) : undefined
 }
 
 /** The chat session a pull request review runs on: `<orgId>:pr-<reviewId>`. */
@@ -67,7 +72,7 @@ export const prReviewSessionId = (orgId: string, reviewId: string): string => `$
 /** Recover the pull-request review id from a `pr-<id>` tab. `undefined` for other modes. */
 export const prReviewIdFromChatSessionId = (sessionId: string): string | undefined => {
 	const tab = tabIdFromChatSessionId(sessionId)
-	return tab.startsWith("pr-") ? tab.slice("pr-".length) : undefined
+	return Str.startsWith("pr-")(tab) ? Str.slice("pr-".length)(tab) : undefined
 }
 
 /** The chat session a reply to a pull request comment runs on: `<orgId>:prr-<replyId>`. */
@@ -76,7 +81,7 @@ export const prReplySessionId = (orgId: string, replyId: string): string => `${o
 /** Recover the reply id from a `prr-<id>` tab. `undefined` for other modes. */
 export const prReplyIdFromChatSessionId = (sessionId: string): string | undefined => {
 	const tab = tabIdFromChatSessionId(sessionId)
-	return tab.startsWith("prr-") ? tab.slice("prr-".length) : undefined
+	return Str.startsWith("prr-")(tab) ? Str.slice("prr-".length)(tab) : undefined
 }
 
 /**
@@ -93,9 +98,9 @@ export type ChatMode = Schema.Schema.Type<typeof ChatMode>
 /** Mode is derived from the tab-id prefix, never sent by the client. */
 export const chatModeFromSessionId = (sessionId: string): ChatMode => {
 	const tab = tabIdFromChatSessionId(sessionId)
-	if (tab.startsWith("inv-")) return "investigate"
-	if (tab.startsWith("prr-")) return "pr-reply"
-	if (tab.startsWith("pr-")) return "pr-review"
+	if (Str.startsWith("inv-")(tab)) return "investigate"
+	if (Str.startsWith("prr-")(tab)) return "pr-reply"
+	if (Str.startsWith("pr-")(tab)) return "pr-review"
 	return "default"
 }
 
@@ -257,8 +262,8 @@ export const delegationToolName = (agent: string): string => `${DELEGATION_TOOL_
 
 /** The sub-agent a tool name delegates to, or `undefined` for an ordinary tool. */
 export const delegatedAgentOf = (toolName: string): string | undefined =>
-	toolName.startsWith(DELEGATION_TOOL_PREFIX) && toolName.length > DELEGATION_TOOL_PREFIX.length
-		? toolName.slice(DELEGATION_TOOL_PREFIX.length)
+	Str.startsWith(DELEGATION_TOOL_PREFIX)(toolName) && toolName.length > DELEGATION_TOOL_PREFIX.length
+		? Str.slice(DELEGATION_TOOL_PREFIX.length)(toolName)
 		: undefined
 
 const task = { task: Schema.optionalKey(ChatTaskRef) }
@@ -426,12 +431,16 @@ const ChatEventPayload = Schema.Union([
 ]).pipe(Schema.toTaggedUnion("type"))
 
 const encodePayload = Schema.encodeUnknownSync(Schema.fromJsonString(ChatEventPayload))
-const decodePayload = Schema.decodeUnknownSync(Schema.fromJsonString(ChatEventPayload))
+const parsePayload = Schema.decodeUnknownSync(
+	Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown)),
+)
+const decodeStoredEvent = Schema.decodeUnknownSync(ChatEvent)
 
 export const encodeChatEventPayload = (event: ChatEventInput): string => encodePayload(event)
 
+// The stored JSON is a `ChatEvent`'s encoded form minus `seq`, so it decodes to the event class.
 export const decodeChatEventPayload = (payload: string, seq: number): ChatEvent =>
-	({ ...decodePayload(payload), seq }) as ChatEvent
+	decodeStoredEvent({ ...parsePayload(payload), seq })
 
 // Turn identity
 

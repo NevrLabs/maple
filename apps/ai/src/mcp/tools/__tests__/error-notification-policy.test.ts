@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto"
 import { afterEach, describe, expect, it } from "@effect/vitest"
-import { Clock, Context, Effect, Layer, Schema } from "effect"
+import { Clock, Context, Effect, Layer, Schema, Array as Arr } from "effect"
 import * as PG from "@maple-dev/effect-orm/postgres"
 import { AlertDestinations } from "@maple/db/tables"
 import { AlertDestinationId, AlertPersistenceError, OrgId, RoleName, UserId } from "@maple/domain/http"
@@ -13,9 +13,9 @@ import { ErrorPolicyService } from "@maple/backend/services/errors/ErrorPolicySe
 import { CurrentMcpTenant } from "../../lib/query-warehouse"
 import { executeRegisteredMcpToolUnscoped } from "../registry"
 
-const ORG = Schema.decodeUnknownSync(OrgId)("org_policy_tools")
-const OTHER_ORG = Schema.decodeUnknownSync(OrgId)("org_policy_tools_other")
-const USER = Schema.decodeUnknownSync(UserId)("user_policy_tools")
+const ORG = Schema.decodeSync(OrgId)("org_policy_tools")
+const OTHER_ORG = Schema.decodeSync(OrgId)("org_policy_tools_other")
+const USER = Schema.decodeSync(UserId)("user_policy_tools")
 const asDestinationId = Schema.decodeUnknownSync(AlertDestinationId)
 const DEST = asDestinationId(randomUUID())
 const FOREIGN_DEST = asDestinationId(randomUUID())
@@ -56,7 +56,7 @@ const makeLayer = (namesFail = false) => {
 		Layer.succeed(CurrentMcpTenant, {
 			orgId: ORG,
 			userId: USER,
-			roles: [Schema.decodeUnknownSync(RoleName)("org:admin")],
+			roles: [Schema.decodeSync(RoleName)("org:admin")],
 			authMode: "self_hosted",
 		} as never),
 		Layer.succeed(AlertsService, {
@@ -110,8 +110,9 @@ describe("error notification policy tools", () => {
 				{ id: DEST, publicId, name: "On-call", type: "webhook", enabled: true },
 			])
 			expect(first.output.minOccurrenceCount).toBe(2)
-			expect(first.output.firstNotificationThreshold).toBe(3)
-			expect(first.text).toContain("after 3 occurrences")
+			// Within the day's early promotions the policy's own count applies; past them, 3.
+			expect(first.output.firstNotificationThreshold).toBe(2)
+			expect(first.text).toContain("at least 3 once the day's early promotions are spent")
 
 			yield* call("update_error_notification_policy", { destination_ids: [], notify_on_resolve: true })
 			yield* call("update_error_notification_policy", {
@@ -160,7 +161,7 @@ describe("error notification policy tools", () => {
 				result.success.structuredContent,
 			)
 			expect(output.destinationNamesUnavailable).toBe(true)
-			expect(output.destinations.map((d) => [d.id, d.name])).toEqual([[DEST, null]])
+			expect(Arr.map(output.destinations, (d) => [d.id, d.name])).toEqual([[DEST, null]])
 		}).pipe(Effect.provide(makeLayer(true))),
 	)
 })

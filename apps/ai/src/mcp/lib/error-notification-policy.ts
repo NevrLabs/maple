@@ -2,12 +2,15 @@
  * The error notification policy as the get and update tools report it: destinations joined to
  * their names, both id forms, and the occurrence count a new error's first notification waits for.
  */
-import { Effect, Option } from "effect"
+import { Effect, Option, Array as Arr } from "effect"
 import type { ErrorNotificationPolicyDocument, OrgId } from "@maple/domain/http"
 import { encodePublicId, PublicIdPrefixes } from "@maple/domain/http/v2"
 import type { ErrorNotificationPolicyOutput } from "@maple/domain/mcp-outputs"
 import { AlertsService } from "@maple/backend/services/alerts/AlertsService"
-import { PROMOTION_MIN_OCCURRENCES } from "@maple/backend/services/errors/error-tick-persistence"
+import {
+	EarlyPromotionsPerDay,
+	PROMOTION_MIN_OCCURRENCES,
+} from "@maple/backend/services/errors/error-tick-persistence"
 import { doc, type ToolDoc } from "./tool-doc"
 
 type PolicyOutput = typeof ErrorNotificationPolicyOutput.Type
@@ -28,12 +31,17 @@ export const policyOutput = Effect.fn("McpTool.errorNotificationPolicyOutput")(f
 		),
 		Effect.option,
 	)
-	const byId = new Map(Option.getOrElse(lookup, () => []).map((d) => [d.id, d]))
+	const byId = new Map(
+		Arr.map(
+			Option.getOrElse(lookup, () => []),
+			(d) => [d.id, d],
+		),
+	)
 	const output: PolicyOutput = {
 		enabled: policy.enabled,
 		destinationIds: policy.destinationIds,
 		...(Option.isNone(lookup) ? { destinationNamesUnavailable: true } : undefined),
-		destinations: policy.destinationIds.map((id) => {
+		destinations: Arr.map(policy.destinationIds, (id) => {
 			const found = byId.get(id)
 			return {
 				id,
@@ -47,7 +55,7 @@ export const policyOutput = Effect.fn("McpTool.errorNotificationPolicyOutput")(f
 		notifyOnRegression: policy.notifyOnRegression,
 		notifyOnResolve: policy.notifyOnResolve,
 		minOccurrenceCount: policy.minOccurrenceCount,
-		firstNotificationThreshold: Math.max(PROMOTION_MIN_OCCURRENCES, policy.minOccurrenceCount),
+		firstNotificationThreshold: policy.minOccurrenceCount,
 		severity: policy.severity,
 		updatedAt: policy.updatedAt,
 		updatedBy: policy.updatedBy,
@@ -72,9 +80,12 @@ export const renderPolicy = (title: string, output: PolicyOutput): ToolDoc => ({
 				"Destinations",
 				output.destinations.length === 0
 					? "none: nothing is delivered"
-					: output.destinations
-							.map((d) => destinationLabel(d, output.destinationNamesUnavailable === true))
-							.join("; "),
+					: Arr.join(
+							Arr.map(output.destinations, (d) =>
+								destinationLabel(d, output.destinationNamesUnavailable === true),
+							),
+							"; ",
+						),
 			],
 			["First seen", yesNo(output.notifyOnFirstSeen)],
 			["Regression", yesNo(output.notifyOnRegression)],
@@ -89,7 +100,7 @@ export const renderPolicy = (title: string, output: PolicyOutput): ToolDoc => ({
 			],
 		]),
 		doc.text(
-			`A new error becomes an issue only after ${PROMOTION_MIN_OCCURRENCES} occurrences, whatever this policy says. min_occurrence_count is checked once, against the occurrences an incident opens with: a first-seen notification needs at least ${output.firstNotificationThreshold}, and an incident that opens with fewer sends none (later occurrences do not send it). For a regression the count applies as set.`,
+			`A new error becomes an issue on its first occurrence while the org has opened fewer than ${EarlyPromotionsPerDay.defaultValue()} error issues in the last day; past that, only after ${PROMOTION_MIN_OCCURRENCES} occurrences, whatever this policy says. min_occurrence_count is checked once, against the occurrences an incident opens with: a first-seen notification needs at least ${output.firstNotificationThreshold} (at least ${Math.max(PROMOTION_MIN_OCCURRENCES, output.firstNotificationThreshold)} once the day's early promotions are spent), and an incident that opens with fewer sends none (later occurrences do not send it). For a regression the count applies as set.`,
 		),
 	],
 })

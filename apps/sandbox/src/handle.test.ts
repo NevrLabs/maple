@@ -5,10 +5,16 @@ import {
 	SandboxExecResponse,
 	SandboxRunExited,
 } from "@maple/domain/sandbox"
-import { Effect, Schema } from "effect"
+import {
+	EXECUTOR_DESTROY_PATH,
+	EXECUTOR_PREPARE_PATH,
+	EXECUTOR_RELEASE_PATH,
+	EXECUTOR_RUN_PATH,
+} from "@maple/domain/executor"
+import { Effect, Schema, String as Str } from "effect"
 import { handle, type SandboxHandleEnv } from "./handle"
 
-const SHA = "a".repeat(40)
+const SHA = Str.repeat(40)("a")
 const TOKEN = "ghs_secret_token"
 const SERVICE_TOKEN = "service-token"
 
@@ -39,13 +45,24 @@ const post = (payload: unknown = body(), authorization = `Bearer ${SERVICE_TOKEN
 		body: JSON.stringify(payload),
 	})
 
-const env = (run: SandboxHandleEnv["run"]): SandboxHandleEnv => ({ token: SERVICE_TOKEN, run })
+const noExecutor: SandboxHandleEnv["executor"] = {
+	prepare: () => Promise.reject(new Error("no executor in this test")),
+	run: () => Promise.reject(new Error("no executor in this test")),
+	release: () => Promise.reject(new Error("no executor in this test")),
+	destroy: () => Promise.reject(new Error("no executor in this test")),
+}
+
+const env = (run: SandboxHandleEnv["run"], executor = noExecutor): SandboxHandleEnv => ({
+	token: SERVICE_TOKEN,
+	run,
+	executor,
+})
 
 const unreachable: SandboxHandleEnv["run"] = () => {
 	throw new TypeError("Cannot read properties of undefined (reading 'getByName')")
 }
 
-const answered = (response: Response) => response.json() as Promise<Record<string, unknown>>
+const answered = (response: Response) => response.json<Record<string, unknown>>()
 
 describe("handle", () => {
 	it.effect("reports a missing container binding instead of a bare 500", () =>
@@ -110,6 +127,105 @@ describe("handle", () => {
 		Effect.gen(function* () {
 			const response = yield* handle(post({ nope: true }), env(unreachable))
 			assert.strictEqual(response.status, 400)
+		}),
+	)
+})
+
+const executorPost = (path: string, payload: unknown, authorization = `Bearer ${SERVICE_TOKEN}`) =>
+	new Request(`https://sandbox.internal${path}`, {
+		method: "POST",
+		headers: { authorization, "content-type": "application/json" },
+		body: JSON.stringify(payload),
+	})
+
+const prepareBody = {
+	executorKey: "run-1",
+	checkout: {
+		repository: "octo/shop",
+		sha: SHA,
+		remoteUrl: "https://github.com/octo/shop.git",
+		token: TOKEN,
+	},
+}
+
+describe("handle, executor routes", () => {
+	it.effect("hands a prepare to the run's executor by its key", () =>
+		Effect.gen(function* () {
+			const keys: Array<string> = []
+			const response = yield* handle(
+				executorPost(EXECUTOR_PREPARE_PATH, prepareBody),
+				env(unreachable, {
+					...noExecutor,
+					prepare: async (key) => {
+						keys.push(key)
+						return { _tag: "ExecutorPreparing", message: "fetching" }
+					},
+				}),
+			)
+			const payload = yield* Effect.promise(() => answered(response))
+			assert.strictEqual(payload._tag, "ExecutorPreparing")
+			assert.deepStrictEqual(keys, ["run-1"])
+		}),
+	)
+
+	it.effect("hands a release to the run's executor, naming the agent", () =>
+		Effect.gen(function* () {
+			const asked: Array<string> = []
+			const response = yield* handle(
+				executorPost(EXECUTOR_RELEASE_PATH, { executorKey: "run-1", agentId: "hunter-2-ab12cd34" }),
+				env(unreachable, {
+					...noExecutor,
+					release: async (key, request) => {
+						asked.push(`${key} ${request.agentId}`)
+						return { _tag: "ExecutorReleased" }
+					},
+				}),
+			)
+			const payload = yield* Effect.promise(() => answered(response))
+			assert.strictEqual(payload._tag, "ExecutorReleased")
+			assert.deepStrictEqual(asked, ["run-1 hunter-2-ab12cd34"])
+			const invalid = yield* handle(
+				executorPost(EXECUTOR_RELEASE_PATH, { executorKey: "run-1", agentId: "../other" }),
+				env(unreachable),
+			)
+			assert.strictEqual(invalid.status, 400)
+		}),
+	)
+
+	it.effect("never echoes the clone token when the executor cannot be reached", () =>
+		Effect.gen(function* () {
+			const response = yield* handle(
+				executorPost(EXECUTOR_PREPARE_PATH, prepareBody),
+				env(unreachable, {
+					...noExecutor,
+					prepare: () => Promise.reject(new Error(`failed with ${TOKEN}`)),
+				}),
+			)
+			const payload = yield* Effect.promise(() => answered(response))
+			assert.strictEqual(payload._tag, "ExecutorUnavailable")
+			assert.notInclude(String(payload.message), TOKEN)
+		}),
+	)
+
+	it.effect("refuses an executor call without the service token, or with an invalid agent id", () =>
+		Effect.gen(function* () {
+			const unauthorized = yield* handle(
+				executorPost(EXECUTOR_DESTROY_PATH, { executorKey: "run-1" }, "Bearer x"),
+				env(unreachable),
+			)
+			assert.strictEqual(unauthorized.status, 401)
+			const invalid = yield* handle(
+				executorPost(EXECUTOR_RUN_PATH, {
+					executorKey: "run-1",
+					agentId: "../other",
+					command: "id",
+					cwd: "checkout",
+					timeoutMs: 5000,
+					promote: [],
+				}),
+				env(unreachable),
+			)
+			assert.strictEqual(invalid.status, 400)
 		}),
 	)
 })

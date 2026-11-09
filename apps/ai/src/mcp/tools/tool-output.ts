@@ -30,6 +30,7 @@
  */
 
 import { renderToolDoc, type DocBlock, type ToolDoc } from "../lib/tool-doc"
+import { Array as Arr, String as Str } from "effect"
 
 /** Line ceiling. Enough rows to see a distribution; far short of enough to reason over one by one. */
 export const MAX_TOOL_OUTPUT_LINES = 2_000
@@ -67,7 +68,7 @@ export const countLines = (text: string): number => {
 	if (text.length === 0) return 0
 	let lines = 1
 	for (let i = text.indexOf("\n"); i !== -1; i = text.indexOf("\n", i + 1)) lines++
-	return text.endsWith("\n") ? lines - 1 : lines
+	return Str.endsWith("\n")(text) ? lines - 1 : lines
 }
 
 /** Keep the first `maxLines` lines, dropping the newline that would have terminated the last one. */
@@ -80,7 +81,7 @@ const sliceToLines = (text: string, maxLines: number): string => {
 		if (next === -1) return text
 		cut = next
 	}
-	return text.slice(0, cut)
+	return Str.slice(0, cut)(text)
 }
 
 /**
@@ -96,7 +97,7 @@ const sliceToBytes = (text: string, maxBytes: number): string => {
 	const bytes = encoder.encode(text)
 	if (bytes.length <= maxBytes) return text
 	let end = maxBytes
-	while (end > 0 && (bytes[end]! & 0xc0) === 0x80) end--
+	while (end > 0 && ((bytes[end] ?? 0) & 0xc0) === 0x80) end--
 	return decoder.decode(bytes.subarray(0, end))
 }
 
@@ -185,9 +186,13 @@ const clipBlock = (block: DocBlock, fits: (block: DocBlock) => boolean): Clipped
 			return clip(block.entries, "fields", (entries) => ({ ...block, entries }))
 		case "code":
 		case "text": {
-			const lines = block.text.split("\n")
-			if (lines.length > 1) return clip(lines, "lines", (kept) => ({ ...block, text: kept.join("\n") }))
-			return clip([...block.text], "characters", (kept) => ({ ...block, text: kept.join("") }))
+			const lines = Str.split("\n")(block.text)
+			if (lines.length > 1)
+				return clip(lines, "lines", (kept) => ({ ...block, text: Arr.join(kept, "\n") }))
+			return clip(Array.from(block.text), "characters", (kept) => ({
+				...block,
+				text: Arr.join(kept, ""),
+			}))
 		}
 		case "heading":
 			return undefined
@@ -202,7 +207,7 @@ const budgetNotice = (maxChars: number, clipped: ClippedBlock | undefined, omitt
 		...(omitted === 0 ? [] : [`${omitted} later section${omitted === 1 ? "" : "s"} omitted`]),
 	]
 	return (
-		`[Output budget reached (${formatNumberOfChars(maxChars)} characters): ${parts.join("; ")}. ` +
+		`[Output budget reached (${formatNumberOfChars(maxChars)} characters): ${Arr.join(parts, "; ")}. ` +
 		"Narrow the request to see the rest: lower `limit`, add filters (service, environment, " +
 		"attributes), page with `offset`, or shorten the time range.]"
 	)
@@ -243,17 +248,36 @@ export const renderToolDocWithinBudget = (tool: ToolDoc, maxChars: number = MAX_
 	if (text.length <= maxChars) return text
 	// Head and tail alone over budget: hard cut, leaving room for the cut's own marker.
 	const cut = truncateToolOutput(text, { maxBytes: Math.max(0, maxChars - HARD_CUT_MARKER_RESERVE) }).text
-	return cut.length <= maxChars ? cut : cut.slice(0, maxChars)
+	return cut.length <= maxChars ? cut : Str.slice(0, maxChars)(cut)
 }
 
 /**
- * The tool's paging line once the budget has cut its body. Its next-page call would start after rows
- * the model never received, so it is dropped (the budget notice says to lower `limit` instead), and
- * the shown count follows the clipped table when that table is the page.
+ * The tool's paging line once the budget has cut its body. When the clipped table is the page and
+ * the next-page call pages by `offset`, it is moved back to the first row the model did not get
+ * (and its `limit` to the rows that fit); any other next-page call would skip rows, so it is dropped.
  */
 const clippedPaging = (tool: ToolDoc, clipped: ClippedBlock | undefined): ToolDoc["truncation"] => {
 	if (tool.truncation === undefined) return undefined
-	const { shown, total, noun } = tool.truncation
+	const { shown, total, noun, next } = tool.truncation
 	const isPage = clipped !== undefined && clipped.unit === "rows" && clipped.total === shown
-	return { shown: isPage ? clipped.shown : shown, noun, ...(total === undefined ? undefined : { total }) }
+	const offset = next?.args.offset
+	const resumed =
+		isPage && next !== undefined && typeof offset === "number"
+			? {
+					next: {
+						...next,
+						args: {
+							...next.args,
+							offset: offset - shown + clipped.shown,
+							...(next.args.limit === undefined ? undefined : { limit: clipped.shown }),
+						},
+					},
+				}
+			: undefined
+	return {
+		shown: isPage ? clipped.shown : shown,
+		noun,
+		...(total === undefined ? undefined : { total }),
+		...resumed,
+	}
 }

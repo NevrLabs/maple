@@ -1,9 +1,11 @@
+import * as Policy from "@maple/domain/policy"
 import {
 	BillingCustomer,
 	CloudflareIntegrationStatus,
 	CloudflareUsageResponse,
 	GcpResourcesResponse,
 	GithubIntegrationStatus,
+	GithubInstallationSelection,
 	LinearIntegrationStatus,
 	RailwayIntegrationStatus,
 	ScrapeTargetId,
@@ -35,16 +37,16 @@ import {
 } from "@maple/domain/primitives"
 import { Schema } from "effect"
 import { defineMessageUnion } from "foldkit/message"
-import { LoadFailure } from "../../data/load-failure"
-import * as CopyButton from "../../ui/copy-button"
-import * as Dialog from "../../ui/dialog"
-import * as Popover from "../../ui/popover"
-import * as Field from "../../ui/field"
-import * as Menu from "../../ui/menu"
-import * as Select from "../../ui/select"
+import { LoadFailure } from "@maple/views/data/load-failure"
+import * as CopyButton from "@maple/views/ui/copy-button"
+import * as Dialog from "@maple/views/ui/dialog"
+import * as Popover from "@maple/views/ui/popover"
+import * as Field from "@maple/views/ui/field"
+import * as Menu from "@maple/views/ui/menu"
+import * as Select from "@maple/views/ui/select"
 import { FormFieldName } from "./prometheus-form-field"
-import * as ToggleGroup from "../../ui/toggle-group"
-import * as Chart from "../../charts/chart"
+import * as ToggleGroup from "@maple/views/ui/toggle-group"
+import * as Chart from "@maple/views/charts/chart"
 import { ConnectProvider } from "./connect"
 import { OAuthReturnOutcome } from "./oauth-return"
 import { FleetRead } from "../infra-integrations/gcp/data"
@@ -89,8 +91,8 @@ export const Message = defineMessageUnion({
 	CompletedLoadCustomer: result(BillingCustomer),
 	/** `trackProduct("integration_connected")` was handed to the session SDK. */
 	CompletedTrackConnected: {},
-	/** The shared session read answered (`useIsOrgAdmin`). */
-	CompletedLoadSession: { isAdmin: Schema.Boolean },
+	/** The shared session read answered with its grants. */
+	CompletedLoadSession: { grants: Schema.Array(Policy.PermissionName) },
 	/** A catalog row or card, or the header's back button (`navigate({ search })`). */
 	ClickedIntegration: { integration: Schema.NullOr(Schema.String) },
 	/** A settings nav tab (`navigate({ to: "/settings", search: { tab } })`). */
@@ -99,6 +101,17 @@ export const Message = defineMessageUnion({
 	CompletedChatToast: {},
 	/** The header or card Connect button: a new popup attempt for the page's provider. */
 	ClickedConnect: {},
+	/**
+	 * Opens the GitHub App install page, not authorization: the picker's "Install on another
+	 * GitHub account", and "Change repos on GitHub" (an installed account gets its settings).
+	 */
+	ClickedOpenGithubInstallPage: {},
+	ClickedSelectGithubInstallation: { installationId: Schema.String },
+	CompletedSelectGithubInstallation: {
+		state: Schema.String,
+		installationId: Schema.String,
+		failure: Schema.NullOr(LoadFailure),
+	},
 	SucceededStartConnect: { attempt: Schema.Number },
 	FailedStartConnect: { attempt: Schema.Number, title: Schema.String, description: Schema.String },
 	/** The authorize URL arrived but the popup was gone and could not be reopened. */
@@ -164,8 +177,6 @@ export const Message = defineMessageUnion({
 	FailedLoadChartRuntime: { reason: Schema.String },
 	GotSparklineMessage: { message: Chart.Message },
 	ClickedTarget: { id: ScrapeTargetId },
-	/** A press inside a row's switch or menu cell, which does not select the row. */
-	ClickedTargetControls: {},
 	CompletedFetchChecks: {
 		key: Schema.String,
 		result: Schema.Result(Schema.Array(V2ScrapeTargetCheck), LoadFailure),
@@ -246,7 +257,9 @@ export const Message = defineMessageUnion({
 	ToggledAwsRegion: { id: AwsConnectionId, region: Schema.String },
 	ToggledAwsNamespace: { id: AwsConnectionId, namespace: AwsMetricNamespace },
 	SubmittedAwsMetrics: { id: AwsConnectionId },
+	/** `id`: the connection the save was for, which the editor may have moved on from. */
 	CompletedAwsMetricStream: {
+		id: AwsConnectionId,
 		connection: Schema.NullOr(V2AwsConnection),
 		error: Schema.NullOr(Schema.String),
 	},
@@ -371,12 +384,14 @@ export const Message = defineMessageUnion({
 		provider: ConnectProvider,
 		status: Schema.String,
 		message: Schema.NullOr(Schema.String),
+		github: Schema.optionalKey(GithubInstallationSelection),
 	},
 	/** Another tab finished a return whose popup lost its opener (`RELAY_CHANNEL`). */
 	ReceivedConnectRelay: {
 		provider: ConnectProvider,
 		status: Schema.String,
 		message: Schema.String,
+		github: Schema.optionalKey(GithubInstallationSelection),
 	},
 	/** The provider return this page was opened with, finished (`null`: there was none). */
 	CompletedOAuthReturn: { outcome: Schema.NullOr(OAuthReturnOutcome) },

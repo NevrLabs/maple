@@ -1,7 +1,10 @@
+import { Schema, String as Str, Array as Arr } from "effect"
 import { formatWarehouseDateTimeMs } from "@maple/query-engine"
 import { buildTraceDetail, type SpanHierarchyRow } from "@maple/ui/lib/span-tree"
 
 import { LONG_SERVICE, type WorstCaseMode } from "./worst-case-fixture"
+
+const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown))
 
 const T0_MS = new Date("2026-07-21T10:00:00.000Z").getTime()
 
@@ -43,7 +46,7 @@ const RUNTIMES = new Map<string, Record<string, string>>([
 /** A single parent chain, `depth` spans deep, so indentation is the only thing that grows. */
 function chain(depth: number, worst: boolean): SpanHierarchyRow[] {
 	return Array.from({ length: depth }, (_, i) => {
-		const serviceName = worst ? SERVICES[i % SERVICES.length]! : "api"
+		const serviceName = worst ? Arr.getUnsafe(SERVICES, i % SERVICES.length) : "api"
 		return row({
 			spanId: `d${i}`,
 			parentSpanId: i === 0 ? "" : `d${i - 1}`,
@@ -52,12 +55,12 @@ function chain(depth: number, worst: boolean): SpanHierarchyRow[] {
 				: `step ${i}`,
 			serviceName,
 			spanKind: i === 0 ? "Server" : "Internal",
-			spanAttributes: JSON.stringify(CALLS[i % CALLS.length]),
-			resourceAttributes: JSON.stringify(RUNTIMES.get(serviceName) ?? {}),
+			spanAttributes: encodeJson(CALLS[i % CALLS.length]),
+			resourceAttributes: encodeJson(RUNTIMES.get(serviceName) ?? {}),
 			startTime: formatWarehouseDateTimeMs(T0_MS + i * 5),
 			durationMs: Math.max(0.001, 2000 - i * 33),
 			statusCode: worst && i === depth - 1 ? "Error" : "Ok",
-			statusMessage: worst && i === depth - 1 ? "x".repeat(300) : "",
+			statusMessage: worst && i === depth - 1 ? Str.repeat(300)("x") : "",
 		})
 	})
 }

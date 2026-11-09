@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "@effect/vitest"
 import { createHash } from "node:crypto"
 import { McpConnectionId, OrgId, RoleName, UserId } from "@maple/domain/http"
-import { ConfigProvider, Effect, Exit, Layer, Option, Schema } from "effect"
+import { ConfigProvider, Effect, Exit, Layer, Option, Schema, Array as Arr } from "effect"
 import { TestClock } from "effect/testing"
 import { Env } from "@maple/backend/platform/Env"
 import { cleanupTestDbs, createTestDb, type TestDb } from "@maple/backend/platform/test-pglite"
@@ -35,11 +35,11 @@ const makeLayer = (testDb: TestDb) => {
 	)
 }
 
-const orgId = Schema.decodeUnknownSync(OrgId)("org_connections")
-const otherOrgId = Schema.decodeUnknownSync(OrgId)("org_elsewhere")
-const alice = Schema.decodeUnknownSync(UserId)("user_alice")
-const bob = Schema.decodeUnknownSync(UserId)("user_bob")
-const memberRole = Schema.decodeUnknownSync(RoleName)("org:member")
+const orgId = Schema.decodeSync(OrgId)("org_connections")
+const otherOrgId = Schema.decodeSync(OrgId)("org_elsewhere")
+const alice = Schema.decodeSync(UserId)("user_alice")
+const bob = Schema.decodeSync(UserId)("user_bob")
+const memberRole = Schema.decodeSync(RoleName)("org:member")
 const resource = "https://api.example.com/mcp"
 const redirectUri = "http://127.0.0.1:49152/callback"
 const verifier = "maple-mcp-oauth-verifier-that-is-long-enough-1234567890"
@@ -115,9 +115,9 @@ describe("McpConnectionsService", () => {
 			yield* connect("Windsurf", bob, otherOrgId)
 
 			const asBob = yield* connections.list(orgId, { userId: bob, seesAll: false })
-			expect(asBob.map((c) => c.clientName)).toEqual(["Cursor"])
+			expect(Arr.map(asBob, (c) => c.clientName)).toEqual(["Cursor"])
 			const asAdmin = yield* connections.list(orgId, admin)
-			expect(asAdmin.map((c) => c.clientName).sort()).toEqual(["Claude Code", "Cursor"])
+			expect(Arr.map(asAdmin, (c) => c.clientName).sort()).toEqual(["Claude Code", "Cursor"])
 		}).pipe(Effect.provide(makeLayer(createTestDb(createdDbs)))),
 	)
 
@@ -133,7 +133,7 @@ describe("McpConnectionsService", () => {
 			yield* apiKeys.create(orgId, alice, { name: "CI" })
 
 			const { keys } = yield* apiKeys.list(orgId)
-			expect(keys.map((key) => key.name).sort()).toEqual(["CI", "Laptop"])
+			expect(Arr.map(keys, (key) => key.name).sort()).toEqual(["CI", "Laptop"])
 		}).pipe(Effect.provide(makeLayer(createTestDb(createdDbs)))),
 	)
 
@@ -145,7 +145,7 @@ describe("McpConnectionsService", () => {
 			const claude = yield* connect("Claude Code", alice, orgId)
 			const [connection] = yield* connections.list(orgId, admin)
 
-			const revoked = yield* connections.revoke(orgId, connection!.id, {
+			const revoked = yield* connections.revoke(orgId, connection.id, {
 				userId: alice,
 				seesAll: false,
 			})
@@ -169,10 +169,10 @@ describe("McpConnectionsService", () => {
 			const [connection] = yield* connections.list(orgId, admin)
 
 			const asBob = yield* Effect.flip(
-				connections.revoke(orgId, connection!.id, { userId: bob, seesAll: false }),
+				connections.revoke(orgId, connection.id, { userId: bob, seesAll: false }),
 			)
 			expect(asBob._tag).toBe("@maple/http/errors/McpConnectionNotFoundError")
-			const unknown = Schema.decodeUnknownSync(McpConnectionId)("7c9e6679-7425-40de-944b-e07fc1f90ae7")
+			const unknown = Schema.decodeSync(McpConnectionId)("7c9e6679-7425-40de-944b-e07fc1f90ae7")
 			const missing = yield* Effect.flip(connections.revoke(orgId, unknown, admin))
 			expect(missing._tag).toBe("@maple/http/errors/McpConnectionNotFoundError")
 			expect(yield* connections.list(orgId, admin)).toHaveLength(1)

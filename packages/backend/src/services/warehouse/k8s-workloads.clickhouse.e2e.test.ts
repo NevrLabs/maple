@@ -3,7 +3,7 @@
 // pod usage) per workload. These seed each against the real schema and read the rows back.
 
 import { afterAll, assert, beforeAll, describe, it } from "@effect/vitest"
-import { Schema } from "effect"
+import { Schema, Array as Arr, Record as Rec, String as Str } from "effect"
 import { compileUnsafe } from "@maple-dev/effect-orm/clickhouse"
 import { OrgId } from "@maple/domain"
 import { listWorkloadsQuery, type ListWorkloadsOpts } from "../../../../query-engine/src/ch/queries/infra"
@@ -22,10 +22,11 @@ const MINUTE_MS = 60_000
 // Anchored to now so the table TTL never drops the seed.
 const END_MS = Math.floor(Date.now() / MINUTE_MS) * MINUTE_MS - 10 * MINUTE_MS
 const START_MS = END_MS - 60 * MINUTE_MS
-const chDateTime = (epochMs: number): string => new Date(epochMs).toISOString().replace("T", " ").slice(0, 19)
+const chDateTime = (epochMs: number): string =>
+	Str.slice(0, 19)(Str.replace("T", " ")(new Date(epochMs).toISOString()))
 const minutesBeforeEnd = (minutes: number) => chDateTime(END_MS - minutes * MINUTE_MS)
 
-const quote = (value: string): string => `'${value.replace(/\\/g, "\\\\").replace(/'/g, "\\'")}'`
+const quote = (value: string): string => `'${Str.replace(/'/g, "\\'")(Str.replace(/\\/g, "\\\\")(value))}'`
 
 interface Sample {
 	readonly org?: string
@@ -129,7 +130,7 @@ function restarts(
 		computeType === undefined
 			? baseAttrs
 			: { ...baseAttrs, "eks.amazonaws.com/compute-type": computeType }
-	return totals.map((value, index) => ({
+	return Arr.map(totals, (value, index) => ({
 		org,
 		metric: "k8s.container.restarts",
 		minutesBeforeEnd: 45 - index * 20,
@@ -139,20 +140,22 @@ function restarts(
 }
 
 const mapLiteral = (attrs: Record<string, string>) =>
-	`map(${Object.entries(attrs)
-		.flatMap(([key, value]) => [quote(key), quote(value)])
-		.join(", ")})`
+	`map(${Arr.join(
+		Arr.flatMap(Rec.toEntries(attrs), ([key, value]) => [quote(key), quote(value)]),
+		", ",
+	)})`
 
 describe.skipIf(!clickhouseE2eEnabled)("listWorkloadsQuery against ClickHouse", () => {
 	beforeAll(async () => {
 		await clickhouseExec(`CREATE DATABASE ${database}`)
 		await applyRealMigrations(database)
-		const rows = samples
-			.map((sample) => {
+		const rows = Arr.join(
+			Arr.map(samples, (sample) => {
 				const at = quote(minutesBeforeEnd(sample.minutesBeforeEnd))
 				return `(${quote(sample.org ?? ORG)}, '', ${quote(sample.metric)}, ${at}, ${at}, ${sample.value}, ${mapLiteral(sample.attrs)})`
-			})
-			.join(",\n")
+			}),
+			",\n",
+		)
 		await clickhouseExec(
 			`INSERT INTO metrics_gauge (OrgId, ServiceName, MetricName, StartTimeUnix, TimeUnix, Value, ResourceAttributes) VALUES\n${rows}`,
 			database,
@@ -176,16 +179,16 @@ describe.skipIf(!clickhouseE2eEnabled)("listWorkloadsQuery against ClickHouse", 
 			}),
 		)
 		assert.isDefined(compiled.rowSchema)
-		return Schema.decodeUnknownSync(Schema.Array(compiled.rowSchema!))(body.data)
+		return Schema.decodeUnknownSync(Schema.Array(compiled.rowSchema))(body.data)
 	}
 
 	it("ranks missing replicas first, including a workload with no pods at all", async () => {
 		const rows = await run({ kind: "deployment" })
 		assert.deepEqual(
-			rows.map((row) => row.workloadName),
+			Arr.map(rows, (row) => row.workloadName),
 			["checkout-api", "orphan", "api"],
 		)
-		const orphan = rows[1]!
+		const orphan = rows[1]
 		assert.strictEqual(orphan.podCount, 0)
 		assert.strictEqual(orphan.shortfall, 2)
 	})
@@ -193,35 +196,35 @@ describe.skipIf(!clickhouseE2eEnabled)("listWorkloadsQuery against ClickHouse", 
 	it("reads the latest replica gauges and sums restarts per container, not per sample", async () => {
 		const [checkout] = await run({ kind: "deployment", workloadNames: ["checkout-api"] })
 		assert.isDefined(checkout)
-		assert.strictEqual(checkout!.desiredReplicas, 5)
-		assert.strictEqual(checkout!.readyReplicas, 2)
-		assert.strictEqual(checkout!.shortfall, 3)
-		assert.isAbove(checkout!.replicaSamples, 0)
+		assert.strictEqual(checkout.desiredReplicas, 5)
+		assert.strictEqual(checkout.readyReplicas, 2)
+		assert.strictEqual(checkout.shortfall, 3)
+		assert.isAbove(checkout.replicaSamples, 0)
 		// 0 → 4 on pod a's app, 10 → 12 on b's app, 3 → 8 on b's worker, 5 → 5 on the sidecar;
 		// the other org's 500 is excluded.
-		assert.strictEqual(checkout!.restarts, 11)
+		assert.strictEqual(checkout.restarts, 11)
 		// a's OOM kill is the latest restart; b's worker errored earlier.
-		assert.strictEqual(checkout!.lastTerminatedReason, "OOMKilled")
-		assert.strictEqual(checkout!.podCount, 2)
+		assert.strictEqual(checkout.lastTerminatedReason, "OOMKilled")
+		assert.strictEqual(checkout.podCount, 2)
 		// Only pod a still reports at the window's end.
-		assert.closeTo(checkout!.cpuUsage, 0.2, 1e-9)
-		assert.closeTo(checkout!.peakMemoryLimitPct, 0.38, 1e-9)
+		assert.closeTo(checkout.cpuUsage, 0.2, 1e-9)
+		assert.closeTo(checkout.peakMemoryLimitPct, 0.38, 1e-9)
 	})
 
 	it("reports the worst pod's peak, not where it ended", async () => {
 		const [api] = await run({ kind: "deployment", workloadNames: ["api"] })
-		assert.closeTo(api!.peakCpuLimitPct, 0.93, 1e-9)
-		assert.closeTo(api!.saturation, 0.93, 1e-9)
-		assert.strictEqual(api!.shortfall, 0)
-		assert.strictEqual(api!.restarts, 9)
+		assert.closeTo(api.peakCpuLimitPct, 0.93, 1e-9)
+		assert.closeTo(api.saturation, 0.93, 1e-9)
+		assert.strictEqual(api.shortfall, 0)
+		assert.strictEqual(api.restarts, 9)
 		// c's Error is newer than d's OOM kills, whatever order the series are read in.
-		assert.strictEqual(api!.lastTerminatedReason, "Error")
+		assert.strictEqual(api.lastTerminatedReason, "Error")
 	})
 
 	it("lists jobs by failures, without calling a running job short of replicas", async () => {
 		const rows = await run({ kind: "job" })
 		assert.deepEqual(
-			rows.map((row) => [row.workloadName, row.failedPods, row.readyReplicas, row.shortfall]),
+			Arr.map(rows, (row) => [row.workloadName, row.failedPods, row.readyReplicas, row.shortfall]),
 			[
 				["broken", 2, 0, 0],
 				["nightly", 0, 1, 0],
@@ -234,7 +237,7 @@ describe.skipIf(!clickhouseE2eEnabled)("listWorkloadsQuery against ClickHouse", 
 		// orphan has no pods and checkout-api's pods carry no compute type: neither may leak in.
 		// api's restarts count only its Fargate pod, not the node pod's OOM kills.
 		assert.deepEqual(
-			rows.map((row) => [
+			Arr.map(rows, (row) => [
 				row.workloadName,
 				row.desiredReplicas,
 				row.podCount,

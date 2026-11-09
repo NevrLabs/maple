@@ -12,6 +12,7 @@ import {
 	windowCount,
 } from "./history"
 import { PAGE_SCRIPT_LOGIC } from "./script"
+import { Array as Arr, Record as Rec } from "effect"
 
 interface ScriptLogic {
 	readonly shift: (day: string, offset: number) => string
@@ -26,6 +27,7 @@ interface ScriptLogic {
 }
 
 // The shipped script source, evaluated as the browser would, to hold it to the server's answers.
+// oxlint-disable-next-line typescript/no-implied-eval -- evaluates the shipped inline script source on purpose.
 const logic: ScriptLogic = new Function(
 	`${PAGE_SCRIPT_LOGIC}return{shift,mlabel,fday,bounds,state,tip,pct,cells,mback}`,
 )()
@@ -71,7 +73,7 @@ describe("page script logic", () => {
 		const october = monthCells(2026, 10)
 		expect(october.slice(0, 4)).toEqual([0, 0, 0, 1])
 		expect(october).toHaveLength(35)
-		expect(october.filter((date) => date > 0)).toHaveLength(31)
+		expect(Arr.filter(october, (date) => date > 0)).toHaveLength(31)
 		// February 2021 starts on a Monday and fills exactly four weeks.
 		expect(monthCells(2021, 2)).toHaveLength(28)
 		for (const [year, month] of [
@@ -92,7 +94,7 @@ describe("page script logic", () => {
 describe("history bounds", () => {
 	it("pages back only as far as the oldest checked day", () => {
 		const unchecked = (count: number) =>
-			Object.fromEntries(Array.from({ length: count }, (_, index) => [index, "none" as const]))
+			Rec.fromEntries(Array.from({ length: count }, (_, index) => [String(index), "none" as const]))
 		const withDays = (blank: number) =>
 			makeSnapshot({
 				components: [makeComponent(0, { days: makeDays(FIXTURE_NOW, unchecked(blank), 365) })],

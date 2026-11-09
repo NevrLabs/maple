@@ -13,6 +13,7 @@ import {
 	type GcpChart,
 } from "./charts"
 import { gcpWorkload, type GcpMetricReader } from "./tabs"
+import { Array as Arr, Option } from "effect"
 
 const T1 = "2026-10-08T12:00:00.000Z"
 const T2 = "2026-10-08T12:05:00.000Z"
@@ -55,7 +56,9 @@ const metricsOf = (chart: GcpChart): ReadonlyArray<string> => {
 }
 
 const lineChart = (service: (typeof GCP_INFRA_SERVICE_IDS)[number], title: string) => {
-	const chart = GCP_INFRA_CHARTS[service].find((candidate) => candidate.title === title)
+	const chart = Option.getOrUndefined(
+		Arr.findFirst(GCP_INFRA_CHARTS[service], (candidate) => candidate.title === title),
+	)
 	if (chart?.kind !== "lines") throw new Error(`no line chart ${title}`)
 	return chart
 }
@@ -63,28 +66,30 @@ const lineChart = (service: (typeof GCP_INFRA_SERVICE_IDS)[number], title: strin
 describe("GCP_INFRA_CHARTS", () => {
 	it("reads only metrics the page's query returns", () => {
 		for (const service of GCP_INFRA_SERVICE_IDS) {
-			const known = new Set(gcpInfraMetrics(service).map((metric) => metric.name))
-			const read = GCP_INFRA_CHARTS[service].flatMap(metricsOf)
+			const known = new Set(Arr.map(gcpInfraMetrics(service), (metric) => metric.name))
+			const read = Arr.flatMap(GCP_INFRA_CHARTS[service], metricsOf)
 			expect(read.length, service).toBeGreaterThan(0)
 			expect(
-				read.filter((metric) => !known.has(metric)),
+				Arr.filter(read, (metric) => !known.has(metric)),
 				service,
 			).toEqual([])
 		}
-		const nodes = new Set(gcpInfraMetrics("gkeNodes").map((metric) => metric.name))
-		expect(GCP_GKE_NODE_CHARTS.flatMap(metricsOf).filter((metric) => !nodes.has(metric))).toEqual([])
+		const nodes = new Set(Arr.map(gcpInfraMetrics("gkeNodes"), (metric) => metric.name))
+		expect(
+			Arr.filter(Arr.flatMap(GCP_GKE_NODE_CHARTS, metricsOf), (metric) => !nodes.has(metric)),
+		).toEqual([])
 	})
 
 	it("titles every chart uniquely on its page", () => {
 		for (const service of GCP_INFRA_SERVICE_IDS) {
-			const titles = GCP_INFRA_CHARTS[service].map((chart) => chart.title)
+			const titles = Arr.map(GCP_INFRA_CHARTS[service], (chart) => chart.title)
 			expect(new Set(titles).size, service).toBe(titles.length)
 		}
 	})
 
 	it("opens a counter as a sum and a gauge or percentile as a gauge", () => {
 		// The explorer keeps apart what the chart draws apart: the classes, the percentiles.
-		expect(gcpChartMetric(GCP_INFRA_CHARTS.cloudRun[0], [])).toEqual({
+		expect(gcpChartMetric(Arr.getUnsafe(GCP_INFRA_CHARTS.cloudRun, 0), [])).toEqual({
 			name: "gcp.cloud_run.requests",
 			type: "sum",
 			groupBy: "attr.gcp.metric.labels.response_code_class",
@@ -231,7 +236,7 @@ describe("gcpBuckets", () => {
 	const window = { ...WINDOW, endTime: "2026-10-08 12:20:00" }
 
 	it("keeps the silent buckets between the first and the last that reported", () => {
-		expect(gcpBuckets(idle, 300).map(({ bucket, points }) => [bucket, points.length])).toEqual([
+		expect(Arr.map(gcpBuckets(idle, 300), ({ bucket, points }) => [bucket, points.length])).toEqual([
 			[T1, 2],
 			[T2, 0],
 			["2026-10-08T12:10:00.000Z", 0],
@@ -242,9 +247,9 @@ describe("gcpBuckets", () => {
 
 	it("reads a counter as zero through the silence and leaves a gauge out of it", () => {
 		const requests = gcpClassRows("gcp.cloud_run.requests", idle, window)
-		expect(requests.map((row) => row.value)).toEqual([1, 0, 0, 2])
+		expect(Arr.map(requests, (row) => row.value)).toEqual([1, 0, 0, 2])
 		const latency = gcpLineRows(lineChart("cloudRun", "Request latency").series, idle, window)
-		expect(latency.map((row) => [row.bucket, row.value])).toEqual([
+		expect(Arr.map(latency, (row) => [row.bucket, row.value])).toEqual([
 			[T1, 125],
 			[T4, 250],
 		])
@@ -261,7 +266,7 @@ describe("gcpWindowPoints", () => {
 	]
 
 	it("orders buckets oldest first", () => {
-		expect(gcpBuckets(points, 300).map(({ bucket }) => bucket)).toEqual([T1, T2])
+		expect(Arr.map(gcpBuckets(points, 300), ({ bucket }) => bucket)).toEqual([T1, T2])
 	})
 
 	it("folds the buckets into the numbers of the workload's table row", () => {

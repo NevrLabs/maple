@@ -1,4 +1,5 @@
-import { Option } from "effect"
+import { END_USER_ID_MAX_LENGTH } from "@maple/domain/http"
+import { Option, String as Str } from "effect"
 import { fromString } from "foldkit/url"
 import { describe, expect, test } from "vitest"
 import { DATA_INTEGRATIONS } from "./data-integrations"
@@ -24,6 +25,16 @@ describe("routes", () => {
 		}
 	})
 
+	test("a user page takes any id the API accepts, decoded, and nothing longer", () => {
+		// Cloudflare delivers an encoded `%2F` as a real slash, so the id is the rest of the path.
+		const route = parse("/users/user/42%20ada")
+		expect(route).toMatchObject({ _tag: "UserDetail", userId: "user/42 ada" })
+		expect(hrefOf(route)).toBe("/users/user/42%20ada")
+		expect(parse("/users/user%2F42%20ada")).toMatchObject({ _tag: "UserDetail", userId: "user/42 ada" })
+		expect(parse(`/users/${Str.repeat(END_USER_ID_MAX_LENGTH)("u")}`)._tag).toBe("UserDetail")
+		expect(parse(`/users/${Str.repeat(END_USER_ID_MAX_LENGTH + 1)("u")}`)._tag).not.toBe("UserDetail")
+	})
+
 	test("path params are percent-decoded and printed back encoded", () => {
 		const route = parse("/services/checkout%20api")
 		expect(route).toMatchObject({ _tag: "Service", serviceName: "checkout api" })
@@ -38,6 +49,16 @@ describe("routes", () => {
 		const monitor = parse("/alerts/uptime/upm_abc")
 		expect(monitor).toMatchObject({ _tag: "AlertsUptimeMonitor", monitorId: "upm_abc" })
 		expect(hrefOf(monitor)).toBe("/alerts/uptime/upm_abc")
+	})
+
+	test("SLO routes parse ahead of a rule id and print back", () => {
+		expect(parse("/alerts/slos/new?serviceName=%22checkout%22")).toMatchObject({
+			_tag: "AlertsSloNew",
+			search: { serviceName: "checkout" },
+		})
+		const slo = parse("/alerts/slos/slo_abc")
+		expect(slo).toMatchObject({ _tag: "AlertsSlo", sloId: "slo_abc" })
+		expect(hrefOf(slo)).toBe("/alerts/slos/slo_abc")
 	})
 
 	test("status page routes parse, the builder ahead of a page id, and print back", () => {
@@ -61,6 +82,41 @@ describe("routes", () => {
 		)
 		expect(routeRedirect(parse("/alerts/status-pages/stp_abc?tab=%22incidents%22"))).toEqual(
 			Option.some({ url: "/status-pages/stp_abc", isReplace: true }),
+		)
+	})
+
+	test("the anomalies list opens the Alerts Inbox's Anomalies view, carrying a service and status", () => {
+		expect(routeRedirect(parse("/anomalies"))).toEqual(
+			Option.some({ url: "/alerts?signal=anomaly", isReplace: true }),
+		)
+		const narrowed = routeRedirect(
+			parse("/anomalies?services=%5B%22checkout%22%5D&status=%22resolved%22"),
+		)
+		expect(Option.map(narrowed, ({ url }) => parse(url))).toEqual(
+			Option.some(
+				AppRoute.Alerts({
+					search: { signal: "anomaly", serviceName: "checkout", anomalyStatus: "resolved" },
+				}),
+			),
+		)
+		// "open" is the view's default, and several services have no one-service filter to land on.
+		const several = routeRedirect(parse("/anomalies?services=%5B%22a%22%2C%22b%22%5D&status=%22open%22"))
+		expect(Option.map(several, ({ url }) => parse(url))).toEqual(
+			Option.some(AppRoute.Alerts({ search: { signal: "anomaly" } })),
+		)
+		expect(routeRedirect(parse("/anomalies/00000000-0000-4000-8000-000000000004"))).toEqual(Option.none())
+	})
+
+	test("old anomalies links with a plain or singular service still land on that service", () => {
+		const landing = (path: string) => Option.map(routeRedirect(parse(path)), ({ url }) => parse(url))
+		const checkout = Option.some(
+			AppRoute.Alerts({ search: { signal: "anomaly", serviceName: "demo-api" } }),
+		)
+		expect(landing("/anomalies?services=demo-api")).toEqual(checkout)
+		expect(landing("/anomalies?service=demo-api")).toEqual(checkout)
+		// A value it cannot read is dropped: the view opens unfiltered instead of "Page not found".
+		expect(landing("/anomalies?services=%7B%22a%22%3A1%7D&status=nope")).toEqual(
+			Option.some(AppRoute.Alerts({ search: { signal: "anomaly" } })),
 		)
 	})
 
@@ -135,25 +191,51 @@ describe("routes", () => {
 		expect(routeRedirect(parse("/integrations"))).toEqual(Option.none())
 	})
 
-	test("the Security Center's tabs, run and finding pages parse to their own routes", () => {
-		expect(parse("/security")._tag).toBe("Security")
-		expect(parse("/security/findings?rejected=true")).toMatchObject({
-			_tag: "SecurityFindings",
+	test("the Security Center's sources, run and finding pages parse to their own routes", () => {
+		expect(parse("/security/code")._tag).toBe("SecurityCode")
+		expect(parse("/security/code/findings?rejected=true")).toMatchObject({
+			_tag: "SecurityCodeFindings",
 			search: { rejected: true },
 		})
-		expect(parse("/security/runs")._tag).toBe("SecurityRuns")
+		expect(parse("/security/code/runs")._tag).toBe("SecurityCodeRuns")
 		expect(parse("/security/exposure")._tag).toBe("SecurityExposure")
 		expect(parse("/security/runtimes")._tag).toBe("SecurityRuntimes")
 		expect(parse("/security/dependencies")._tag).toBe("SecurityDependencies")
-		expect(parse("/security/runs/run_9f3c2a1e7b")).toMatchObject({
+		expect(parse("/security/dependencies?repo=repo_1")).toMatchObject({
+			_tag: "SecurityDependencies",
+			search: { repo: "repo_1" },
+		})
+		expect(parse("/security/code/runs/run_9f3c2a1e7b")).toMatchObject({
 			_tag: "SecurityRun",
 			runId: "run_9f3c2a1e7b",
 		})
-		const finding = parse("/security/findings/5ec0a0d1-0000-4000-8000-000000000001/exports%2Ftenant")
+		const finding = parse("/security/code/findings/5ec0a0d1-0000-4000-8000-000000000001/exports%2Ftenant")
 		expect(finding).toMatchObject({ _tag: "SecurityFinding", fingerprint: "exports/tenant" })
 		expect(hrefOf(finding)).toBe(
-			"/security/findings/5ec0a0d1-0000-4000-8000-000000000001/exports%2Ftenant",
+			"/security/code/findings/5ec0a0d1-0000-4000-8000-000000000001/exports%2Ftenant",
 		)
+	})
+
+	test("the code audit's old links open the same page under /security/code", () => {
+		const redirectOf = (path: string) => Option.map(routeRedirect(parse(path)), ({ url }) => url)
+		expect(redirectOf("/security")).toEqual(Option.some("/security/code"))
+		expect(redirectOf("/security/findings")).toEqual(Option.some("/security/code/findings"))
+		expect(redirectOf("/security/findings?status=%22all%22&q=%22tenant%22")).toEqual(
+			Option.some(hrefOf(AppRoute.SecurityCodeFindings({ search: { status: "all", q: "tenant" } }))),
+		)
+		expect(redirectOf("/security/runs?target=%22tgt_1%22")).toEqual(
+			Option.some(hrefOf(AppRoute.SecurityCodeRuns({ search: { target: "tgt_1" } }))),
+		)
+		expect(redirectOf("/security/runs/run_9f3c2a1e7b")).toEqual(
+			Option.some("/security/code/runs/run_9f3c2a1e7b"),
+		)
+		expect(
+			redirectOf("/security/findings/5ec0a0d1-0000-4000-8000-000000000001/exports%2Ftenant"),
+		).toEqual(
+			Option.some("/security/code/findings/5ec0a0d1-0000-4000-8000-000000000001/exports%2Ftenant"),
+		)
+		expect(routeRedirect(parse("/security/code"))).toEqual(Option.none())
+		expect(routeRedirect(parse("/security/exposure"))).toEqual(Option.none())
 	})
 
 	test("an unknown path is NotFound", () => {

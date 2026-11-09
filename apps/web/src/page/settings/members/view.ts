@@ -1,42 +1,57 @@
-import { truncatedCellStyles } from "@maple/ui/styles/ui/table"
-import { initialsFrom } from "@maple/ui/lib/initials"
-import { formatRelativeTime } from "@maple/ui/lib/time-format"
+import * as Policy from "@maple/domain/policy"
 import { cn } from "@maple/ui/lib/utils"
 import { orgRoleLabel, roleChangePrompt, toOrgRole } from "../../../components/settings/org-membership"
 import { formatDateInTimezone } from "@maple/web-data/lib/timezone-format"
 import { AsyncData, Submodel } from "foldkit"
 import type { Html, HtmlBuilder } from "foldkit/html"
-import { button } from "../../../ui/button"
-import { confirmDialog } from "../../../ui/confirm-dialog"
-import { warmAvatarTone } from "../../../ui/avatar-tone"
-import { avatarFallback } from "../../../ui/display"
-import { field, type FieldIds, fieldLabel, input, type FieldState } from "../../../ui/field"
-import * as Field from "../../../ui/field"
-import { formDialog } from "../../../ui/form-dialog"
-import { icon } from "../../../ui/icon"
-import * as Menu from "../../../ui/menu"
-import { rowActionsMenu } from "../../../ui/row-actions-menu"
-import * as SelectView from "../../../ui/select-view"
-import { skeleton, skeletonList } from "../../../ui/skeleton"
-import { table, tableBody, tableCell, tableHead, tableHeader, tableRow } from "../../../ui/table"
-import { truncatedText } from "../../../ui/truncated-text"
+import { button } from "@maple/views/ui/button"
+import { confirmDialog } from "@maple/views/ui/confirm-dialog"
+import { personAvatar } from "@maple/views/ui/person-avatar"
+import { field, type FieldIds, fieldLabel, input, type FieldState } from "@maple/views/ui/field"
+import * as Field from "@maple/views/ui/field"
+import { formDialog } from "@maple/views/ui/form-dialog"
+import { icon } from "@maple/views/ui/icon"
+import * as Menu from "@maple/views/ui/menu"
+import { rowActionsMenu } from "@maple/views/ui/row-actions-menu"
+import * as SelectView from "@maple/views/ui/select-view"
+import { skeleton, skeletonList } from "@maple/views/ui/skeleton"
+import {
+	table,
+	tableBody,
+	tableCell,
+	tableHead,
+	tableHeader,
+	tableRow,
+	truncatedTableCell,
+} from "@maple/views/ui/table"
+import { truncatedText } from "@maple/views/ui/truncated-text"
 import { accountSectionSkeleton, noOrganization } from "../kit/account-skeleton"
 import { adminOnlyNotice } from "../kit/members"
 import { settingsSection, settingsSections } from "../kit/section"
-import { type InvitationRow, type MemberRow, Message, type Model } from "./model"
+import { canManage, type InvitationRow, type MemberRow, Message, type Model } from "./model"
 import { hasMore, roleSelectFor } from "./update"
+import { typographyClass } from "@maple/views/ui/typography"
+import { hstack } from "@maple/views/ui/stack"
+import { timestamp } from "@maple/views/ui/timestamp"
+import { Array as Arr, String as Str } from "effect"
 
 type H = HtmlBuilder<Message>
 type Inputs = Readonly<{ nowMs: number; timeZone: string; isKnownMember: boolean }>
 
-const ROLE_ENTRIES: ReadonlyArray<SelectView.SelectEntry> = [
-	{ _tag: "Item", item: { value: "org:member", label: "Member" } },
-	{ _tag: "Item", item: { value: "org:admin", label: "Admin" } },
-]
+const ROLE_ENTRIES: ReadonlyArray<SelectView.SelectEntry> = Arr.map(
+	Policy.assignableRoles,
+	(entry): SelectView.SelectEntry => ({
+		_tag: "Item",
+		item: { value: entry.clerkKey, label: entry.label },
+	}),
+)
 
 /** `isInset`: the members column holds role selects, so both tables put values and headers at their text inset. */
 const roleText = (h: H, role: string, isInset: boolean): Html =>
-	h.span([h.Class(cn("text-xs text-foreground", isInset && "px-2.5"))], [orgRoleLabel(role)])
+	h.span(
+		[h.Class(cn(typographyClass({ size: "xs", tone: "foreground" }), isInset && "px-2.5"))],
+		[orgRoleLabel(role)],
+	)
 
 const roleHead = (h: H, isInset: boolean): Html =>
 	tableHead(h, [h.span([h.Class(cn(isInset && "px-2.5"))], ["Role"])], COLUMN.role)
@@ -45,44 +60,35 @@ const roleHead = (h: H, isInset: boolean): Html =>
 const COLUMN = { role: "w-36", date: "w-36", actions: "w-12" } as const
 
 /** Without the actions column the date column ends the row, so it sits flush right. */
-const dateAlign = (isAdmin: boolean): string | undefined => (isAdmin ? undefined : "text-right")
-
-const truncatedCell = (h: H, children: ReadonlyArray<Html>, className?: string): Html =>
-	tableCell(h, children, cn(truncatedCellStyles, className))
+const dateAlign = (hasActions: boolean): string | undefined => (hasActions ? undefined : "text-right")
 
 const loadMore = (h: H, isLoading: boolean, onClick: Message): Html =>
-	h.div(
-		[h.Class("flex justify-center border-t p-2")],
-		[
-			button(h, { variant: "ghost", size: "sm", isLoading, attributes: [h.OnClick(onClick)] }, [
-				"Load more",
-			]),
-		],
-	)
+	hstack(h, { align: "stretch", justify: "center", className: "border-t p-2" }, [
+		button(h, { variant: "ghost", size: "sm", isLoading, attributes: [h.OnClick(onClick)] }, [
+			"Load more",
+		]),
+	])
 
-const skeletonRow = (h: H, isAdmin: boolean, index: number): Html =>
+const skeletonRow = (h: H, hasActions: boolean, index: number): Html =>
 	tableRow(
 		h,
 		[
 			tableCell(h, [
-				h.div(
-					[h.Class("flex items-center gap-3")],
-					[
-						skeleton(h, "size-6 rounded-full"),
-						h.div([h.Class("space-y-1.5")], [skeleton(h, "h-3 w-32"), skeleton(h, "h-3 w-48")]),
-					],
-				),
+				hstack(h, { gap: "3" }, [
+					skeleton(h, "size-6 rounded-full"),
+					h.div([h.Class("space-y-1.5")], [skeleton(h, "h-3 w-32"), skeleton(h, "h-3 w-48")]),
+				]),
 			]),
 			tableCell(h, [skeleton(h, "h-3 w-16")]),
-			tableCell(h, [skeleton(h, cn("h-3 w-20", !isAdmin && "ml-auto"))]),
-			...(isAdmin ? [tableCell(h, [])] : []),
+			tableCell(h, [skeleton(h, cn("h-3 w-20", !hasActions && "ml-auto"))]),
+			...(hasActions ? [tableCell(h, [])] : []),
 		],
 		undefined,
 		[h.Key(`skeleton-${index}`)],
 	)
 
-const roleCell = (h: H, model: Model, member: MemberRow, canManage: boolean): Html => {
-	if (!canManage) return tableCell(h, [roleText(h, member.role, model.isAdmin)])
+const roleCell = (h: H, model: Model, member: MemberRow, canEdit: boolean): Html => {
+	if (!canEdit) return tableCell(h, [roleText(h, member.role, canManage(model))])
 	const isConfirming = model.pendingRole?.memberId === member.id
 	return tableCell(h, [
 		h.submodel({
@@ -103,60 +109,64 @@ const roleCell = (h: H, model: Model, member: MemberRow, canManage: boolean): Ht
 }
 
 const memberRows = (h: H, model: Model, member: MemberRow, inputs: Inputs): ReadonlyArray<Html> => {
-	const canManage = model.isAdmin && !member.isCurrentUser
+	const canEdit = canManage(model) && !member.isCurrentUser
 	const pending = model.pendingRole?.memberId === member.id ? model.pendingRole : null
-	const columnCount = model.isAdmin ? 4 : 3
+	const columnCount = canManage(model) ? 4 : 3
 	const menuId = `member-actions-${member.id}`
 	const row = tableRow(
 		h,
 		[
-			truncatedCell(h, [
-				h.div(
-					[h.Class("flex items-center gap-3")],
-					[
-						personAvatar(h, member.name, member.imageUrl),
-						h.div(
-							[h.Class("min-w-0")],
-							[
-								h.div(
-									[h.Class("flex min-w-0 text-xs font-medium")],
-									[
-										truncatedText(h, { text: member.name }),
-										...(member.isCurrentUser
-											? [
-													h.span(
-														[h.Class("ml-1 shrink-0 text-muted-foreground")],
-														["(you)"],
-													),
-												]
-											: []),
-									],
-								),
-								truncatedText(h, {
-									text: member.identifier,
-									className: "text-xs text-muted-foreground",
-								}),
-							],
-						),
-					],
-				),
+			truncatedTableCell(h, [
+				hstack(h, { gap: "3" }, [
+					personAvatar(h, { name: member.name, imageUrl: member.imageUrl }),
+					h.div(
+						[h.Class("min-w-0")],
+						[
+							hstack(
+								h,
+								{
+									align: "stretch",
+									shrink: true,
+									className: typographyClass({ size: "xs", weight: "medium" }),
+								},
+								[
+									truncatedText(h, { text: member.name }),
+									...(member.isCurrentUser
+										? [
+												h.span(
+													[h.Class("ml-1 shrink-0 text-muted-foreground")],
+													["(you)"],
+												),
+											]
+										: []),
+								],
+							),
+							truncatedText(h, {
+								text: member.identifier,
+								className: typographyClass({ size: "xs", tone: "muted" }),
+							}),
+						],
+					),
+				]),
 			]),
-			roleCell(h, model, member, canManage),
+			roleCell(h, model, member, canEdit),
 			tableCell(
 				h,
 				[
-					h.span(
-						[h.Title(formatRelativeTime(member.createdAtMs, inputs.nowMs))],
-						[formatDateInTimezone(member.createdAtMs, { timeZone: inputs.timeZone })],
-					),
+					timestamp(h, {
+						value: member.createdAtMs,
+						timeZone: inputs.timeZone,
+						nowMs: inputs.nowMs,
+						label: formatDateInTimezone(member.createdAtMs, { timeZone: inputs.timeZone }),
+					}),
 				],
-				cn("text-xs text-muted-foreground", dateAlign(model.isAdmin)),
+				cn(typographyClass({ size: "xs", tone: "muted" }), dateAlign(canManage(model))),
 			),
-			...(model.isAdmin
+			...(canManage(model)
 				? [
 						tableCell(
 							h,
-							canManage
+							canEdit
 								? [
 										rowActionsMenu(h, {
 											slotId: menuId,
@@ -193,44 +203,38 @@ const memberRows = (h: H, model: Model, member: MemberRow, inputs: Inputs): Read
 				tableCell(
 					h,
 					[
-						h.div(
-							[h.Class("flex items-center justify-between gap-4 pl-9")],
-							[
-								h.p(
-									[h.Class("flex items-center gap-2 text-xs text-foreground")],
-									[
-										icon(h, "CircleInfoIcon", {
-											className: "size-3.5 shrink-0 text-primary",
-										}),
-										prompt.question,
-									],
+						hstack(h, { gap: "4", align: "center", justify: "between", className: "pl-9" }, [
+							h.p(
+								[h.Class("flex items-center gap-2 text-xs text-foreground")],
+								[
+									icon(h, "CircleInfoIcon", {
+										className: "size-3.5 shrink-0 text-primary",
+									}),
+									prompt.question,
+								],
+							),
+							hstack(h, { gap: "1.5", className: "shrink-0" }, [
+								button(
+									h,
+									{
+										variant: "ghost",
+										size: "sm",
+										isDisabled: pending._tag === "Saving",
+										attributes: [h.OnClick(Message.ClickedCancelRole())],
+									},
+									["Cancel"],
 								),
-								h.div(
-									[h.Class("flex shrink-0 items-center gap-1.5")],
-									[
-										button(
-											h,
-											{
-												variant: "ghost",
-												size: "sm",
-												isDisabled: model.isRoleSaving,
-												attributes: [h.OnClick(Message.ClickedCancelRole())],
-											},
-											["Cancel"],
-										),
-										button(
-											h,
-											{
-												size: "sm",
-												isLoading: model.isRoleSaving,
-												attributes: [h.OnClick(Message.ClickedConfirmRole())],
-											},
-											[prompt.confirmLabel],
-										),
-									],
+								button(
+									h,
+									{
+										size: "sm",
+										isLoading: pending._tag === "Saving",
+										attributes: [h.OnClick(Message.ClickedConfirmRole())],
+									},
+									[prompt.confirmLabel],
 								),
-							],
-						),
+							]),
+						]),
 					],
 					undefined,
 					[h.Colspan(columnCount)],
@@ -242,23 +246,11 @@ const memberRows = (h: H, model: Model, member: MemberRow, inputs: Inputs): Read
 	]
 }
 
-/** The warm initials tile the sidebar draws, or the member's own uploaded image. */
-const personAvatar = (h: H, seed: string, imageUrl: string): Html =>
-	avatarFallback(
-		h,
-		{
-			className: "size-6 shrink-0",
-			fallbackClassName: `font-medium ${warmAvatarTone(seed)}`,
-			imageUrl,
-		},
-		initialsFrom(seed),
-	)
-
 export const description = "Admins manage billing, keys and members."
 
 /** The tab's primary action, drawn in the settings page header beside the `<h1>`. */
 export const headerActions = Submodel.defineView<Model, Message, Readonly<{}>>((model, _inputs, h) =>
-	model.isAdmin
+	canManage(model)
 		? button(h, { size: "sm", attributes: [h.OnClick(Message.ClickedInvite())] }, [
 				icon(h, "PlusIcon", { attributes: [h.DataAttribute("icon", "inline-start")] }),
 				"Invite member",
@@ -284,14 +276,16 @@ const membersSection = (h: H, model: Model, inputs: Inputs): Html => {
 				tableHeader(h, [
 					tableRow(h, [
 						tableHead(h, ["Member"]),
-						roleHead(h, model.isAdmin),
-						tableHead(h, ["Joined"], cn(COLUMN.date, dateAlign(model.isAdmin))),
-						...(model.isAdmin ? [tableHead(h, [], COLUMN.actions)] : []),
+						roleHead(h, canManage(model)),
+						tableHead(h, ["Joined"], cn(COLUMN.date, dateAlign(canManage(model)))),
+						...(canManage(model) ? [tableHead(h, [], COLUMN.actions)] : []),
 					]),
 				]),
 				tableBody(h, [
-					...(isLoading ? [0, 1, 2].map((index) => skeletonRow(h, model.isAdmin, index)) : []),
-					...rows.flatMap((member) => memberRows(h, model, member, inputs)),
+					...(isLoading
+						? Arr.map([0, 1, 2], (index) => skeletonRow(h, canManage(model), index))
+						: []),
+					...Arr.flatMap(rows, (member) => memberRows(h, model, member, inputs)),
 				]),
 			]),
 			...(data !== null && hasMore(data)
@@ -307,28 +301,27 @@ const invitationRow = (h: H, model: Model, invitation: InvitationRow, inputs: In
 	return tableRow(
 		h,
 		[
-			truncatedCell(h, [
-				h.div(
-					[h.Class("flex items-center gap-3")],
-					[
-						personAvatar(h, invitation.email, ""),
-						truncatedText(h, { text: invitation.email, className: "text-xs" }),
-					],
-				),
+			truncatedTableCell(h, [
+				hstack(h, { gap: "3" }, [
+					personAvatar(h, { name: invitation.email }),
+					truncatedText(h, { text: invitation.email, className: "text-xs" }),
+				]),
 			]),
-			tableCell(h, [roleText(h, invitation.role, model.isAdmin)]),
+			tableCell(h, [roleText(h, invitation.role, canManage(model))]),
 			tableCell(
 				h,
-				// The absolute date, as on Joined above; the age is the tooltip.
+				// The absolute date, as on Joined above; the age is in its hover card.
 				[
-					h.span(
-						[h.Title(formatRelativeTime(invitation.createdAtMs, inputs.nowMs))],
-						[formatDateInTimezone(invitation.createdAtMs, { timeZone: inputs.timeZone })],
-					),
+					timestamp(h, {
+						value: invitation.createdAtMs,
+						timeZone: inputs.timeZone,
+						nowMs: inputs.nowMs,
+						label: formatDateInTimezone(invitation.createdAtMs, { timeZone: inputs.timeZone }),
+					}),
 				],
-				cn("text-xs text-muted-foreground", dateAlign(model.isAdmin)),
+				cn(typographyClass({ size: "xs", tone: "muted" }), dateAlign(canManage(model))),
 			),
-			...(model.isAdmin
+			...(canManage(model)
 				? [
 						tableCell(h, [
 							rowActionsMenu(h, {
@@ -382,14 +375,14 @@ const invitationsSection = (h: H, model: Model, inputs: Inputs): ReadonlyArray<H
 					tableHeader(h, [
 						tableRow(h, [
 							tableHead(h, ["Email"]),
-							roleHead(h, model.isAdmin),
-							tableHead(h, ["Invited"], cn(COLUMN.date, dateAlign(model.isAdmin))),
-							...(model.isAdmin ? [tableHead(h, [], COLUMN.actions)] : []),
+							roleHead(h, canManage(model)),
+							tableHead(h, ["Invited"], cn(COLUMN.date, dateAlign(canManage(model)))),
+							...(canManage(model) ? [tableHead(h, [], COLUMN.actions)] : []),
 						]),
 					]),
 					tableBody(
 						h,
-						data.rows.map((invitation) => invitationRow(h, model, invitation, inputs)),
+						Arr.map(data.rows, (invitation) => invitationRow(h, model, invitation, inputs)),
 					),
 				]),
 				...(hasMore(data)
@@ -425,7 +418,7 @@ const inviteDialog = (h: H, model: Model): Html => {
 		onSubmit: Message.SubmittedInvite(),
 		submitLabel: "Send invitation",
 		isPending: model.isInviting,
-		isSubmitDisabled: model.inviteEmail.value.trim().length === 0,
+		isSubmitDisabled: Str.trim(model.inviteEmail.value).length === 0,
 		fields: [
 			field(h, { state: emailState }, [
 				fieldLabel(h, { ids: EMAIL_IDS, state: emailState }, "Email address"),
@@ -503,13 +496,10 @@ const loadingSkeleton = (h: H): Html =>
 			rows: 3,
 			gap: "3",
 			renderRow: () =>
-				h.div(
-					[h.Class("flex items-center gap-3")],
-					[
-						skeleton(h, "size-8 rounded-full"),
-						h.div([h.Class("space-y-1.5")], [skeleton(h, "h-3.5 w-32"), skeleton(h, "h-3 w-48")]),
-					],
-				),
+				hstack(h, { gap: "3" }, [
+					skeleton(h, "size-8 rounded-full"),
+					h.div([h.Class("space-y-1.5")], [skeleton(h, "h-3.5 w-32"), skeleton(h, "h-3 w-48")]),
+				]),
 		}),
 	])
 
@@ -519,7 +509,7 @@ export const view = Submodel.defineView<Model, Message, Inputs>((model, inputs, 
 		return noOrganization(h, "Select or create an organization to manage members.")
 	return settingsSections(h, [
 		...adminOnlyNotice(h, {
-			isKnownMember: inputs.isKnownMember && !model.isAdmin,
+			isKnownMember: inputs.isKnownMember && !canManage(model),
 			subject: "members",
 			adminName: model.adminName,
 		}),

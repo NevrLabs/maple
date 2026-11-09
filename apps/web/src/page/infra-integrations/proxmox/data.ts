@@ -1,7 +1,7 @@
 import { RawSqlExecuteRequest } from "@maple/domain/http"
 import { formatWarehouseDateTime } from "@maple/query-engine"
 import { Effect } from "effect"
-import { toLoadFailure } from "../../../data/load-failure"
+import { toLoadFailure } from "@maple/views/data/load-failure"
 import { MapleInternalApiClient } from "../../../platform/api-clients"
 import type { ProxmoxBackup, ProxmoxBackupJob, ProxmoxGuest, ProxmoxNode, ProxmoxSnapshot, ProxmoxStorage } from "./model"
 

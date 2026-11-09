@@ -12,12 +12,13 @@ import { scaleBand } from "@tanstack/charts-scales/band"
 import { scaleLinear } from "@tanstack/charts-scales/linear"
 import { controlledSignal } from "@tanstack/charts/interaction/signal"
 import { type InteractiveColorLegendChange, interactiveColorLegend } from "@tanstack/charts/legend"
-import { Option } from "effect"
-import { ChartTooltip } from "../../charts/chart-spec"
-import type { BuiltChart } from "../../charts/definitions/built-chart"
-import { cursorTooltip, MUTED_COLOR_AMOUNT } from "../../charts/definitions/plot-constants"
+import { Option, Array as Arr } from "effect"
+import { ChartTooltip } from "@maple/views/charts/chart-spec"
+import type { BuiltChart } from "@maple/views/charts/definitions/built-chart"
+import { cursorTooltip, MUTED_COLOR_AMOUNT } from "@maple/views/charts/definitions/plot-constants"
 import type { SpikeSpec } from "./spike-spec"
 import { STACK_TOKEN_BY_SERVICE } from "./spike-timeseries-tokens"
+import { nonZeroOr } from "@maple/ui/lib/number"
 
 // `StackedBarSpike`, `StackedBarLegendSpike` and `StackedBarSceneLegendSpike`, definition half.
 
@@ -43,19 +44,16 @@ const colorForOf = (spec: SpikeSpec) => {
 const byBucketOf = (
 	rows: ReadonlyArray<StackedBarSpikeRow>,
 ): ReadonlyMap<string, ReadonlyArray<StackedBarSpikeRow>> =>
-	rows.reduce(
-		(map, row) => map.set(row.bucket, [...(map.get(row.bucket) ?? []), row]),
-		new Map<string, ReadonlyArray<StackedBarSpikeRow>>(),
+	Arr.reduce(rows, new Map<string, ReadonlyArray<StackedBarSpikeRow>>(), (map, row) =>
+		map.set(row.bucket, [...(map.get(row.bucket) ?? []), row]),
 	)
 
 const stackMaxOf = (byBucket: ReadonlyMap<string, ReadonlyArray<StackedBarSpikeRow>>): number =>
-	[...byBucket.values()].reduce(
-		(max, rows) =>
-			Math.max(
-				max,
-				rows.reduce((sum, row) => sum + row.spans, 0),
-			),
-		0,
+	Arr.reduce([...byBucket.values()], 0, (max, rows) =>
+		Math.max(
+			max,
+			Arr.reduce(rows, 0, (sum, row) => sum + row.spans),
+		),
 	)
 
 const scalesOf = (
@@ -96,13 +94,13 @@ const bucketTooltip =
 			return ChartTooltip.Bucket({
 				heading: `${formatBucketLabel(datum.bucket, axisContext, "tooltip")}${datum.partial ? " · partial" : ""}`,
 				highlighted: datum.service,
-				rows: rows.map((row) => ({
+				rows: Arr.map(rows, (row) => ({
 					label: row.service,
 					color: colorFor(row.service),
 					dashed: row.partial,
 					value: formatNumber(row.spans),
 				})),
-				total: formatNumber(rows.reduce((sum, row) => sum + row.spans, 0)),
+				total: formatNumber(Arr.reduce(rows, 0, (sum, row) => sum + row.spans)),
 			})
 		})
 
@@ -152,7 +150,7 @@ export const buildStackedBarSceneSpike =
 		const colorFor = colorForOf({ ...spec, highlighted: null })
 		const axisContext = stackedBarAxisContext(rows)
 		const byBucket = byBucketOf(rows)
-		const visible = STACKED_BAR_SERVICES.filter((service) => !spec.hidden.includes(service))
+		const visible = Arr.filter(STACKED_BAR_SERVICES, (service) => !spec.hidden.includes(service))
 		const definition = defineChart({
 			marks: [
 				barY(rows, {
@@ -167,7 +165,7 @@ export const buildStackedBarSceneSpike =
 			],
 			color: {
 				domain: STACKED_BAR_SERVICES,
-				range: STACKED_BAR_SERVICES.map(colorFor),
+				range: Arr.map(STACKED_BAR_SERVICES, colorFor),
 				legend: interactiveColorLegend({
 					visible: controlledSignal<ReadonlyArray<string>, InteractiveColorLegendChange<string>>(
 						visible,
@@ -177,7 +175,7 @@ export const buildStackedBarSceneSpike =
 					ariaLabel: "Spans by service",
 				}),
 			},
-			scales: scalesOf([...byBucket.keys()], stackMaxOf(byBucket) || 1, axisContext),
+			scales: scalesOf([...byBucket.keys()], nonZeroOr(stackMaxOf(byBucket), 1), axisContext),
 			focus: "nearest",
 			focusRing: false,
 			tooltip: cursorTooltip("pointer"),

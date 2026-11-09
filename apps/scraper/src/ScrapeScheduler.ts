@@ -11,13 +11,15 @@ import {
 	Result,
 	Schedule,
 	Semaphore,
+	Array as Arr,
 } from "effect"
 import { ScrapeResultReport, type InternalScrapeTarget } from "@maple/domain/http"
 import { ScraperEnv } from "./Env"
 import { activeTargets, scrapeDurationMs, scrapesTotal } from "./Metrics"
 import { backoffLogMessage, nextScrapeDelayMs, shouldBackOff, startJitterMs } from "./policy"
 import { ResultReporter } from "./ResultReporter"
-import { Scraper, type SubTargetScrape } from "./Scraper"
+import type { ScrapeFailureReason } from "./ScrapeError"
+import { type ScrapePermit, Scraper, type SubTargetScrape } from "./Scraper"
 import { type TargetGroup, TargetRegistry, targetKey } from "./TargetRegistry"
 
 export interface SchedulerStats {
@@ -35,6 +37,13 @@ export interface ScrapeSchedulerApi {
 }
 
 const STALE_RECONCILES = 3
+
+/**
+ * Scrape permits one org may hold at once out of `total`. All orgs share the
+ * scraper's pool, so without this one org's slow targets could hold every
+ * permit. A fifth of the pool, and at least 2: 2 at the default of 10.
+ */
+export const orgScrapePermits = (total: number): number => Math.max(2, Math.floor(total / 5))
 
 /** Start offset for a new loop. A reference so tests can pin cadence to t=0. */
 export class StartJitter extends Context.Reference<(key: string, baseMs: number) => number>(
@@ -61,6 +70,10 @@ const toReport = (scrape: SubTargetScrape) =>
 interface Backoff {
 	readonly consecutive: number
 	readonly notBefore: number
+	/** The failure that put it here; the same failure again is the same streak. */
+	readonly reason: ScrapeFailureReason
+	/** The URL it failed on; a changed URL is a new endpoint and starts clean. */
+	readonly url: string
 }
 
 /** Per-parent loop state. Target-side backoff is per sub-target; an ingest block is per parent. */
@@ -86,18 +99,24 @@ const nextBackoffs = (
 	baseMs: number,
 	endedAt: number,
 ): ReadonlyMap<string, Backoff> => {
-	const live = new Set(group.map(targetKey))
-	const kept = Array.from(current).filter(([key]) => live.has(key))
-	const scraped = new Set(scrapes.map((scrape) => targetKey(scrape.target)))
-	const updated = scrapes.flatMap((scrape): ReadonlyArray<readonly [string, Backoff]> => {
+	const live = new Set(Arr.map(group, targetKey))
+	const kept = Arr.filter(Array.from(current), ([key]) => live.has(key))
+	const scraped = new Set(Arr.map(scrapes, (scrape) => targetKey(scrape.target)))
+	const updated = Arr.flatMap(scrapes, (scrape): ReadonlyArray<readonly [string, Backoff]> => {
 		const failure = Result.isFailure(scrape.result) ? scrape.result.failure : null
 		if (failure === null || !shouldBackOff(failure) || failure.reason === "delivery_blocked") return []
 		const key = targetKey(scrape.target)
 		const consecutive = current.get(key)?.consecutive ?? 0
 		const delayMs = nextScrapeDelayMs({ baseMs, failure, consecutiveBackoffs: consecutive })
-		return [[key, { consecutive: consecutive + 1, notBefore: endedAt + delayMs }]]
+		const backoff = {
+			consecutive: consecutive + 1,
+			notBefore: endedAt + delayMs,
+			reason: failure.reason,
+			url: scrape.target.url,
+		}
+		return [[key, backoff]]
 	})
-	return new Map([...kept.filter(([key]) => !scraped.has(key)), ...updated])
+	return new Map([...Arr.filter(kept, ([key]) => !scraped.has(key)), ...updated])
 }
 
 export class ScrapeScheduler extends Context.Service<ScrapeScheduler, ScrapeSchedulerApi>()(
@@ -110,7 +129,16 @@ export class ScrapeScheduler extends Context.Service<ScrapeScheduler, ScrapeSche
 			const reporter = yield* ResultReporter
 			const startJitter = yield* StartJitter
 
-			const semaphore = yield* Semaphore.make(env.SCRAPER_CONCURRENCY)
+			const sharedPermits = yield* Semaphore.make(env.SCRAPER_CONCURRENCY)
+			const perOrg = orgScrapePermits(env.SCRAPER_CONCURRENCY)
+			const orgPermits = new Map<string, Semaphore.Semaphore>()
+			// The org's permit first: a scrape queued behind its own org's cap holds no shared one.
+			const permitFor = (orgId: string) =>
+				Effect.sync((): ScrapePermit => {
+					const org = orgPermits.get(orgId) ?? Semaphore.makeUnsafe(perOrg)
+					orgPermits.set(orgId, org)
+					return (effect) => org.withPermits(1)(sharedPermits.withPermits(1)(effect))
+				})
 			const startedAt = yield* Clock.currentTimeMillis
 			const activeLoops = yield* Ref.make(0)
 
@@ -146,18 +174,36 @@ export class ScrapeScheduler extends Context.Service<ScrapeScheduler, ScrapeSche
 					const baseMs = group[0].scrapeIntervalSeconds * 1000
 					const cycleStart = yield* Clock.currentTimeMillis
 					const before = yield* Ref.get(state)
+					// A backoff earned on another URL neither delays nor quiets the new one.
+					const current = new Map(
+						Arr.filter(Array.from(before.backoffs), ([key, backoff]) =>
+							Arr.some(
+								group,
+								(target) => targetKey(target) === key && target.url === backoff.url,
+							),
+						),
+					)
 
 					const notBefore = (target: InternalScrapeTarget) =>
-						before.backoffs.get(targetKey(target))?.notBefore ?? 0
-					const [firstDue, ...restDue] = group.filter((target) => notBefore(target) <= cycleStart)
+						current.get(targetKey(target))?.notBefore ?? 0
+					const [firstDue, ...restDue] = Arr.filter(
+						group,
+						(target) => notBefore(target) <= cycleStart,
+					)
+					// A parent's sub-targets all belong to its org.
+					const permit = yield* permitFor(group[0].orgId)
 					const outcome =
 						firstDue === undefined
 							? { scrapes: [], deliveryFailure: null }
-							: yield* scraper.scrapeCycle([firstDue, ...restDue], semaphore)
+							: yield* scraper.scrapeCycle(
+									[firstDue, ...restDue],
+									permit,
+									new Map(Array.from(current, ([key, backoff]) => [key, backoff.reason])),
+								)
 					yield* Effect.forEach(outcome.scrapes, record, { discard: true })
 					const endedAt = yield* Clock.currentTimeMillis
 
-					const backoffs = nextBackoffs(before.backoffs, group, outcome.scrapes, baseMs, endedAt)
+					const backoffs = nextBackoffs(current, group, outcome.scrapes, baseMs, endedAt)
 					const blocked =
 						outcome.deliveryFailure !== null && shouldBackOff(outcome.deliveryFailure)
 							? outcome.deliveryFailure
@@ -180,7 +226,7 @@ export class ScrapeScheduler extends Context.Service<ScrapeScheduler, ScrapeSche
 					// earlier of the tick and the first backoff end, so a branch discovered
 					// meanwhile still runs within one interval.
 					const nextTick = cycleStart + baseMs
-					const healthy = group.some((target) => !backoffs.has(targetKey(target)))
+					const healthy = Arr.some(group, (target) => !backoffs.has(targetKey(target)))
 					return Option.some(
 						healthy
 							? nextTick
@@ -232,9 +278,10 @@ export class ScrapeScheduler extends Context.Service<ScrapeScheduler, ScrapeSche
 						{ discard: true },
 					)
 					const running = yield* FiberMap.size(loops)
-					const subTargets = Array.from(desired.values()).reduce(
-						(total, group) => total + group.length,
+					const subTargets = Arr.reduce(
+						Array.from(desired.values()),
 						0,
+						(total, group) => total + group.length,
 					)
 					yield* Ref.set(activeLoops, subTargets)
 					yield* Metric.update(activeTargets, subTargets)

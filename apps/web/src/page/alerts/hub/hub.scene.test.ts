@@ -1,6 +1,15 @@
+import * as Policy from "@maple/domain/policy"
 import { OrgId } from "@maple/domain"
-import { AlertDestinationId, AlertRuleId } from "@maple/domain/http"
-import { Result, Schema } from "effect"
+import {
+	AlertDeliveryError,
+	AlertDeliveryAuthError,
+	AlertDeliveryRejectedError,
+	AlertDeliveryTargetMissingError,
+	AlertDestinationId,
+	AlertIncidentId,
+	AlertRuleId,
+} from "@maple/domain/http"
+import { Result, Schema, Array as Arr } from "effect"
 import {
 	click,
 	expect as expectView,
@@ -12,21 +21,24 @@ import {
 	withViewInputs,
 } from "foldkit/scene"
 import { describe, expect, test } from "vitest"
-import { toLoadFailure } from "../../../data/load-failure"
-import * as Menu from "../../../ui/menu"
+import { encodePublicId, PublicIdPrefixes, publicError, V2AlertIncident } from "@maple/domain/http/v2"
+import { toLoadFailure } from "@maple/views/data/load-failure"
+import * as Menu from "@maple/views/ui/menu"
 import { PageOutMessage, type PageContext } from "../../contract"
 import { destinationRow, incidentRow, NOW, ORG, ruleId, ruleRow, stateRow } from "../shared/test-rows"
 import { Message } from "./message"
 import type { Model } from "./model"
 import { init, ruleMenuId, update } from "./update"
-import { view as pageView } from "./view"
+import { breadcrumbs, view as pageView } from "./view"
+
+const ENGINEER = Policy.grantsOf(["org:engineer"])
 
 const orgId = Schema.decodeSync(OrgId)(ORG)
 const context: PageContext = { orgId, pinnedNamespace: null, timeZone: "UTC" }
 const pageUpdate = (model: Model, message: Message) => update(model, message, context)
 const view = withViewInputs(pageView, { context })()
 const names = (commands: ReadonlyArray<{ readonly name: string }> | undefined) =>
-	(commands ?? []).map(({ name }) => name)
+	Arr.map(commands ?? [], ({ name }) => name)
 const RULE_2 = Schema.decodeSync(AlertRuleId)(ruleId(2))
 const DESTINATION = Schema.decodeSync(AlertDestinationId)(destinationRow().id)
 
@@ -34,20 +46,31 @@ const entered = (search: Model["search"] = {}) => init({ _tag: "Alerts", search 
 
 /** The four shapes and the clock have answered: rule 2 is firing, rule 4 is off. */
 const loaded = (search: Model["search"] = {}): Model =>
-	[
-		Message.ReadClock({ nowMs: NOW }),
-		Message.UpdatedRules({
-			orgId: ORG,
-			rows: [ruleRow(1), ruleRow(2, { name: "Payment p95 latency" }), ruleRow(4, { enabled: false })],
-		}),
-		Message.UpdatedRuleStates({
-			orgId: ORG,
-			rows: [stateRow(1), stateRow(2, { last_status: "breached", last_value: 1840 })],
-		}),
-		Message.UpdatedIncidents({ orgId: ORG, rows: [incidentRow({ rule_name: "Payment p95 latency" })] }),
-		Message.UpdatedDestinations({ orgId: ORG, rows: [destinationRow()] }),
-		Message.CompletedFetchSession({ orgId: ORG, isAdmin: true }),
-	].reduce((model, message) => pageUpdate(model, message).model, entered(search).model)
+	Arr.reduce(
+		[
+			Message.ReadClock({ nowMs: NOW }),
+			Message.UpdatedRules({
+				orgId: ORG,
+				rows: [
+					ruleRow(1),
+					ruleRow(2, { name: "Payment p95 latency" }),
+					ruleRow(4, { enabled: false }),
+				],
+			}),
+			Message.UpdatedRuleStates({
+				orgId: ORG,
+				rows: [stateRow(1), stateRow(2, { last_status: "breached", last_value: 1840 })],
+			}),
+			Message.UpdatedIncidents({
+				orgId: ORG,
+				rows: [incidentRow({ rule_name: "Payment p95 latency" })],
+			}),
+			Message.UpdatedDestinations({ orgId: ORG, rows: [destinationRow()] }),
+			Message.CompletedFetchSession({ orgId: ORG, grants: ENGINEER }),
+		],
+		entered(search).model,
+		(model, message) => pageUpdate(model, message).model,
+	)
 
 describe("alerts hub", () => {
 	test("entry reads the clock, the session and the deliveries list; Routing adds its own read", () => {
@@ -73,11 +96,150 @@ describe("alerts hub", () => {
 			{ update: pageUpdate, view },
 			given(loaded()),
 			expectView(text("1 firing")).toExist(),
+			expectView(role("link", { name: /^Inbox\s*1$/ })).toExist(),
 			expectView(role("link", { name: "P95 latency 1.84s on all" })).toHaveAttr(
 				"href",
 				"/alerts/incidents/0199a003-0000-7000-8000-000000000001",
 			),
 		)
+	})
+
+	test("the section rail marks the open section, which titles the page and its crumbs", () => {
+		scene(
+			{ update: pageUpdate, view },
+			given(loaded({ tab: "rules" })),
+			expectView(role("link", { name: /^Rules\s*3$/ })).toHaveAttr("aria-current", "page"),
+			expectView(role("link", { name: /^Inbox\s*1$/ })).not.toHaveAttr("aria-current", "page"),
+			expectView(role("heading", { name: "Rules" })).toExist(),
+		)
+		// The anomaly filters belong to the Inbox: its row keeps them, every other row drops them.
+		scene(
+			{ update: pageUpdate, view },
+			given(loaded({ tab: "inbox", signal: "anomaly", serviceName: "checkout" })),
+			expectView(role("link", { name: /^Inbox\s*1$/ })).toHaveAttr(
+				"href",
+				"/alerts?tab=inbox&serviceName=checkout&signal=anomaly",
+			),
+			expectView(role("link", { name: "Silences" })).toHaveAttr(
+				"href",
+				"/alerts?tab=silences&serviceName=checkout",
+			),
+		)
+		expect(breadcrumbs(loaded({ tab: "silences" }))).toEqual([
+			{ label: "Alerts", href: "/alerts" },
+			{ label: "Silences" },
+		])
+	})
+
+	const v2Incident = Schema.decodeSync(V2AlertIncident)({
+		id: encodePublicId(PublicIdPrefixes.alertIncident, incidentRow().id),
+		object: "alert_incident",
+		rule_id: encodePublicId(PublicIdPrefixes.alertRule, ruleId(2)),
+		rule_name: "Payment p95 latency",
+		group_key: null,
+		signal_type: "p95_latency",
+		severity: "critical",
+		peak_severity: null,
+		status: "open",
+		comparator: "gt",
+		threshold: 1500,
+		threshold_upper: null,
+		first_triggered_at: new Date(NOW).toISOString(),
+		last_triggered_at: new Date(NOW).toISOString(),
+		resolved_at: null,
+		last_observed_value: 1840,
+		last_sample_count: 10,
+		dedupe_key: "d",
+		last_delivered_event_type: null,
+		last_notified_at: null,
+		hold_reason: null,
+		held_since: null,
+		acknowledged_at: null,
+		acknowledged_by: null,
+		acknowledged_via: null,
+		error_issue_id: null,
+		escalation: null,
+		silence_id: null,
+		silenced_at: null,
+	})
+
+	test("the inbox acknowledges a firing incident and moves it out of the firing count", () => {
+		const incidentId = Schema.decodeSync(AlertIncidentId)(incidentRow().id)
+		const acknowledged = pageUpdate(
+			loaded(),
+			Message.UpdatedIncidents({
+				orgId: ORG,
+				rows: [
+					incidentRow({
+						rule_name: "Payment p95 latency",
+						acknowledged_at: new Date(NOW - 60_000).toISOString(),
+						acknowledged_by_name: "Dana Kim",
+						acknowledged_via: "slack",
+					}),
+				],
+			}),
+		).model
+		scene(
+			{ update: pageUpdate, view },
+			given(acknowledged),
+			expectView(text("0 firing")).toExist(),
+			// The tab's red badge counts only what nobody is on yet.
+			expectView(role("link", { name: "Inbox" })).toExist(),
+			expectView(text(/1 acknowledged/)).toExist(),
+			expectView(text(/^Acknowledged by Dana Kim ·/)).toExist(),
+			expectView(role("button", { name: "Unacknowledge P95 latency 1.84s on all" })).toExist(),
+		)
+		const clicked = pageUpdate(
+			loaded(),
+			Message.ClickedAcknowledgeIncident({ incidentId, acknowledged: true }),
+		)
+		expect(names(clicked.commands)).toEqual(["AcknowledgeAlertIncident"])
+		expect(clicked.model.acknowledgingIncidentIds).toEqual([incidentId])
+		const twice = pageUpdate(
+			clicked.model,
+			Message.ClickedAcknowledgeIncident({ incidentId, acknowledged: true }),
+		)
+		expect(twice.commands ?? []).toHaveLength(0)
+		const failed = pageUpdate(
+			clicked.model,
+			Message.CompletedAcknowledgeIncident({
+				incidentId,
+				acknowledged: true,
+				result: Result.fail(toLoadFailure(new Error("boom"))),
+			}),
+		)
+		expect(failed.model.acknowledgingIncidentIds).toEqual([])
+		// Success patches the synced row from the answer, so the row moves before the sync catches up.
+		const answered = Schema.decodeSync(V2AlertIncident)({
+			...Schema.encodeSync(V2AlertIncident)(v2Incident),
+			acknowledged_at: new Date(NOW - 60_000).toISOString(),
+			acknowledged_by: { user_id: null, name: "Dana Kim" },
+			acknowledged_via: "web",
+		})
+		scene(
+			{ update: pageUpdate, view },
+			given(clicked.model),
+			expectView(text(/1 acknowledged/)).not.toExist(),
+		)
+		const succeeded = pageUpdate(
+			clicked.model,
+			Message.CompletedAcknowledgeIncident({
+				incidentId,
+				acknowledged: true,
+				result: Result.succeed(answered),
+			}),
+		)
+		expect(succeeded.model.acknowledgingIncidentIds).toEqual([])
+		scene(
+			{ update: pageUpdate, view },
+			given(succeeded.model),
+			expectView(text(/1 acknowledged/)).toExist(),
+			expectView(text(/^Acknowledged by Dana Kim ·/)).toExist(),
+		)
+		expect(failed.outMessage).toMatchObject({
+			_tag: "RequestedToast",
+			title: "Couldn't acknowledge the incident",
+		})
 	})
 
 	test("a live sync that stops before its first answer shows the failure with a retry, not a skeleton", () => {
@@ -108,10 +270,14 @@ describe("alerts hub", () => {
 	})
 
 	test("an org with only uptime monitors gets the empty state once their incidents are resolved", () => {
-		const noRules = [
-			Message.UpdatedRules({ orgId: ORG, rows: [] }),
-			Message.UpdatedDestinations({ orgId: ORG, rows: [] }),
-		].reduce((model, message) => pageUpdate(model, message).model, loaded())
+		const noRules = Arr.reduce(
+			[
+				Message.UpdatedRules({ orgId: ORG, rows: [] }),
+				Message.UpdatedDestinations({ orgId: ORG, rows: [] }),
+			],
+			loaded(),
+			(model, message) => pageUpdate(model, message).model,
+		)
 		const withIncident = (status: "open" | "resolved") =>
 			pageUpdate(
 				noRules,
@@ -207,6 +373,56 @@ describe("alerts hub", () => {
 		)
 	})
 
+	test("a failed destination test names the provider's HTTP status when it gave one", () => {
+		// The v2 client hands the page the wire envelope, not the server's class instance.
+		const rejected = (error: AlertDeliveryRejectedError) =>
+			toLoadFailure(Schema.encodeSync(publicError(AlertDeliveryRejectedError))(error))
+		const failed = (error: AlertDeliveryError) =>
+			toLoadFailure(Schema.encodeSync(publicError(AlertDeliveryError))(error))
+		const authFailed = (error: AlertDeliveryAuthError) =>
+			toLoadFailure(Schema.encodeSync(publicError(AlertDeliveryAuthError))(error))
+		const targetMissing = (error: AlertDeliveryTargetMissingError) =>
+			toLoadFailure(Schema.encodeSync(publicError(AlertDeliveryTargetMissingError))(error))
+		const toastFor = (failure: ReturnType<typeof toLoadFailure>) =>
+			pageUpdate(
+				loaded({ tab: "routing" }),
+				Message.CompletedTestDestination({
+					destinationId: DESTINATION,
+					result: Result.fail(failure),
+				}),
+			).outMessage
+		const toastSaying = (description: string) =>
+			PageOutMessage.RequestedToast({
+				type: "error",
+				title: "Couldn't send test notification",
+				description,
+			})
+
+		expect(
+			toastFor(rejected(new AlertDeliveryRejectedError({ message: "x", providerStatus: 405 }))),
+		).toEqual(toastSaying("The alert provider rejected the request (HTTP 405)"))
+		expect(toastFor(failed(new AlertDeliveryError({ message: "x", providerStatus: 502 })))).toEqual(
+			toastSaying("The alert provider failed (HTTP 502)"),
+		)
+		expect(
+			toastFor(authFailed(new AlertDeliveryAuthError({ message: "x", providerStatus: 401 }))),
+		).toEqual(
+			toastSaying("The destination rejected Maple's credentials. Reconnect it in settings. (HTTP 401)"),
+		)
+		expect(
+			toastFor(
+				targetMissing(new AlertDeliveryTargetMissingError({ message: "x", providerStatus: 404 })),
+			),
+		).toEqual(
+			toastSaying(
+				"The destination no longer exists or is not reachable. Update it in settings. (HTTP 404)",
+			),
+		)
+		expect(toastFor(rejected(new AlertDeliveryRejectedError({ message: "x" })))).toEqual(
+			toastSaying("The alert provider rejected the request."),
+		)
+	})
+
 	test("a chat destination's routing row names its connector, not a generic Chat", () => {
 		const chat = destinationRow({
 			type: "chat",
@@ -233,7 +449,7 @@ describe("alerts hub", () => {
 				rows: [ruleRow(2, { tags_json: ["team:payments", "tier:p1"] })],
 			}),
 		).model
-		const menus = ["team:payments", "tier:p1"].map((tag) => ruleMenuId(RULE_2, tag))
+		const menus = Arr.map(["team:payments", "tier:p1"], (tag) => ruleMenuId(RULE_2, tag))
 		expect(new Set(menus).size).toBe(2)
 		const opened = pageUpdate(
 			tagged,

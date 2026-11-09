@@ -1,8 +1,8 @@
 import type { OrgId } from "@maple/domain"
-import { Option } from "effect"
+import { Option, Array as Arr } from "effect"
 import { Command, type Update } from "foldkit"
-import * as Keyed from "../../data/keyed"
-import { requestKey } from "../../data/request-key"
+import * as Keyed from "@maple/views/data/keyed"
+import { requestKey } from "@maple/views/data/request-key"
 import { resolveWindow } from "../../data/time-range"
 import type { Resources } from "../../platform/resources"
 import { AUTOCOMPLETE_LOOKUPS } from "../../page/kit/autocomplete-lookups"
@@ -68,8 +68,10 @@ const withCommands = (step: Return, commands: ReadonlyArray<Cmd>): Return => ({
 
 /** `AutocompleteValuesProvider` (not lazy): every lookup over the current window. */
 const requestLookups = (model: Model, orgId: OrgId): Return =>
-	AUTOCOMPLETE_LOOKUPS.reduce<Return>(
-		(step, lookup) => {
+	Arr.reduce(
+		AUTOCOMPLETE_LOOKUPS,
+		{ model, commands: [] } satisfies Return,
+		(step: Return, lookup): Return => {
 			const key = requestKey(orgId, `autocomplete.${lookup}`, step.model.window)
 			const slot = step.model.autocomplete[lookup] ?? Keyed.idle()
 			return Option.match(Keyed.request(slot, key, "Load"), {
@@ -87,7 +89,6 @@ const requestLookups = (model: Model, orgId: OrgId): Return =>
 					),
 			})
 		},
-		{ model, commands: [] },
 	)
 
 const requestMetrics = (model: Model, orgId: OrgId, mode: Keyed.RequestMode): Return => {
@@ -148,7 +149,7 @@ const reloaded = (model: Model): Return => {
 
 /** `runQueries`: the drafts and window as they are now, or the no-enabled-queries error. */
 const ran = (model: Model): Return => {
-	if (!model.queries.some((query) => query.enabled))
+	if (!Arr.some(model.queries, (query) => query.enabled))
 		return { model: { ...model, noQueriesError: NO_ENABLED_QUERIES, submitted: null } }
 	const submitted: SubmittedInput = {
 		startTime: model.window.startTime,
@@ -162,10 +163,15 @@ const ran = (model: Model): Return => {
 }
 
 const cloned = (model: Model, queryId: string, id: string): Return => {
-	const source = model.queries.find((query) => query.id === queryId)
-	return source === undefined
-		? { model }
-		: { model: { ...model, queries: relabelQueries([...model.queries, { ...source, id }]) } }
+	return Option.match(
+		Arr.findFirst(model.queries, (query) => query.id === queryId),
+		{
+			onNone: (): Return => ({ model }),
+			onSome: (source): Return => ({
+				model: { ...model, queries: relabelQueries([...model.queries, { ...source, id }]) },
+			}),
+		},
+	)
 }
 
 const signedIn = (model: Model, orgId: OrgId): Return => {
@@ -219,7 +225,7 @@ export const update = (model: Model, message: Message): Return =>
 			commands: [
 				CreateFormula({
 					index: model.formulas.length,
-					queryNames: model.queries.map((query) => query.name),
+					queryNames: Arr.map(model.queries, (query) => query.name),
 				}),
 			],
 		}),
@@ -230,7 +236,7 @@ export const update = (model: Model, message: Message): Return =>
 		ClickedRemoveFormula: ({ formulaId }) => ({
 			model: {
 				...model,
-				formulas: relabelFormulas(model.formulas.filter((formula) => formula.id !== formulaId)),
+				formulas: relabelFormulas(Arr.filter(model.formulas, (formula) => formula.id !== formulaId)),
 			},
 		}),
 		ClickedRun: () => ran(model),
@@ -246,7 +252,7 @@ export const update = (model: Model, message: Message): Return =>
 		ChangedFormulaText: ({ formulaId, field, value }) => ({
 			model: {
 				...model,
-				formulas: model.formulas.map((formula) =>
+				formulas: Arr.map(model.formulas, (formula) =>
 					formula.id === formulaId ? { ...formula, [field]: value } : formula,
 				),
 			},
@@ -262,6 +268,6 @@ const removedQuery = (model: Model, queryId: string): Return =>
 		: {
 				model: {
 					...model,
-					queries: relabelQueries(model.queries.filter((query) => query.id !== queryId)),
+					queries: relabelQueries(Arr.filter(model.queries, (query) => query.id !== queryId)),
 				},
 			}

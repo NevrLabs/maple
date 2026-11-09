@@ -1,5 +1,5 @@
 import { describe, it } from "@effect/vitest"
-import { ConfigProvider, Effect, Layer, Option, Ref, Schema } from "effect"
+import { ConfigProvider, Effect, Layer, Option, Ref, Schema, Array as Arr } from "effect"
 import { strict as assert } from "node:assert"
 import { makeRecordingTracer, spansNamed } from "@maple/backend/testing/recording-tracer"
 import { OrgId, UserId } from "@maple/domain"
@@ -71,17 +71,16 @@ const COUNT_ROWS = [
 	traceRow({ bucket: "2026-01-01 00:10:00", count: 5 }),
 ]
 
-const countRequest = (reducer: QueryEngineEvaluateRequest["reducer"]): AlertEvaluateRequest =>
-	({
-		startTime: "2026-01-01 00:00:00",
-		endTime: "2026-01-01 00:15:00",
-		source: {
-			kind: "spec",
-			query: { kind: "timeseries", source: "traces", metric: "count", bucketSeconds: 300 },
-		},
-		reducer,
-		sampleCountStrategy: "trace_count",
-	}) as AlertEvaluateRequest
+const countRequest = (reducer: QueryEngineEvaluateRequest["reducer"]): AlertEvaluateRequest => ({
+	startTime: "2026-01-01 00:00:00",
+	endTime: "2026-01-01 00:15:00",
+	source: {
+		kind: "spec",
+		query: { kind: "timeseries", source: "traces", metric: "count", bucketSeconds: 300 },
+	},
+	reducer,
+	sampleCountStrategy: "trace_count",
+})
 
 const evalStub = (rows: ReadonlyArray<Record<string, unknown>>) =>
 	({
@@ -120,7 +119,7 @@ describe("makeQueryEngineEvaluate (shared alert-lowering core)", () => {
 			const result = yield* makeQueryEngineEvaluate(evalStub(rows))(tenant, {
 				...req,
 				source: { kind: "spec", query: { ...req.source.query, groupBy: ["service"] } },
-			} as AlertEvaluateRequest)
+			})
 			assert.deepStrictEqual(result, [
 				{ groupKey: "a", value: 6, sampleCount: 6, hasData: true },
 				{ groupKey: "b", value: 3, sampleCount: 3, hasData: true },
@@ -151,7 +150,7 @@ describe("makeQueryEngineEvaluateSeries (per-bucket preview core)", () => {
 
 			// The reduced evaluate path must agree with the sum of the series.
 			const reduced = yield* makeQueryEngineEvaluate(evalStub(COUNT_ROWS))(tenant, countRequest("sum"))
-			const total = series.reduce((sum, obs) => sum + (obs.value ?? 0), 0)
+			const total = Arr.reduce(series, 0, (sum, obs) => sum + (obs.value ?? 0))
 			assert.equal(reduced[0]?.value, total)
 		}),
 	)
@@ -167,7 +166,7 @@ describe("makeQueryEngineEvaluateSeries (per-bucket preview core)", () => {
 			const series = yield* makeQueryEngineEvaluateSeries(evalStub(rows))(tenant, {
 				...req,
 				source: { kind: "spec", query: { ...req.source.query, groupBy: ["service"] } },
-			} as AlertEvaluateRequest)
+			})
 			assert.deepStrictEqual(series, [
 				{ bucket: "2026-01-01T00:00:00.000Z", groupKey: "a", value: 2, sampleCount: 2 },
 				{ bucket: "2026-01-01T00:00:00.000Z", groupKey: "b", value: 3, sampleCount: 3 },
@@ -303,7 +302,7 @@ const makeRecordingEdge = (
 	},
 	invalidate: () => Effect.void,
 	rawGetDetailed: () => Effect.succeed({ status: "miss" as const, value: Option.none(), readMs: 0 }),
-	rawGet: () => Effect.succeed(Option.none()),
+	rawGet: () => Effect.succeedNone,
 	rawPut: () => Effect.void,
 	rawDelete: () => Effect.void,
 })
@@ -334,7 +333,7 @@ describe("QueryEngineService.cachedDirect TTL", () => {
 			yield* qe.cachedDirect(tenant, "serviceOverview", { a: 1 }, Effect.succeed([{ ok: true }]))
 
 			assert.deepStrictEqual(
-				calls.map(({ bucket, ttlSeconds }) => ({ bucket, ttlSeconds })),
+				Arr.map(calls, ({ bucket, ttlSeconds }) => ({ bucket, ttlSeconds })),
 				[
 					{ bucket: "qe-direct", ttlSeconds: 3600 },
 					{ bucket: "qe-direct", ttlSeconds: 15 },
@@ -434,7 +433,7 @@ describe("QueryEngineService.cachedDirect TTL", () => {
 			assert.strictEqual(calls[0]?.key, calls[1]?.key)
 			assert.match(calls[0]?.key ?? "", /^direct:v2:/)
 			assert.deepStrictEqual(
-				calls.map(({ ttlSeconds }) => ttlSeconds),
+				Arr.map(calls, ({ ttlSeconds }) => ttlSeconds),
 				[300, 300],
 			)
 		}).pipe(Effect.provide(layer))
@@ -494,7 +493,7 @@ describe("QueryEngineService.evaluate", () => {
 			assert.strictEqual(yield* Ref.get(queries), 2)
 			// The "Query Engine Cache" dashboard reads this span; every evaluation is now a miss.
 			assert.deepStrictEqual(
-				spansNamed(spans, "QueryEngineService.cachedEvaluate").map((span) => [
+				Arr.map(spansNamed(spans, "QueryEngineService.cachedEvaluate"), (span) => [
 					span.attributes.get("cache.hit"),
 					span.attributes.get("cache.path"),
 				]),

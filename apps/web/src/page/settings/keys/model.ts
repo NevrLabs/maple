@@ -1,9 +1,10 @@
+import * as Policy from "@maple/domain/policy"
 import { V2ApiKey } from "@maple/domain/http/v2"
 import { Schema } from "effect"
-import * as CopyButton from "../../../ui/copy-button"
-import * as Dialog from "../../../ui/dialog"
-import * as Menu from "../../../ui/menu"
-import * as Select from "../../../ui/select"
+import * as CopyButton from "@maple/views/ui/copy-button"
+import * as Dialog from "@maple/views/ui/dialog"
+import * as Menu from "@maple/views/ui/menu"
+import * as Select from "@maple/views/ui/select"
 import * as CreateDialog from "./create-dialog"
 import * as RollDialog from "./roll-dialog"
 
@@ -16,7 +17,7 @@ export const KeyStatusFilter = Schema.Literals(["active", "expired", "revoked"])
 export type KeyStatusFilter = typeof KeyStatusFilter.Type
 
 export const Model = Schema.Struct({
-	isAdmin: Schema.Boolean,
+	grants: Schema.Array(Policy.PermissionName),
 	userId: Schema.NullOr(Schema.String),
 	/** `useApiKeysList()`: `null` until the shape's first answer. */
 	apiKeys: Schema.NullOr(Schema.Array(V2ApiKey)),
@@ -37,3 +38,7 @@ export const Model = Schema.Struct({
 	isScopesOpen: Schema.Boolean,
 })
 export type Model = typeof Model.Type
+
+/** The viewer may manage every API key, not only their own (`api_keys:manage`). */
+export const canManage = (model: Pick<Model, "grants">): boolean =>
+	Policy.has(model.grants, "api_keys:manage")

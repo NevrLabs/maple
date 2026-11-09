@@ -1,19 +1,18 @@
-import { cn } from "@maple/ui/lib/utils"
-import { badgeVariants } from "@maple/ui/styles/ui/badge"
-import { eyebrowVariants } from "@maple/ui/styles/ui/eyebrow"
-import { fieldErrorStyles } from "@maple/ui/styles/ui/field"
 import type { Html, HtmlBuilder } from "foldkit/html"
-import { button } from "../../../ui/button"
-import * as Checkbox from "../../../ui/checkbox"
-import { eyebrow } from "../../../ui/eyebrow"
-import * as TabsView from "../../../ui/tabs-view"
-import { textarea } from "../../../ui/textarea"
+import { alert, alertDescription, alertTitle } from "@maple/views/ui/alert"
+import { button } from "@maple/views/ui/button"
+import * as Checkbox from "@maple/views/ui/checkbox"
+import { badge } from "@maple/views/ui/display"
+import { eyebrow } from "@maple/views/ui/eyebrow"
+import { fieldErrorText } from "@maple/views/ui/field"
+import * as TabsView from "@maple/views/ui/tabs-view"
+import { textarea } from "@maple/views/ui/textarea"
 import { textInput } from "../../kit/query-builder/parts"
 import { queryPanelView } from "../../kit/query-builder/view"
 import type { FormulaDraft, QueryDraft } from "./editor-state"
 import { toPanelType } from "../kit/chart-registry"
 import type { EditorState } from "./editor-state"
-import { isNote, isProductEventsFunnel, validationErrorOf } from "./lowering"
+import { isNote, isProductEventsFunnel, queryCapabilitiesOf, validationErrorOf } from "./lowering"
 import { listPanel } from "./view-list"
 import { funnelPanel, pathsPanel } from "./view-panels"
 import { autoIntervalLabel, isSqlSource, showsSourceToggle } from "./update"
@@ -21,6 +20,9 @@ import { rawSqlEditor } from "./view-sql"
 import { Message } from "./message"
 import { baseValuesOf } from "./where-inputs"
 import type { Model } from "./model"
+import { typography } from "@maple/views/ui/typography"
+import { hstack } from "@maple/views/ui/stack"
+import { Array as Arr } from "effect"
 
 // The widget editor's query side: the source toggle, one `QueryPanel` per query,
 // `FormulaPanel`s, and the toolbar.
@@ -51,8 +53,8 @@ const queryPanel = (
 			metricSearch: model.metricSearch,
 			metricBreakdownKeys:
 				query.dataSource === "metrics"
-					? (model.metricKeys[`${query.metricName}::${query.metricType}`] ?? [])
-					: [],
+					? model.metricKeys[`${query.metricName}::${query.metricType}`]
+					: undefined,
 			autocompleteValues: baseValuesOf(model, query),
 		},
 		toParentMessage: (message) => Message.GotQueryPanelMessage({ message }),
@@ -63,81 +65,61 @@ const formulaPanel = (h: H, formula: FormulaDraft): Html =>
 	h.div(
 		[h.Class("border border-dashed border-l-2 border-l-chart-3 p-3 space-y-2")],
 		[
-			h.div(
-				[h.Class("flex items-center justify-between gap-2")],
-				[
-					h.div(
-						[h.Class("flex items-center gap-2")],
-						[
-							...Checkbox.view(h, {
-								model: { isChecked: !formula.hidden },
-								toParentMessage: () =>
-									Message.ToggledFormulaVisible({ formulaId: formula.id }),
-								id: `formula-visible-${formula.id}-root`,
-								inputId: `formula-visible-${formula.id}`,
-							}),
-							h.span(
-								[
-									h.Class(
-										cn(
-											badgeVariants({
-												variant: "outline",
-												className:
-													"font-mono text-xs bg-chart-3/10 border-chart-3/30",
-											}),
-										),
-									),
-									h.DataAttribute("slot", "badge"),
-								],
-								[formula.name],
-							),
-						],
-					),
-					button(
+			hstack(h, { gap: "2", justify: "between" }, [
+				hstack(h, { gap: "2" }, [
+					...Checkbox.view(h, {
+						model: { isChecked: !formula.hidden },
+						toParentMessage: () => Message.ToggledFormulaVisible({ formulaId: formula.id }),
+						id: `formula-visible-${formula.id}-root`,
+						inputId: `formula-visible-${formula.id}`,
+					}),
+					badge(
 						h,
 						{
-							variant: "ghost",
-							size: "xs",
-							attributes: [h.OnClick(Message.ClickedRemoveFormula({ formulaId: formula.id }))],
+							variant: "outline",
+							className: "font-mono text-xs bg-chart-3/10 border-chart-3/30",
 						},
-						["Remove"],
+						[formula.name],
 					),
-				],
-			),
-			h.div(
-				[h.Class("flex items-center gap-2")],
-				[
-					textInput(
-						h,
-						`formula-expression-${formula.id}`,
-						formula.expression,
-						"A / B, (A + B) / 2",
-						"font-mono flex-1",
-						(value) =>
-							Message.ChangedFormulaText({ formulaId: formula.id, field: "expression", value }),
-					),
-					textInput(h, `formula-legend-${formula.id}`, formula.legend, "Legend", "w-48", (value) =>
-						Message.ChangedFormulaText({ formulaId: formula.id, field: "legend", value }),
-					),
-				],
-			),
+				]),
+				button(
+					h,
+					{
+						variant: "ghost",
+						size: "xs",
+						attributes: [h.OnClick(Message.ClickedRemoveFormula({ formulaId: formula.id }))],
+					},
+					["Remove"],
+				),
+			]),
+			hstack(h, { gap: "2" }, [
+				textInput(
+					h,
+					`formula-expression-${formula.id}`,
+					formula.expression,
+					"A / B, (A + B) / 2",
+					"font-mono flex-1",
+					(value) =>
+						Message.ChangedFormulaText({ formulaId: formula.id, field: "expression", value }),
+				),
+				textInput(h, `formula-legend-${formula.id}`, formula.legend, "Legend", "w-48", (value) =>
+					Message.ChangedFormulaText({ formulaId: formula.id, field: "legend", value }),
+				),
+			]),
 		],
 	)
 
 const sourceToggle = (h: H, model: Model): Html =>
-	h.div(
-		[h.Class("flex items-center gap-3")],
-		[
-			eyebrow(h, {}, ["Source"]),
-			h.submodel({
-				slotId: "widget-editor-source",
-				model: model.sourceTabs,
-				view: TabsView.view,
-				viewInputs: { labels: ["Query Builder", "Raw SQL"], panel: () => undefined },
-				toParentMessage: (message) => Message.GotSourceTabsMessage({ message }),
-			}),
-		],
-	)
+	hstack(h, { gap: "3" }, [
+		eyebrow(h, {}, ["Source"]),
+		h.submodel({
+			slotId: "widget-editor-source",
+			model: model.sourceTabs,
+			view: TabsView.view,
+			viewInputs: { labels: ["Query builder", "Raw SQL"], panel: () => undefined },
+			toParentMessage: (message) => Message.GotSourceTabsMessage({ message }),
+		}),
+	])
 
 const MARKDOWN_PLACEHOLDER = "## Runbook\n\n- Check the error rate panel first\n- Escalate to #oncall"
 
@@ -146,26 +128,20 @@ const markdownEditor = (h: H, content: string): Html =>
 	h.div(
 		[h.Class("space-y-2")],
 		[
-			h.div(
-				[h.Class("flex items-baseline justify-between")],
-				[
-					h.p([h.Class(eyebrowVariants({})), h.DataAttribute("slot", "eyebrow")], ["Content"]),
-					h.p(
-						[h.Class("text-2xs text-muted-foreground")],
-						[
-							"Markdown: ",
-							h.code([], ["# heading"]),
-							", ",
-							h.code([], ["**bold**"]),
-							", ",
-							h.code([], ["- list"]),
-							",",
-							" ",
-							h.code([], ["[link](url)"]),
-						],
-					),
-				],
-			),
+			hstack(h, { align: "baseline", justify: "between" }, [
+				eyebrow(h, { as: "p" }, ["Content"]),
+				typography(h, { size: "2xs", tone: "muted", as: "p" }, [
+					"Markdown: ",
+					h.code([], ["# heading"]),
+					", ",
+					h.code([], ["**bold**"]),
+					", ",
+					h.code([], ["- list"]),
+					",",
+					" ",
+					h.code([], ["[link](url)"]),
+				]),
+			]),
 			textarea(h, {
 				id: "widget-editor-markdown",
 				className: "min-h-56 font-mono text-xs leading-relaxed",
@@ -197,26 +173,35 @@ export const queryEditor = (h: H, model: Model, timeZone: string): Html => {
 					: [
 							...(error === null
 								? []
-								: [
-										h.div(
-											[
-												h.Class(cn(fieldErrorStyles, "font-medium")),
-												h.DataAttribute("slot", "field-error"),
-											],
-											[error],
-										),
-									]),
+								: [fieldErrorText(h, { className: "font-medium" }, error)]),
 							...(panel === "list"
 								? listPanel(h, model, state)
 								: panel === "paths"
 									? pathsPanel(h, model, state)
 									: isProductEventsFunnel(state)
 										? funnelPanel(h, model, state)
-										: queryPanels(h, model, state, timeZone)),
+										: state.queryFixed
+											? [fixedQueryNote(h), runPreviewButton(h, false)]
+											: queryPanels(h, model, state, timeZone)),
 						]),
 		],
 	)
 }
+
+/** Applies the staged query and display edits (row limit, aggregate) to the preview. */
+const runPreviewButton = (h: H, isDisabled: boolean): Html =>
+	button(h, { size: "sm", isDisabled, attributes: [h.OnClick(Message.ClickedRunPreview())] }, [
+		"Run preview",
+	])
+
+/** A preset whose query has no builder equivalent: it stays as stored, only its display edits. */
+const fixedQueryNote = (h: H): Html =>
+	alert(h, { variant: "info", size: "sm", role: "status" }, [
+		alertTitle(h, ["This preset's query can't be edited"]),
+		alertDescription(h, [
+			"Change its display options here, or recreate it from the query builder or Raw SQL.",
+		]),
+	])
 
 /** The query panels, formula panels and the toolbar under them. */
 const queryPanels = (h: H, model: Model, state: EditorState, timeZone: string): ReadonlyArray<Html> => {
@@ -224,7 +209,7 @@ const queryPanels = (h: H, model: Model, state: EditorState, timeZone: string): 
 	return [
 		h.div(
 			[h.Class("space-y-3")],
-			state.queries.map((query, index) =>
+			Arr.map(state.queries, (query, index) =>
 				queryPanel(
 					h,
 					model,
@@ -240,50 +225,49 @@ const queryPanels = (h: H, model: Model, state: EditorState, timeZone: string): 
 			: [
 					h.div(
 						[h.Class("space-y-3")],
-						state.formulas.map((formula) => formulaPanel(h, formula)),
+						Arr.map(state.formulas, (formula) => formulaPanel(h, formula)),
 					),
 				]),
-		h.div(
-			[h.Class("flex items-center gap-3")],
-			[
-				button(
-					h,
-					{
-						variant: "outline",
-						size: "sm",
-						attributes: [h.OnClick(Message.ClickedAddQuery())],
-					},
-					["+ Query"],
+		hstack(h, { gap: "3", wrap: true }, [
+			button(
+				h,
+				{
+					variant: "outline",
+					size: "sm",
+					attributes: [h.OnClick(Message.ClickedAddQuery())],
+				},
+				["+ Query"],
+			),
+			// Breakdown rows, grouped tables and histograms drop formulas, so none is offered there.
+			...(queryCapabilitiesOf(state).formulas
+				? [
+						button(
+							h,
+							{
+								variant: "outline",
+								size: "sm",
+								attributes: [h.OnClick(Message.ClickedAddFormula())],
+							},
+							["+ Formula"],
+						),
+					]
+				: []),
+			runPreviewButton(h, error !== null),
+			// Two text nodes once there are formulas.
+			typography(h, { size: "2xs", tone: "muted", className: "ml-auto" }, [
+				Arr.join(
+					Arr.map(state.queries, (query) => query.name),
+					", ",
 				),
-				button(
-					h,
-					{
-						variant: "outline",
-						size: "sm",
-						attributes: [h.OnClick(Message.ClickedAddFormula())],
-					},
-					["+ Formula"],
-				),
-				button(
-					h,
-					{
-						size: "sm",
-						isDisabled: error !== null,
-						attributes: [h.OnClick(Message.ClickedRunPreview())],
-					},
-					["Run preview"],
-				),
-				// Two text nodes once there are formulas.
-				h.span(
-					[h.Class("text-2xs text-muted-foreground ml-auto")],
-					[
-						state.queries.map((query) => query.name).join(", "),
-						...(state.formulas.length === 0
-							? []
-							: [`, ${state.formulas.map((formula) => formula.name).join(", ")}`]),
-					],
-				),
-			],
-		),
+				...(state.formulas.length === 0
+					? []
+					: [
+							`, ${Arr.join(
+								Arr.map(state.formulas, (formula) => formula.name),
+								", ",
+							)}`,
+						]),
+			]),
+		]),
 	]
 }

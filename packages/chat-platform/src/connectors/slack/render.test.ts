@@ -2,9 +2,14 @@
  * Blocks → a Slack body. The limits are the interesting part: Slack rejects a whole message over
  * one oversized field, so a turn that overruns one must still be a turn.
  */
-import { Option } from "effect"
+import { Option, Array as Arr, String as Str } from "effect"
 import { describe, expect, it } from "vitest"
-import { decodeChatActionControlId, encodeChatActionToken, type ChatActionToken } from "../../action-token"
+import {
+	decodeChatActionControlId,
+	decodeChatAlertAckControlId,
+	encodeChatActionToken,
+	type ChatActionToken,
+} from "../../action-token"
 import type { ChatAlertBlock, ChatBlock } from "../../render/blocks"
 import {
 	APPROVE_ACTION,
@@ -60,7 +65,7 @@ describe("slack message bodies", () => {
 	})
 
 	it("clamps a section rather than letting Slack refuse the message", () => {
-		const payload = renderSlackMessage([prose("x".repeat(MAX_SECTION_CHARS * 2))])
+		const payload = renderSlackMessage([prose(Str.repeat(MAX_SECTION_CHARS * 2)("x"))])
 		const block = payload.blocks?.[0]
 		expect(block?.type === "section" && block.text.text.length).toBe(MAX_SECTION_CHARS)
 	})
@@ -119,9 +124,9 @@ describe("charts", () => {
 
 	it("drops an over-long image URL rather than sending a message Slack rejects", () => {
 		const payload = renderSlackMessage([
-			chart(`https://app.maple.dev/${"x".repeat(MAX_IMAGE_URL_CHARS)}`),
+			chart(`https://app.maple.dev/${Str.repeat(MAX_IMAGE_URL_CHARS)("x")}`),
 		])
-		expect(payload.blocks?.some((block) => block.type === "image")).toBe(false)
+		expect(payload.blocks && Arr.some(payload.blocks, (block) => block.type === "image")).toBe(false)
 	})
 })
 
@@ -159,8 +164,10 @@ describe("approvals", () => {
 		// The host decodes the clicked button's value alone; `action_id` never reaches it.
 		const payload = renderSlackMessage([approval(encodeChatActionToken("call_1"))])
 		const actions = payload.blocks?.[1]
-		const values = actions?.type === "actions" ? actions.elements.map((button) => button.value) : []
-		expect(values.map((value) => Option.getOrUndefined(decodeChatActionControlId(value ?? "")))).toEqual([
+		const values = actions?.type === "actions" ? Arr.map(actions.elements, (button) => button.value) : []
+		expect(
+			Arr.map(values, (value) => Option.getOrUndefined(decodeChatActionControlId(value ?? ""))),
+		).toEqual([
 			{ decision: "approve", toolCallId: "call_1" },
 			{ decision: "deny", toolCallId: "call_1" },
 		])
@@ -183,7 +190,7 @@ describe("approvals", () => {
 				},
 			},
 		])
-		expect(payload.blocks?.some((block) => block.type === "actions")).toBe(false)
+		expect(payload.blocks && Arr.some(payload.blocks, (block) => block.type === "actions")).toBe(false)
 		expect(payload.blocks?.[0]).toMatchObject({
 			type: "section",
 			text: {
@@ -197,8 +204,8 @@ describe("approvals", () => {
 	})
 
 	it("says so rather than sending buttons Slack would reject the message over", () => {
-		const payload = renderSlackMessage([approval("x".repeat(MAX_BUTTON_VALUE_CHARS + 1))])
-		expect(payload.blocks?.some((block) => block.type === "actions")).toBe(false)
+		const payload = renderSlackMessage([approval(Str.repeat(MAX_BUTTON_VALUE_CHARS + 1)("x"))])
+		expect(payload.blocks && Arr.some(payload.blocks, (block) => block.type === "actions")).toBe(false)
 		expect(payload.text).toContain("Approve create_dashboard?")
 	})
 })
@@ -258,25 +265,24 @@ describe("the rest of the vocabulary", () => {
 		expect(attachment?.color).toBe("#e01e5a")
 		expect(attachment?.fallback).toContain("High error rate — Triggered")
 		const blocks = attachment?.blocks ?? []
-		const section = blocks.find((block) => block.type === "section")
+		const section = Option.getOrUndefined(Arr.findFirst(blocks, (block) => block.type === "section"))
 		// Markdown is converted, and each field reads as its label over its value.
 		expect(section?.type === "section" && section.text.text).toBe(
 			"*Error Rate* is *49.7%* — above the 5% threshold, measured over the last 5m.",
 		)
-		expect(section?.type === "section" && section.fields?.map((field) => field.text)).toEqual([
-			"*Severity*\n\u{1F534} Critical",
-			"*Group*\n`electric-sync`",
-		])
-		// Only the primary link is styled; every link button carries its url.
-		const actions = blocks.find((block) => block.type === "actions")
 		expect(
-			actions?.type === "actions" && actions.elements.map((button) => [button.url, button.style]),
+			section?.type === "section" && section.fields && Arr.map(section.fields, (field) => field.text),
+		).toEqual(["*Severity*\n\u{1F534} Critical", "*Group*\n`electric-sync`"])
+		// Only the primary link is styled; every link button carries its url.
+		const actions = Option.getOrUndefined(Arr.findFirst(blocks, (block) => block.type === "actions"))
+		expect(
+			actions?.type === "actions" && Arr.map(actions.elements, (button) => [button.url, button.style]),
 		).toEqual([
 			["https://app.maple.dev/alerts/1", "primary"],
 			["https://app.maple.dev/alerts/rule_1", undefined],
 		])
 		// The sent time is a Slack date token in seconds, with an ISO fallback.
-		const context = blocks.find((block) => block.type === "context")
+		const context = Option.getOrUndefined(Arr.findFirst(blocks, (block) => block.type === "context"))
 		expect(context?.type === "context" && context.elements[0]?.text).toContain(
 			"<!date^1700000000^{date_short_pretty} at {time}|2023-11-14T22:13:20.000Z>",
 		)
@@ -285,7 +291,7 @@ describe("the rest of the vocabulary", () => {
 	it("puts an alert's chart between the summary and the buttons", () => {
 		const blocks = renderSlackMessage([alert({ imageUrl: "https://charts.maple.dev/c.png" })])
 			.attachments?.[0]?.blocks
-		expect(blocks?.map((block) => block.type)).toEqual([
+		expect(blocks && Arr.map(blocks, (block) => block.type)).toEqual([
 			"header",
 			"section",
 			"image",
@@ -298,5 +304,61 @@ describe("the rest of the vocabulary", () => {
 		const section = renderSlackMessage([alert({ summary: "<!channel> look" })]).attachments?.[0]
 			?.blocks[1]
 		expect(section?.type === "section" && section.text.text).toBe("&lt;!channel&gt; look")
+	})
+
+	describe("an alert's acknowledge control", () => {
+		const INCIDENT = "00000000-0000-4000-8000-0000000000a1"
+		const ackButton = (block: ChatAlertBlock) => {
+			const blocks = renderSlackMessage([block]).attachments?.[0]?.blocks ?? []
+			const actions = Option.getOrUndefined(Arr.findFirst(blocks, (b) => b.type === "actions"))
+			return {
+				blocks,
+				button:
+					actions?.type === "actions"
+						? Option.getOrUndefined(Arr.findFirst(actions.elements, (b) => b.value !== undefined))
+						: undefined,
+			}
+		}
+
+		it("offers Acknowledge on an unacknowledged incident, carrying a control the host can read", () => {
+			const { blocks, button } = ackButton(
+				alert({ acknowledge: { incidentId: INCIDENT, acknowledgedBy: null } }),
+			)
+			expect(button?.text.text).toBe("Acknowledge")
+			expect(button?.url).toBeUndefined()
+			expect(Option.getOrUndefined(decodeChatAlertAckControlId(button?.value ?? ""))).toEqual({
+				action: "acknowledge",
+				incidentId: INCIDENT,
+			})
+			const contexts = Arr.filter(blocks, (block) => block.type === "context")
+			expect(
+				Arr.some(
+					contexts,
+					(block) =>
+						block.type === "context" &&
+						Arr.some(block.elements, (element) => Str.includes("Acknowledged")(element.text)),
+				),
+			).toBe(false)
+		})
+
+		it("shows who acknowledged and offers Unacknowledge", () => {
+			const { blocks, button } = ackButton(
+				alert({ acknowledge: { incidentId: INCIDENT, acknowledgedBy: "sam_*ops*" } }),
+			)
+			expect(button?.text.text).toBe("Unacknowledge")
+			expect(Option.getOrUndefined(decodeChatAlertAckControlId(button?.value ?? ""))?.action).toBe(
+				"unacknowledge",
+			)
+			const texts = Arr.flatMap(blocks, (block) =>
+				block.type === "context" ? Arr.map(block.elements, (element) => element.text) : [],
+			)
+			expect(
+				Arr.some(texts, (text) => Str.includes("Acknowledged by")(text) && Str.includes("sam")(text)),
+			).toBe(true)
+		})
+
+		it("renders no ack button on a card without the control", () => {
+			expect(ackButton(alert()).button).toBeUndefined()
+		})
 	})
 })

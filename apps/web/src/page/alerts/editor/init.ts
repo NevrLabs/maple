@@ -1,16 +1,22 @@
 import { Command } from "foldkit"
-import * as Chart from "../../../charts/chart"
-import { LoadChartRuntime } from "../../../charts/chart-runtime"
-import * as Keyed from "../../../data/keyed"
+import * as Chart from "@maple/views/charts/chart"
+import { LoadChartRuntime } from "@maple/views/charts/chart-runtime"
+import * as Keyed from "@maple/views/data/keyed"
 import type { AppRoute } from "../../../route"
-import * as Dialog from "../../../ui/dialog"
-import * as Tooltip from "../../../ui/tooltip"
+import * as Dialog from "@maple/views/ui/dialog"
+import * as Tooltip from "@maple/views/ui/tooltip"
 import type { PageContext, PageReturn } from "../../contract"
 import * as QueryPanel from "../../kit/query-builder/panel"
 import * as TimeRangePicker from "../../kit/time-range-picker"
 import * as DestinationDialog from "../destination/dialog"
 import * as ChatConnect from "../shared/chat-connect"
-import { FetchEditorConnectors, GenerateDraftId, ReadEditorClock, ReadEditorIsAdmin } from "./command"
+import {
+	FetchEditorChains,
+	FetchEditorConnectors,
+	GenerateDraftId,
+	ReadEditorClock,
+	ReadEditorGrants,
+} from "./command"
 import { Message } from "./message"
 import type { Model } from "./model"
 
@@ -37,14 +43,22 @@ export const init = (route: CreateRoute, _context: PageContext): PageReturn<Mode
 		isRulesLoadFailed: false,
 		sourceDashboards: null,
 		isDashboardsLoadFailed: false,
-		isAdmin: false,
+		grants: [],
 		isDefaultDestinationApplied: false,
+		autoDestinationId: null,
 		connectors: null,
+		escalationChains: null,
+		isEscalationChainsFailed: false,
 		autocompleteWindow: null,
 		previewPreset: DEFAULT_PREVIEW_PRESET,
 		previewWindow: null,
 		traceFacets: Keyed.idle(),
 		autocomplete: {},
+		metricSearch: "",
+		metricRequested: null,
+		metricOptions: null,
+		metricKeys: {},
+		metricKeysRequested: [],
 		preview: Keyed.idle(),
 		savedPreview: Keyed.idle(),
 		dryRun: null,
@@ -66,6 +80,7 @@ export const init = (route: CreateRoute, _context: PageContext): PageReturn<Mode
 		issuesTooltip: Tooltip.init("alert-rule-issues"),
 		chatConnect: ChatConnect.init(),
 		chatConnectMenuId: null,
+		destinationTier: "warning",
 		brokenLogos: [],
 		timePicker: TimeRangePicker.init("alert-rule-preview-range"),
 		chart: Chart.init(),
@@ -75,8 +90,9 @@ export const init = (route: CreateRoute, _context: PageContext): PageReturn<Mode
 	commands: [
 		GenerateDraftId(),
 		ReadEditorClock(),
-		ReadEditorIsAdmin(),
+		ReadEditorGrants(),
 		FetchEditorConnectors(),
+		FetchEditorChains(),
 		Command.mapMessage(LoadChartRuntime(), (message) =>
 			message._tag === "CompletedLoadChartRuntime"
 				? Message.CompletedLoadChartRuntime()

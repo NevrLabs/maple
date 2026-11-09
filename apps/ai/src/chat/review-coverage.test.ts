@@ -6,6 +6,7 @@ import { renderFollowUp, renderIgnoredPaths } from "@maple/backend/services/pr-r
 import { assert, describe, it } from "vitest"
 import { renderChangedFiles, renderFileDiffs } from "../mcp/tools/pull-request"
 import { makeReviewCoverage, unreadRefusal } from "./review-coverage"
+import { Array as Arr } from "effect"
 
 const file = (path: string): PullRequestFile => ({
 	path,
@@ -17,8 +18,9 @@ const file = (path: string): PullRequestFile => ({
 })
 
 const FILES = [file("src/a.ts"), file("src/b.ts"), file("src/a.test.ts"), file("docs/a.md")]
-const listing = renderChangedFiles("octo/shop", 7, FILES).content[0]!.text
-const diffs = (...paths: Array<string>) => renderFileDiffs("octo/shop", 7, FILES, paths).content[0]!.text
+const listing = Arr.getUnsafe(renderChangedFiles("octo/shop", 7, FILES).content, 0).text
+const diffs = (...paths: Array<string>) =>
+	Arr.getUnsafe(renderFileDiffs("octo/shop", 7, FILES, paths).content, 0).text
 
 describe("makeReviewCoverage", () => {
 	it("owes nothing before the file list is read", () => {
@@ -56,16 +58,19 @@ describe("makeReviewCoverage", () => {
 			changes: { paths: ["src/b.ts"], rewritten: false },
 			open: [],
 		})
-		const coverage = makeReviewCoverage(["Review pull request #7.", ...followUp].join("\n"))
+		const coverage = makeReviewCoverage(Arr.join(["Review pull request #7.", ...followUp], "\n"))
 		coverage.observe("pr_changed_files", listing)
 		assert.deepEqual(coverage.unread(), ["src/b.ts"])
 
 		const nothing = makeReviewCoverage(
-			renderFollowUp({
-				previousSha: "abcdef1234",
-				changes: { paths: [], rewritten: false },
-				open: [],
-			}).join("\n"),
+			Arr.join(
+				renderFollowUp({
+					previousSha: "abcdef1234",
+					changes: { paths: [], rewritten: false },
+					open: [],
+				}),
+				"\n",
+			),
 		)
 		nothing.observe("pr_changed_files", listing)
 		assert.deepEqual(nothing.unread(), [])
@@ -74,15 +79,18 @@ describe("makeReviewCoverage", () => {
 
 	it("owes the pass after an unchecked fix every file, whatever changed since", () => {
 		const coverage = makeReviewCoverage(
-			[
-				"Review pull request #7.",
-				...renderFollowUp({
-					previousSha: "abcdef1234",
-					changes: { paths: ["src/b.ts"], rewritten: false },
-					open: [],
-					recheck: true,
-				}),
-			].join("\n"),
+			Arr.join(
+				[
+					"Review pull request #7.",
+					...renderFollowUp({
+						previousSha: "abcdef1234",
+						changes: { paths: ["src/b.ts"], rewritten: false },
+						open: [],
+						recheck: true,
+					}),
+				],
+				"\n",
+			),
 		)
 		coverage.observe("pr_changed_files", listing)
 		assert.lengthOf(coverage.unread(), 3)

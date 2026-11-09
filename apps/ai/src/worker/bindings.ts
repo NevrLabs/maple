@@ -11,7 +11,7 @@
  */
 import { MapleDb, parseMapleDeployment } from "@maple/infra/cloudflare"
 import * as Cloudflare from "@alchemy.run/cloudflare"
-import { RuntimeContext } from "alchemy/RuntimeContext"
+import { dischargeRuntimeContext } from "@maple/backend/platform/alchemy-runtime"
 import { Stage } from "alchemy/Stage"
 import { Effect, Layer, Option } from "effect"
 import { securityAuditWorkflowControl } from "../security-audit/workflow-control"
@@ -52,11 +52,6 @@ export const bindAiClients = Effect.gen(function* () {
 
 type AiBindingClients = Effect.Success<typeof bindAiClients>
 
-/** Discharge alchemy's phantom color, the way alchemy's own runtime helpers do. */
-const runtime = <A, E>(effect: Effect.Effect<A, E, RuntimeContext>): Effect.Effect<A, E> =>
-	// oxlint-disable-next-line effecttsgo/strict-effect-provide
-	Effect.provide(effect, RuntimeContext.phantom)
-
 /**
  * The AI Gateway Workers AI calls route through. The logical id is the api's, unchanged: the
  * gateway's Cloudflare id derives from it, so renaming it mints a new gateway and abandons its logs.
@@ -71,14 +66,16 @@ const AiGateway = Cloudflare.AI.Gateway("maple-api-ai")
  * is either on the env or not, and the others read none and call Workers AI directly.
  */
 const bindWorkersAiGateway = Effect.gen(function* () {
-	if (!globalThis.__ALCHEMY_RUNTIME__ && parseMapleDeployment(yield* Stage).stage.kind !== "prd") {
-		return Option.none()
+	if (!globalThis.__ALCHEMY_RUNTIME__) {
+		const stage = yield* Stage
+		if (parseMapleDeployment(stage).stage.kind !== "prd") return Option.none()
 	}
 	const client = yield* Cloudflare.AI.QueryGateway(AiGateway)
 	if (!globalThis.__ALCHEMY_RUNTIME__) return Option.none()
-	const raw = yield* runtime(client.raw)
+	const raw = yield* dischargeRuntimeContext(client.raw)
 	if (!isWorkersAiBinding(raw)) return Option.none()
-	return Option.some(viaGateway(raw, yield* runtime(client.id)))
+	const id = yield* dischargeRuntimeContext(client.id)
+	return Option.some(viaGateway(raw, id))
 })
 
 /**
@@ -98,7 +95,7 @@ export const AiBindingsLive = Layer.mergeAll(
 
 const limiter = (client: Cloudflare.Workers.RateLimitClient): RateLimiter => ({
 	limit: (key) =>
-		runtime(client.limit({ key })).pipe(
+		dischargeRuntimeContext(client.limit({ key })).pipe(
 			Effect.mapError(
 				(error) =>
 					new RateLimitBindingError({

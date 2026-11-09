@@ -1,3 +1,4 @@
+import * as Policy from "@maple/domain/policy"
 import {
 	BillingCustomer,
 	CloudflareIntegrationStatus,
@@ -15,10 +16,10 @@ import {
 	V2ScrapeTarget,
 } from "@maple/domain/http/v2"
 import { Schema } from "effect"
-import { KeyedSchema } from "../../data/keyed"
-import { LoadFailure } from "../../data/load-failure"
+import { KeyedSchema } from "@maple/views/data/keyed"
+import { LoadFailure } from "@maple/views/data/load-failure"
 import { IntegrationsSearch } from "../../route/search"
-import * as Dialog from "../../ui/dialog"
+import * as Dialog from "@maple/views/ui/dialog"
 import { ChatCardModel } from "./chat"
 import { CloudflareCardModel } from "./cloudflare"
 import { GithubCardModel } from "./github"
@@ -58,7 +59,7 @@ export const Model = Schema.Struct({
 	/** `useMapleCustomer` (the settings nav's Data platform gate under Clerk). */
 	customer: keyed(BillingCustomer),
 	/** `useIsOrgAdmin()`: the session's roles (`false` until it loads under Clerk). */
-	isAdmin: Schema.Boolean,
+	grants: Schema.Array(Policy.PermissionName),
 	/** The OAuth popup flow of the page's integration (`IntegrationConnectProvider`). */
 	connect: ConnectModel,
 	/** The page's disconnect confirmation and its in-flight flag (one integration shows at a time). */
@@ -74,3 +75,7 @@ export const Model = Schema.Struct({
 	supabaseCard: SupabaseCardModel,
 })
 export type Model = typeof Model.Type
+
+/** The viewer may connect, disconnect and change integrations (`integrations:manage`). */
+export const canManage = (model: Pick<Model, "grants">): boolean =>
+	Policy.has(model.grants, "integrations:manage")

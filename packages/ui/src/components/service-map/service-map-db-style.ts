@@ -1,4 +1,5 @@
 import { HYPERDRIVE_DB_NAMESPACE } from "@maple/domain/tinybird/db-query-shape-sql"
+import { String as Str } from "effect"
 
 // Framework-free half of `service-map-db.tsx`: colors, labels and an icon KEY per
 // db system. The React module maps keys to icon components; other renderers
@@ -76,7 +77,7 @@ function categoryOf(system: string): DbCategory {
  * category label always agree.
  */
 export function getDbStyle(system: string | undefined): DbStyle {
-	const s = (system ?? "").trim().toLowerCase()
+	const s = Str.toLowerCase(Str.trim(system ?? ""))
 
 	switch (s) {
 		case "postgresql":
@@ -85,7 +86,7 @@ export function getDbStyle(system: string | undefined): DbStyle {
 				category: "database",
 				icon: "postgres",
 				label: "PostgreSQL",
-				color: "oklch(0.6 0.12 255)",
+				color: "var(--color-brand-postgresql)",
 				branded: true,
 			}
 		case "mysql":
@@ -94,7 +95,7 @@ export function getDbStyle(system: string | undefined): DbStyle {
 				category: "database",
 				icon: "mysql",
 				label: s === "mariadb" ? "MariaDB" : "MySQL",
-				color: "oklch(0.62 0.1 215)",
+				color: s === "mariadb" ? "var(--color-brand-mariadb)" : "var(--color-brand-mysql)",
 				branded: true,
 			}
 		case "clickhouse":
@@ -102,7 +103,7 @@ export function getDbStyle(system: string | undefined): DbStyle {
 				category: "database",
 				icon: "clickhouse",
 				label: "ClickHouse",
-				color: "oklch(0.8 0.16 95)",
+				color: "var(--color-brand-clickhouse)",
 				branded: true,
 			}
 		case "mongodb":
@@ -110,7 +111,7 @@ export function getDbStyle(system: string | undefined): DbStyle {
 				category: "database",
 				icon: "mongodb",
 				label: "MongoDB",
-				color: "oklch(0.66 0.16 150)",
+				color: "var(--color-brand-mongodb)",
 				branded: true,
 			}
 		case "redis":
@@ -118,7 +119,7 @@ export function getDbStyle(system: string | undefined): DbStyle {
 				category: "cache",
 				icon: "redis",
 				label: "Redis",
-				color: "oklch(0.58 0.2 25)",
+				color: "var(--color-brand-redis)",
 				branded: true,
 			}
 		case "tinybird":
@@ -130,7 +131,7 @@ export function getDbStyle(system: string | undefined): DbStyle {
 				category: "database",
 				icon: "database",
 				label: "Tinybird",
-				color: "oklch(0.82 0.19 155)",
+				color: "var(--color-brand-tinybird)",
 				branded: false,
 			}
 	}
@@ -215,7 +216,7 @@ export function resolvePlanetScaleDbStyle(
 	}
 }
 
-/** Append an alpha channel to an `oklch(L C H)` color string. */
+/** `color` at `alpha` opacity; any CSS colour, a `var(--token)` included. */
 export function withAlpha(color: string, alpha: number): string {
-	return color.replace(/\)\s*$/, ` / ${alpha})`)
+	return `color-mix(in oklab, ${color} ${alpha * 100}%, transparent)`
 }

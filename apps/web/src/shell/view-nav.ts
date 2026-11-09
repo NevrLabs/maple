@@ -1,10 +1,9 @@
 import { isClerkAuthEnabled } from "../lib/services/common/auth-mode"
-import { ROW_LANE } from "@maple/ui/styles/ui/list-row"
-import { Option } from "effect"
+import { Option, Array as Arr, String as Str } from "effect"
 import type { InfraSurfaceLiteral } from "@maple/domain/http"
 import { AsyncData } from "foldkit"
 import type { Html, HtmlBuilder } from "foldkit/html"
-import { icon, iconColor } from "../ui/icon"
+import { icon, iconColor } from "@maple/views/ui/icon"
 import {
 	sidebarGroup,
 	sidebarGroupContent,
@@ -15,7 +14,7 @@ import {
 	sidebarMenuSub,
 	sidebarMenuSubButton,
 	sidebarMenuSubItem,
-} from "../ui/sidebar"
+} from "@maple/views/ui/sidebar"
 import type { PinnedDashboardRow } from "./dashboards-shape"
 import { Menu, Message } from "./message"
 import { type Model, type ShellClerk, shellProbe, shellSurfaces } from "./model"
@@ -31,7 +30,8 @@ import {
 	navPreview,
 	partitionSubItems,
 } from "./nav"
-import { ACTIVE_RAIL, GROUP_LABEL, NO_TIP, navBadge, type RailTip, triggerFor } from "./view-sidebar"
+import { GROUP_LABEL, NO_TIP, navBadge, type RailTip, triggerFor } from "./view-sidebar"
+import { typography } from "@maple/views/ui/typography"
 
 /**
  * `useOrganizationFeatureFlags`: self-hosted turns every rollout on; a Clerk org reads its public
@@ -73,12 +73,12 @@ export const surfacesOf = (model: Model): ReadonlySet<NavSurface> | null => {
 }
 
 const activeSubHrefOf = (subItems: ReadonlyArray<NavSubItem>, currentPath: string): string | undefined =>
-	subItems.reduce<{ href: string; length: number } | undefined>((best, sub) => {
+	Arr.reduce<NavSubItem, { href: string; length: number } | undefined>(subItems, undefined, (best, sub) => {
 		const matched = matchSubItem(currentPath, sub)
 		return matched !== undefined && (best === undefined || matched.length > best.length)
 			? { href: sub.href, length: matched.length }
 			: best
-	}, undefined)?.href
+	})?.href
 // ROWS
 
 const collapsedSectionRow = (h: HtmlBuilder<Message>, model: Model, item: NavItem, isActive: boolean): Html =>
@@ -86,7 +86,7 @@ const collapsedSectionRow = (h: HtmlBuilder<Message>, model: Model, item: NavIte
 		sidebarMenuButton(
 			h,
 			{
-				className: ACTIVE_RAIL,
+				rail: "active",
 				isActive,
 				slot: "dropdown-menu-trigger",
 				attributes: triggerFor(h, model, Menu.NavSection({ title: item.title })),
@@ -100,7 +100,7 @@ const subList = (h: HtmlBuilder<Message>, subItems: ReadonlyArray<NavSubItem>, c
 	return sidebarMenuSub(
 		h,
 		"mx-0 ms-4 translate-x-0 gap-0 border-l-0 px-0 py-0",
-		subItems.map((sub) =>
+		Arr.map(subItems, (sub) =>
 			sidebarMenuSubItem(
 				h,
 				sub.href === activeSubHref
@@ -155,7 +155,7 @@ const navRow = (
 		sidebarMenuButton(
 			h,
 			{
-				className: isOpen ? ROW_LANE : ACTIVE_RAIL,
+				rail: isOpen ? "lane" : "active",
 				isActive,
 				link: { href: item.href, currentPath },
 				hasTooltip: true,
@@ -174,7 +174,7 @@ const navRow = (
 									),
 								],
 								[
-									...preview.glyphs.flatMap((sub) =>
+									...Arr.flatMap(preview.glyphs, (sub) =>
 										sub.icon === undefined
 											? []
 											: [
@@ -214,27 +214,29 @@ export const pinnedGroup = (
 		model.dashboards,
 		(): ReadonlyArray<PinnedDashboardRow> => [],
 	)
-	const pinned = dashboards.filter((dashboard) => model.dashboardFavorites.includes(dashboard.id))
+	const pinned = Arr.filter(dashboards, (dashboard) => model.dashboardFavorites.includes(dashboard.id))
 	const visible = pinned.slice(0, MAX_PINNED)
 	if (!AsyncData.isSuccess(model.dashboards) || visible.length === 0) return []
 	const overflow = pinned.length - visible.length
-	const activeDashboardId = currentPath.match(/^\/dashboards\/([^/]+)/)?.[1]
+	const activeDashboardId = Option.flatMap(Str.match(/^\/dashboards\/([^/]+)/)(currentPath), (match) =>
+		Option.fromUndefinedOr(match[1]),
+	)
 	return [
 		sidebarGroup(h, "group-data-[collapsible=icon]:hidden", [
 			sidebarGroupLabel(h, GROUP_LABEL, [
 				h.span([h.Class("flex-1")], ["Pinned dashboards"]),
-				h.span([h.Class("font-normal tabular-nums")], [String(pinned.length)]),
+				typography(h, { weight: "normal", numeric: true }, [String(pinned.length)]),
 			]),
 			sidebarGroupContent(h, [
 				sidebarMenu(h, undefined, [
-					...visible.map((dashboard) =>
+					...Arr.map(visible, (dashboard) =>
 						sidebarMenuItem(h, undefined, [
 							sidebarMenuButton(
 								h,
 								{
 									size: "sm",
-									className: ACTIVE_RAIL,
-									isActive: activeDashboardId === dashboard.id,
+									rail: "active",
+									isActive: Option.contains(activeDashboardId, dashboard.id),
 									link: {
 										href: `/dashboards/${encodeURIComponent(dashboard.id)}`,
 										currentPath,
@@ -256,7 +258,8 @@ export const pinnedGroup = (
 										h,
 										{
 											size: "sm",
-											className: `${ACTIVE_RAIL} text-muted-foreground`,
+											rail: "active",
+											className: "text-muted-foreground",
 											link: { href: "/dashboards", currentPath },
 										},
 										[
@@ -280,14 +283,14 @@ export const navGroupSections = (
 	tip: RailTip = NO_TIP,
 	clerk: ShellClerk | null = null,
 ): ReadonlyArray<Html> =>
-	shellNavGroups(clerk).map((group) =>
+	Arr.map(shellNavGroups(clerk), (group) =>
 		sidebarGroup(h, undefined, [
 			...(group.label === undefined ? [] : [sidebarGroupLabel(h, GROUP_LABEL, [group.label])]),
 			sidebarGroupContent(h, [
 				sidebarMenu(
 					h,
 					undefined,
-					group.items.map((item) => navRow(h, model, item, currentPath, tip)),
+					Arr.map(group.items, (item) => navRow(h, model, item, currentPath, tip)),
 				),
 			]),
 		]),

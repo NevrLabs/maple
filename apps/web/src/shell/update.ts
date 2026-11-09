@@ -2,8 +2,8 @@ import { isClerkAuthEnabled } from "../lib/services/common/auth-mode"
 import { Array, Equal, Option, Record, Struct } from "effect"
 import { AsyncData, Command, type Update } from "foldkit"
 import { modifyFields } from "foldkit/struct"
-import * as Dialog from "../ui/dialog"
-import * as Tooltip from "../ui/tooltip"
+import * as Dialog from "@maple/views/ui/dialog"
+import * as Tooltip from "@maple/views/ui/tooltip"
 import type { Resources } from "../platform/resources"
 import { integrationsAnswered, PENDING_INTEGRATIONS, settledSurfaces } from "../data/infra-surfaces"
 import {
@@ -16,18 +16,7 @@ import {
 	SaveSidebarState,
 	SaveTheme,
 } from "./command"
-import {
-	LoadCloudflareStatus,
-	LoadAwsStatus,
-	LoadGcpStatus,
-	LoadInfraPresence,
-	LoadNamespaces,
-	LoadPlanetscaleStatus,
-	LoadRailwayStatus,
-	LoadProxmoxStatus,
-	LoadSources,
-	LoadSupabaseStatus,
-} from "./data"
+import { LoadInfraSurfaces, LoadNamespaces, LoadSources } from "./data"
 import { DismissQuotaBanner, OpenCustomerPortal } from "./billing-banners"
 import * as ClerkOrgSwitcher from "./clerk-org-switcher"
 import * as Checklist from "./onboarding-checklist"
@@ -104,7 +93,10 @@ const requestSidebarData = (model: Model): UpdateReturn => {
 	}
 }
 
-/** `useInfraSurfaces`: the last hour's presence probe and the four integration statuses, once. */
+/** Every integration settled as not connected, as when the combined read failed. */
+const NOT_CONNECTED = Record.map(PENDING_INTEGRATIONS, () => false)
+
+/** `useInfraSurfaces`: the last hour's presence probe and every integration status, once. */
 const requestInfraSurfaces = (model: Model): UpdateReturn =>
 	Option.match(model.maybeOrgId, {
 		onNone: () => ({ model }),
@@ -113,16 +105,7 @@ const requestInfraSurfaces = (model: Model): UpdateReturn =>
 				? { model }
 				: {
 						model: modifyFields(model, { infraPresence: () => InfraPresenceData.Loading() }),
-						commands: [
-							LoadInfraPresence({ orgId }),
-							LoadCloudflareStatus({ orgId }),
-							LoadPlanetscaleStatus({ orgId }),
-							LoadRailwayStatus({ orgId }),
-							LoadGcpStatus({ orgId }),
-							LoadSupabaseStatus({ orgId }),
-							LoadAwsStatus({ orgId }),
-							LoadProxmoxStatus({ orgId }),
-						],
+						commands: [LoadInfraSurfaces({ orgId })],
 					},
 	})
 
@@ -227,7 +210,7 @@ export const routeChanged =
 				connect: () => connect.model,
 			}),
 			commands: [
-				...checklistRefreshOnNavigation(model, hasTopBar, isClerkAuthEnabled),
+				...(isSamePage ? [] : checklistRefreshOnNavigation(model, hasTopBar, isClerkAuthEnabled)),
 				...Command.mapMessages(connect.commands ?? [], (message) =>
 					Message.GotConnectMessage({ message }),
 				),
@@ -236,11 +219,14 @@ export const routeChanged =
 	}
 
 /**
- * Every checklist step is done on another page: a navigation re-reads it (`onResolved`), but only
- * where the top bar's pill is mounted.
+ * Every checklist step is done on another page: moving to another page re-reads it, but only where
+ * the top bar's pill is mounted and while steps remain. Claimable, claimed and expired checklists
+ * change only through the claim, which re-reads on its own.
  */
 export const checklistRefreshOnNavigation = (model: Model, hasTopBar: boolean, isClerk: boolean) =>
-	isClerk && hasTopBar && model.checklist.checklist !== null ? [toChecklist(Checklist.LoadChecklist())] : []
+	isClerk && hasTopBar && model.checklist.checklist?.status === "in_progress"
+		? [toChecklist(Checklist.LoadChecklist())]
+		: []
 
 const toggleSidebar = (model: Model, isInstant: boolean): UpdateReturn =>
 	model.isMobile
@@ -428,14 +414,23 @@ const foldMessage = (model: Model, message: Message): UpdateReturn =>
 		ClickedReload: () => ({ model, commands: [ReloadPage()] }),
 		CompletedReloadPage: () => ({ model }),
 		// Org-stamped answers: one for an org the shell has left is dropped.
-		SucceededLoadInfraPresence: ({ orgId, surfaces }) =>
+		// A failed probe lays out every surface; a failed status counts as not connected.
+		SucceededLoadInfraSurfaces: ({ orgId, maybeSurfaces, integrations }) =>
 			surfacesAnswered(model, orgId, (current) =>
-				modifyFields(current, { infraPresence: () => InfraPresenceData.Success({ data: surfaces }) }),
+				modifyFields(current, {
+					infraPresence: () =>
+						Option.match(maybeSurfaces, {
+							onNone: () => InfraPresenceData.Failure({ error: "Failed" }),
+							onSome: (surfaces) => InfraPresenceData.Success({ data: surfaces }),
+						}),
+					integrations: () => integrations,
+				}),
 			),
-		FailedLoadInfraPresence: ({ orgId }) =>
+		FailedLoadInfraSurfaces: ({ orgId }) =>
 			surfacesAnswered(model, orgId, (current) =>
 				modifyFields(current, {
 					infraPresence: () => InfraPresenceData.Failure({ error: "Failed" }),
+					integrations: () => NOT_CONNECTED,
 				}),
 			),
 		SucceededLoadSources: ({ orgId, sources }) =>
@@ -445,16 +440,6 @@ const foldMessage = (model: Model, message: Message): UpdateReturn =>
 		FailedLoadSources: ({ orgId }) =>
 			forOrg(model, orgId, (current) =>
 				modifyFields(current, { sources: () => SourcesData.Failure({ error: "Failed" }) }),
-			),
-		SucceededLoadIntegration: ({ orgId, integration, isConnected }) =>
-			surfacesAnswered(model, orgId, (current) =>
-				modifyFields(current, {
-					integrations: (known) => ({ ...known, [integration]: isConnected }),
-				}),
-			),
-		FailedLoadIntegration: ({ orgId, integration }) =>
-			surfacesAnswered(model, orgId, (current) =>
-				modifyFields(current, { integrations: (known) => ({ ...known, [integration]: false }) }),
 			),
 		// A result for an org the shell has left is dropped.
 		SucceededLoadDashboards: ({ orgId, dashboards }) =>
@@ -498,7 +483,7 @@ const foldMessage = (model: Model, message: Message): UpdateReturn =>
 			const next = Checklist.update(model.checklist, child)
 			return {
 				model: modifyFields(model, { checklist: () => next.model }),
-				commands: (next.commands ?? []).map(toChecklist),
+				commands: Array.map(next.commands ?? [], toChecklist),
 			}
 		},
 		GotConnectMessage: ({ message: child }) => {
@@ -548,7 +533,7 @@ const foldMessage = (model: Model, message: Message): UpdateReturn =>
 export const update = (model: Model, message: Message): UpdateReturn => {
 	const result = foldMessage(model, message)
 	const next = result.model
-	return next !== model && Struct.keys(model).every((key) => model[key] === next[key])
+	return next !== model && Array.every(Struct.keys(model), (key) => model[key] === next[key])
 		? { ...result, model }
 		: result
 }

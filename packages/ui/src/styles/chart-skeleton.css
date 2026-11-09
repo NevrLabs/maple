@@ -1,4 +1,4 @@
-/* Chart loading ghosts for `chartSkeleton` (apps/web/src/ui/chart-skeleton.ts).
+/* Chart loading ghosts for `chartSkeleton` (packages/views/src/ui/chart-skeleton.ts).
    Shared because the dashboard and Maple Local both render it; import after tailwindcss. */
 /* One motion for every ghost: the shapes hold still and a soft band of light
    passes left to right, then rests. It fades in after a beat so a fast query
@@ -48,4 +48,20 @@
 .skeleton-slow-note {
 	visibility: hidden;
 	animation: skeleton-slow-reveal 1ms linear 8s forwards;
+}
+
+/* The same note taking no room until it shows, for a box with no gap under it (`tableSkeleton`). */
+@keyframes skeleton-slow-expand {
+	to {
+		visibility: visible;
+		max-height: 4rem;
+		padding-block: 0.5rem;
+	}
+}
+
+.skeleton-slow-note.skeleton-slow-note-collapse {
+	max-height: 0;
+	padding-block: 0;
+	overflow: hidden;
+	animation: skeleton-slow-expand 1ms linear 8s forwards;
 }

@@ -1,6 +1,8 @@
 import { TRACE_BUCKET_FN } from "@maple/domain/tinybird/datasources"
 import { MAX_RAW_SQL_LENGTH, maskLiteralsAndComments, rawSqlIssue } from "@maple/domain/raw-sql"
 import { definedNames, referencedTableNames } from "./sql-identifiers"
+import { Array as Arr, Option, String as Str } from "effect"
+import { matchAllIndexed } from "@maple/strings"
 
 const ID = "'[0-9a-fA-F]{16,32}'"
 
@@ -34,27 +36,30 @@ export const withTraceIndexSeek = (sql: string): string | undefined => {
 		TIME_BOUND.test(masked) ||
 		// The seek brings its own `$__orgFilter`; the query must pass the gate without it.
 		rawSqlIssue(sql) !== null ||
-		["ServiceName", "Timestamp", "TraceId"].some((name) => defined.has(name))
+		Arr.some(["ServiceName", "Timestamp", "TraceId"], (name) => defined.has(name))
 	)
 		return undefined
 	// The literal is blanked in `masked`, so match the original and keep conjuncts outside literals.
-	const hits = [...sql.matchAll(TRACE_ID_PREDICATE)].filter((m) => {
-		const name = m[0].slice(0, m[0].indexOf("TraceId") + "TraceId".length)
+	const hits = Arr.filter(matchAllIndexed(sql, TRACE_ID_PREDICATE), (m) => {
+		const name = `${m[1] === undefined ? "" : `${m[1]}.`}TraceId`
 		return (
-			masked.startsWith(name, m.index) &&
-			BEFORE_CONJUNCT.test(masked.slice(0, m.index)) &&
-			AFTER_CONJUNCT.test(masked.slice(m.index + m[0].length))
+			Str.startsWith(name, m.index)(masked) &&
+			BEFORE_CONJUNCT.test(Str.slice(0, m.index)(masked)) &&
+			AFTER_CONJUNCT.test(Str.slice(m.index + m[0].length)(masked))
 		)
 	})
 	if (hits.length === 0) return undefined
-	const seeked = hits.reduceRight((text, m) => {
+	const seeked = Arr.reduceRight(hits, sql, (text, m) => {
 		const q = m[1] === undefined ? "" : `${m[1]}.`
-		const ids = m[0].match(new RegExp(ID, "g"))?.join(", ") ?? ""
+		const ids = Option.match(Str.match(new RegExp(ID, "g"))(m[0]), {
+			onNone: () => "",
+			onSome: (found) => Arr.join(found, ", "),
+		})
 		const seek =
 			`(${q}ServiceName, ${TRACE_BUCKET_FN}(${q}Timestamp), ${q}TraceId) IN ` +
 			`(SELECT ServiceName, Bucket, TraceId FROM trace_index WHERE $__orgFilter AND TraceId IN (${ids}))`
-		return `${text.slice(0, m.index)}(${m[0]} AND ${seek})${text.slice(m.index + m[0].length)}`
-	}, sql)
+		return `${Str.slice(0, m.index)(text)}(${m[0]} AND ${seek})${Str.slice(m.index + m[0].length)(text)}`
+	})
 	// The seek adds text; a statement it pushes past the length limit runs as written.
 	return seeked.length > MAX_RAW_SQL_LENGTH ? undefined : seeked
 }

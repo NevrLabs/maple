@@ -1,6 +1,8 @@
-import { randomBytes } from "node:crypto"
 import {
 	type GithubConnectionState,
+	GithubInstallationChoice,
+	GithubInstallationSelection,
+	type VcsRepositoryDiscovery,
 	IntegrationsPersistenceError,
 	IntegrationsUpstreamError,
 	IntegrationsValidationError,
@@ -17,7 +19,10 @@ import {
 	type VcsRepoSyncStatus,
 	type VcsSyncJob,
 } from "@maple/domain/http"
-import { Clock, Context, Effect, Layer, Option } from "effect"
+import { Clock, Context, Effect, Layer, Option, Array as Arr, String as Str } from "effect"
+import * as SecureRandom from "effect/crypto/SecureRandom"
+import * as Base64Url from "effect/encoding/Base64Url"
+import type { OAuthAuthStateRow } from "@maple/db/tables"
 import { Env } from "@maple/backend/platform/Env"
 import { OAuthStateRepository } from "@maple/backend/services/auth/OAuthStateRepository"
 import type { OAuthFlowInitiator } from "@maple/backend/services/auth/oauth/oauth-state"
@@ -31,10 +36,12 @@ import { githubWebBaseUrl } from "./github-hosts"
 // installation into a `vcs_installations` row owned by a Maple org, then hands
 // off to the existing sync engine (enqueues an InstallationSyncJob).
 //
-// Flow: the dashboard opens the GitHub App install URL (carrying our `state`).
-// After install GitHub redirects to the callback with `installation_id` and the
-// `state` echoed back in the query; the signed-in dashboard posts that query back
-// and finishes here, redeeming `state` only for the Maple user who started it.
+// Flow: the dashboard opens GitHub user authorization (carrying our `state`), which
+// always returns to the callback, even when the app is already installed. Discovery
+// lists the installations this user administers: the user picks one to bind, or,
+// with none, is sent on to the App install page, whose return carries
+// `installation_id` + `code` + `state`. The signed-in dashboard posts each return
+// back, redeeming `state` only for the Maple user who started it.
 // Account metadata comes from the App JWT
 // (`GET /app/installations/{id}`); sync later mints its own installation tokens.
 //
@@ -44,6 +51,8 @@ import { githubWebBaseUrl } from "./github-hosts"
 // installation that already belongs to a different org.
 
 const GITHUB_PROVIDER = "github" as const
+const AUTHORIZE_PROVIDER = "github-authorize"
+const SELECTION_PROVIDER = "github-selection"
 const STATE_TTL_MS = 10 * 60_000 // 10 minutes
 
 interface GithubBranchStatus {
@@ -74,15 +83,23 @@ interface GithubConnectStatus {
 	readonly accountType: VcsAccountType | null
 	readonly repositorySelection: VcsRepoSelection | null
 	readonly ciTracesEnabled: boolean
+	readonly repositoryDiscovery: VcsRepositoryDiscovery | null
 	readonly repositories: ReadonlyArray<GithubRepoStatus>
 }
 
 export interface GithubConnectServiceApi {
-	/** Create a single-use state row and the GitHub install URL to open. */
+	/**
+	 * Create a single-use state row and the GitHub URL to open: user authorization by
+	 * default, or the App install page for "Install on another GitHub account".
+	 */
 	readonly startConnect: (
 		orgId: OrgId,
 		userId: UserId,
-		options: { readonly callbackUrl: string; readonly returnTo?: string },
+		options: {
+			readonly callbackUrl: string
+			readonly returnTo?: string
+			readonly mode?: "install"
+		},
 	) => Effect.Effect<
 		{ readonly redirectUrl: string; readonly state: string },
 		IntegrationsValidationError | IntegrationsPersistenceError
@@ -102,6 +119,22 @@ export interface GithubConnectServiceApi {
 		IntegrationsValidationError | IntegrationsUpstreamError | IntegrationsPersistenceError
 	>
 	readonly getStatus: (orgId: OrgId) => Effect.Effect<GithubConnectStatus, IntegrationsPersistenceError>
+	readonly discoverInstallations: (
+		code: string,
+		state: string,
+		initiator: OAuthFlowInitiator,
+	) => Effect.Effect<
+		GithubInstallationSelection,
+		IntegrationsValidationError | IntegrationsUpstreamError | IntegrationsPersistenceError
+	>
+	readonly selectInstallation: (
+		installationId: string,
+		state: string,
+		initiator: OAuthFlowInitiator,
+	) => Effect.Effect<
+		{ readonly connected: true },
+		IntegrationsValidationError | IntegrationsUpstreamError | IntegrationsPersistenceError
+	>
 	readonly disconnect: (
 		orgId: OrgId,
 	) => Effect.Effect<{ readonly disconnected: boolean }, IntegrationsPersistenceError>
@@ -213,10 +246,17 @@ const refuseConnect = (orgId: OrgId, outcome: string, reason: string, message: s
 const cleanPrReviewConfig = Effect.fn("GithubConnectService.cleanPrReviewConfig")(function* (
 	config: PrReviewRepositoryConfig,
 ) {
-	const ignorePaths = [...new Set((config.ignorePaths ?? []).map((p) => p.trim()).filter((p) => p !== ""))]
+	const ignorePaths = [
+		...new Set(
+			Arr.filter(
+				Arr.map(config.ignorePaths ?? [], (p) => Str.trim(p)),
+				(p) => p !== "",
+			),
+		),
+	]
 	if (ignorePaths.length > 50)
 		return yield* new IntegrationsValidationError({ message: "At most 50 ignored paths." })
-	const instructions = config.instructions?.trim()
+	const instructions = config.instructions === undefined ? undefined : Str.trim(config.instructions)
 	return new PrReviewRepositoryConfig({
 		...(instructions ? { instructions } : undefined),
 		...(ignorePaths.length > 0 ? { ignorePaths } : undefined),
@@ -249,47 +289,171 @@ export class GithubConnectService extends Context.Service<GithubConnectService, 
 			const repo = yield* VcsRepository
 			const queue = yield* VcsSyncQueue
 			const githubApp = yield* GithubAppClient
+			const random = yield* SecureRandom.SecureRandom
+			const newState = Effect.map(random.randomBytes(24), Base64Url.encode)
 
-			const startConnect = Effect.fn("GithubConnectService.startConnect")(function* (
-				orgId: OrgId,
-				userId: UserId,
-				options: { readonly callbackUrl: string; readonly returnTo?: string },
-			) {
-				const slug = Option.getOrUndefined(env.GITHUB_APP_SLUG)
-				if (!slug) {
-					yield* Effect.annotateCurrentSpan({
+			const consumeState = (state: string, provider: string, initiator: OAuthFlowInitiator) =>
+				states
+					.consume({ state, provider, initiator })
+					.pipe(
+						Effect.catchTag("@maple/http/errors/OAuthStatePersistenceError", (error) =>
+							Effect.fail(new IntegrationsPersistenceError({ message: error.message })),
+						),
+					)
+
+			const ownedInstallation = Effect.fnUntraced(function* (orgId: OrgId, installationId: string) {
+				const existing = yield* asPersistence(
+					repo.resolveInstallation(GITHUB_PROVIDER, installationId),
+				)
+				if (Option.isSome(existing) && existing.value.orgId !== orgId) {
+					return yield* refuseConnect(
 						orgId,
-						"vcs.connect.outcome": "app_not_configured",
-						"vcs.connect.reason": "GITHUB_APP_SLUG missing",
-					})
+						"installation_cross_org_rejected",
+						"installation_id already belongs to a different org",
+						"This GitHub installation is already connected to another Maple organization.",
+					)
+				}
+				return existing
+			})
+
+			const bindInstallation = Effect.fnUntraced(function* (
+				installationId: string,
+				stateRow: OAuthAuthStateRow,
+				detail: Effect.Success<ReturnType<GithubAppClient["Service"]["getInstallation"]>>,
+				isSameOrgReconnect: boolean,
+			) {
+				const account = detail.account
+				if (account === null) {
 					return yield* new IntegrationsValidationError({
-						message: "GitHub App is not configured (set GITHUB_APP_SLUG)",
+						message: "GitHub installation has no account — restart the connect flow",
 					})
 				}
+				const accountType: VcsAccountType = account.type === "Organization" ? "organization" : "user"
+				const repositorySelection: VcsRepoSelection =
+					detail.repository_selection === "selected" ? "selected" : "all"
+				const requestId = yield* newState
+				const installation = yield* asPersistence(
+					repo.upsertInstallation({
+						orgId: stateRow.orgId,
+						provider: GITHUB_PROVIDER,
+						externalInstallationId: installationId,
+						accountLogin: account.login,
+						accountType,
+						externalAccountId: String(account.id),
+						accountAvatarUrl: account.avatar_url ?? null,
+						repositorySelection,
+						installedByUserId: stateRow.initiatedByUserId,
+						repositoryDiscovery: { _tag: "Pending", requestId },
+					}),
+				)
+				yield* asPersistence(
+					queue
+						.send({
+							kind: "installation-sync",
+							provider: GITHUB_PROVIDER,
+							externalInstallationId: installationId,
+							reason: isSameOrgReconnect ? "updated" : "created",
+							requestId,
+						})
+						.pipe(
+							Effect.tapError(() =>
+								repo.finishRepositoryDiscovery(installation.id, {
+									_tag: "Failed",
+									requestId,
+									message: "Repository discovery could not be queued. Reconnect to retry.",
+								}),
+							),
+						),
+				)
+				yield* Effect.annotateCurrentSpan({
+					orgId: stateRow.orgId,
+					"vcs.connect.outcome": "connected",
+					"vcs.account.type": accountType,
+					"vcs.repository.selection": repositorySelection,
+				})
+				return { orgId: stateRow.orgId, returnTo: stateRow.returnTo }
+			})
+
+			const githubWeb = githubWebBaseUrl(env.GITHUB_API_BASE_URL)
+
+			const insertState = Effect.fnUntraced(function* (row: {
+				readonly orgId: OrgId
+				readonly userId: UserId
+				readonly provider: string
+				readonly redirectUri: string
+				readonly returnTo: string | null
+				readonly githubInstallationIds?: ReadonlyArray<string>
+			}) {
 				const now = yield* Clock.currentTimeMillis
-				const state = randomBytes(24).toString("base64url")
+				const state = yield* newState
 				yield* asPersistence(states.purgeExpired(now))
 				yield* asPersistence(
 					states.insert({
 						state,
-						orgId,
-						provider: GITHUB_PROVIDER,
-						initiatedByUserId: userId,
-						redirectUri: options.callbackUrl,
-						returnTo: options.returnTo ?? null,
+						orgId: row.orgId,
+						provider: row.provider,
+						initiatedByUserId: row.userId,
+						redirectUri: row.redirectUri,
+						returnTo: row.returnTo,
+						githubInstallationIds:
+							row.githubInstallationIds === undefined ? null : [...row.githubInstallationIds],
 						createdAt: now,
 						expiresAt: now + STATE_TTL_MS,
 					}),
 				)
+				return state
+			})
+
+			const appConfig = Effect.fnUntraced(function* (orgId: OrgId) {
+				const slug = Option.getOrUndefined(env.GITHUB_APP_SLUG)
+				const clientId = Option.getOrUndefined(env.GITHUB_APP_CLIENT_ID)
+				if (!slug || !clientId) {
+					const missing = !slug ? "GITHUB_APP_SLUG" : "GITHUB_APP_CLIENT_ID"
+					yield* Effect.annotateCurrentSpan({
+						orgId,
+						"vcs.connect.outcome": "app_not_configured",
+						"vcs.connect.reason": `${missing} missing`,
+					})
+					return yield* new IntegrationsValidationError({
+						message: `GitHub App is not configured (set ${missing})`,
+					})
+				}
+				return { slug, clientId }
+			})
+
+			const installUrlOf = (slug: string, state: string) =>
+				`${githubWeb}/apps/${slug}/installations/new?${new URLSearchParams({ state }).toString()}`
+
+			const startConnect = Effect.fn("GithubConnectService.startConnect")(function* (
+				orgId: OrgId,
+				userId: UserId,
+				options: {
+					readonly callbackUrl: string
+					readonly returnTo?: string
+					readonly mode?: "install"
+				},
+			) {
+				const { slug, clientId } = yield* appConfig(orgId)
+				const isInstall = options.mode === "install"
+				const state = yield* insertState({
+					orgId,
+					userId,
+					provider: isInstall ? GITHUB_PROVIDER : AUTHORIZE_PROVIDER,
+					redirectUri: options.callbackUrl,
+					returnTo: options.returnTo ?? null,
+				})
 				yield* Effect.annotateCurrentSpan({
 					orgId,
 					"vcs.connect.outcome": "started",
+					"vcs.connect.mode": isInstall ? "install" : "authorize",
 				})
-				const params = new URLSearchParams({ state })
-				return {
-					redirectUrl: `${githubWebBaseUrl(env.GITHUB_API_BASE_URL)}/apps/${slug}/installations/new?${params.toString()}`,
+				if (isInstall) return { redirectUrl: installUrlOf(slug, state), state }
+				const params = new URLSearchParams({
+					client_id: clientId,
+					redirect_uri: options.callbackUrl,
 					state,
-				}
+				})
+				return { redirectUrl: `${githubWeb}/login/oauth/authorize?${params.toString()}`, state }
 			})
 
 			const completeConnect = Effect.fn("GithubConnectService.completeConnect")(function* (
@@ -314,20 +478,7 @@ export class GithubConnectService extends Context.Service<GithubConnectService, 
 
 				// Don't let one org claim an installation another org already owns.
 				// (Same org is fine — that's just reconnecting your own.)
-				const existingInstallation = yield* asPersistence(
-					repo.resolveInstallation(GITHUB_PROVIDER, installationId),
-				)
-				if (
-					Option.isSome(existingInstallation) &&
-					existingInstallation.value.orgId !== stateRow.orgId
-				) {
-					return yield* refuseConnect(
-						stateRow.orgId,
-						"installation_cross_org_rejected",
-						"installation_id already belongs to a different org",
-						"This GitHub installation is already connected to another Maple organization.",
-					)
-				}
+				const existingInstallation = yield* ownedInstallation(stateRow.orgId, installationId)
 
 				// Connecting a brand-new installation? Require the OAuth `code` and check
 				// the user can actually manage it. No code → reject (don't guess-and-trust).
@@ -335,18 +486,15 @@ export class GithubConnectService extends Context.Service<GithubConnectService, 
 				const isSameOrgReconnect = Option.isSome(existingInstallation)
 				const hasCode = code !== undefined && code.length > 0
 				const userToken = hasCode
-					? Option.some(
-							yield* githubApp.exchangeUserOAuthCode(code).pipe(
-								Effect.tapError(() =>
-									Effect.annotateCurrentSpan({
-										orgId: stateRow.orgId,
-										"vcs.connect.outcome": "oauth_exchange_failed",
-										"vcs.connect.reason":
-											"could not exchange OAuth code for a user token",
-									}),
-								),
-								Effect.mapError(fromGithubError),
+					? yield* githubApp.exchangeUserOAuthCode(code).pipe(
+							Effect.tapError(() =>
+								Effect.annotateCurrentSpan({
+									orgId: stateRow.orgId,
+									"vcs.connect.outcome": "oauth_exchange_failed",
+									"vcs.connect.reason": "could not exchange OAuth code for a user token",
+								}),
 							),
+							Effect.mapBoth({ onSuccess: Option.some, onFailure: fromGithubError }),
 						)
 					: Option.none<string>()
 				if (Option.isSome(userToken)) {
@@ -439,41 +587,174 @@ export class GithubConnectService extends Context.Service<GithubConnectService, 
 						)
 					}
 				}
-				const accountType: VcsAccountType = account.type === "Organization" ? "organization" : "user"
-				const repositorySelection: VcsRepoSelection =
-					detail.repository_selection === "selected" ? "selected" : "all"
+				return yield* bindInstallation(installationId, stateRow, detail, isSameOrgReconnect)
+			})
 
-				yield* asPersistence(
-					repo.upsertInstallation({
-						orgId: stateRow.orgId,
-						provider: GITHUB_PROVIDER,
-						externalInstallationId: installationId,
-						accountLogin: account.login,
-						accountType,
-						externalAccountId: String(account.id),
-						accountAvatarUrl: account.avatar_url ?? null,
-						repositorySelection,
-						installedByUserId: stateRow.initiatedByUserId,
-					}),
+			// One installation the user can see: a connectable choice, an account whose org
+			// withheld the user's role (needs the app's permission request approved), or one this
+			// user cannot connect here (another Maple org, not an admin, or GitHub failed to answer).
+			const classifyInstallation = (orgId: OrgId, userToken: string, id: string) =>
+				Effect.gen(function* () {
+					const existing = yield* asPersistence(repo.resolveInstallation(GITHUB_PROVIDER, id))
+					if (Option.isSome(existing) && existing.value.orgId !== orgId)
+						return { _tag: "Unavailable" as const }
+					const detail = yield* githubApp.getInstallation(id)
+					if (detail.account === null) return { _tag: "Unavailable" as const }
+					const admin = yield* githubApp.checkAccountAdmin(userToken, detail.account)
+					if (admin === "unverifiable")
+						return { _tag: "NeedsApproval" as const, accountLogin: detail.account.login }
+					if (admin !== "admin") return { _tag: "Unavailable" as const }
+					return {
+						_tag: "Choice" as const,
+						choice: new GithubInstallationChoice({
+							id,
+							accountLogin: detail.account.login,
+							accountType: detail.account.type === "Organization" ? "organization" : "user",
+							repositorySelection:
+								detail.repository_selection === "selected" ? "selected" : "all",
+						}),
+					}
+				}).pipe(
+					// Kept visible: a GitHub failure here reads like "cannot connect" to the user.
+					Effect.catchTag("@maple/backend/vcs/GithubAppError", (error) =>
+						Effect.logWarning(
+							"[GitHub] Could not classify an installation during discovery",
+						).pipe(
+							Effect.annotateLogs({
+								installationId: id,
+								status: error.status ?? "none",
+								message: error.message,
+							}),
+							Effect.andThen(
+								Effect.annotateCurrentSpan({
+									"vcs.connect.classify_upstream_failed": true,
+									"error.type": "@maple/backend/vcs/GithubAppError",
+								}),
+							),
+							Effect.as({ _tag: "Unavailable" as const }),
+						),
+					),
 				)
 
-				yield* asPersistence(
-					queue.send({
-						kind: "installation-sync",
-						provider: GITHUB_PROVIDER,
-						externalInstallationId: installationId,
-						// "updated" if this org already had the install, else "created".
-						reason: isSameOrgReconnect ? "updated" : "created",
-					}),
+			const discoverInstallations = Effect.fn("GithubConnectService.discoverInstallations")(function* (
+				code: string,
+				state: string,
+				initiator: OAuthFlowInitiator,
+			) {
+				const stateRow = yield* consumeState(state, AUTHORIZE_PROVIDER, initiator).pipe(
+					Effect.tapError(() =>
+						Effect.annotateCurrentSpan({
+							"vcs.connect.outcome": "state_rejected",
+							"vcs.connect.reason": "state unknown, expired, or minted by another identity",
+						}),
+					),
 				)
-
+				const { slug } = yield* appConfig(stateRow.orgId)
+				const userToken = yield* githubApp.exchangeUserOAuthCode(code).pipe(
+					Effect.tapError(() =>
+						Effect.annotateCurrentSpan({
+							orgId: stateRow.orgId,
+							"vcs.connect.outcome": "oauth_exchange_failed",
+							"vcs.connect.reason": "could not exchange OAuth code for a user token",
+						}),
+					),
+					Effect.mapError(fromGithubError),
+				)
+				const ids = yield* githubApp.listUserInstallationIds(userToken).pipe(
+					Effect.tapError(() =>
+						Effect.annotateCurrentSpan({
+							orgId: stateRow.orgId,
+							"vcs.connect.outcome": "oauth_installations_failed",
+							"vcs.connect.reason": "could not list the user's installations",
+						}),
+					),
+					Effect.mapError(fromGithubError),
+				)
+				const results = yield* Effect.forEach(
+					ids,
+					(id) => classifyInstallation(stateRow.orgId, userToken, id),
+					{ concurrency: 4 },
+				)
+				const installations = Arr.flatMap(results, (result) =>
+					result._tag === "Choice" ? [result.choice] : [],
+				).sort((a, b) => Str.localeCompare(b.accountLogin)(a.accountLogin))
+				const needsApproval = Arr.flatMap(results, (result) =>
+					result._tag === "NeedsApproval" ? [result.accountLogin] : [],
+				).sort((a, b) => Str.localeCompare(b)(a))
+				const unavailable = Arr.filter(results, (result) => result._tag === "Unavailable").length
+				const rowBase = {
+					orgId: stateRow.orgId,
+					userId: stateRow.initiatedByUserId,
+					redirectUri: stateRow.redirectUri,
+					returnTo: stateRow.returnTo,
+				}
+				const installState = yield* insertState({ ...rowBase, provider: GITHUB_PROVIDER })
+				const selectionState = yield* insertState({
+					...rowBase,
+					provider: SELECTION_PROVIDER,
+					githubInstallationIds: Arr.map(installations, (installation) => installation.id),
+				})
 				yield* Effect.annotateCurrentSpan({
 					orgId: stateRow.orgId,
-					"vcs.connect.outcome": "connected",
-					"vcs.account.type": accountType,
-					"vcs.repository.selection": repositorySelection,
+					"vcs.connect.outcome":
+						installations.length > 0
+							? "installations_discovered"
+							: needsApproval.length > 0
+								? "installation_admin_unverifiable"
+								: unavailable > 0
+									? "installations_unavailable"
+									: "no_installation",
+					"vcs.connect.installations_seen": ids.size,
+					"vcs.connect.installations_connectable": installations.length,
+					"vcs.connect.installations_needing_approval": needsApproval.length,
+					"vcs.connect.installations_unavailable": unavailable,
 				})
-				return { orgId: stateRow.orgId, returnTo: stateRow.returnTo ?? null }
+				return new GithubInstallationSelection({
+					state: selectionState,
+					installations,
+					needsApproval,
+					unavailable,
+					installUrl: installUrlOf(slug, installState),
+				})
+			})
+
+			const selectInstallation = Effect.fn("GithubConnectService.selectInstallation")(function* (
+				installationId: string,
+				state: string,
+				initiator: OAuthFlowInitiator,
+			): Effect.fn.Return<
+				{ readonly connected: true },
+				IntegrationsValidationError | IntegrationsUpstreamError | IntegrationsPersistenceError
+			> {
+				const stateRow = yield* consumeState(state, SELECTION_PROVIDER, initiator).pipe(
+					Effect.tapError(() =>
+						Effect.annotateCurrentSpan({
+							"vcs.connect.outcome": "state_rejected",
+							"vcs.connect.reason": "state unknown, expired, or minted by another identity",
+						}),
+					),
+				)
+				if (!stateRow.githubInstallationIds?.includes(installationId)) {
+					return yield* refuseConnect(
+						stateRow.orgId,
+						"installation_not_authorized",
+						"installation_id was not verified for this selection",
+						"This installation was not authorized. Connect GitHub again from Maple.",
+					)
+				}
+				const existing = yield* ownedInstallation(stateRow.orgId, installationId)
+				const detail = yield* githubApp.getInstallation(installationId).pipe(
+					Effect.tapError(() =>
+						Effect.annotateCurrentSpan({
+							orgId: stateRow.orgId,
+							"vcs.connect.outcome": "upstream_github_error",
+							"vcs.connect.reason": "could not read the selected installation",
+						}),
+					),
+					Effect.mapError(fromGithubError),
+				)
+				yield* bindInstallation(installationId, stateRow, detail, Option.isSome(existing))
+				return { connected: true }
 			})
 
 			// Resolve an installation's repositories into the dashboard summary shape
@@ -503,7 +784,7 @@ export class GithubConnectService extends Context.Service<GithubConnectService, 
 								// was never set, mirroring the sync engine's resolution.
 								trackedBranch: r.trackedBranch ?? r.defaultBranch,
 								prReviewEnabled: r.prReviewEnabled,
-								branches: branches.map((b) => ({
+								branches: Arr.map(branches, (b) => ({
 									name: b.name,
 									isDefault: b.isDefault,
 								})),
@@ -515,10 +796,11 @@ export class GithubConnectService extends Context.Service<GithubConnectService, 
 			})
 
 			const getStatus = Effect.fn("GithubConnectService.getStatus")(function* (orgId: OrgId) {
-				const installations = (yield* asPersistence(repo.listInstallationsByOrg(orgId))).filter(
-					(i) => i.provider === GITHUB_PROVIDER,
+				const allInstallations = yield* asPersistence(repo.listInstallationsByOrg(orgId))
+				const installations = Arr.filter(allInstallations, (i) => i.provider === GITHUB_PROVIDER)
+				const active = Option.getOrUndefined(
+					Arr.findFirst(installations, (i) => i.status === "active"),
 				)
-				const active = installations.find((i) => i.status === "active")
 				if (active) {
 					const repositories = yield* repositoriesOf(active)
 					yield* Effect.annotateCurrentSpan({
@@ -537,6 +819,7 @@ export class GithubConnectService extends Context.Service<GithubConnectService, 
 						accountType: active.accountType,
 						repositorySelection: active.repositorySelection,
 						ciTracesEnabled: active.ciTracesEnabled,
+						repositoryDiscovery: active.repositoryDiscovery,
 						repositories,
 					} satisfies GithubConnectStatus
 				}
@@ -548,7 +831,7 @@ export class GithubConnectService extends Context.Service<GithubConnectService, 
 				// Installation rows are never auto-deleted, so one is here whenever the org
 				// has connected before. Its repos/commits are kept too — shown read-only.
 				const deactivated = [...installations].sort((a, b) => b.updatedAt - a.updatedAt)[0]
-				if (!deactivated) {
+				if (deactivated === undefined) {
 					yield* Effect.annotateCurrentSpan({
 						orgId,
 						"vcs.status.outcome": "ok",
@@ -562,6 +845,7 @@ export class GithubConnectService extends Context.Service<GithubConnectService, 
 						accountType: null,
 						repositorySelection: null,
 						ciTracesEnabled: true,
+						repositoryDiscovery: null,
 						repositories: [],
 					} satisfies GithubConnectStatus
 				}
@@ -584,13 +868,14 @@ export class GithubConnectService extends Context.Service<GithubConnectService, 
 					accountType: deactivated.accountType,
 					repositorySelection: deactivated.repositorySelection,
 					ciTracesEnabled: deactivated.ciTracesEnabled,
+					repositoryDiscovery: deactivated.repositoryDiscovery,
 					repositories,
 				} satisfies GithubConnectStatus
 			})
 
 			const disconnect = Effect.fn("GithubConnectService.disconnect")(function* (orgId: OrgId) {
 				const installations = yield* asPersistence(repo.listInstallationsByOrg(orgId))
-				const targets = installations.filter((i) => i.provider === GITHUB_PROVIDER)
+				const targets = Arr.filter(installations, (i) => i.provider === GITHUB_PROVIDER)
 				// Fully remove each installation and its repos/commits — a disconnect
 				// must not strand the org's VCS data. Deleting the row (rather than only
 				// flipping its status to "disconnected") also lets a later reconnect
@@ -703,7 +988,7 @@ export class GithubConnectService extends Context.Service<GithubConnectService, 
 				// The chosen branch must be one the repo actually knows about (the picker's
 				// list), so we don't point the tracker at a non-existent ref.
 				const branches = yield* asPersistence(repo.listBranchesByRepository(repositoryId))
-				if (!branches.some((b) => b.name === trackedBranch)) {
+				if (!Arr.some(branches, (b) => b.name === trackedBranch)) {
 					yield* Effect.annotateCurrentSpan({
 						orgId,
 						"vcs.repository.id": repositoryId,
@@ -766,8 +1051,11 @@ export class GithubConnectService extends Context.Service<GithubConnectService, 
 				enabled: boolean,
 			) {
 				const installations = yield* asPersistence(repo.listInstallationsByOrg(orgId))
-				const active = installations.find(
-					(i) => i.provider === GITHUB_PROVIDER && i.status === "active",
+				const active = Option.getOrUndefined(
+					Arr.findFirst(
+						installations,
+						(i) => i.provider === GITHUB_PROVIDER && i.status === "active",
+					),
 				)
 				if (active === undefined) {
 					yield* Effect.annotateCurrentSpan({ orgId, "vcs.set_ci_traces.outcome": "not_connected" })
@@ -820,11 +1108,10 @@ export class GithubConnectService extends Context.Service<GithubConnectService, 
 			const requireRepository = (orgId: OrgId, repositoryId: VcsRepositoryId) =>
 				asPersistence(repo.getRepositoryById(orgId, repositoryId)).pipe(
 					Effect.flatMap((existing) =>
-						Option.isNone(existing)
-							? Effect.fail(
-									new IntegrationsValidationError({ message: "Repository not found" }),
-								)
-							: Effect.succeed(existing.value),
+						Effect.fromOption(
+							existing,
+							() => new IntegrationsValidationError({ message: "Repository not found" }),
+						),
 					),
 				)
 
@@ -873,6 +1160,7 @@ export class GithubConnectService extends Context.Service<GithubConnectService, 
 						: yield* cleanPrReviewConfig(settings.defaults)
 				const cleaned = new PrReviewOrgSettings({
 					...(settings.model === undefined ? undefined : { model: settings.model }),
+					// @effect-diagnostics-next-line preferEffectRecord:off -- not a record type; Rec.keys would need a cast
 					...(defaults === undefined || Object.keys(defaults).length === 0
 						? undefined
 						: { defaults }),
@@ -889,6 +1177,8 @@ export class GithubConnectService extends Context.Service<GithubConnectService, 
 			return {
 				startConnect,
 				completeConnect,
+				discoverInstallations,
+				selectInstallation,
 				getStatus,
 				disconnect,
 				deleteRepository,
@@ -910,6 +1200,7 @@ export class GithubConnectService extends Context.Service<GithubConnectService, 
 				GithubAppClient.layer,
 				VcsRepository.layer,
 				OAuthStateRepository.layer,
+				SecureRandom.layerWebCrypto,
 			),
 		),
 	)

@@ -1,6 +1,7 @@
+import * as Policy from "@maple/domain/policy"
 import { OrgId } from "@maple/domain"
 import { UptimeMonitorPublicId } from "@maple/domain/http/v2"
-import { Result, Schema } from "effect"
+import { Result, Schema, Array as Arr } from "effect"
 import {
 	click,
 	expect as expectView,
@@ -13,7 +14,7 @@ import {
 	withViewInputs,
 } from "foldkit/scene"
 import { describe, expect, test } from "vitest"
-import { toLoadFailure } from "../../../data/load-failure"
+import { toLoadFailure } from "@maple/views/data/load-failure"
 import { PageOutMessage, type PageContext } from "../../contract"
 import { ORG } from "../shared/test-rows"
 import { LIMIT_REACHED_CODE, monitorHref } from "../shared/uptime-commands"
@@ -24,16 +25,19 @@ import type { Model } from "./model"
 import { init, update } from "./update"
 import { view as pageView } from "./view"
 
+const ENGINEER = Policy.grantsOf(["org:engineer"])
+const MEMBER = Policy.grantsOf(["org:member"])
+
 const orgId = Schema.decodeSync(OrgId)(ORG)
 const publicId = Schema.encodeSync(UptimeMonitorPublicId)
 const context: PageContext = { orgId, pinnedNamespace: null, timeZone: "UTC" }
 const pageUpdate = (model: Model, message: Message) => update(model, message, context)
 const view = withViewInputs(pageView, { context })()
 const names = (commands: ReadonlyArray<{ readonly name: string }> | undefined) =>
-	(commands ?? []).map(({ name }) => name)
+	Arr.map(commands ?? [], ({ name }) => name)
 
 const asAdmin = (model: Model): Model =>
-	pageUpdate(model, Message.CompletedFetchSession({ orgId: ORG, isAdmin: true })).model
+	pageUpdate(model, Message.CompletedFetchSession({ orgId: ORG, grants: ENGINEER })).model
 
 const fresh = (search: Model["search"] = {}): Model =>
 	asAdmin(init({ _tag: "AlertsUptimeNew", search }, context).model)
@@ -144,16 +148,18 @@ describe("uptime monitor form", () => {
 			}),
 		})
 		const editUrl = Message.ChangedText({ field: "url", value: "https://api.acme.dev/other" })
-		const tested = [Message.ClickedTest(), passed].reduce(
-			(model, message) => pageUpdate(model, message).model,
+		const tested = Arr.reduce(
+			[Message.ClickedTest(), passed],
 			withUrl("https://api.acme.dev/health"),
+			(model, message) => pageUpdate(model, message).model,
 		)
 		expect(tested.testResult?.status_code).toBe(200)
 		expect(pageUpdate(tested, editUrl).model.testResult).toBeNull()
 
-		const inFlight = [Message.ClickedTest(), editUrl, passed].reduce(
-			(model, message) => pageUpdate(model, message).model,
+		const inFlight = Arr.reduce(
+			[Message.ClickedTest(), editUrl, passed],
 			withUrl("https://api.acme.dev/health"),
+			(model, message) => pageUpdate(model, message).model,
 		)
 		expect({ result: inFlight.testResult, isTesting: inFlight.isTesting }).toEqual({
 			result: null,
@@ -229,12 +235,12 @@ describe("uptime monitor form", () => {
 	test("a member sees that the form is admin-only, and cannot save", () => {
 		const member = pageUpdate(
 			init({ _tag: "AlertsUptimeNew", search: {} }, context).model,
-			Message.CompletedFetchSession({ orgId: ORG, isAdmin: false }),
+			Message.CompletedFetchSession({ orgId: ORG, grants: MEMBER }),
 		).model
 		scene(
 			{ update: pageUpdate, view },
 			given(member),
-			expectView(text("Only org admins can create or change uptime monitors")).toExist(),
+			expectView(text("Only org admins and engineers can create or change uptime monitors")).toExist(),
 			expectView(role("button", { name: "Create monitor" })).not.toExist(),
 		)
 		const tried = pageUpdate(
@@ -268,16 +274,24 @@ describe("uptime monitor form", () => {
 			expectView(role("textbox", { name: "Name" })).toHaveValue("db.acme.dev:5432"),
 			expectView(text("Add a name.")).not.toExist(),
 		)
-		const dns = [
-			Message.PickedKind({ kind: "dns" }),
-			Message.ChangedText({ field: "hostname", value: "example.com" }),
-			Message.ChangedRecordType({ recordType: "MX" }),
-		].reduce((model, message) => pageUpdate(model, message).model, fresh())
+		const dns = Arr.reduce(
+			[
+				Message.PickedKind({ kind: "dns" }),
+				Message.ChangedText({ field: "hostname", value: "example.com" }),
+				Message.ChangedRecordType({ recordType: "MX" }),
+			],
+			fresh(),
+			(model, message) => pageUpdate(model, message).model,
+		)
 		expect(dns.form.name).toBe("MX example.com")
-		const typed = [
-			Message.ChangedText({ field: "name", value: "Mail" }),
-			Message.ChangedText({ field: "hostname", value: "example.org" }),
-		].reduce((model, message) => pageUpdate(model, message).model, dns)
+		const typed = Arr.reduce(
+			[
+				Message.ChangedText({ field: "name", value: "Mail" }),
+				Message.ChangedText({ field: "hostname", value: "example.org" }),
+			],
+			dns,
+			(model, message) => pageUpdate(model, message).model,
+		)
 		expect(typed.form.name).toBe("Mail")
 	})
 
@@ -358,20 +372,24 @@ describe("uptime monitor form", () => {
 			{ _tag: "AlertsUptimeNew", search: { monitorId: publicId(monitor.id) } },
 			context,
 		).model
-		const edited = [
-			Message.CompletedFetchExisting({
-				key: entered.existing.key ?? "",
-				result: Result.succeed({
-					...monitor,
-					config: {
-						type: "heartbeat",
-						schedule: { type: "interval", seconds: 3600 },
-						grace_seconds: 90,
-					},
+		const edited = Arr.reduce(
+			[
+				Message.CompletedFetchExisting({
+					key: entered.existing.key ?? "",
+					result: Result.succeed({
+						...monitor,
+						config: {
+							type: "heartbeat",
+							schedule: { type: "interval", seconds: 3600 },
+							grace_seconds: 90,
+						},
+					}),
 				}),
-			}),
-			Message.ChangedText({ field: "name", value: "Renamed" }),
-		].reduce((model, message) => pageUpdate(model, message).model, entered)
+				Message.ChangedText({ field: "name", value: "Renamed" }),
+			],
+			entered,
+			(model, message) => pageUpdate(model, message).model,
+		)
 		expect(wirePayload(edited.form, true)).toMatchObject({
 			name: "Renamed",
 			config: { grace_seconds: 90 },
@@ -387,11 +405,15 @@ describe("uptime monitor form", () => {
 			).toExist(),
 			expectView(text("Ready to save")).not.toExist(),
 		)
-		const tcp = [
-			Message.PickedKind({ kind: "tcp" }),
-			Message.ChangedText({ field: "host", value: "10.0.0.5" }),
-			Message.ChangedText({ field: "port", value: "5432" }),
-		].reduce((model, message) => pageUpdate(model, message).model, fresh())
+		const tcp = Arr.reduce(
+			[
+				Message.PickedKind({ kind: "tcp" }),
+				Message.ChangedText({ field: "host", value: "10.0.0.5" }),
+				Message.ChangedText({ field: "port", value: "5432" }),
+			],
+			fresh(),
+			(model, message) => pageUpdate(model, message).model,
+		)
 		scene(
 			{ update: pageUpdate, view },
 			given(tcp),
@@ -400,12 +422,16 @@ describe("uptime monitor form", () => {
 			).toExist(),
 			expectView(role("button", { name: "Create monitor" })).toBeDisabled(),
 		)
-		const cron = [
-			Message.PickedKind({ kind: "heartbeat" }),
-			Message.ChangedText({ field: "name", value: "nightly" }),
-			Message.ChangedScheduleMode({ mode: "cron" }),
-			Message.ChangedText({ field: "cronExpression", value: "every night" }),
-		].reduce((model, message) => pageUpdate(model, message).model, fresh())
+		const cron = Arr.reduce(
+			[
+				Message.PickedKind({ kind: "heartbeat" }),
+				Message.ChangedText({ field: "name", value: "nightly" }),
+				Message.ChangedScheduleMode({ mode: "cron" }),
+				Message.ChangedText({ field: "cronExpression", value: "every night" }),
+			],
+			fresh(),
+			(model, message) => pageUpdate(model, message).model,
+		)
 		scene(
 			{ update: pageUpdate, view },
 			given(cron),

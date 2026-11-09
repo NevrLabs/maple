@@ -1,5 +1,5 @@
 import { OrgId } from "@maple/domain"
-import { Result, Schema } from "effect"
+import { Result, Schema, Array as Arr, Option } from "effect"
 import { AsyncData } from "foldkit"
 import {
 	change,
@@ -15,9 +15,9 @@ import {
 	withViewInputs,
 } from "foldkit/scene"
 import { describe, expect, test } from "vitest"
-import { ThemeMessage, ResolveThemeColors } from "../../../charts/theme-colors"
-import { toLoadFailure } from "../../../data/load-failure"
-import { requestKey } from "../../../data/request-key"
+import { ThemeMessage, ResolveThemeColors } from "@maple/views/charts/theme-colors"
+import { toLoadFailure } from "@maple/views/data/load-failure"
+import { requestKey } from "@maple/views/data/request-key"
 import { PageOutMessage, type PageContext } from "../../contract"
 import {
 	FetchAnomalies,
@@ -58,7 +58,7 @@ const row = (serviceName: string, environment = "production", serviceNamespace =
 })
 
 const names = (commands: ReadonlyArray<{ readonly name: string }> | undefined) =>
-	(commands ?? []).map(({ name }) => name)
+	Arr.map(commands ?? [], ({ name }) => name)
 
 const overviewKey = (input = overviewInput({}, window, null)) =>
 	requestKey(orgId, "getServiceOverview", { data: input })
@@ -88,7 +88,7 @@ const loaded = (rows: ReadonlyArray<ServiceRow>): Model => {
 		Message.CompletedLoadChartRuntime(),
 		Message.ResolvedThemeColors({ colors: {} }),
 	]
-	return steps.reduce((model, message) => pageUpdate(model, message).model, base)
+	return Arr.reduce(steps, base, (model, message) => pageUpdate(model, message).model)
 }
 
 const themeResolved = () =>
@@ -111,15 +111,17 @@ describe("services list", () => {
 			entered,
 			Message.CompletedResolveWindow({ window, nowMs: NOW, mode: "Load" }),
 		)
-		expect(names(resolved.commands)).toEqual(expect.arrayContaining([
-			FetchOverview.name,
-			FetchSparklines.name,
-			FetchFacets.name,
-			FetchBaseline.name,
-			FetchAnomalies.name,
-		]))
-		const fetch = resolved.commands?.find(({ name }) => name === FetchOverview.name)
-		expect(fetch?.args).toMatchObject({
+		expect(names(resolved.commands)).toEqual(
+			expect.arrayContaining([
+				FetchOverview.name,
+				FetchSparklines.name,
+				FetchFacets.name,
+				FetchBaseline.name,
+				FetchAnomalies.name,
+			]),
+		)
+		const fetch = Arr.findFirst(resolved.commands ?? [], ({ name }) => name === FetchOverview.name)
+		expect(Option.getOrUndefined(fetch)?.args).toMatchObject({
 			input: { startTime: "2026-10-01 00:00:00", endTime: "2026-10-01 12:00:00" },
 		})
 		expect(resolved.model.overview.key).toBe(overviewKey())
@@ -171,7 +173,7 @@ describe("services list", () => {
 		]
 		scene(
 			{ update: pageUpdate, view },
-			given(steps.reduce((model, message) => pageUpdate(model, message).model, base)),
+			given(Arr.reduce(steps, base, (model, message) => pageUpdate(model, message).model)),
 			themeResolved(),
 			Mount.resolve(MountTable, Message.PaintedTable()),
 			expectView(role("table", { name: "Services" })).toExist(),

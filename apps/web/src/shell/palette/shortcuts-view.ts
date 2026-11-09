@@ -1,44 +1,45 @@
 import { Mount } from "foldkit"
 import type { Html, HtmlBuilder } from "foldkit/html"
-import type * as Dialog from "../../ui/dialog"
+import type * as Dialog from "@maple/views/ui/dialog"
 import {
 	dialogDescription,
 	dialogHeader,
 	dialogPanel,
 	dialogTitle,
 	view as dialogView,
-} from "../../ui/dialog-view"
-import { kbd, kbdGroup } from "../../ui/display"
-import { eyebrow } from "../../ui/eyebrow"
-import { MeasurePaletteList } from "./command"
+} from "@maple/views/ui/dialog-view"
+import { kbd, kbdGroup } from "@maple/views/ui/display"
+import { eyebrow } from "@maple/views/ui/eyebrow"
+import { MeasureCommandList } from "@maple/views/ui/command"
 import { displayAlternates, type Platform, SHORTCUT_GROUPS, SHORTCUTS, type ShortcutDef } from "./shortcuts"
+import { typography } from "@maple/views/ui/typography"
+import { hstack } from "@maple/views/ui/stack"
+import { Array as Arr } from "effect"
 
 // The keyboard shortcuts dialog.
 
 export const SHORTCUTS_DIALOG_ID = "keyboard-shortcuts"
 
 const row = <M>(h: HtmlBuilder<M>, def: ShortcutDef, platform: Platform): Html =>
-	h.div(
-		[h.Class("flex items-center justify-between gap-4 py-1.5")],
-		[
-			h.span([h.Class("text-sm")], [def.label]),
-			h.span(
-				[h.Class("flex shrink-0 items-center gap-1.5")],
-				displayAlternates(def, platform).flatMap((tokens, index) => [
-					...(index > 0 ? [h.span([h.Class("text-muted-foreground text-xs")], ["or"])] : []),
-					kbdGroup(
-						h,
-						undefined,
-						tokens.map((token) => kbd(h, undefined, [token])),
-					),
-				]),
-			),
-		],
-	)
+	hstack(h, { gap: "4", align: "center", justify: "between", className: "py-1.5" }, [
+		typography(h, { size: "sm" }, [def.label]),
+		hstack(
+			h,
+			{ gap: "1.5", as: "span", className: "shrink-0" },
+			Arr.flatMap(displayAlternates(def, platform), (tokens, index) => [
+				...(index > 0 ? [typography(h, { size: "xs", tone: "muted" }, ["or"])] : []),
+				kbdGroup(
+					h,
+					undefined,
+					Arr.map(tokens, (token) => kbd(h, undefined, [token])),
+				),
+			]),
+		),
+	])
 
 const groups = <M>(h: HtmlBuilder<M>, platform: Platform): ReadonlyArray<Html> =>
-	SHORTCUT_GROUPS.flatMap((group) => {
-		const defs = SHORTCUTS.filter((def) => def.group === group)
+	Arr.flatMap(SHORTCUT_GROUPS, (group) => {
+		const defs = Arr.filter(SHORTCUTS, (def) => def.group === group)
 		return defs.length === 0
 			? []
 			: [
@@ -48,7 +49,7 @@ const groups = <M>(h: HtmlBuilder<M>, platform: Platform): ReadonlyArray<Html> =
 							eyebrow(h, { variant: "label", className: "mb-1", as: "h3" }, [group]),
 							h.div(
 								[h.Class("divide-y divide-border-subtle")],
-								defs.map((def) => row(h, def, platform)),
+								Arr.map(defs, (def) => row(h, def, platform)),
 							),
 						],
 					),
@@ -88,7 +89,7 @@ export const shortcutsDialogView = <M>(
 					undefined,
 					{
 						viewportAttributes: [
-							h.OnMount(Mount.mapMessage(MeasurePaletteList(), () => onMeasured)),
+							h.OnMount(Mount.mapMessage(MeasureCommandList(), () => onMeasured)),
 						],
 					},
 				),

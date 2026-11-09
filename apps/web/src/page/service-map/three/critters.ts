@@ -17,6 +17,7 @@ import {
 } from "../../../components/service-map/three/maple-scenery-sketch"
 import * as THREE from "three"
 import { group, inkBox, inkSolid, mesh, type Running, type Scope, sketchDrawing, type Vec3 } from "./kit"
+import { Array as Arr } from "effect"
 
 /** Seconds of motion so far; frozen while paused. */
 export function clock(scope: Scope, running: Running): { value: number } {
@@ -43,6 +44,9 @@ const AWAY = 25
  * `null` when the duck is off the lake, so the click is a plain miss. */
 export type DuckClick = { readonly seconds: number; readonly alarm: boolean } | null
 
+/** Each duck's click hit box, mapped to what a click on it does. */
+export const duckClicks = new WeakMap<THREE.Object3D, () => DuckClick>()
+
 interface Duck {
 	readonly phase: number
 	readonly lane: number
@@ -58,7 +62,7 @@ interface Duck {
 
 /** Mallards paddle a steady loop round the lake. A click makes one hop and quack; a few quick
  * clicks and the duck flies off, gliding back in a while later. Each duck's hit box carries
- * `userData.quack`, which the scene's click handler calls. */
+ * `duckClicks` entry, which the scene's click handler calls. */
 export function ducks(
 	scope: Scope,
 	{
@@ -69,7 +73,7 @@ export function ducks(
 	}: { water: Waterway; floor: number; palette: InkPalette; running: Running },
 ): ReadonlyArray<THREE.Group> {
 	const elapsed = clock(scope, running)
-	const flock = [0.12, 0.16, 0.6].map((phase, i): Duck => ({
+	const flock = Arr.map([0.12, 0.16, 0.6], (phase, i): Duck => ({
 		phase,
 		lane: (hash(i, 8.1) - 0.5) * 0.7,
 		speed: 0.13,
@@ -107,7 +111,7 @@ export function ducks(
 				position: [0, 0.1, 0],
 			},
 		)
-		box.userData.quack = (): DuckClick => click(duck)
+		duckClicks.set(box, () => click(duck))
 		return box
 	}
 	// Wings hinge at the shoulders, folded out of sight until the duck takes off.
@@ -123,8 +127,8 @@ export function ducks(
 		hinge.visible = false
 		return hinge
 	}
-	const wings = flock.map(() => [wing(-1), wing(1)] as const)
-	const groups = flock.map((duck, i) =>
+	const wings = Arr.map(flock, () => [wing(-1), wing(1)] as const)
+	const groups = Arr.map(flock, (duck, i) =>
 		group({}, [group({}, [sketchDrawing(draw, palette.ink), wings[i]]), target(duck)]),
 	)
 	/** Poses the body for a flight `u` of the way out (0 on the water, 1 gone), forward along +x,
@@ -151,11 +155,11 @@ export function ducks(
 	}
 	scope.frames.push(() => {
 		const t = now()
-		flock.forEach((duck, i) => {
+		Arr.forEach(flock, (duck, i) => {
 			const node = groups[i]
 			const body = node?.children[0]
 			const pair = wings[i]
-			if (!node || !body || !pair) return
+			if (node === undefined || body === undefined || pair === undefined) return
 			const s = (duck.phase * water.length + elapsed.value * duck.speed) % water.length
 			const point = water.at(s)
 			// The tangent is the outward normal turned a quarter: (-nz, nx).
@@ -180,7 +184,7 @@ export function ducks(
 				body.scale.setScalar(1)
 				body.rotation.set(0, 0, 0)
 				body.position.set(0, 0, 0)
-				pair.forEach((hinge) => {
+				Arr.forEach(pair, (hinge) => {
 					hinge.visible = false
 				})
 			}
@@ -254,7 +258,7 @@ export function birds(
 	)
 	instanced.frustumCulled = false
 	scope.frames.push(() => {
-		flight.forEach((bird, i) => {
+		Arr.forEach(flight, (bird, i) => {
 			const span = bird.lane === 0 ? maxX - minX + 12 : maxZ - minZ + 12
 			const u = (bird.phase + (elapsed.value * 0.3) / span) % 1
 			const [x, y, z] = route(bird.lane, u)
@@ -295,11 +299,11 @@ export function campfire(
 			)
 		: null
 	if (glow) glow.renderOrder = 1
-	const puffs = [0, 1, 2].map(() =>
+	const puffs = Arr.map([0, 1, 2], () =>
 		group({}, [inkSolid({ geometry: puff, color: palette.cloud, ink: palette.ink })]),
 	)
 	scope.frames.push(() => {
-		puffs.forEach((node, i) => {
+		Arr.forEach(puffs, (node, i) => {
 			const t = (elapsed.value * 0.26 + i / 3) % 1
 			node.position.set(-t * 0.3, 0.3 + t * 1.1, -t * 0.2)
 			node.scale.setScalar(Math.max(0.001, Math.sin(Math.PI * t) * (0.7 + t * 0.6)))

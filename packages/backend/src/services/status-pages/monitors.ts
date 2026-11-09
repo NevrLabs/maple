@@ -4,7 +4,7 @@ import { UptimeMonitors } from "@maple/db/tables"
 import { StatusPageValidationError } from "@maple/domain/http"
 import { UptimeMonitorPublicId } from "@maple/domain/http/v2"
 import type { OrgId, UptimeMonitorId } from "@maple/domain/primitives"
-import { Effect, Schema } from "effect"
+import { Effect, Option, Schema, Array as Arr } from "effect"
 
 const encodeMonitorId = Schema.encodeSync(UptimeMonitorPublicId)
 
@@ -21,10 +21,10 @@ export const ensureMonitorsInOrg = Effect.fnUntraced(function* (
 			.select("id")
 			.where(($) => [$.orgId.eq(orgId), $.id.in_(first, ...rest)]),
 	)
-	const known = new Set(found.map((row) => row.id))
-	const missing = monitorIds.find((id) => !known.has(id))
-	if (missing !== undefined)
+	const known = new Set(Arr.map(found, (row) => row.id))
+	const missing = Arr.findFirst(monitorIds, (id) => !known.has(id))
+	if (Option.isSome(missing))
 		return yield* new StatusPageValidationError({
-			message: `Unknown uptime monitor ${encodeMonitorId(missing)}`,
+			message: `Unknown uptime monitor ${encodeMonitorId(missing.value)}`,
 		})
 })

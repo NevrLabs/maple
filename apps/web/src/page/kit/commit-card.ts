@@ -2,15 +2,19 @@ import { shortId } from "@maple/ui/lib/ids"
 import { cn } from "@maple/ui/lib/utils"
 import { badgeVariants } from "@maple/ui/styles/ui/badge"
 import { copyableBadgeStyles } from "@maple/ui/styles/ui/copyable-badge"
-import { Effect, Predicate, Schema } from "effect"
+import { Effect, Predicate, Schema, String as Str, Option } from "effect"
 import { AsyncData } from "foldkit"
 import type { Html, HtmlBuilder } from "foldkit/html"
-import { VcsCommitDetailResponse, VcsCommitDetailsResponse } from "@maple/domain/http"
+import {
+	IntegrationsNotConnectedError,
+	VcsCommitDetailResponse,
+	VcsCommitDetailsResponse,
+} from "@maple/domain/http"
 import { IdleTtl } from "../../data/idle-ttl"
 import { ReadCache } from "../../data/read-cache"
-import { requestKey, type RequestKey } from "../../data/request-key"
+import { orgOfKey, requestKey, type RequestKey } from "@maple/views/data/request-key"
 import { MapleInternalApiClient } from "../../platform/api-clients"
-import { skeleton } from "../../ui/skeleton"
+import { skeleton } from "@maple/views/ui/skeleton"
 import { relativeTime } from "./relative-time"
 
 // The commit SHA hover card: the body
@@ -53,14 +57,52 @@ export const commitDetailKey = (orgId: string, sha: string): RequestKey =>
 export const commitDetailsKey = (orgId: string, shasKey: string): RequestKey =>
 	requestKey(orgId, "vcsCommitDetails", { shas: shasKey })
 
+/** An org with no repository connected: every commit lookup answers the same 409. */
+const notConnectedKey = (orgId: string): RequestKey => requestKey(orgId, "vcsNotConnected", {})
+const NotConnected = Schema.Literal(true)
+const isNotConnected = (error: unknown): boolean =>
+	Str.endsWith("IntegrationsNotConnectedError")(errorTag(error))
+
+/**
+ * Once a lookup learns the org has no repository connected, later lookups answer from that memo for
+ * its TTL (counted from the 409, not from each check) instead of sending another request. A refresh
+ * always asks.
+ */
+const unlessNotConnected = <A, E, R>(key: RequestKey, lookup: Effect.Effect<A, E, R>, refresh = false) =>
+	Effect.gen(function* () {
+		const cache = yield* ReadCache
+		const memoKey = notConnectedKey(orgOfKey(key))
+		const memo = refresh ? Option.none() : yield* cache.peek(memoKey, NotConnected)
+		if (Option.isSome(memo))
+			return yield* new IntegrationsNotConnectedError({ message: "No repository is connected" })
+		return yield* lookup.pipe(
+			Effect.tapError((error) =>
+				isNotConnected(error)
+					? cache.read(
+							{
+								key: memoKey,
+								idleTtlMs: IdleTtl.commitDetail,
+								schema: NotConnected,
+								refresh: true,
+							},
+							Effect.succeed(true as const),
+						)
+					: Effect.void,
+			),
+		)
+	})
+
 /** `integrations.vcsCommitDetail` through the read cache, under `commitDetailKey`. */
 export const readCommitDetail = (key: RequestKey, sha: string) =>
 	Effect.gen(function* () {
 		const cache = yield* ReadCache
 		const client = yield* MapleInternalApiClient
-		return yield* cache.read(
-			{ key, idleTtlMs: IdleTtl.commitDetail, schema: VcsCommitDetailResponse },
-			client.integrations.vcsCommitDetail({ params: { sha } }),
+		return yield* unlessNotConnected(
+			key,
+			cache.read(
+				{ key, idleTtlMs: IdleTtl.commitDetail, schema: VcsCommitDetailResponse },
+				client.integrations.vcsCommitDetail({ params: { sha } }),
+			),
 		)
 	})
 
@@ -69,9 +111,13 @@ export const readCommitDetails = (key: RequestKey, shas: string, refresh = false
 	Effect.gen(function* () {
 		const cache = yield* ReadCache
 		const client = yield* MapleInternalApiClient
-		return yield* cache.read(
-			{ key, idleTtlMs: IdleTtl.commitDetail, schema: VcsCommitDetailsResponse, refresh },
-			client.integrations.vcsCommitDetails({ query: { shas } }),
+		return yield* unlessNotConnected(
+			key,
+			cache.read(
+				{ key, idleTtlMs: IdleTtl.commitDetail, schema: VcsCommitDetailsResponse, refresh },
+				client.integrations.vcsCommitDetails({ query: { shas } }),
+			),
+			refresh,
 		)
 	})
 
@@ -111,7 +157,12 @@ const externalText = <M>(h: HtmlBuilder<M>, href: string | null, className: stri
 					h.Href(href),
 					h.Target("_blank"),
 					h.Rel("noreferrer noopener"),
-					h.Class(cn("hover:text-foreground active:text-foreground hover:underline active:underline", className)),
+					h.Class(
+						cn(
+							"hover:text-foreground active:text-foreground hover:underline active:underline",
+							className,
+						),
+					),
 				],
 				[text],
 			)
@@ -126,7 +177,7 @@ const avatar = <M>(h: HtmlBuilder<M>, url: string | null, name: string, href: st
 							"size-7 flex shrink-0 items-center justify-center rounded-full bg-muted text-2xs font-medium uppercase text-muted-foreground",
 						),
 					],
-					[name.slice(0, 2)],
+					[Str.slice(0, 2)(name)],
 				)
 			: h.img([
 					h.Src(url),
@@ -158,9 +209,15 @@ const commitCard = <M>(
 	clock: Clock,
 	onCopy: M | undefined,
 ): Html => {
-	const newline = commit.message.indexOf("\n")
-	const title = newline === -1 ? commit.message : commit.message.slice(0, newline)
-	const body = newline === -1 ? "" : commit.message.slice(newline + 1).trim()
+	const newline = Str.indexOf("\n")(commit.message)
+	const title = Option.match(newline, {
+		onNone: () => commit.message,
+		onSome: (index) => Str.slice(0, index)(commit.message),
+	})
+	const body = Option.match(newline, {
+		onNone: () => "",
+		onSome: (index) => Str.trim(Str.slice(index + 1)(commit.message)),
+	})
 	const providerLabel = commit.provider === "github" ? "GitHub" : commit.provider
 	const author = commit.authorLogin ?? commit.authorName ?? "Unknown author"
 	const profileHref =
@@ -176,7 +233,10 @@ const commitCard = <M>(
 			h.div(
 				[h.Class("flex flex-col gap-1.5 p-3.5")],
 				[
-					h.p([h.Class(cn("font-medium leading-snug text-foreground", "line-clamp-2 text-sm"))], [title]),
+					h.p(
+						[h.Class(cn("font-medium leading-snug text-foreground", "line-clamp-2 text-sm"))],
+						[title],
+					),
 					...(body === ""
 						? []
 						: [h.p([h.Class("line-clamp-4 whitespace-pre-line text-muted-foreground")], [body])]),
@@ -210,7 +270,6 @@ const commitCard = <M>(
 							relativeTime(h, {
 								value: commit.committedAt,
 								...clock,
-								tooltip: "title",
 								className: "cursor-default",
 							}),
 						],
@@ -270,15 +329,15 @@ const commitSkeleton = <M>(h: HtmlBuilder<M>): Html =>
 const describeError = (
 	tag: string,
 ): Readonly<{ title: string; detail: string; action?: "connect" | "manage" }> =>
-	tag.endsWith("VcsCommitShaInvalidError")
+	Str.endsWith("VcsCommitShaInvalidError")(tag)
 		? { title: "Non-standard commit reference", detail: "Not a resolvable git SHA." }
-		: tag.endsWith("VcsCommitNotFoundError")
+		: Str.endsWith("VcsCommitNotFoundError")(tag)
 			? {
 					title: "Commit not found",
 					detail: "Maple has no record of this commit. Make sure its repository is connected and Maple still has access to it.",
 					action: "manage",
 				}
-			: tag.endsWith("IntegrationsNotConnectedError")
+			: Str.endsWith("IntegrationsNotConnectedError")(tag)
 				? {
 						title: "No repository connected",
 						detail: "Connect a repository so Maple can resolve commits to their author, message, and repo.",
@@ -286,7 +345,8 @@ const describeError = (
 					}
 				: { title: "Couldn't load commit", detail: "Try again in a moment." }
 
-const ACTION_CLASS = "mt-0.5 inline-flex w-fit items-center gap-1 font-medium text-primary hover:underline active:underline"
+const ACTION_CLASS =
+	"mt-0.5 inline-flex w-fit items-center gap-1 font-medium text-primary hover:underline active:underline"
 
 /** `CommitMessage` (not compact). */
 const commitMessage = <M>(h: HtmlBuilder<M>, tag: string): Html => {

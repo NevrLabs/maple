@@ -3,13 +3,13 @@
 # Root disk is ~95% full: all build state + contexts live on DeepVault NFS (/mnt/deepvault/maple-build);
 # runtime images ship BUNDLES (bun build), never node_modules.
 set -euo pipefail
-SRC=~/src/maple
-OUT=/mnt/deepvault/maple-build
-BUN=~/.bun/bin/bun
+SRC=${SRC:-$(git -C "$(dirname "$0")" rev-parse --show-toplevel)}
+OUT=${OUT:-/mnt/deepvault/maple-build}
+BUN=${BUN:-$HOME/.bun/bin/bun}
 mkdir -p $OUT/cargo-target $OUT/go $OUT/ctx
-TAG=$(git -C $SRC rev-parse --short HEAD)
+TAG=${TAG:-$(git -C "$SRC" rev-parse --short HEAD)}
 echo "building tag=$TAG"
-EXT=(-e "cloudflare:*" -e vite -e "@vitejs/*" -e vitest -e "@cloudflare/vite-plugin" -e wrangler -e miniflare -e esbuild -e rolldown -e lightningcss -e "@rolldown/*")
+EXT=(-e "cloudflare:*" -e vite -e "@vitejs/*" -e vitest -e "@cloudflare/vite-plugin" -e wrangler -e miniflare -e esbuild -e rolldown -e lightningcss -e "@rolldown/*" -e "@alchemy.run/frontend-frameworks/astro/config" -e react-devtools-core)
 
 build_selfhost() {
   echo "== selfhost bundles (api, alerting, electric-sync, scraper, status, pg-migrate, ch-migrate)"

@@ -1,19 +1,23 @@
 import type { AiSessionSpan } from "@maple/domain/http"
 import { callMetaLine, type SpanMessage, type SpanMessagePart } from "@maple/agent-sessions"
 import { cn } from "@maple/ui/lib/utils"
-import { Option } from "effect"
+import { Option, Array as Arr, String as Str } from "effect"
 import type { Html, HtmlBuilder } from "foldkit/html"
-import { tryParseJson } from "../../../lib/display-text"
-import { emptyMessage } from "../../../ui/empty"
-import { eyebrow } from "../../../ui/eyebrow"
-import { icon } from "../../../ui/icon"
-import { panel } from "../../../ui/panel"
+import { tryParseJson } from "@maple/views/lib/display-text"
+import { separator } from "@maple/views/ui/display"
+import { emptyMessage } from "@maple/views/ui/empty"
+import { eyebrow } from "@maple/views/ui/eyebrow"
+import { icon } from "@maple/views/ui/icon"
+import { panel } from "@maple/views/ui/panel"
+import { pressable } from "@maple/views/ui/pressable"
 import { firstLine, previewOf } from "./clamped-text"
 import { Message } from "./message"
 import type { Model } from "./model"
 import { disclosed, jsonPayload, messageBody, viewSwitch } from "./payload-view"
 import { clampedBody, payloadCopyButton } from "./transcript-kit"
 import { shownMarkdown } from "./transcript-rows"
+import { hstack, vstack } from "@maple/views/ui/stack"
+import { typography } from "@maple/views/ui/typography"
 
 // The span expansion's Messages tab. Its local state (open,
 // raw) lives in the page's `openRows` under the popover's key prefix, reset when the span changes.
@@ -33,20 +37,26 @@ const ROLE_TEXT = new Map([
 	["tool", "text-chart-4"],
 ])
 
-const roleColor = (role: string): string => ROLE_TEXT.get(role.toLowerCase()) ?? "text-muted-foreground"
+const roleColor = (role: string): string => ROLE_TEXT.get(Str.toLowerCase(role)) ?? "text-muted-foreground"
 
 /** A message's parts as one preview body; reasoning is labelled rather than dropped. */
 const collapsedText = (parts: ReadonlyArray<SpanMessagePart>): string =>
-	parts
-		.map((part) => {
-			if (part.kind === "text") return part.text
-			if (part.kind === "reasoning")
-				return part.text === undefined ? "[thinking, no text captured]" : `THINKING\n${part.text}`
-			return ""
-		})
-		.filter((text) => text !== "")
-		.join("\n")
-		.trim()
+	Str.trim(
+		Arr.join(
+			Arr.filter(
+				Arr.map(parts, (part) => {
+					if (part.kind === "text") return part.text
+					if (part.kind === "reasoning")
+						return part.text === undefined
+							? "[thinking, no text captured]"
+							: `THINKING\n${part.text}`
+					return ""
+				}),
+				(text) => text !== "",
+			),
+			"\n",
+		),
+	)
 
 /** A clamped panel body, keyed for its expansion and measured overflow. */
 const panelBody = (
@@ -74,33 +84,37 @@ export const payloadCard = (
 	h.div(
 		[h.Class("min-w-0 overflow-hidden rounded-md border border-border-subtle")],
 		[
-			h.div(
-				[h.Class("flex items-center gap-2 bg-surface-sunken px-2.5 py-1.5")],
-				[
-					h.span([h.AriaHidden(true), h.Class("size-1.5 shrink-0 rounded-xs bg-chart-4")], []),
-					h.span([h.Class("shrink-0 font-medium font-mono text-chart-4 text-xs")], [options.label]),
-					...(options.name === undefined
-						? []
-						: [
-								h.span(
-									[h.Class("min-w-0 truncate font-mono text-foreground text-xs")],
-									[options.name],
-								),
-							]),
-					...(options.meta === undefined
-						? []
-						: [
-								h.span(
-									[
-										h.Class(
-											"ml-auto min-w-0 truncate font-mono text-2xs text-foreground-subtle",
-										),
-									],
-									[options.meta],
-								),
-							]),
-				],
-			),
+			hstack(h, { gap: "2", align: "center", className: "bg-surface-sunken px-2.5 py-1.5" }, [
+				h.span([h.AriaHidden(true), h.Class("size-1.5 shrink-0 rounded-xs bg-chart-4")], []),
+				h.span([h.Class("shrink-0 font-medium font-mono text-chart-4 text-xs")], [options.label]),
+				...(options.name === undefined
+					? []
+					: [
+							typography(
+								h,
+								{
+									size: "xs",
+									tone: "foreground",
+									mono: true,
+									truncate: true,
+									className: "min-w-0",
+								},
+								[options.name],
+							),
+						]),
+				...(options.meta === undefined
+					? []
+					: [
+							h.span(
+								[
+									h.Class(
+										"ml-auto min-w-0 truncate font-mono text-2xs text-foreground-subtle",
+									),
+								],
+								[options.meta],
+							),
+						]),
+			]),
 			...(options.body === undefined
 				? []
 				: [payloadBody(h, model, options.body, options.label, options.key)]),
@@ -110,8 +124,13 @@ export const payloadCard = (
 const payloadBody = (h: H, model: Model, text: string, copyLabel: string, key: string): Html => {
 	const { formatted, isJson } = jsonPayload(text)
 	const isRaw = disclosed(model.openRows, `${key}:raw`, false)
-	return h.div(
-		[h.Class("flex items-start gap-1.5 border-border-subtle border-t bg-background/50 px-2.5 py-2")],
+	return hstack(
+		h,
+		{
+			gap: "1.5",
+			align: "start",
+			className: "border-border-subtle border-t bg-background/50 px-2.5 py-2",
+		},
 		[
 			h.div(
 				[h.Class("min-w-0 grow")],
@@ -151,14 +170,11 @@ const reasoningPart = (
 		[
 			eyebrow(h, { variant: "mono", className: "text-chart-5" }, ["Reasoning"]),
 			part.redacted || part.text === undefined
-				? h.p(
-						[h.Class("text-muted-foreground text-xs italic")],
-						[
-							part.redacted
-								? "Redacted by the provider. The reasoning was returned sealed."
-								: "No reasoning text was captured.",
-						],
-					)
+				? typography(h, { size: "xs", tone: "muted", as: "p", className: "italic" }, [
+						part.redacted
+							? "Redacted by the provider. The reasoning was returned sealed."
+							: "No reasoning text was captured.",
+					])
 				: clampedBody(h, model, { text: part.text, textKey: `${key}:text`, clampLines: PANEL_CLAMP }),
 		],
 	)
@@ -184,39 +200,36 @@ const messagePart = (h: H, model: Model, part: SpanMessagePart, isRaw: boolean, 
 
 const messageBlock = (h: H, model: Model, message: SpanMessage, span: AiSessionSpan, key: string): Html => {
 	const isRaw = disclosed(model.openRows, `${key}:raw`, false)
-	const hasText = message.parts.some((part) => part.kind === "text")
-	const rendered = message.parts.some(
+	const hasText = Arr.some(message.parts, (part) => part.kind === "text")
+	const rendered = Arr.some(
+		message.parts,
 		(part) => part.kind === "text" && Option.isNone(tryParseJson(part.text)),
 	)
 		? "md"
 		: "json"
-	return h.div(
-		[h.Class("flex min-w-0 flex-col gap-1.5")],
-		[
-			h.div(
-				[h.Class("flex items-center gap-2.5")],
-				[
-					eyebrow(h, { variant: "mono", className: cn("shrink-0", roleColor(message.role)) }, [
-						message.role,
-					]),
-					...(message.origin === "output"
-						? [
-								h.span(
-									[h.Class("min-w-0 truncate font-mono text-2xs text-foreground-subtle")],
-									[callMetaLine(span)],
-								),
-							]
-						: []),
-					h.span([h.AriaHidden(true), h.Class("h-px min-w-4 flex-1 bg-border-subtle")], []),
-					...(hasText ? [viewSwitch(h, { rendered, isRaw, rawKey: `${key}:raw` })] : []),
-				],
-			),
-			h.div(
-				[h.Class("flex min-w-0 flex-col gap-2")],
-				message.parts.map((part, index) => messagePart(h, model, part, isRaw, `${key}:${index}`)),
-			),
-		],
-	)
+	return vstack(h, { gap: "1.5", shrink: true }, [
+		hstack(h, { gap: "2.5" }, [
+			eyebrow(h, { variant: "mono", className: cn("shrink-0", roleColor(message.role)) }, [
+				message.role,
+			]),
+			...(message.origin === "output"
+				? [
+						typography(
+							h,
+							{ size: "2xs", tone: "subtle", mono: true, truncate: true, className: "min-w-0" },
+							[callMetaLine(span)],
+						),
+					]
+				: []),
+			separator(h, "horizontal", "min-w-4 flex-1 bg-border-subtle"),
+			...(hasText ? [viewSwitch(h, { rendered, isRaw, rawKey: `${key}:raw` })] : []),
+		]),
+		vstack(
+			h,
+			{ gap: "2", shrink: true },
+			Arr.map(message.parts, (part, index) => messagePart(h, model, part, isRaw, `${key}:${index}`)),
+		),
+	])
 }
 
 /** The markdown bodies the Messages tab lays out, for the parse `update` asks for. */
@@ -225,14 +238,14 @@ export const popoverMarkdown = (
 	messages: ReadonlyArray<SpanMessage>,
 	keyPrefix: string,
 ): ReadonlyArray<string> =>
-	messages.flatMap((message, index) => {
+	Arr.flatMap(messages, (message, index) => {
 		const key = `${keyPrefix}:msg${index}`
-		if (message.role.toLowerCase() === "system")
+		if (Str.toLowerCase(message.role) === "system")
 			return disclosed(model.openRows, key, false)
 				? shownMarkdown(model, key, collapsedText(message.parts))
 				: []
 		if (disclosed(model.openRows, `${key}:raw`, false)) return []
-		return message.parts.flatMap((part, partIndex) => {
+		return Arr.flatMap(message.parts, (part, partIndex) => {
 			if (part.kind !== "text" || messageBody(part.text).rendered !== "md") return []
 			const partKey = `${key}:${partIndex}`
 			return [disclosed(model.openRows, `${partKey}:text`, false) ? part.text : previewOf(part.text)]
@@ -251,10 +264,11 @@ export const messagesSection = (
 		? emptyMessage(h, {}, [
 				"No messages were captured on this span. Message capture is opt-in and off by default.",
 			])
-		: h.div(
-				[h.Class("flex flex-col gap-4 pb-1")],
-				messages.map((message, index) =>
-					message.role.toLowerCase() === "system"
+		: vstack(
+				h,
+				{ gap: "4", className: "pb-1" },
+				Arr.map(messages, (message, index) =>
+					Str.toLowerCase(message.role) === "system"
 						? systemMessageRow(h, model, message, `${keyPrefix}:msg${index}`)
 						: messageBlock(h, model, message, span, `${keyPrefix}:msg${index}`),
 				),
@@ -266,13 +280,13 @@ const systemMessageRow = (h: H, model: Model, message: SpanMessage, key: string)
 	const isRaw = disclosed(model.openRows, `${key}:raw`, false)
 	const text = collapsedText(message.parts)
 	return panel(h, { tone: "muted", className: "border-border-subtle" }, [
-		h.button(
-			[
-				h.AriaExpanded(isOpen),
-				h.Class("flex w-full cursor-pointer items-center gap-2 px-2.5 py-2 text-left"),
-				h.Type("button"),
-				h.OnClick(Message.ToggledRow({ key })),
-			],
+		pressable(
+			h,
+			{
+				onClick: Message.ToggledRow({ key }),
+				className: "flex w-full items-center gap-2 px-2.5 py-2 text-left",
+				attributes: [h.AriaExpanded(isOpen)],
+			},
 			[
 				icon(h, isOpen ? "ChevronDownIcon" : "ChevronRightIcon", {
 					size: 12,
@@ -282,8 +296,9 @@ const systemMessageRow = (h: H, model: Model, message: SpanMessage, key: string)
 				...(isOpen
 					? []
 					: [
-							h.span(
-								[h.Class("min-w-0 truncate text-muted-foreground text-xs")],
+							typography(
+								h,
+								{ size: "xs", tone: "muted", truncate: true, className: "min-w-0" },
 								[firstLine(text)],
 							),
 						]),
@@ -291,25 +306,22 @@ const systemMessageRow = (h: H, model: Model, message: SpanMessage, key: string)
 		),
 		...(isOpen
 			? [
-					h.div(
-						[h.Class("flex items-start gap-1.5 px-2.5 pb-2.5 pl-8")],
-						[
-							h.div([h.Class("min-w-0 grow")], [panelBody(h, model, { text, key, isRaw })]),
-							viewSwitch(h, {
-								rendered: messageBody(text).rendered,
-								isRaw,
-								rawKey: `${key}:raw`,
-								className: "self-start",
-							}),
-							payloadCopyButton(h, model, {
-								key: `${key}:copy`,
-								value: text,
-								label: "system message",
-								className: "-my-1 shrink-0",
-								hasTooltip: false,
-							}),
-						],
-					),
+					hstack(h, { gap: "1.5", align: "start", className: "px-2.5 pb-2.5 pl-8" }, [
+						h.div([h.Class("min-w-0 grow")], [panelBody(h, model, { text, key, isRaw })]),
+						viewSwitch(h, {
+							rendered: messageBody(text).rendered,
+							isRaw,
+							rawKey: `${key}:raw`,
+							className: "self-start",
+						}),
+						payloadCopyButton(h, model, {
+							key: `${key}:copy`,
+							value: text,
+							label: "system message",
+							className: "-my-1 shrink-0",
+							hasTooltip: false,
+						}),
+					]),
 				]
 			: []),
 	])

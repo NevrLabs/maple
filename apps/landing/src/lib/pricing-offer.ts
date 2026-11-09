@@ -16,6 +16,7 @@
 import { PRICING_CARD_FEATURE_IDS, isPricingCardFeature } from "@maple/domain/billing"
 import { Autumn } from "autumn-js"
 import * as m from "../paraglide/messages.js"
+import { Array as Arr } from "effect"
 
 const AUTUMN_API_VERSION = "2.3.0"
 
@@ -115,30 +116,34 @@ export async function getOffer(): Promise<Offer> {
 			xApiVersion: AUTUMN_API_VERSION,
 		})
 		const result = await autumn.plans.list()
-		const products = (result.list ?? []).filter((p) => !p.addOn)
+		const products = Arr.filter(result.list ?? [], (p) => !p.addOn)
 
 		if (products.length > 1) {
 			// The layout renders one offer. A second tier must fail loudly at build
 			// time rather than silently vanishing off the pricing page.
 			console.warn(
-				`[pricing-offer] Autumn returned ${products.length} non-add-on plans (${products
-					.map((p) => p.id)
-					.join(", ")}); only the first is rendered. Update PricingTable for multiple tiers.`,
+				`[pricing-offer] Autumn returned ${products.length} non-add-on plans (${Arr.join(
+					Arr.map(products, (p) => p.id),
+					", ",
+				)}); only the first is rendered. Update PricingTable for multiple tiers.`,
 			)
 		}
 
 		const product = products[0]
 
-		if (product) {
+		if (product !== undefined) {
 			return {
 				name: product.name,
 				price: product.price?.amount ?? 0,
-				interval: product.price?.interval ? `/${product.price.interval}` : undefined,
+				interval:
+					product.price?.interval == null || product.price.interval === ""
+						? undefined
+						: `/${product.price.interval}`,
 				hasTrial: !!product.freeTrial,
 				trialDuration: product.freeTrial?.durationLength,
-				allotments: product.items
-					.filter((item) => isPricingCardFeature(item.featureId))
-					.map((item) => {
+				allotments: Arr.map(
+					Arr.filter(product.items, (item) => isPricingCardFeature(item.featureId)),
+					(item) => {
 						const featureId = item.featureId
 						const unit = unitFor(featureId)
 						const billingUnits = Math.max(1, item.price?.billingUnits ?? 1)
@@ -153,8 +158,8 @@ export async function getOffer(): Promise<Offer> {
 							rate: amount == null ? undefined : (amount / billingUnits) * rateUnits,
 							rateUnits,
 						}
-					})
-					.sort((a, b) => dataFeatureRank(a.featureId) - dataFeatureRank(b.featureId)),
+					},
+				).sort((a, b) => dataFeatureRank(a.featureId) - dataFeatureRank(b.featureId)),
 				ctaLabel: product.freeTrial
 					? m.pricing_start_trial({ duration: String(product.freeTrial.durationLength) })
 					: m.cta_get_started(),
@@ -171,10 +176,10 @@ export async function getOffer(): Promise<Offer> {
 		hasTrial: true,
 		trialDuration: 14,
 		allotments: [
-			{ featureId: "logs", label: labels.logs!, unit: "gb", included: 100, rate: 0.3, rateUnits: 1 },
+			{ featureId: "logs", label: labels.logs, unit: "gb", included: 100, rate: 0.3, rateUnits: 1 },
 			{
 				featureId: "traces",
-				label: labels.traces!,
+				label: labels.traces,
 				unit: "gb",
 				included: 100,
 				rate: 0.3,
@@ -182,7 +187,7 @@ export async function getOffer(): Promise<Offer> {
 			},
 			{
 				featureId: "metrics",
-				label: labels.metrics!,
+				label: labels.metrics,
 				unit: "gb",
 				included: 100,
 				rate: 0.3,
@@ -190,7 +195,7 @@ export async function getOffer(): Promise<Offer> {
 			},
 			{
 				featureId: "browser_sessions",
-				label: labels.browser_sessions!,
+				label: labels.browser_sessions,
 				unit: "sessions",
 				included: 5000,
 				rate: 0.002,
@@ -198,7 +203,7 @@ export async function getOffer(): Promise<Offer> {
 			},
 			{
 				featureId: "product_events",
-				label: labels.product_events!,
+				label: labels.product_events,
 				unit: "events",
 				// Mirrors `apps/api/autumn.config.ts`: $0.005 per 1,000, quoted per 1M.
 				included: 1_000_000,
@@ -207,7 +212,7 @@ export async function getOffer(): Promise<Offer> {
 			},
 			{
 				featureId: "ai_credits",
-				label: labels.ai_credits!,
+				label: labels.ai_credits,
 				unit: "usd",
 				included: 10,
 				rate: 1,

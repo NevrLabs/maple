@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 
 import type { GcpBucketPoint } from "./charts"
 import { gcpRailFacts, gcpTraceGap, gcpTracedErrors, gcpWorkloadStrips } from "./workload-signals"
+import { Array as Arr, Option } from "effect"
 
 const BUCKET_SECONDS = 300
 const START_MS = Date.parse("2026-10-14T12:00:00.000Z")
@@ -29,7 +30,7 @@ const cloudRun = (
 	activeInstances: ReadonlyArray<number>,
 	serverErrors = 500,
 ): ReadonlyArray<GcpBucketPoint> =>
-	activeInstances.flatMap((active, index) => [
+	Arr.flatMap(activeInstances, (active, index) => [
 		point(index, REQUESTS, "2xx", 1000),
 		...(index === 2 || index === 3 ? [point(index, REQUESTS, "5xx", serverErrors)] : []),
 		point(index, INSTANCES, "active", active),
@@ -93,8 +94,8 @@ describe("gcpTracedErrors", () => {
 describe("gcpWorkloadStrips", () => {
 	it("counts Cloud Run's 5xx per bucket, with the window's total and share", () => {
 		const strips = gcpWorkloadStrips("cloudRun", cloudRun([4, 4, 4, 4, 4, 4]), WINDOW)
-		const serverErrors = strips.find((strip) => strip.label === "5xx")
-		expect(serverErrors?.rows.map((row) => row.value)).toEqual([0, 0, 500, 500, 0, 0])
+		const serverErrors = Option.getOrUndefined(Arr.findFirst(strips, (strip) => strip.label === "5xx"))
+		expect(Arr.map(serverErrors?.rows ?? [], (row) => row.value)).toEqual([0, 0, 500, 500, 0, 0])
 		expect(serverErrors?.summary).toEqual({ value: "1K", caption: "14.3% of 7K", alert: true })
 	})
 
@@ -103,7 +104,9 @@ describe("gcpWorkloadStrips", () => {
 			point(0, "gcp.cloud_run.request.duration", "0.95", 1.2),
 			point(0, "gcp.cloud_run.request.duration", "0.5", 0.2),
 		]
-		const latency = gcpWorkloadStrips("cloudRun", points, WINDOW).find((strip) => strip.id === "latency")
+		const latency = Option.getOrUndefined(
+			Arr.findFirst(gcpWorkloadStrips("cloudRun", points, WINDOW), (strip) => strip.id === "latency"),
+		)
 		expect(latency?.rows).toEqual([
 			{ bucket: at(0), attributeValue: "p95", value: 1200 },
 			{ bucket: at(0), attributeValue: "p50", value: 200 },
@@ -121,7 +124,7 @@ describe("gcpWorkloadStrips", () => {
 		]
 		const replica = [...primary, point(0, "gcp.cloud_sql.replication.lag", "", 4)]
 		const labels = (points: ReadonlyArray<GcpBucketPoint>) =>
-			gcpWorkloadStrips("cloudSql", points, WINDOW).map((strip) => strip.label)
+			Arr.map(gcpWorkloadStrips("cloudSql", points, WINDOW), (strip) => strip.label)
 		expect(labels(primary)).toEqual(["Connections", "CPU"])
 		expect(labels(insights)).toEqual(["Query latency", "Connections", "Lock wait", "CPU"])
 		expect(labels(replica)).toEqual(["Connections", "CPU", "Replica lag"])
@@ -133,7 +136,9 @@ describe("gcpWorkloadStrips", () => {
 			point(0, "gcp.cloud_sql.query.lock.time", "", 31),
 			point(0, "gcp.cloud_sql.query.io.time", "", 4),
 		]
-		const lock = gcpWorkloadStrips("cloudSql", points, WINDOW).find((strip) => strip.id === "lock-wait")
+		const lock = Option.getOrUndefined(
+			Arr.findFirst(gcpWorkloadStrips("cloudSql", points, WINDOW), (strip) => strip.id === "lock-wait"),
+		)
 		expect(lock?.rows).toEqual([{ bucket: at(0), attributeValue: "lock wait", value: 0.31 }])
 	})
 
@@ -144,10 +149,16 @@ describe("gcpWorkloadStrips", () => {
 			point(1, "gcp.cloud_sql.postgresql.connection.count", "active", 59),
 			point(1, "gcp.cloud_sql.postgresql.connection.count", "idle_in_transaction", 38),
 		]
-		const connections = gcpWorkloadStrips("cloudSql", points, WINDOW, 100).find(
-			(strip) => strip.id === "connections",
+		const connections = Option.getOrUndefined(
+			Arr.findFirst(
+				gcpWorkloadStrips("cloudSql", points, WINDOW, 100),
+				(strip) => strip.id === "connections",
+			),
 		)
-		expect(connections?.rows.map((row) => row.attributeValue)).toEqual(["active", "idle in transaction"])
+		expect(Arr.map(connections?.rows ?? [], (row) => row.attributeValue)).toEqual([
+			"active",
+			"idle in transaction",
+		])
 		expect(connections?.summary).toEqual({ value: "97", caption: "peak of 100 max", alert: true })
 	})
 
@@ -158,11 +169,14 @@ describe("gcpWorkloadStrips", () => {
 			point(0, "gcp.pubsub.subscription.push_requests", "ack", 90),
 			point(0, "gcp.pubsub.subscription.push_requests", "internal", 10),
 		]
-		expect(gcpWorkloadStrips("pubsub", pull, WINDOW).map((strip) => strip.label)).not.toContain(
+		expect(Arr.map(gcpWorkloadStrips("pubsub", pull, WINDOW), (strip) => strip.label)).not.toContain(
 			"Push failed",
 		)
-		const failed = gcpWorkloadStrips("pubsub", push, WINDOW).find(
-			(strip) => strip.label === "Push failed",
+		const failed = Option.getOrUndefined(
+			Arr.findFirst(
+				gcpWorkloadStrips("pubsub", push, WINDOW),
+				(strip) => strip.label === "Push failed",
+			),
 		)
 		expect(failed?.summary.value).toBe("10")
 	})

@@ -1,11 +1,22 @@
+import type { AdvisorySeverity } from "@maple/domain/runtime-advisories"
 import type { SecurityAuditRunStatus, SecurityAuditSeverity } from "@maple/domain/security-audit"
 import { cn } from "@maple/ui/lib/utils"
 import type { Html, HtmlBuilder } from "foldkit/html"
-import { badge } from "../../../ui/display"
-import { empty, emptyDescription, emptyHeader, emptyMedia, emptyTitle } from "../../../ui/empty"
-import { icon, type IconName } from "../../../ui/icon"
-import { severityIcon } from "../../errors/kit/severity"
+import { badge } from "@maple/views/ui/display"
+import {
+	empty,
+	emptyDescription,
+	emptyFrameClass,
+	emptyHeader,
+	emptyMedia,
+	emptyTitle,
+} from "@maple/views/ui/empty"
+import { icon, type IconName } from "@maple/views/ui/icon"
+import { severityBadge } from "../../errors/kit/severity"
 import { type Gate, issueSeverityOf, runLabelOf, runToneOf, SECURITY_SEVERITY_LABEL } from "./format"
+import { String as Str, Option } from "effect"
+import { hstack, vstack } from "@maple/views/ui/stack"
+import { typography } from "@maple/views/ui/typography"
 
 // Marks and states the Security Center's pages share.
 
@@ -18,77 +29,53 @@ export const runStatusBadge = <M>(h: HtmlBuilder<M>, run: RunState, detail?: str
 	])
 }
 
-/** The errors hub's severity glyph; informational and "no severity" draw the unset blocks. */
-export const severityMark = <M>(
-	h: HtmlBuilder<M>,
-	severity: SecurityAuditSeverity | null,
-	size = 16,
-): Html =>
-	severity === "informational"
-		? // The unset glyph, named for what it is: role="img" makes the inner svg presentational.
-			h.span(
-				[h.Role("img"), h.AriaLabel("Informational"), h.Class("inline-flex")],
-				[severityIcon(h, null, size)],
-			)
-		: severityIcon(h, issueSeverityOf(severity), size)
-
-type RankedSeverity = Exclude<SecurityAuditSeverity, "informational">
-
-/** Security's own ramp: four hues far apart, so a dot reads without its label. */
-export const SECURITY_SEVERITY_FILL = {
-	critical: "bg-severity-fatal",
-	high: "bg-severity-warn",
-	medium: "bg-severity-debug",
-	low: "bg-severity-trace",
-} satisfies Record<RankedSeverity, string>
-
-const SECURITY_SEVERITY_TINT = {
-	critical: "bg-severity-fatal text-white",
-	high: "bg-severity-warn-a2 text-severity-warn",
-	medium: "bg-severity-debug-a2 text-severity-debug",
-	low: "bg-severity-trace-a2 text-severity-trace",
-} satisfies Record<RankedSeverity, string>
-
-/** The severity badge: critical is filled so it never reads as one more tinted label. The muted
- * variant carries no dark-mode background, so the tint is the one that renders. */
+/** The errors kit's severity badge, so "High" is one colour everywhere; informational stays a quiet
+ * "Info" chip (the shared badge draws nothing for an unset severity). */
 export const securitySeverityBadge = <M>(
 	h: HtmlBuilder<M>,
 	severity: SecurityAuditSeverity,
 	className?: string,
 ): Html => {
 	const level = issueSeverityOf(severity)
-	return badge(
-		h,
-		{
-			variant: "muted",
-			className: cn(
-				level === null ? "text-muted-foreground" : SECURITY_SEVERITY_TINT[level],
-				className,
-			),
-		},
-		[SECURITY_SEVERITY_LABEL[severity]],
-	)
+	return level === null
+		? badge(h, { variant: "muted", className: cn("text-muted-foreground", className) }, [
+				SECURITY_SEVERITY_LABEL[severity],
+			])
+		: severityBadge(h, level, className)
 }
+
+/** An advisory's severity in the same badge; one with no score reads as "Unrated". */
+export const advisorySeverityBadge = <M>(
+	h: HtmlBuilder<M>,
+	severity: AdvisorySeverity,
+	className?: string,
+): Html =>
+	severity === "unknown"
+		? badge(h, { variant: "muted", className: cn("text-muted-foreground", className) }, ["Unrated"])
+		: securitySeverityBadge(h, severity, className)
 
 /** A still loading block: the skeleton's surface without its sweep. */
 export const placeholder = <M>(h: HtmlBuilder<M>, className: string): Html =>
 	h.div([h.AriaHidden(true), h.Class(cn("rounded-sm bg-muted", className))])
 
 export const placeholderRows = <M>(h: HtmlBuilder<M>, rows: number, className = "h-10"): Html =>
-	h.div(
-		[h.AriaBusy(true), h.AriaLabel("Loading"), h.Class("flex flex-col gap-2 p-4")],
+	vstack(
+		h,
+		{ gap: "2", className: "p-4", attributes: [h.AriaBusy(true), h.AriaLabel("Loading")] },
 		Array.from({ length: rows }, () => placeholder(h, cn("w-full", className))),
 	)
 
 /** The page's icon tile, as the empty state draws one. */
 export const iconTile = <M>(h: HtmlBuilder<M>, name: IconName): Html =>
-	h.span(
-		[
-			h.AriaHidden(true),
-			h.Class(
-				"flex size-8 shrink-0 items-center justify-center rounded-md border bg-card text-foreground",
-			),
-		],
+	hstack(
+		h,
+		{
+			align: "center",
+			justify: "center",
+			as: "span",
+			className: "size-8 shrink-0 rounded-md border bg-card text-foreground",
+			attributes: [h.AriaHidden(true)],
+		},
 		[icon(h, name, { size: 16 })],
 	)
 
@@ -101,9 +88,9 @@ const GATE_COPY = {
 	},
 	forbidden: {
 		icon: "LockIcon",
-		title: "Findings and reports are visible to org admins only",
+		title: "Findings and reports are visible to org admins and engineers only",
 		description:
-			"They can describe how to exploit your code, so only admins can read them. Ask an admin of this organization for access.",
+			"They can describe how to exploit your code, so only admins and engineers can read them. Ask an admin of this organization for access.",
 	},
 } satisfies Record<Gate, { icon: IconName; title: string; description: string }>
 
@@ -119,19 +106,16 @@ export const gateState = <M>(h: HtmlBuilder<M>, gate: Gate, className?: string):
 				emptyDescription(h, [copy.description]),
 			]),
 		],
-		cn("rounded-md border border-dashed md:py-14", className),
+		emptyFrameClass("dashed", className),
 	)
 }
 
 /** `owner/` recedes so the repository name carries the row. */
 export const repositoryName = <M>(h: HtmlBuilder<M>, fullName: string, className?: string): Html => {
-	const slash = fullName.indexOf("/")
+	const name = Option.match(Str.indexOf("/")(fullName), { onNone: () => 0, onSome: (slash) => slash + 1 })
 	return h.span(
 		[h.Class(cn("truncate", className)), h.Title(fullName)],
-		[
-			h.span([h.Class("text-muted-foreground")], [fullName.slice(0, slash + 1)]),
-			fullName.slice(slash + 1),
-		],
+		[typography(h, { tone: "muted" }, [Str.slice(0, name)(fullName)]), Str.slice(name)(fullName)],
 	)
 }
 
@@ -140,10 +124,7 @@ export const metaItem = <M>(
 	name: IconName | null,
 	children: ReadonlyArray<Html | string>,
 ): Html =>
-	h.span(
-		[h.Class("inline-flex min-w-0 items-center gap-1.5")],
-		[
-			...(name === null ? [] : [icon(h, name, { size: 14, className: "text-muted-foreground" })]),
-			...children,
-		],
-	)
+	hstack(h, { gap: "1.5", align: "center", shrink: true, inline: true, as: "span" }, [
+		...(name === null ? [] : [icon(h, name, { size: 14, className: "text-muted-foreground" })]),
+		...children,
+	])

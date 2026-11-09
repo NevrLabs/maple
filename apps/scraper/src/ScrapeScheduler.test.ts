@@ -1,5 +1,5 @@
 import { assert, describe, it } from "@effect/vitest"
-import { Duration, Effect, Layer, Redacted, Schema } from "effect"
+import { Duration, Effect, Exit, Layer, Option, Redacted, Schema, Array as Arr, String as Str } from "effect"
 import { TestClock } from "effect/testing"
 import { InternalScrapeTarget, type ScrapeResultReport } from "@maple/domain/http"
 import { ApiClient, ApiRequestError, type ApiClientApi } from "./ApiClient"
@@ -7,12 +7,13 @@ import { ScraperEnv, type ScraperEnvConfig } from "./Env"
 import { DELIVERY_BLOCKED_BACKOFF, startJitterMs } from "./policy"
 import { ResultReporter } from "./ResultReporter"
 import { scrapeError, type ScrapeError, type ScrapeFailureReason } from "./ScrapeError"
-import { ScrapeScheduler, StartJitter } from "./ScrapeScheduler"
+import { orgScrapePermits, ScrapeScheduler, StartJitter } from "./ScrapeScheduler"
 import type { OtlpExportRequest } from "@maple/prometheus-otlp"
 import { OtlpIngest } from "./OtlpIngest"
 import { Scraper } from "./Scraper"
 import { TargetFetcher } from "./TargetFetcher"
 import { TargetRegistry } from "./TargetRegistry"
+import { endedSpansNamed, makeCapturingTracer } from "./testing/capturing-tracer"
 
 const decodeTarget = Schema.decodeUnknownSync(InternalScrapeTarget)
 
@@ -23,6 +24,7 @@ const mkTarget = (
 	id: string,
 	intervalSeconds: number,
 	overrides: Partial<{
+		orgId: string
 		url: string
 		scrapeUrl: string
 		ingestKey: string
@@ -31,8 +33,8 @@ const mkTarget = (
 ): InternalScrapeTarget =>
 	decodeTarget({
 		id,
-		orgId: "org_test",
-		name: `target-${id.slice(0, 4)}`,
+		orgId: overrides.orgId ?? "org_test",
+		name: `target-${Str.slice(0, 4)(id)}`,
 		serviceName: null,
 		targetType: "prometheus",
 		url: overrides.url ?? "https://example.com/metrics",
@@ -41,7 +43,7 @@ const mkTarget = (
 		subTargetKey: overrides.subTargetKey ?? null,
 		scrapeIntervalSeconds: intervalSeconds,
 		labels: {},
-		ingestKey: overrides.ingestKey ?? `maple_pk_${id.slice(0, 4)}`,
+		ingestKey: overrides.ingestKey ?? `maple_pk_${Str.slice(0, 4)(id)}`,
 	})
 
 /** Three samples, two exported: the NaN is dropped by the converter. */
@@ -92,14 +94,14 @@ const makeHarness = (targets: Array<InternalScrapeTarget>): Harness => {
 }
 
 const scrapesOf = (harness: Harness, id: string, subTargetKey: string | null = null) =>
-	harness.scraped.filter((t) => t.id === id && t.subTargetKey === subTargetKey).length
+	Arr.filter(harness.scraped, (t) => t.id === id && t.subTargetKey === subTargetKey).length
 
 /** Real registry, scraper and reporter over a stubbed API, fetcher and ingest. Jitter is zeroed unless asked for. */
 const harnessLayer = (harness: Harness, options: { readonly realJitter?: boolean } = {}) => {
 	const api: ApiClientApi = {
-		listTargets: () => Effect.suspend(() => harness.listImpl()),
+		listTargets: Effect.suspend(() => harness.listImpl()),
 		reportResults: (results) => Effect.sync(() => void harness.reported.push(...results)),
-		listUptimeTargets: () => Effect.succeed([]),
+		listUptimeTargets: Effect.succeed([]),
 		reportUptimeResults: () => Effect.void,
 	}
 	const fetcher = Layer.succeed(TargetFetcher, {
@@ -166,7 +168,7 @@ describe("ScrapeScheduler", () => {
 			Effect.gen(function* () {
 				const harness = makeHarness([mkTarget(TARGET_A, 60), mkTarget(TARGET_B, 60)])
 				yield* startScheduler.pipe(Effect.provide(harnessLayer(harness, { realJitter: true })))
-				const offsets = [TARGET_A, TARGET_B].map((id) => startJitterMs(id, 60_000))
+				const offsets = Arr.map([TARGET_A, TARGET_B], (id) => startJitterMs(id, 60_000))
 				assert.notStrictEqual(offsets[0], offsets[1])
 
 				for (const [index, id] of [TARGET_A, TARGET_B].entries()) {
@@ -180,7 +182,7 @@ describe("ScrapeScheduler", () => {
 	})
 
 	describe("backoff", () => {
-		for (const reason of ["rate_limited", "auth_failed", "target_error"] as const) {
+		for (const reason of ["rate_limited", "auth_failed", "target_error", "target_rejected"] as const) {
 			it.effect(`escalates exponentially on ${reason}`, () =>
 				Effect.gen(function* () {
 					const harness = makeHarness([mkTarget(TARGET_A, 10)])
@@ -193,6 +195,52 @@ describe("ScrapeScheduler", () => {
 				}),
 			)
 		}
+
+		it.effect("closes only the first scrape of a dead target's streak as an error", () =>
+			Effect.gen(function* () {
+				const tracer = makeCapturingTracer()
+				const harness = makeHarness([mkTarget(TARGET_A, 10)])
+				harness.scrapeImpl = () => Effect.fail(failure("target_rejected"))
+				yield* startScheduler.pipe(Effect.provide(Layer.merge(harnessLayer(harness), tracer.layer)))
+				yield* TestClock.adjust(Duration.seconds(60))
+
+				const spans = endedSpansNamed(tracer.ended, "scraper.scrape_target")
+				assert.deepStrictEqual(
+					Arr.map(spans, (span) => Exit.isFailure(span.exit)),
+					[true, false, false],
+				)
+				// Every failure is still reported, so the target shows its error.
+				assert.lengthOf(
+					Arr.filter(harness.reported, (report) => report.error !== null),
+					3,
+				)
+			}),
+		)
+
+		it.effect("starts a target clean when its URL changes mid-streak", () =>
+			Effect.gen(function* () {
+				const tracer = makeCapturingTracer()
+				const harness = makeHarness([
+					mkTarget(TARGET_A, 10, { url: "https://old.example.com/metrics" }),
+				])
+				harness.scrapeImpl = () => Effect.fail(failure("target_rejected"))
+				yield* startScheduler.pipe(Effect.provide(Layer.merge(harnessLayer(harness), tracer.layer)))
+				yield* TestClock.adjust(Duration.seconds(30))
+				// Backing off until t=70; the next reconcile (t=60) picks up the new URL.
+				harness.targets = [mkTarget(TARGET_A, 10, { url: "https://new.example.com/metrics" })]
+				yield* TestClock.adjust(Duration.seconds(45))
+
+				const onNewHost = Arr.filter(
+					endedSpansNamed(tracer.ended, "scraper.scrape_target"),
+					(span) => span.attributes.get("maple.scraper.target_host") === "new.example.com",
+				)
+				// t=60 at the next tick, not t=70 after the old backoff; its first failure is an error.
+				assert.deepStrictEqual(
+					Arr.map(onNewHost, (span) => Exit.isFailure(span.exit)),
+					[true, false],
+				)
+			}),
+		)
 
 		it.effect("holds the configured cadence on scrape_failed", () =>
 			Effect.gen(function* () {
@@ -322,6 +370,43 @@ describe("ScrapeScheduler", () => {
 		)
 	})
 
+	describe("fair share", () => {
+		// More slow targets in one org than the whole pool has permits.
+		const busyOrgTargets = Arr.makeBy(12, (n) =>
+			mkTarget(`aaaaaaaa-aaaa-4aaa-8aaa-${Str.padStart(12, "0")(String(n))}`, 10, {
+				orgId: "org_busy",
+			}),
+		)
+		const quietTarget = mkTarget(TARGET_B, 10, { orgId: "org_quiet" })
+
+		it.effect("one org's slow targets leave permits for another org", () =>
+			Effect.gen(function* () {
+				const harness = makeHarness([...busyOrgTargets, quietTarget])
+				let inFlight = 0
+				let peak = 0
+				harness.scrapeImpl = (target) =>
+					target.orgId === "org_busy"
+						? Effect.acquireUseRelease(
+								Effect.sync(() => {
+									inFlight += 1
+									peak = Math.max(peak, inFlight)
+								}),
+								() => Effect.as(Effect.sleep(Duration.seconds(9)), OK_BODY),
+								() => Effect.sync(() => void (inFlight -= 1)),
+							)
+						: Effect.succeed(OK_BODY)
+				yield* startScheduler.pipe(Effect.provide(harnessLayer(harness)))
+
+				// Queued behind twelve 9s scrapes on one shared pool, it would wait until t=9.
+				assert.strictEqual(scrapesOf(harness, TARGET_B), 1)
+				yield* TestClock.adjust(Duration.seconds(30))
+				assert.strictEqual(peak, orgScrapePermits(testEnv.SCRAPER_CONCURRENCY))
+				// t=0, 10, 20, 30: its cadence holds while the busy org stays capped.
+				assert.strictEqual(scrapesOf(harness, TARGET_B), 4)
+			}),
+		)
+	})
+
 	describe("results", () => {
 		it.effect("reports duration and sample counts, and only the error on failure", () =>
 			Effect.gen(function* () {
@@ -338,16 +423,18 @@ describe("ScrapeScheduler", () => {
 				// Both land within the first two report intervals.
 				yield* TestClock.adjust(Duration.seconds(12))
 
-				const ok = harness.reported.find((r) => r.targetId === TARGET_A)
-				assert.strictEqual(ok?.error, null)
-				assert.strictEqual(ok?.durationMs, 2000)
-				assert.strictEqual(ok?.samplesScraped, 3)
-				assert.strictEqual(ok?.samplesPostMetricRelabeling, 2)
+				const ok = Option.getOrThrow(Arr.findFirst(harness.reported, (r) => r.targetId === TARGET_A))
+				assert.strictEqual(ok.error, null)
+				assert.strictEqual(ok.durationMs, 2000)
+				assert.strictEqual(ok.samplesScraped, 3)
+				assert.strictEqual(ok.samplesPostMetricRelabeling, 2)
 
-				const failed = harness.reported.find((r) => r.targetId === TARGET_B)
-				assert.strictEqual(failed?.error, 'target "target-bbbb" (example.com) failed: target_error')
-				assert.strictEqual(failed?.durationMs, 2000)
-				assert.isUndefined(failed?.samplesScraped)
+				const failed = Option.getOrThrow(
+					Arr.findFirst(harness.reported, (r) => r.targetId === TARGET_B),
+				)
+				assert.strictEqual(failed.error, 'target "target-bbbb" (example.com) failed: target_error')
+				assert.strictEqual(failed.durationMs, 2000)
+				assert.isUndefined(failed.samplesScraped)
 			}),
 		)
 	})
@@ -380,7 +467,7 @@ describe("ScrapeScheduler", () => {
 				assert.lengthOf(harness.sent, 4)
 				for (const { request } of harness.sent) assert.lengthOf(request.resourceMetrics, 2)
 				assert.deepStrictEqual(
-					new Set(harness.reported.map((r) => r.subTargetKey)),
+					new Set(Arr.map(harness.reported, (r) => r.subTargetKey)),
 					new Set(["branch-1", "branch-2"]),
 				)
 
@@ -402,7 +489,7 @@ describe("ScrapeScheduler", () => {
 						: Effect.succeed(OK_BODY)
 				yield* startScheduler.pipe(Effect.provide(harnessLayer(harness)))
 				yield* TestClock.adjust(Duration.seconds(5))
-				const first = new Map(harness.reported.map((r) => [r.subTargetKey, r]))
+				const first = new Map(Arr.map(harness.reported, (r) => [r.subTargetKey, r]))
 				assert.strictEqual(first.get("ok")?.error, null)
 				assert.strictEqual(first.get("ok")?.samplesScraped, 3)
 				assert.strictEqual(
@@ -412,9 +499,9 @@ describe("ScrapeScheduler", () => {
 
 				harness.sendImpl = () => Effect.fail(failure("scrape_failed"))
 				yield* TestClock.adjust(Duration.seconds(10))
-				const second = harness.reported.filter((r) => r.scrapedAt === 10_000)
+				const second = Arr.filter(harness.reported, (r) => r.scrapedAt === 10_000)
 				assert.deepStrictEqual(
-					second.map((r) => [r.subTargetKey, r.error]),
+					Arr.map(second, (r) => [r.subTargetKey, r.error]),
 					[
 						["ok", 'target "target-aaaa" (ok.example.com) failed: scrape_failed'],
 						["down", 'target "target-aaaa" (down.example.com) fetch broke'],

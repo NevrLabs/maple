@@ -1,8 +1,8 @@
 /** One infrastructure entity in depth: what the web app's host/pod/node/workload/container pages show. */
-import { Array as Arr, Effect } from "effect"
+import { Array as Arr, Effect, Record as Rec } from "effect"
 import { CH } from "@maple/query-engine"
 import { formatPercent } from "./format"
-import { WarehouseExecutor } from "@maple/query-engine/observability"
+import { WarehouseExecutor, type WarehouseExecutorError } from "@maple/query-engine/observability"
 import type {
 	InfraEntityKind,
 	InfraEntityRow,
@@ -48,7 +48,7 @@ const PER_POD_SERIES = 3
 
 /** Keeps only the details a collector actually reported. */
 const details = (entries: ReadonlyArray<readonly [string, string]>): Record<string, string> =>
-	Object.fromEntries(entries.filter(([, value]) => value !== ""))
+	Rec.fromEntries(Arr.filter(entries, ([, value]) => value !== ""))
 
 export const inspectInfra = (target: InspectTarget, window: InfraWindow) =>
 	Effect.gen(function* () {
@@ -57,7 +57,11 @@ export const inspectInfra = (target: InspectTarget, window: InfraWindow) =>
 		const seriesParams = { ...params, bucketSeconds: bucketSecondsFor(window) }
 		const series = <Row>(query: CH.CompiledQueryInput<Row>, context: string) =>
 			executor.compiledQuery(query, { profile: "aggregation", context })
-		const first = <Row>(query: CH.CompiledQueryInput<Row>, context: string) =>
+		// `NoInfer`: inside `Effect.all([...])` the return type would otherwise infer `Row` as `any`.
+		const first = <Row>(
+			query: CH.CompiledQueryInput<Row>,
+			context: string,
+		): Effect.Effect<NoInfer<Row> | undefined, WarehouseExecutorError> =>
 			executor
 				.compiledQuery(query, { profile: "aggregation", context })
 				.pipe(Effect.map((rows) => rows[0]))
@@ -132,8 +136,11 @@ export const inspectInfra = (target: InspectTarget, window: InfraWindow) =>
 						["arch", summary.hostArch],
 						["cloud.provider", summary.cloudProvider],
 						["cloud.region", summary.cloudRegion],
-						...filesystems.map((fs): readonly [string, string] => [
-							`disk ${fs.mountpoint}`,
+						...Arr.map(filesystems, (fs): readonly [string, string] => [
+							// A remounted mountpoint lists once per device; keep both.
+							Arr.filter(filesystems, (other) => other.mountpoint === fs.mountpoint).length > 1
+								? `disk ${fs.mountpoint} (${fs.device})`
+								: `disk ${fs.mountpoint}`,
 							`${formatPercent(fs.usedMax)} full at most (avg ${formatPercent(fs.usedAvg)})${fs.device ? `, ${fs.device}` : ""}`,
 						]),
 					]),
@@ -170,7 +177,7 @@ export const inspectInfra = (target: InspectTarget, window: InfraWindow) =>
 					{ concurrency: 6 },
 				)
 				if (summary === undefined) return NOT_FOUND
-				const restarted = restarts.reduce((sum, row) => sum + row.restarts, 0)
+				const restarted = Arr.reduce(restarts, 0, (sum, row) => sum + row.restarts)
 				// The limit itself is not collected; working set over its share of the limit recovers it.
 				const workingSetAvg = seriesStats({ label: "", unit: "bytes" }, ungrouped(workingSet))[0]?.avg
 				const memoryLimitBytes =
@@ -214,7 +221,7 @@ export const inspectInfra = (target: InspectTarget, window: InfraWindow) =>
 								? ""
 								: `about ${Math.round(memoryLimitBytes / 2 ** 20)} MiB (working set ÷ % of limit)`,
 						],
-						...restarts.map((row): readonly [string, string] => [
+						...Arr.map(restarts, (row): readonly [string, string] => [
 							`restarts of container ${row.containerName}`,
 							`${row.restarts} in this window (${row.totalRestarts} since the pod started)`,
 						]),
@@ -271,9 +278,9 @@ export const inspectInfra = (target: InspectTarget, window: InfraWindow) =>
 					],
 					{ concurrency: 2 },
 				)
-				const podCores = pods.rows.reduce((sum, pod) => sum + (pod.cpuCores ?? 0), 0)
+				const podCores = Arr.reduce(pods.rows, 0, (sum, pod) => sum + (pod.cpuCores ?? 0))
 				const allPods = pods.summary === undefined || pods.rows.length >= pods.summary.total
-				const others = peers.rows.filter((peer) => peer.name !== summary.nodeName)
+				const others = Arr.filter(peers.rows, (peer) => peer.name !== summary.nodeName)
 				return {
 					found: true,
 					entity: {
@@ -295,9 +302,10 @@ export const inspectInfra = (target: InspectTarget, window: InfraWindow) =>
 						],
 						[
 							"other nodes (CPU cores, avg)",
-							others
-								.map((peer) => `${peer.name} ${(peer.cpuCores ?? 0).toFixed(2)}`)
-								.join(", "),
+							Arr.join(
+								Arr.map(others, (peer) => `${peer.name} ${(peer.cpuCores ?? 0).toFixed(2)}`),
+								", ",
+							),
 						],
 						[
 							"capacity",
@@ -406,7 +414,7 @@ const inspectWorkload = (target: InspectTarget, window: InfraWindow) =>
 						),
 						{ profile: "aggregation", context: "workloadDetailSummary" },
 					)
-					.pipe(Effect.map((rows) => rows.map((row) => ({ kind, row })))),
+					.pipe(Effect.map((rows) => Arr.map(rows, (row) => ({ kind, row })))),
 			{ concurrency: 3 },
 		)
 		const match = matches.flat().sort((a, b) => b.row.podCount - a.row.podCount)[0]
@@ -444,10 +452,11 @@ const inspectWorkload = (target: InspectTarget, window: InfraWindow) =>
 			],
 			{ concurrency: 5 },
 		)
-		const podPeaks = Object.entries(Arr.groupBy(memoryByPod, (r) => r.attributeValue))
-			.flatMap(([pod, rows]) =>
+		const podPeaks = Arr.flatMap(
+			Rec.toEntries(Arr.groupBy(memoryByPod, (r) => r.attributeValue)),
+			([pod, rows]) =>
 				seriesStats({ label: "memory % of limit", unit: "fraction" }, ungrouped(rows), pod),
-			)
+		)
 			.sort((a, b) => b.max - a.max)
 			.slice(0, PER_POD_SERIES)
 		return {

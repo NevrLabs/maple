@@ -10,9 +10,21 @@ import {
 	type UserId,
 } from "@maple/domain/http"
 import * as PG from "@maple-dev/effect-orm/postgres"
-import { OAuthAuthStates } from "@maple/db/tables"
+import { OAuthAuthStates, PlanetscaleConnections } from "@maple/db/tables"
 import * as PlanetScale from "@distilled.cloud/planetscale"
-import { Clock, Context, Duration, Effect, Layer, Option, Redacted, Result, Schema } from "effect"
+import {
+	Clock,
+	Context,
+	Duration,
+	Effect,
+	Layer,
+	Option,
+	Redacted,
+	Result,
+	Schema,
+	String as Str,
+	Array as Arr,
+} from "effect"
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http"
 import { Database } from "@maple/backend/platform/DatabaseLive"
 import { Env, type EnvConfig } from "@maple/backend/platform/Env"
@@ -57,7 +69,7 @@ const MAX_PAGES = 10
 interface ResolvedPlanetScaleOAuthConfig {
 	readonly clientId: string
 	/** Always present — PlanetScale OAuth apps are confidential clients (no PKCE). Redacted until the wire. */
-	readonly clientSecret: Redacted.Redacted<string>
+	readonly clientSecret: Redacted.Redacted
 	readonly authorizeUrl: string
 	readonly tokenUrl: string
 	/** Space-delimited, resource-prefixed scopes sent in the authorize request. */
@@ -65,24 +77,20 @@ interface ResolvedPlanetScaleOAuthConfig {
 }
 
 const resolveConfig = Effect.fn("PlanetScaleOAuthService.resolveConfig")(function* (env: EnvConfig) {
-	const clientId = yield* Option.match(env.PLANETSCALE_OAUTH_CLIENT_ID, {
-		onNone: () =>
-			Effect.fail(
-				new IntegrationsConfigurationError({
-					message: "PLANETSCALE_OAUTH_CLIENT_ID is required to use the PlanetScale integration",
-				}),
-			),
-		onSome: (value) => Effect.succeed(value),
-	})
-	const clientSecret = yield* Option.match(env.PLANETSCALE_OAUTH_CLIENT_SECRET, {
-		onNone: () =>
-			Effect.fail(
-				new IntegrationsConfigurationError({
-					message: "PLANETSCALE_OAUTH_CLIENT_SECRET is required to use the PlanetScale integration",
-				}),
-			),
-		onSome: (value) => Effect.succeed(value),
-	})
+	const clientId = yield* Effect.fromOption(
+		env.PLANETSCALE_OAUTH_CLIENT_ID,
+		() =>
+			new IntegrationsConfigurationError({
+				message: "PLANETSCALE_OAUTH_CLIENT_ID is required to use the PlanetScale integration",
+			}),
+	)
+	const clientSecret = yield* Effect.fromOption(
+		env.PLANETSCALE_OAUTH_CLIENT_SECRET,
+		() =>
+			new IntegrationsConfigurationError({
+				message: "PLANETSCALE_OAUTH_CLIENT_SECRET is required to use the PlanetScale integration",
+			}),
+	)
 	return {
 		clientId,
 		clientSecret,
@@ -195,9 +203,17 @@ export interface PlanetScaleOAuthServiceApi {
 			readonly revokedAt: number | null
 			readonly expiresAt: number | null
 			readonly scopes: ReadonlyArray<string>
+			/** The grant row's last write, for {@link markRevoked}'s race guard. Null when not connected. */
+			readonly updatedAt: number | null
 		},
 		IntegrationsPersistenceError
 	>
+	/**
+	 * Stamp the grant revoked so pollers stop and the UI asks for a reconnect. A no-op when the
+	 * row was rewritten after `unchangedSince` (a reconnect or refresh wins). Best-effort; reports
+	 * whether the stamp landed.
+	 */
+	readonly markRevoked: (orgId: OrgId, unchangedSince: number) => Effect.Effect<boolean>
 	/** Drop the stored grant. PlanetScale documents no revoke endpoint. */
 	readonly disconnect: (
 		orgId: OrgId,
@@ -217,6 +233,14 @@ export class PlanetScaleOAuthService extends Context.Service<
 			providerLabel: "PlanetScale",
 			database,
 			env,
+			// A new grant starts clean: an inventory failure from the old one must not count toward
+			// the repeated-403 revoke in PlanetScaleService.pollOrg, even if the callback fails after.
+			onUpsert: (db, orgId, currentTime) =>
+				db.run(
+					PG.update(PlanetscaleConnections)
+						.set({ lastInventoryError: null, updatedAt: currentTime })
+						.where(($) => [$.orgId.eq(orgId)]),
+				),
 		})
 
 		const apiTarget = (accessToken: string) => ({
@@ -262,7 +286,7 @@ export class PlanetScaleOAuthService extends Context.Service<
 				if (res.status === 401 || res.status === 403) {
 					yield* Effect.logError("PlanetScale auth server rejected the token on introspection", {
 						status: res.status,
-						body: text.slice(0, 200),
+						body: Str.slice(0, 200)(text),
 					})
 					return "invalid" satisfies TokenIntrospectionVerdict
 				}
@@ -298,7 +322,7 @@ export class PlanetScaleOAuthService extends Context.Service<
 					decodeConsumed(Schema.Array(OrganizationSchema), "organizations")(items),
 				),
 				Effect.map((organizations) =>
-					organizations.map((organization): PlanetScaleOrganization => ({
+					Arr.map(organizations, (organization): PlanetScaleOrganization => ({
 						id: organization.id,
 						name: organization.name,
 					})),
@@ -383,9 +407,9 @@ export class PlanetScaleOAuthService extends Context.Service<
 			yield* Effect.annotateCurrentSpan({
 				"maple.planetscale.token.granted_scope": tokenResponse.scope ?? "(none)",
 				"maple.planetscale.token.type": tokenResponse.token_type ?? "(none)",
-				"maple.planetscale.token.prefix": tokenResponse.access_token.slice(0, 13),
+				"maple.planetscale.token.prefix": Str.slice(0, 13)(tokenResponse.access_token),
 				"maple.planetscale.token.length": tokenResponse.access_token.length,
-				"maple.planetscale.token.looks_jwt": tokenResponse.access_token.split(".").length === 3,
+				"maple.planetscale.token.looks_jwt": Str.split(tokenResponse.access_token, ".").length === 3,
 				"maple.planetscale.token.expires_in": tokenResponse.expires_in ?? "(none)",
 			})
 
@@ -399,12 +423,10 @@ export class PlanetScaleOAuthService extends Context.Service<
 					"PlanetScale OAuth token exchange returned no refresh token — refusing connection",
 					{ orgId },
 				)
-				return yield* Effect.fail(
-					new IntegrationsValidationError({
-						message:
-							"PlanetScale returned no refresh token, so this connection would stop working when the access token expires. Reconnect and grant offline access.",
-					}),
-				)
+				return yield* new IntegrationsValidationError({
+					message:
+						"PlanetScale returned no refresh token, so this connection would stop working when the access token expires. Reconnect and grant offline access.",
+				})
 			}
 
 			// Resolve what the grant can see before persisting anything: a grant with
@@ -425,7 +447,7 @@ export class PlanetScaleOAuthService extends Context.Service<
 						})
 						if (Result.isSuccess(retried)) return retried.success
 						if (retried.failure._tag !== "@maple/http/errors/IntegrationsRevokedError") {
-							return yield* Effect.fail(retried.failure)
+							return yield* retried.failure
 						}
 
 						const verdict = yield* introspectToken(tokenResponse.access_token)
@@ -433,23 +455,20 @@ export class PlanetScaleOAuthService extends Context.Service<
 							"maple.planetscale.token.introspection": verdict,
 						})
 						if (verdict === "valid") {
-							return yield* Effect.fail(
-								toUpstreamError(
-									"PlanetScale's API rejected the new access token even though PlanetScale's auth server reports it as valid. Reconnecting won't help — try again in a few minutes, and contact support if it persists.",
-									401,
-								),
+							return yield* toUpstreamError(
+								"PlanetScale's API rejected the new access token even though PlanetScale's auth server reports it as valid. Reconnecting won't help — try again in a few minutes, and contact support if it persists.",
+								401,
 							)
 						}
-						return yield* Effect.fail(rejection)
+						return yield* rejection
 					}),
 				),
 			)
-			if (organizations.length === 0) {
-				return yield* Effect.fail(
-					new IntegrationsValidationError({
-						message: "The PlanetScale authorization grants access to no organizations",
-					}),
-				)
+			const [firstOrganization] = organizations
+			if (firstOrganization === undefined) {
+				return yield* new IntegrationsValidationError({
+					message: "The PlanetScale authorization grants access to no organizations",
+				})
 			}
 
 			// Identify the grant for display. `/v1/user` may be outside the app's
@@ -469,7 +488,7 @@ export class PlanetScaleOAuthService extends Context.Service<
 
 			yield* oauth.upsertConnection(orgId, currentTime, {
 				externalUserId: Option.match(currentUser, {
-					onNone: () => organizations[0]!.id,
+					onNone: () => firstOrganization.id,
 					onSome: (user) => user.id,
 				}),
 				externalUserEmail: Option.match(currentUser, {
@@ -544,9 +563,13 @@ export class PlanetScaleOAuthService extends Context.Service<
 			return {
 				revokedAt: row?.revokedAt ?? null,
 				expiresAt: row?.expiresAt ?? null,
-				scopes: (row?.scope ?? "").split(" ").filter((scope) => scope !== ""),
+				scopes: Arr.filter(Str.split(row?.scope ?? "", " "), (scope) => scope !== ""),
+				updatedAt: row?.updatedAt ?? null,
 			}
 		})
+
+		const markRevoked = (orgId: OrgId, unchangedSince: number) =>
+			oauth.markConnectionRevoked(orgId, unchangedSince)
 
 		const disconnect = Effect.fn("PlanetScaleOAuthService.disconnect")(function* (orgId: OrgId) {
 			yield* Effect.annotateCurrentSpan({ orgId })
@@ -562,6 +585,7 @@ export class PlanetScaleOAuthService extends Context.Service<
 			hasConnection,
 			connectedByUserId,
 			grantStatus,
+			markRevoked,
 			disconnect,
 		} satisfies PlanetScaleOAuthServiceApi
 	}),

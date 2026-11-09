@@ -1,24 +1,27 @@
+import * as Policy from "@maple/domain/policy"
 import type { ApiKeyKind } from "@maple/domain/http"
 import { Array, Option, Result } from "effect"
 import { Command } from "foldkit"
 import { PageOutMessage, type PageReturn } from "../../contract"
-import * as CopyButton from "../../../ui/copy-button"
-import * as Dialog from "../../../ui/dialog"
-import * as Menu from "../../../ui/menu"
-import * as Select from "../../../ui/select"
+import * as CopyButton from "@maple/views/ui/copy-button"
+import * as Dialog from "@maple/views/ui/dialog"
+import * as Menu from "@maple/views/ui/menu"
+import * as Select from "@maple/views/ui/select"
 import { RevokeApiKey } from "./command"
 import * as CreateDialog from "./create-dialog"
 import { Message } from "./message"
-import { KeyStatusFilter, type Model } from "./model"
+import { canManage, KeyStatusFilter, type Model } from "./model"
 import * as RollDialog from "./roll-dialog"
 
 type Return = PageReturn<Model, Message>
 
 export const STATUS_VALUES = KeyStatusFilter.literals
 
-export const init = (options: Readonly<{ isAdmin: boolean; userId: string | null }>): Return => ({
+export const init = (
+	options: Readonly<{ grants: ReadonlyArray<Policy.Permission>; userId: string | null }>,
+): Return => ({
 	model: {
-		isAdmin: options.isAdmin,
+		grants: options.grants,
 		userId: options.userId,
 		apiKeys: null,
 		isLoadFailed: false,
@@ -139,7 +142,7 @@ export const update = (model: Model, message: Message): Return =>
 		},
 		ChangedSearch: ({ value }) => ({ model: { ...model, search: value } }),
 		ClickedClearSearch: () => ({ model: { ...model, search: "" } }),
-		ClickedCreateKey: () => openCreate(model, model.isAdmin ? "standard" : "mcp"),
+		ClickedCreateKey: () => openCreate(model, canManage(model) ? "standard" : "mcp"),
 		GotCreateMenuMessage: ({ message: child }) =>
 			updateMenu(
 				model,

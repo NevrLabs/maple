@@ -1,10 +1,10 @@
-import { Duration, Effect, Fiber, Option, Ref, Schema } from "effect"
+import { Duration, Effect, Fiber, Option, Ref, Schema, String as Str } from "effect"
 import { labEnabled, labPathOf } from "../lab/boot"
 import { clerkAppearance, clerkLocalization } from "../lib/clerk-appearance"
 import { isClerkAuthEnabled } from "../lib/services/common/auth-mode"
 import { purgeForeignClerkCookies } from "../lib/services/common/clerk-cookie-guard"
 import type { ClerkGlobal } from "./clerk"
-import { clerkJsUrl } from "./clerk-js-url"
+import { clerkJsUrl } from "@maple/domain/clerk-js-url"
 
 export class ClerkLoadError extends Schema.TaggedError<ClerkLoadError>()("@maple/web/ClerkLoadError", {
 	message: Schema.String,
@@ -17,9 +17,9 @@ interface LoadedClerk {
 	readonly readyAtMs: number
 }
 
-const publishableKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY?.trim() ?? ""
-const signInUrl = import.meta.env.VITE_CLERK_SIGN_IN_URL?.trim() || "/sign-in"
-const signUpUrl = import.meta.env.VITE_CLERK_SIGN_UP_URL?.trim() || "/sign-up"
+const publishableKey = Str.trim(import.meta.env.VITE_CLERK_PUBLISHABLE_KEY ?? "")
+const signInUrl = Str.trim(import.meta.env.VITE_CLERK_SIGN_IN_URL ?? "") || "/sign-in"
+const signUpUrl = Str.trim(import.meta.env.VITE_CLERK_SIGN_UP_URL ?? "") || "/sign-up"
 
 const injectClerkJs = Effect.callback<void, ClerkLoadError>((resume) => {
 	const script = document.createElement("script")
@@ -39,11 +39,10 @@ const injectClerkJs = Effect.callback<void, ClerkLoadError>((resume) => {
 })
 
 const currentClerk = Effect.suspend(() =>
-	Option.match(Option.fromNullishOr(window.Clerk), {
-		onNone: () =>
-			Effect.fail(new ClerkLoadError({ message: "window.Clerk is missing", cause: undefined })),
-		onSome: Effect.succeed,
-	}),
+	Effect.fromOption(
+		Option.fromNullishOr(window.Clerk),
+		() => new ClerkLoadError({ message: "window.Clerk is missing", cause: undefined }),
+	),
 )
 
 const CLERK_LOAD_TIMEOUT = Duration.seconds(20)

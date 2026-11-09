@@ -1,13 +1,15 @@
-import { DashboardRefreshIntervalSeconds } from "@maple/domain/http"
+import { DashboardRefreshIntervalSeconds, IsoDateTimeString, type TimeRange } from "@maple/domain/http"
+import { resolveRelativeRangeToWarehouse } from "@maple/query-engine"
+import { DateTime, Option, Record as Rec, Schema, String as Str } from "effect"
 
 // Cross-widget dashboard controls live in the URL so a view is shareable and
 // deep-linkable. Two families share that space:
 //
 //   `var-<name>`  dashboard-variable selections (Grafana-style)
-//   `filter`, `collapsed`, `expanded`, `tab`, `widget`, `refresh`
+//   `filter`, `collapsed`, `expanded`, `tab`, `widget`, `refresh`, `range`, `from`, `to`
 //                 per-viewer view state: the free-text filter clause, section
 //                 collapse overrides, the active tab per section, a tile
-//                 deep link, and the auto-refresh cadence
+//                 deep link, the auto-refresh cadence and the picked time range
 //
 // This module is the one owner of both. Every `navigate()` on a dashboard route
 // rebuilds search from `pickDashboardControlParams`, so a param that is not
@@ -24,6 +26,9 @@ export interface DashboardViewParams {
 	tab?: string
 	widget?: string
 	refresh?: number | string
+	range?: string
+	from?: string
+	to?: string
 }
 
 export type DashboardControlParams = VariableSearchParams & DashboardViewParams
@@ -36,18 +41,62 @@ export type DashboardControlParams = VariableSearchParams & DashboardViewParams
  */
 export function variableValuesFromSearch(search: Record<string, unknown>): Record<string, string> {
 	const values: Record<string, string> = {}
-	for (const [key, value] of Object.entries(search)) {
-		if (!key.startsWith(VARIABLE_PARAM_PREFIX)) continue
+	for (const [key, value] of Rec.toEntries(search)) {
+		if (!Str.startsWith(VARIABLE_PARAM_PREFIX)(key)) continue
 		if (typeof value === "string") {
-			values[key.slice(VARIABLE_PARAM_PREFIX.length)] = value
+			values[Str.slice(VARIABLE_PARAM_PREFIX.length)(key)] = value
 		} else if (typeof value === "number" || typeof value === "boolean") {
-			values[key.slice(VARIABLE_PARAM_PREFIX.length)] = String(value)
+			values[Str.slice(VARIABLE_PARAM_PREFIX.length)(key)] = String(value)
 		}
 	}
 	return values
 }
 
-const VIEW_PARAM_KEYS = ["filter", "collapsed", "expanded", "tab", "widget", "refresh"] as const
+const VIEW_PARAM_KEYS = [
+	"filter",
+	"collapsed",
+	"expanded",
+	"tab",
+	"widget",
+	"refresh",
+	"range",
+	"from",
+	"to",
+] as const
+
+const decodeIso = Schema.decodeUnknownOption(IsoDateTimeString)
+
+// The resolver's date formatter throws on an out-of-range preset (`?range=1000000000000m`).
+const resolvePreset = Option.liftThrowable((value: string) =>
+	resolveRelativeRangeToWarehouse(value, 0, "UTC"),
+)
+
+const isPreset = (value: unknown): value is string =>
+	typeof value === "string" && Option.isSome(Option.flatMap(resolvePreset(value), Option.fromNullishOr))
+
+/**
+ * This viewer's picked range: `?from=&to=` (both ISO), else `?range=` (a preset the resolver reads).
+ * A hand-edited value it cannot read is ignored, so the board's saved range applies instead.
+ */
+export function timeRangeFromSearch(search: Record<string, unknown>): TimeRange | undefined {
+	// An inverted window (`from` after `to`) is unreadable too, so the saved range applies.
+	const bounds = Option.filter(
+		Option.all({ startTime: decodeIso(search.from), endTime: decodeIso(search.to) }),
+		({ startTime, endTime }) =>
+			Option.exists(Option.all([DateTime.make(startTime), DateTime.make(endTime)]), ([start, end]) =>
+				DateTime.isLessThan(start, end),
+			),
+	)
+	if (Option.isSome(bounds)) return { type: "absolute", ...bounds.value }
+	return isPreset(search.range) ? { type: "relative", value: search.range } : undefined
+}
+
+/** The time-range params for a picked range; the other form's params are cleared. */
+export function timeRangeParams(timeRange: TimeRange): Pick<DashboardViewParams, "range" | "from" | "to"> {
+	return timeRange.type === "relative"
+		? { range: timeRange.value, from: undefined, to: undefined }
+		: { range: undefined, from: timeRange.startTime, to: timeRange.endTime }
+}
 
 /** Ordered cadence options for the picker, straight off the schema's closed set. */
 export const REFRESH_INTERVAL_OPTIONS: ReadonlyArray<DashboardRefreshIntervalSeconds> =
@@ -64,7 +113,7 @@ export function parseRefreshIntervalSeconds(value: unknown): DashboardRefreshInt
 	const seconds =
 		typeof value === "number"
 			? value
-			: typeof value === "string" && value.trim() !== ""
+			: typeof value === "string" && Str.trim(value) !== ""
 				? Number(value)
 				: Number.NaN
 	return REFRESH_INTERVAL_VALUES.has(seconds) ? (seconds as DashboardRefreshIntervalSeconds) : undefined
@@ -99,8 +148,8 @@ export function resolveRefreshIntervalSeconds(
 export function pickDashboardControlParams(search: Record<string, unknown>): DashboardControlParams {
 	const params: Record<string, unknown> = {}
 
-	for (const [key, value] of Object.entries(search)) {
-		if (key.startsWith(VARIABLE_PARAM_PREFIX)) {
+	for (const [key, value] of Rec.toEntries(search)) {
+		if (Str.startsWith(VARIABLE_PARAM_PREFIX)(key)) {
 			params[key] = value
 		}
 	}

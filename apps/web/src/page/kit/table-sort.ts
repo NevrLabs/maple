@@ -1,4 +1,4 @@
-import { Schema } from "effect"
+import { Schema, Array as Arr, String as Str, Order } from "effect"
 
 // The click-to-sort state as Model data, and the comparator.
 
@@ -31,7 +31,7 @@ export const nextSort = <K>(
 }
 
 const isNumericString = (value: unknown): value is string =>
-	typeof value === "string" && value.trim() !== "" && Number.isFinite(Number(value))
+	typeof value === "string" && Str.trim(value) !== "" && Number.isFinite(Number(value))
 
 /** `compareValues`: numeric when both sides are numbers (or numeric strings), else text. */
 export const compareValues = (a: unknown, b: unknown, dir: SortDir): number => {
@@ -45,7 +45,7 @@ export const compareValues = (a: unknown, b: unknown, dir: SortDir): number => {
 	}
 	const as = String(a)
 	const bs = String(b)
-	return dir === "asc" ? as.localeCompare(bs) : bs.localeCompare(as)
+	return dir === "asc" ? Str.localeCompare(bs)(as) : Str.localeCompare(as)(bs)
 }
 
 /** `useTableSort`'s `sorted`: a stable sort by the active column, source order without one. */
@@ -55,8 +55,19 @@ export const sortRows = <Row>(
 	read: (row: Row, key: string) => SortValue,
 ): ReadonlyArray<Row> => {
 	const key = sort.key
-	return key === null ? rows : rows.toSorted((a, b) => compareValues(read(a, key), read(b, key), sort.dir))
+	return key === null
+		? rows
+		: Arr.sort(
+				rows,
+				orderOf((a: Row, b: Row) => compareValues(read(a, key), read(b, key), sort.dir)),
+			)
 }
+
+/** A native numeric comparator as an `Order`: only its sign counts, as with `toSorted`. */
+const orderOf =
+	<Row>(compare: (a: Row, b: Row) => number): Order.Order<Row> =>
+	(a, b) =>
+		Order.Number(compare(a, b), 0)
 
 /** `sortRows` on the row field named by the key, `pinned` rows first. */
 export const sortRowsByField = <Row, K extends keyof Row>(
@@ -66,9 +77,15 @@ export const sortRowsByField = <Row, K extends keyof Row>(
 ): ReadonlyArray<Row> => {
 	const key = sort.key
 	if (key === null) return rows
-	const compare = (a: Row, b: Row) => compareValues(a[key], b[key], sort.dir)
-	if (pinned === undefined) return rows.toSorted(compare)
-	return [...rows.filter(pinned).toSorted(compare), ...rows.filter((row) => !pinned(row)).toSorted(compare)]
+	const compare = orderOf((a: Row, b: Row) => compareValues(a[key], b[key], sort.dir))
+	if (pinned === undefined) return Arr.sort(rows, compare)
+	return [
+		...Arr.sort(Arr.filter(rows, pinned), compare),
+		...Arr.sort(
+			Arr.filter(rows, (row) => !pinned(row)),
+			compare,
+		),
+	]
 }
 
 export type SortAccessors<Row> = ReadonlyMap<string, (row: Row) => SortValue>

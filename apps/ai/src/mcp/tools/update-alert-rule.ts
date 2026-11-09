@@ -1,5 +1,5 @@
 import { McpInvalidInputError, type McpToolRegistrar } from "./types"
-import { Array as Arr, Effect, Schema } from "effect"
+import { Array as Arr, Effect, Option, Schema, String as Str } from "effect"
 import { UpdateAlertRuleOutput } from "@maple/domain/mcp-outputs"
 import { toMcpHttpError } from "../lib/map-http-error"
 import { CurrentMcpTenant } from "../lib/query-warehouse"
@@ -10,16 +10,21 @@ import {
 	ALERT_EVALUATION_INTERVALS,
 	AlertRuleUpsertRequest,
 	isRangeComparator,
+	MAX_ALERT_WINDOW_MINUTES,
 	QueryBuilderQueryDraftSchema,
 	type AlertComparator,
 	type AlertRuleDocument,
 	type AlertThreshold,
+	type EscalationChainId,
 } from "@maple/domain/http"
+import { MAX_RAW_SQL_ALERT_GROUPS } from "@maple/domain/raw-sql"
 import {
 	ALERT_COMPARATORS,
 	ALERT_REDUCERS,
 	ALERT_SEVERITIES,
 	ALERT_SIGNAL_TYPES,
+	ANOMALY_SIGNAL_TYPES,
+	ANOMALY_SIGNALS_DESCRIPTION,
 	renderBulkRuleWrite,
 	renderRuleWrite,
 	ruleConfigWarnings,
@@ -42,7 +47,7 @@ export const UpdateAlertRuleParameters = Schema.Struct({
 	name: P.optionalText("New rule name"),
 	severity: P.optionalOneOf(ALERT_SEVERITIES, "Alert severity"),
 	threshold: P.optionalNumber("Threshold value. E.g. 0.05 for 5% error rate, 1000 for 1s latency"),
-	window_minutes: P.optionalNumber("Evaluation window in minutes"),
+	window_minutes: P.optionalNumber(`Evaluation window in minutes, at most ${MAX_ALERT_WINDOW_MINUTES}`),
 	evaluation_interval_minutes: P.optionalNullableNumberOneOf(
 		ALERT_EVALUATION_INTERVALS,
 		'Minutes between checks, at most window_minutes. A raw_query rule checked less often gets a longer query time limit: 5s under 5 min, 15s at 5, 25s at 10 or more. Omit to keep the current one; pass "auto" to derive it from the window (a fifth, 1 to 5). Any edit also clears a slowdown the scheduler applied.',
@@ -54,7 +59,7 @@ export const UpdateAlertRuleParameters = Schema.Struct({
 	enabled: P.optionalFlag("Whether the rule is enabled"),
 	destination_ids: P.optionalResourceIdList(
 		"alertDestination",
-		"Destination IDs to notify (replaces the current destinations; use list_alert_destinations to find IDs)",
+		"Destination IDs to notify, from list_alert_destinations; replaces the current ones. A rule needs at least one",
 	),
 	add_destination_ids: P.optionalResourceIdList(
 		"alertDestination",
@@ -66,7 +71,11 @@ export const UpdateAlertRuleParameters = Schema.Struct({
 	),
 	signal_type: P.optionalOneOf(
 		ALERT_SIGNAL_TYPES,
-		"What the rule measures. builder_query takes query_builder_draft, raw_query takes raw_query_sql.",
+		"What the rule measures. builder_query takes query_builder_draft, raw_query takes raw_query_sql, anomaly pages on the anomaly detector's incidents.",
+	),
+	anomaly_signals: P.optionalOneOfList(
+		ANOMALY_SIGNAL_TYPES,
+		`${ANOMALY_SIGNALS_DESCRIPTION} Replaces the current list; an empty list means every signal.`,
 	),
 	comparator: P.optionalOneOf(ALERT_COMPARATORS, "How the observed value is compared with threshold"),
 	group_by: P.optionalList(
@@ -88,7 +97,7 @@ export const UpdateAlertRuleParameters = Schema.Struct({
 		"Query-builder draft, same shape as create_alert_rule (for signal_type=builder_query)",
 	),
 	raw_query_sql: P.optionalText(
-		"ClickHouse SQL returning a numeric `value` column (for signal_type=raw_query). Must reference $__orgFilter and $__timeFilter(col).",
+		`ClickHouse SQL returning a numeric \`value\` column (for signal_type=raw_query), at most ${MAX_RAW_SQL_ALERT_GROUPS} groups. Must reference $__orgFilter and $__timeFilter(col).`,
 	),
 	raw_query_reducer: P.optionalOneOf(
 		ALERT_REDUCERS,
@@ -99,6 +108,14 @@ export const UpdateAlertRuleParameters = Schema.Struct({
 	),
 	notification_body: P.optionalText(
 		"Notification body template (Markdown) with {{ variable }} and {{#if key}}...{{/if}}",
+	),
+	escalation_chain_id: P.optionalResourceId(
+		"escalationChain",
+		'Escalation chain an incident starts on top of the destinations (from list_escalation_chains), or "none" to detach. Applies to escalation_chain_tier; without it, an id sets the critical (or only) tier and "none" detaches every tier',
+	),
+	escalation_chain_tier: P.optionalOneOf(
+		["warning", "critical"],
+		"The tier escalation_chain_id sets or detaches, leaving the other tier's chain as it is",
 	),
 })
 
@@ -127,7 +144,17 @@ export const buildUpdatedRequest = Effect.fnUntraced(function* (
 	const signalType = params.signal_type ?? current.signalType
 	const comparator = params.comparator ?? current.comparator
 	const keepsRawQuery = signalType === "raw_query"
-	const thresholds = yield* mergeThresholds(current, params, comparator)
+	const chain =
+		params.escalation_chain_id === undefined
+			? undefined
+			: Str.toLowerCase(params.escalation_chain_id) === "none"
+				? null
+				: yield* P.decodeResourceId(
+						"escalationChain",
+						"escalation_chain_id",
+					)(params.escalation_chain_id)
+	const merged = yield* mergeThresholds(current, params, comparator)
+	const thresholds = yield* withEscalationChain(current.name, merged, chain, params.escalation_chain_tier)
 
 	return {
 		name: params.name ?? current.name,
@@ -137,6 +164,12 @@ export const buildUpdatedRequest = Effect.fnUntraced(function* (
 		serviceNames: [...(params.services ?? current.serviceNames)],
 		excludeServiceNames: [...current.excludeServiceNames],
 		environments: [...(params.environments ?? current.environments)],
+		// Only an anomaly rule has a signal scope; the server rejects one on any other rule.
+		...(signalType === "anomaly"
+			? { anomalySignals: [...(params.anomaly_signals ?? current.anomalySignals ?? [])] }
+			: params.anomaly_signals === undefined
+				? undefined
+				: { anomalySignals: [...params.anomaly_signals] }),
 		tags: [...current.tags],
 		groupBy:
 			params.group_by !== undefined
@@ -223,6 +256,49 @@ const mergeThresholds = (
 	)
 }
 
+/** Sets the chain on the only tier, or on the critical one of two; `undefined` keeps every tier's. */
+/**
+ * Sets or detaches a tier's chain. A named tier changes only that tier; without one, an id sets the
+ * critical (or only) tier and "none" detaches every tier.
+ */
+const withEscalationChain = <T extends { readonly severity: AlertThreshold["severity"] }>(
+	ruleName: string,
+	tiers: Arr.NonEmptyReadonlyArray<T>,
+	chain: EscalationChainId | null | undefined,
+	tier: AlertThreshold["severity"] | undefined,
+): Effect.Effect<Arr.NonEmptyReadonlyArray<T>, McpInvalidInputError> => {
+	if (chain === undefined) {
+		return tier === undefined
+			? Effect.succeed(tiers)
+			: Effect.fail(
+					new McpInvalidInputError({
+						message:
+							'escalation_chain_tier needs escalation_chain_id (an id, or "none" to detach)',
+						parameter: "escalation_chain_tier",
+					}),
+				)
+	}
+	if (tier !== undefined) {
+		if (!Arr.some(tiers, (t) => t.severity === tier)) {
+			return Effect.fail(
+				new McpInvalidInputError({
+					message: `"${ruleName}" has no ${tier} tier`,
+					parameter: "escalation_chain_tier",
+				}),
+			)
+		}
+		return Effect.succeed(
+			Arr.map(tiers, (t) => (t.severity === tier ? { ...t, escalationChainId: chain } : t)),
+		)
+	}
+	if (chain === null) return Effect.succeed(Arr.map(tiers, (t) => ({ ...t, escalationChainId: null })))
+	const critical = Arr.findLastIndex(tiers, (t) => t.severity === "critical")
+	const target = tiers.length === 1 ? 0 : Option.getOrElse(critical, () => tiers.length - 1)
+	return Effect.succeed(
+		Arr.map(tiers, (t, index) => (index === target ? { ...t, escalationChainId: chain } : t)),
+	)
+}
+
 /** `destination_ids` replaces; add/remove edit the current (or replaced) list in place. */
 const mergeDestinations = (
 	current: ReadonlyArray<string>,
@@ -233,7 +309,10 @@ const mergeDestinations = (
 ): Array<string> => {
 	const base = params.destination_ids ?? current
 	const removed = new Set(params.remove_destination_ids ?? [])
-	return [...new Set([...base, ...(params.add_destination_ids ?? [])])].filter((id) => !removed.has(id))
+	return Arr.filter(
+		[...new Set([...base, ...(params.add_destination_ids ?? [])])],
+		(id) => !removed.has(id),
+	)
 }
 
 const noTargets = new McpInvalidInputError({
@@ -250,9 +329,9 @@ const resolveTargets = (
 	if (ids.length === 0) return Effect.fail(noTargets)
 	if (ids.includes("*")) return rules.length > 0 ? Effect.succeed(rules) : Effect.fail(noTargets)
 	const unique = [...new Set(ids)]
-	const missing = unique.find((id) => !rules.some((r) => r.id === id))
+	const missing = unique.find((id) => !Arr.some(rules, (r) => r.id === id))
 	if (missing !== undefined) return Effect.fail(ruleNotFound(missing))
-	return Effect.succeed(rules.filter((r) => unique.includes(r.id)))
+	return Effect.succeed(Arr.filter(rules, (r) => unique.includes(r.id)))
 }
 
 export function registerUpdateAlertRuleTool(server: McpToolRegistrar) {
@@ -321,15 +400,15 @@ export function registerUpdateAlertRuleTool(server: McpToolRegistrar) {
 			const head = saved[0]
 			if (head === undefined) return yield* noTargets
 			const bulk = saved.length > 1
-			const configWarnings = saved.flatMap(({ rule }) =>
-				ruleConfigWarnings(rule).map((w) => (bulk ? `${rule.name}: ${w}` : w)),
+			const configWarnings = Arr.flatMap(saved, ({ rule }) =>
+				Arr.map(ruleConfigWarnings(rule), (w) => (bulk ? `${rule.name}: ${w}` : w)),
 			)
 			// One rule gets a first-evaluation preview; a bulk change would run one per rule.
 			const evaluated = bulk ? undefined : yield* firstEvaluation(head.request, head.rule.enabled)
 			const warnings = [...configWarnings, ...(evaluated?.warnings ?? [])]
 			return {
 				rule: toAlertRuleRow(head.rule),
-				...(bulk ? { rules: saved.map(({ rule }) => toAlertRuleRow(rule)) } : undefined),
+				...(bulk ? { rules: Arr.map(saved, ({ rule }) => toAlertRuleRow(rule)) } : undefined),
 				...(warnings.length > 0 ? { warnings } : undefined),
 				...(evaluated === undefined ? undefined : { evaluation: evaluated.evaluation }),
 			}

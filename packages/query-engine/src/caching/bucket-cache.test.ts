@@ -1,5 +1,5 @@
 import { assert, describe, expect, it } from "@effect/vitest"
-import { ConfigProvider, Effect, Exit, Layer, Schema } from "effect"
+import { ConfigProvider, Effect, Exit, Layer, Schema, Array as Arr } from "effect"
 import { OrgId } from "@maple/domain"
 import type { TimeseriesPoint } from "@maple/domain/query-engine"
 import {
@@ -122,8 +122,8 @@ describe("coalesceMissingRanges", () => {
 
 		const coalesced = coalesceMissingRanges(missing)
 		expect(coalesced).toHaveLength(2)
-		expect(coalesced.filter((r) => r.cachable)).toHaveLength(1)
-		expect(coalesced.filter((r) => !r.cachable)).toHaveLength(1)
+		expect(Arr.filter(coalesced, (r) => r.cachable)).toHaveLength(1)
+		expect(Arr.filter(coalesced, (r) => !r.cachable)).toHaveLength(1)
 	})
 
 	it("keeps every cachable range strictly below the flux boundary", () => {
@@ -140,9 +140,11 @@ describe("coalesceMissingRanges", () => {
 		const buckets = [bucket(MIN, 2 * MIN), bucket(4 * MIN, 5 * MIN), bucket(7 * MIN, 8 * MIN)]
 		const missing = findMissingRanges(buckets, 0, 10 * MIN, MIN, FAR_FUTURE_FLUX)
 		const coalesced = coalesceMissingRanges(missing)
-		const uncovered = missing.filter(
+		const uncovered = Arr.filter(
+			missing,
 			(gap) =>
-				!coalesced.some(
+				!Arr.some(
+					coalesced,
 					(span) =>
 						span.cachable === gap.cachable &&
 						span.range.startMs <= gap.range.startMs &&
@@ -165,9 +167,9 @@ describe("pointsToBuckets", () => {
 			point("1970-01-01T00:03:00.000Z", { v: 4 }),
 		]
 		const buckets = pointsToBuckets(points, bucketMs, flux)
-		expect(buckets.map((b) => b.startMs)).toEqual([0, MIN])
-		expect(buckets[0]!.points).toHaveLength(1)
-		expect(buckets[1]!.points).toHaveLength(1)
+		expect(Arr.map(buckets, (b) => b.startMs)).toEqual([0, MIN])
+		expect(Arr.getUnsafe(buckets, 0).points).toHaveLength(1)
+		expect(Arr.getUnsafe(buckets, 1).points).toHaveLength(1)
 	})
 
 	it("skips points with an unparseable bucket timestamp", () => {
@@ -177,7 +179,7 @@ describe("pointsToBuckets", () => {
 		]
 		const buckets = pointsToBuckets(points, MIN, FAR_FUTURE_FLUX)
 		expect(buckets).toHaveLength(1)
-		expect(buckets[0]!.points).toHaveLength(1)
+		expect(Arr.getUnsafe(buckets, 0).points).toHaveLength(1)
 	})
 })
 
@@ -186,7 +188,7 @@ describe("mergeAndDeduplicateBuckets", () => {
 		const existing = [bucket(0, MIN, [point("1970-01-01T00:00:00.000Z")])]
 		const fresh = [bucket(MIN, 2 * MIN, [point("1970-01-01T00:01:00.000Z")])]
 		const merged = mergeAndDeduplicateBuckets(existing, fresh)
-		expect(merged.map((b) => b.startMs)).toEqual([0, MIN])
+		expect(Arr.map(merged, (b) => b.startMs)).toEqual([0, MIN])
 	})
 
 	it("prefers fresh bucket when startMs collides", () => {
@@ -194,7 +196,7 @@ describe("mergeAndDeduplicateBuckets", () => {
 		const fresh = [bucket(0, MIN, [point("1970-01-01T00:00:00.000Z", { fresh: 2 })])]
 		const merged = mergeAndDeduplicateBuckets(existing, fresh)
 		expect(merged).toHaveLength(1)
-		expect(merged[0]!.points[0]!.series).toEqual({ fresh: 2 })
+		expect(Arr.getUnsafe(Arr.getUnsafe(merged, 0).points, 0).series).toEqual({ fresh: 2 })
 	})
 })
 
@@ -269,12 +271,18 @@ describe("segment key stability under a sliding window", () => {
 		const base = 1_760_000_000_000
 
 		let changes = 0
-		let previous = segmentStartsFor(base - windowMs, base, segmentMs).join(",")
+		let previous = Arr.join(
+			Arr.map(segmentStartsFor(base - windowMs, base, segmentMs), (start) => `${start}`),
+			",",
+		)
 
 		// One hour of a dashboard refreshing every second.
 		for (let tick = 1; tick <= 3600; tick++) {
 			const endMs = base + tick * 1000
-			const current = segmentStartsFor(endMs - windowMs, endMs, segmentMs).join(",")
+			const current = Arr.join(
+				Arr.map(segmentStartsFor(endMs - windowMs, endMs, segmentMs), (start) => `${start}`),
+				",",
+			)
 			if (current !== previous) changes++
 			previous = current
 		}
@@ -516,8 +524,8 @@ describe("BucketCacheService.getOrComputeBuckets", () => {
 			const second = yield* svc.getOrComputeBuckets({ ...base, bucketSeconds: 180 }, makeCompute(180))
 
 			assert.strictEqual(computeCalls.length, 2)
-			assert.strictEqual(computeCalls[0]!.bucketSeconds, 60)
-			assert.strictEqual(computeCalls[1]!.bucketSeconds, 180)
+			assert.strictEqual(Arr.getUnsafe(computeCalls, 0).bucketSeconds, 60)
+			assert.strictEqual(Arr.getUnsafe(computeCalls, 1).bucketSeconds, 180)
 			assert.isTrue(second.bucketsMissed > 0)
 		}).pipe(Effect.provide(BucketTestLive))
 	})
@@ -687,7 +695,7 @@ describe("BucketCacheService.getOrComputeBuckets", () => {
 			// cold under sustained timeouts.
 			assert.strictEqual(writes.length, 1)
 			assert.deepStrictEqual(
-				writes[0]!.buckets.map((b) => b.startMs),
+				Arr.map(Arr.getUnsafe(writes, 0).buckets, (b) => b.startMs),
 				[0, MIN],
 			)
 		}).pipe(Effect.provide(makeBucketTestLive(backend, makeConfig(), 10)), Effect.timeout(200))

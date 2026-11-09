@@ -1,4 +1,4 @@
-import { Array as Arr, DateTime, Effect, pipe } from "effect"
+import { Array as Arr, DateTime, Effect, pipe, String as Str, Option } from "effect"
 import type { ErrorDetailTracesOutput, ErrorsTimeseriesOutput, ListLogsOutput } from "@maple/domain/tinybird"
 import { parseWarehouseDateTime, formatWarehouseDateTime, warehouseDateTimeToIso } from "../datetime"
 import * as CH from "../ch"
@@ -109,7 +109,7 @@ export interface ErrorDetailOutput {
 
 /** "{}" is what some SDKs put in a status message when they had nothing to say. */
 const meaningful = (text: string | undefined): string => {
-	const trimmed = (text ?? "").trim()
+	const trimmed = Str.trim(text ?? "")
 	return trimmed === "{}" || trimmed === "[]" || trimmed === "null" ? "" : trimmed
 }
 
@@ -156,17 +156,17 @@ const SEVERITY_RANK: ReadonlyMap<string, number> = new Map([
 	["WARN", 2],
 	["WARNING", 2],
 ])
-const severityRank = (severity: string): number => SEVERITY_RANK.get(severity.toUpperCase()) ?? 3
+const severityRank = (severity: string): number => SEVERITY_RANK.get(Str.toUpperCase(severity)) ?? 3
 
 /** Error-level logs first (then newest first): a trace's last Info line is rarely the clue. */
 export const errorFirstLogs = <L extends { readonly severityText: string; readonly timestamp: string }>(
 	logs: ReadonlyArray<L>,
 ): ReadonlyArray<L> =>
-	[...logs].sort(
-		(a, b) =>
-			severityRank(a.severityText) - severityRank(b.severityText) ||
-			(a.timestamp < b.timestamp ? 1 : a.timestamp > b.timestamp ? -1 : 0),
-	)
+	[...logs].sort((a, b) => {
+		const bySeverity = severityRank(a.severityText) - severityRank(b.severityText)
+		if (bySeverity !== 0) return bySeverity
+		return a.timestamp < b.timestamp ? 1 : a.timestamp > b.timestamp ? -1 : 0
+	})
 
 const ANCHOR_SLACK_MS = 60 * 1000
 const RELATED_SLACK_MS = 5 * 60 * 1000
@@ -214,14 +214,17 @@ export const errorDetail = Effect.fn("Observability.errorDetail")(function* (inp
 		),
 		{ profile: "list", context: "errorFingerprintSummary" },
 	)
-	const summaryRow = summaryRows.find((row) => row.occurrences > 0)
+	const summaryRow = Arr.findFirst(summaryRows, (row) => row.occurrences > 0)
 	const anchoredRange =
-		input.anchorWithin !== undefined && summaryRow !== undefined
-			? rangeEndingAt(input.timeRange, summaryRow.lastSeen)
+		input.anchorWithin !== undefined && Option.isSome(summaryRow)
+			? rangeEndingAt(input.timeRange, summaryRow.value.lastSeen)
 			: undefined
 	const sampleRange = anchoredRange ?? input.timeRange
 	yield* Effect.annotateCurrentSpan({
-		"maple.error_detail.occurrences": summaryRow?.occurrences ?? 0,
+		"maple.error_detail.occurrences": Option.match(summaryRow, {
+			onNone: () => 0,
+			onSome: (row) => row.occurrences,
+		}),
 		"maple.error_detail.anchored": anchoredRange !== undefined,
 	})
 
@@ -289,18 +292,18 @@ export const errorDetail = Effect.fn("Observability.errorDetail")(function* (inp
 				)
 		: undefined
 
-	const summary: ErrorDetailSummary | undefined =
-		summaryRow === undefined
-			? undefined
-			: {
-					timeRange: summaryRange,
-					occurrences: summaryRow.occurrences,
-					firstSeen: DateTime.formatIso(summaryRow.firstSeen),
-					lastSeen: DateTime.formatIso(summaryRow.lastSeen),
-					services: summaryRow.services,
-					serviceCount: summaryRow.serviceCount,
-					noExceptionCount: summaryRow.noExceptionCount,
-				}
+	const summary: ErrorDetailSummary | undefined = Option.match(summaryRow, {
+		onNone: () => undefined,
+		onSome: (row) => ({
+			timeRange: summaryRange,
+			occurrences: row.occurrences,
+			firstSeen: DateTime.formatIso(row.firstSeen),
+			lastSeen: DateTime.formatIso(row.lastSeen),
+			services: row.services,
+			serviceCount: row.serviceCount,
+			noExceptionCount: row.noExceptionCount,
+		}),
+	})
 
 	return {
 		fingerprintHash: input.fingerprintHash,
@@ -308,7 +311,7 @@ export const errorDetail = Effect.fn("Observability.errorDetail")(function* (inp
 		summary,
 		anchored: anchoredRange !== undefined,
 		related,
-		error: identityOf(traces[0], summaryRow),
+		error: identityOf(traces[0], Option.getOrUndefined(summaryRow)),
 		traces: pipe(
 			traces,
 			Arr.map((t, i): ErrorDetailTrace => ({
@@ -324,7 +327,7 @@ export const errorDetail = Effect.fn("Observability.errorDetail")(function* (inp
 				errorSpan: errorSpanOf(t),
 				logs: pipe(
 					errorFirstLogs(
-						(logsResults[i]?.data ?? []).map((l) => ({
+						Arr.map(logsResults[i]?.data ?? [], (l) => ({
 							timestamp: l.timestamp,
 							severityText: l.severityText || "INFO",
 							body: l.body,
@@ -344,15 +347,18 @@ const relatedFingerprints = Effect.fn("Observability.relatedFingerprints")(funct
 	traces: ReadonlyArray<ErrorDetailTracesOutput>,
 ) {
 	if (traces.length === 0) return []
-	const starts = traces.map((t) => parseWarehouseDateTime(t.startTime)).filter((ms) => !Number.isNaN(ms))
+	const starts = Arr.filter(
+		Arr.map(traces, (t) => parseWarehouseDateTime(t.startTime)),
+		(ms) => !Number.isNaN(ms),
+	)
 	if (starts.length === 0) return []
-	const maxDurationMs = Math.max(...traces.map((t) => t.durationMicros / 1000))
+	const maxDurationMs = Math.max(...Arr.map(traces, (t) => t.durationMicros / 1000))
 	const executor = yield* WarehouseExecutor
 	const rows = yield* executor.compiledQuery(
 		CH.compile(
 			CH.errorCooccurringFingerprintsQuery({
 				fingerprintHash,
-				traceIds: traces.map((t) => t.traceId),
+				traceIds: Arr.map(traces, (t) => t.traceId),
 			}),
 			{
 				orgId: executor.orgId,
@@ -362,7 +368,7 @@ const relatedFingerprints = Effect.fn("Observability.relatedFingerprints")(funct
 		),
 		{ profile: "list", context: "errorCooccurringFingerprints" },
 	)
-	return rows.map((row): ErrorDetailRelated => ({
+	return Arr.map(rows, (row): ErrorDetailRelated => ({
 		fingerprintHash: row.fingerprintHash,
 		label: row.errorLabel,
 		serviceName: row.serviceName,

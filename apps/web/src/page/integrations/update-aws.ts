@@ -1,18 +1,20 @@
 import type { V2AwsConnection, V2AwsIngest, V2AwsSetup } from "@maple/domain/http/v2"
 import type { AwsConnectionId, AwsMetricNamespace } from "@maple/domain/primitives"
-import { Option, type Result } from "effect"
+import { Option, type Result, Array as Arr } from "effect"
 import { AsyncData, Command as FoldkitCommand } from "foldkit"
-import * as Keyed from "../../data/keyed"
-import type { LoadFailure } from "../../data/load-failure"
-import { requestKey } from "../../data/request-key"
-import * as CopyButton from "../../ui/copy-button"
-import * as Dialog from "../../ui/dialog"
-import * as Field from "../../ui/field"
+import * as Keyed from "@maple/views/data/keyed"
+import type { LoadFailure } from "@maple/views/data/load-failure"
+import { requestKey } from "@maple/views/data/request-key"
+import * as CopyButton from "@maple/views/ui/copy-button"
+import * as Dialog from "@maple/views/ui/dialog"
+import * as Field from "@maple/views/ui/field"
 import { type PageContext, PageOutMessage, type PageReturn } from "../contract"
 import {
 	type AwsCardModel,
 	type AwsRemovedStack,
+	type AwsMetricsEdit,
 	type AwsSelection,
+	isMetricsPanelOpen,
 	type AwsSetupMethod,
 	type AwsSetupPart,
 	CheckAwsConnection,
@@ -32,6 +34,7 @@ import {
 } from "./aws"
 import { integrationOfSearch } from "./catalog"
 import { ReadClock } from "./command"
+import { disconnectSpec } from "./disconnect"
 import { Message } from "./message"
 import type { Model } from "./model"
 import { chain, requestStatus } from "./update-status"
@@ -142,7 +145,7 @@ export const setMethod = (model: Model, part: AwsSetupPart, method: AwsSetupMeth
 /** A click during a background check makes that check the user's: its result is toasted. */
 const startCheck = (model: Model, id: AwsConnectionId, quiet: boolean): Return => {
 	const checking = model.awsCard.checking
-	if (!checking.some((entry) => entry.id === id)) {
+	if (!Arr.some(checking, (entry) => entry.id === id)) {
 		return {
 			model: withCard(model, { checking: [...checking, { id, quiet }] }),
 			commands: [CheckAwsConnection({ id, quiet })],
@@ -152,7 +155,7 @@ const startCheck = (model: Model, id: AwsConnectionId, quiet: boolean): Return =
 		? { model }
 		: {
 				model: withCard(model, {
-					checking: checking.map((entry) => (entry.id === id ? { id, quiet: false } : entry)),
+					checking: Arr.map(checking, (entry) => (entry.id === id ? { id, quiet: false } : entry)),
 				}),
 			}
 }
@@ -166,7 +169,8 @@ export const tickedPending = (model: Model): Return =>
 		Option.match(AsyncData.getData(model.statuses.aws.data), {
 			onNone: () => [],
 			onSome: (status) =>
-				pendingConnections(status).map(
+				Arr.map(
+					pendingConnections(status),
 					(connection) => (next: Model) => startCheck(next, connection.id, true),
 				),
 		}),
@@ -180,15 +184,23 @@ export const completedCheck = (
 	connection: V2AwsConnection | null,
 	failure: LoadFailure | null,
 ): Return => {
-	const quiet = model.awsCard.checking.find((entry) => entry.id === id)?.quiet ?? sentQuiet
-	const settled = withCard(model, { checking: model.awsCard.checking.filter((entry) => entry.id !== id) })
+	const quiet = Arr.findFirst(model.awsCard.checking, (entry) => entry.id === id).pipe(
+		Option.flatMapNullishOr((found) => found.quiet),
+		Option.getOrElse(() => sentQuiet),
+	)
+	const settled = withCard(model, {
+		checking: Arr.filter(model.awsCard.checking, (entry) => entry.id !== id),
+	})
 	if (failure !== null) {
 		return quiet
 			? { model: settled }
 			: toast(settled, "error", "Couldn't check the AWS connection", failure.message)
 	}
-	const before = connectionsOf(model).find((entry) => entry.id === id)
-	const justVerified = before?.verified_at === null && connection?.verified_at != null
+	const justVerified =
+		Option.exists(
+			Arr.findFirst(connectionsOf(model), (entry) => entry.id === id),
+			(before) => before.verified_at === null,
+		) && connection?.verified_at != null
 	// Only the open setup's own connection closes it: a background check may verify another.
 	const isOpen = model.awsCard.setupId === id
 	return chain(settled, [
@@ -242,8 +254,9 @@ export const gotDisconnectDialog = (model: Model, message: Dialog.Message): Retu
 
 export const confirmedDisconnect = (model: Model): Return => {
 	const id = model.awsCard.disconnectId
-	const connection = connectionsOf(model).find((entry) => entry.id === id)
-	if (id === null || connection === undefined || model.awsCard.isDisconnecting) return { model }
+	const found = Arr.findFirst(connectionsOf(model), (entry) => entry.id === id)
+	if (id === null || Option.isNone(found) || model.awsCard.isDisconnecting) return { model }
+	const connection = found.value
 	return {
 		model: withCard(model, { isDisconnecting: true }),
 		commands: [DeleteAwsConnection({ id, accountId: connection.account_id })],
@@ -262,9 +275,12 @@ export const completedDisconnect = (
 	error: string | null,
 ): Return => {
 	const settled = withCard(model, { isDisconnecting: false })
-	if (removed === null) return toast(settled, "error", "Couldn't disconnect AWS", error ?? "")
+	if (removed === null) return toast(settled, "error", disconnectSpec("aws").error, error ?? "")
 	const card = settled.awsCard
-	const stacks = [removed, ...card.removed.filter((stack) => stack.connectionId !== removed.connectionId)]
+	const stacks = [
+		removed,
+		...Arr.filter(card.removed, (stack) => stack.connectionId !== removed.connectionId),
+	]
 	return chain(
 		// `disconnectId` stays: the closing dialog still names the account.
 		withCard(settled, {
@@ -282,14 +298,19 @@ export const completedDisconnect = (
 				commands: [WriteAwsRemoved({ orgId: context.orgId, removed: stacks })],
 			}),
 			(next) =>
-				toast(next, "success", "AWS disconnected", "Delete the stack in AWS to remove the role."),
+				toast(
+					next,
+					"success",
+					disconnectSpec("aws").success,
+					"Delete the stack in AWS to remove the role.",
+				),
 			(next) => requestStatus(next, context, "aws", "Supersede"),
 		],
 	)
 }
 
 export const dismissedRemoved = (model: Model, context: PageContext, connectionId: string): Return => {
-	const removed = model.awsCard.removed.filter((stack) => stack.connectionId !== connectionId)
+	const removed = Arr.filter(model.awsCard.removed, (stack) => stack.connectionId !== connectionId)
 	return {
 		model: withCard(model, { removed }),
 		commands: [WriteAwsRemoved({ orgId: context.orgId, removed })],
@@ -316,9 +337,12 @@ const ingestKey = (context: PageContext, id: AwsConnectionId) =>
 const requestIngest = (model: Model, context: PageContext, mode: Keyed.ReadMode): Return =>
 	chain(
 		model,
-		(integrationOfSearch(model.search.integration) === "aws" ? connectionsOf(model) : [])
-			.filter((connection) => connection.verified_at !== null && connection.metric_stream !== null)
-			.map((connection) => (next: Model) => {
+		Arr.map(
+			Arr.filter(
+				integrationOfSearch(model.search.integration) === "aws" ? connectionsOf(model) : [],
+				(connection) => connection.verified_at !== null && connection.metric_stream !== null,
+			),
+			(connection) => (next: Model) => {
 				const slot = next.awsCard.ingest[connection.id] ?? Keyed.idle()
 				return Option.match(Keyed.requestFor(slot, ingestKey(context, connection.id), mode), {
 					onNone: () => ({ model: next }),
@@ -329,7 +353,8 @@ const requestIngest = (model: Model, context: PageContext, mode: Keyed.ReadMode)
 						commands: [LoadAwsIngest({ key: requested.key, id: connection.id })],
 					}),
 				})
-			}),
+			},
+		),
 	)
 
 /** The status is read again, and with it each stream's ingest; the clock moves "last delivery" along. */
@@ -365,50 +390,71 @@ export const statusArrived = (
 	before: ReadonlyArray<V2AwsConnection>,
 ): Return => {
 	const setupId = model.awsCard.setupId
-	const was = before.find((entry) => entry.id === setupId)
-	const now = connectionsOf(model).find((entry) => entry.id === setupId)
-	const justVerified = was?.verified_at === null && now !== undefined && now.verified_at !== null
+	const wasUnverified = Option.exists(
+		Arr.findFirst(before, (entry) => entry.id === setupId),
+		(entry) => entry.verified_at === null,
+	)
+	const verified = Option.filter(
+		Arr.findFirst(connectionsOf(model), (entry) => entry.id === setupId),
+		(entry) => entry.verified_at !== null,
+	)
 	return chain(model, [
 		(next) => requestIngest(next, context, "Load"),
 		(next) =>
-			justVerified
-				? toast(
+			Option.match(wasUnverified ? verified : Option.none(), {
+				onNone: () => ({ model: next }),
+				onSome: (now) =>
+					toast(
 						withCard(next, { setupId: null }),
 						"success",
 						"AWS connected",
 						`Maple can read account ${now.account_id}.`,
-					)
-				: { model: next },
+					),
+			}),
 	])
 }
 
 /** Edit data: the picker opens with what the connection streams. */
-export const clickedMetrics = (model: Model, id: AwsConnectionId): Return => ({
-	model: withCard(model, { metricsId: id, metricsError: null }),
-})
+export const clickedMetrics = (model: Model, id: AwsConnectionId): Return => {
+	const edit = model.awsCard.metrics
+	const selection = edit._tag === "Editing" && edit.id === id ? edit.selection : null
+	return {
+		model: withCard(model, {
+			metrics: { _tag: "Editing", id, selection, isPanelOpen: true, error: null },
+		}),
+	}
+}
 
+/** Closes the panel; a save in flight still answers, as a toast. */
 export const cancelledMetrics = (model: Model): Return => ({
-	model: withCard(model, { metricsId: null, metricsError: null, selection: null }),
+	model: withCard(model, { metrics: { _tag: "Idle" } }),
 })
 
-/** One region or namespace in or out of what the connection would stream. */
+/** One region or namespace in or out of what the connection would stream; held while it saves. */
 const toggled = (
 	model: Model,
 	id: AwsConnectionId,
 	change: (selection: AwsSelection) => AwsSelection,
 ): Return => {
-	const connection = connectionsOf(model).find((entry) => entry.id === id)
-	if (connection === undefined) return { model }
+	const edit = model.awsCard.metrics
+	const found = Arr.findFirst(connectionsOf(model), (entry) => entry.id === id)
+	if (Option.isNone(found) || edit._tag === "Saving") return { model }
+	const selection = change(selectionOf(found.value, edit))
 	return {
 		model: withCard(model, {
-			selection: change(selectionOf(connection, model.awsCard.selection)),
-			metricsError: null,
+			metrics: {
+				_tag: "Editing",
+				id,
+				selection,
+				isPanelOpen: isMetricsPanelOpen(edit, id),
+				error: null,
+			},
 		}),
 	}
 }
 
 const flip = <A>(values: ReadonlyArray<A>, value: A): ReadonlyArray<A> =>
-	values.includes(value) ? values.filter((entry) => entry !== value) : [...values, value]
+	values.includes(value) ? Arr.filter(values, (entry) => entry !== value) : [...values, value]
 
 export const toggledRegion = (model: Model, id: AwsConnectionId, region: string): Return =>
 	toggled(model, id, (selection) => ({ ...selection, regions: flip(selection.regions, region) }))
@@ -417,33 +463,51 @@ export const toggledNamespace = (model: Model, id: AwsConnectionId, namespace: A
 	toggled(model, id, (selection) => ({ ...selection, namespaces: flip(selection.namespaces, namespace) }))
 
 export const submittedMetrics = (model: Model, id: AwsConnectionId): Return => {
-	const card = model.awsCard
-	const connection = connectionsOf(model).find((entry) => entry.id === id)
-	if (connection === undefined || card.isSavingMetrics) return { model }
-	return Option.match(metricStreamOf(selectionOf(connection, card.selection)), {
-		onNone: () => ({ model: withCard(model, { metricsError: METRIC_SELECTION_HINT }) }),
+	const edit = model.awsCard.metrics
+	const found = Arr.findFirst(connectionsOf(model), (entry) => entry.id === id)
+	if (Option.isNone(found) || edit._tag === "Saving") return { model }
+	const selection = selectionOf(found.value, edit)
+	const isPanelOpen = isMetricsPanelOpen(edit, id)
+	return Option.match(metricStreamOf(selection), {
+		onNone: () => ({
+			model: withCard(model, {
+				metrics: { _tag: "Editing", id, selection, isPanelOpen, error: METRIC_SELECTION_HINT },
+			}),
+		}),
 		onSome: (metricStream) => ({
-			model: withCard(model, { isSavingMetrics: true, metricsError: null }),
+			model: withCard(model, { metrics: { _tag: "Saving", id, selection, isPanelOpen } }),
 			commands: [UpdateAwsMetricStream({ id, metricStream })],
 		}),
 	})
 }
 
-/** AWS only streams once the stack is deployed again, so its setup opens right away. */
+/**
+ * AWS only streams once the stack is deployed again, so its setup opens right away. A result for a
+ * save the editor moved on from only reports, as a toast.
+ */
 export const completedMetricStream = (
 	model: Model,
 	context: PageContext,
+	id: AwsConnectionId,
 	connection: V2AwsConnection | null,
 	error: string | null,
 ): Return => {
-	if (connection === null) {
-		return { model: withCard(model, { isSavingMetrics: false, metricsError: error }) }
-	}
-	return chain(withCard(model, { isSavingMetrics: false, metricsId: null }), [
+	const done = (next: Model) =>
+		toast(next, "success", "Metric stream added", "Run the setup again in AWS to start streaming.")
+	const edit = model.awsCard.metrics
+	if (edit._tag !== "Saving" || edit.id !== id)
+		return connection === null
+			? toast(model, "error", "Couldn't turn on the metric stream", error ?? "")
+			: chain(model, [(next) => requestStatus(next, context, "aws", "Supersede"), done])
+	const { selection, isPanelOpen } = edit
+	if (connection === null)
+		return { model: withCard(model, { metrics: { _tag: "Editing", id, selection, isPanelOpen, error } }) }
+	// The pick stays, panel closed, so the flow shows it until the status read brings the stream back.
+	const saved: AwsMetricsEdit = { _tag: "Editing", id, selection, isPanelOpen: false, error: null }
+	return chain(withCard(model, { metrics: saved }), [
 		// The stored script predates the stream, so it is read again.
 		(next) => openSetup(next, context, connection.id, "Supersede"),
 		(next) => requestStatus(next, context, "aws", "Supersede"),
-		(next) =>
-			toast(next, "success", "Metric stream added", "Run the setup again in AWS to start streaming."),
+		done,
 	])
 }

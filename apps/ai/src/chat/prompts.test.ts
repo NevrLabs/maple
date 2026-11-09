@@ -5,6 +5,7 @@
 import { assert, describe, it } from "vitest"
 import { mapleToolCatalog } from "../mcp/tools/registry"
 import { CONNECTOR_SYSTEM_PROMPT, SYSTEM_PROMPT } from "./prompts"
+import { Array as Arr, String as Str } from "effect"
 
 describe("CONNECTOR_SYSTEM_PROMPT", () => {
 	it("carries the sections every renderer has to agree with", () => {
@@ -17,11 +18,14 @@ describe("CONNECTOR_SYSTEM_PROMPT", () => {
 	})
 
 	it("only sends the agent to sandbox tools that are registered", () => {
-		const named = [...CONNECTOR_SYSTEM_PROMPT.matchAll(/\bsandbox_[a-z_]+/g)].map((match) => match[0])
-		const registered = new Set(mapleToolCatalog.map((tool) => tool.name))
+		const named = Arr.map(
+			Arr.fromIterable(Str.matchAll(/\bsandbox_[a-z_]+/g)(CONNECTOR_SYSTEM_PROMPT)),
+			(match) => match[0],
+		)
+		const registered = new Set(Arr.map(mapleToolCatalog, (tool) => tool.name))
 		assert.isNotEmpty(named)
 		assert.deepEqual(
-			named.filter((name) => !registered.has(name)),
+			Arr.filter(named, (name) => !registered.has(name)),
 			[],
 		)
 	})

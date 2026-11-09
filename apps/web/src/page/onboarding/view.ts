@@ -5,7 +5,7 @@ import type { Html, HtmlBuilder } from "foldkit/html"
 import * as OrgSwitcherView from "../../shell/clerk-org-switcher-view"
 import { accountLayout } from "../../layout/account-layout"
 import { currentRegion, MAPLE_REGION_LABELS, regionAppUrl } from "../../lib/region"
-import { button, linkButton } from "../../ui/button"
+import { button, linkButton } from "@maple/views/ui/button"
 import { authDescription, authLayout, authTitle } from "./auth-layout"
 import type * as ClerkScreens from "./clerk-screens"
 import { clerkCard } from "./clerk-card"
@@ -19,7 +19,7 @@ import * as QuickStartTeamView from "./quick-start-team-view"
 import * as PricingCardsView from "./pricing-cards-view"
 import * as QuickStartView from "./quick-start-view"
 import { bootSplash } from "../../layout/boot-splash"
-import * as MenuView from "../../ui/menu-view"
+import * as MenuView from "@maple/views/ui/menu-view"
 import type * as CliLogin from "./cli-login"
 import * as CreateOrgView from "./create-org-view"
 import * as CliLoginView from "./cli-login-view"
@@ -43,6 +43,7 @@ import type * as McpAuthorize from "./mcp-authorize"
 import * as McpAuthorizeView from "./mcp-authorize-view"
 import * as Unsubscribe from "./unsubscribe"
 import { selfHostedWorkspace, workspaceCard } from "./workspace"
+import { hstack } from "@maple/views/ui/stack"
 
 /** A screen's view inputs: the session, plus markup the container owns (the org switcher). */
 type ScreenInputs = Inputs & Readonly<{ workspace: () => Html }>
@@ -161,7 +162,7 @@ const quickStartView = Submodel.defineView<
 					onNone: () => "Your team",
 					onSome: (org) => org.name,
 				}),
-				teamStep: () => QuickStartTeamView.teamStep(h, model.team),
+				teamStep: (orgName) => QuickStartTeamView.teamStep(h, model.team, orgName),
 				planStep: QuickStartTeamView.planStep(
 					h,
 					accessOf(inputs.customer) === "loading",
@@ -221,17 +222,14 @@ const wrongRegionView = (
 			" dashboard, which keeps a separate set of organizations.",
 		]),
 		switcher(h, model, inputs, "start", ({ trigger, withTrigger }) =>
-			h.div(
-				[h.Class("mt-6 flex flex-wrap items-center gap-2")],
-				[
-					...(url === undefined
-						? []
-						: [linkButton(h, { href: `${url}${screen.href}` }, [`Open in ${target.short}`])]),
-					...withTrigger(
-						button(h, { variant: "outline", attributes: trigger }, ["Switch organization"]),
-					),
-				],
-			),
+			hstack(h, { gap: "2", align: "center", wrap: true, className: "mt-6" }, [
+				...(url === undefined
+					? []
+					: [linkButton(h, { href: `${url}${screen.href}` }, [`Open in ${target.short}`])]),
+				...withTrigger(
+					button(h, { variant: "outline", attributes: trigger }, ["Switch organization"]),
+				),
+			]),
 		),
 	])
 }

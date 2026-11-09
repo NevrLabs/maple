@@ -1,3 +1,5 @@
+import { Array as Arr, String as Str } from "effect"
+import { nonZeroOr } from "@maple/ui/lib/number"
 // Pixel-grid maple leaves for the crash page, ported from the landing 404
 // (`apps/landing/src/lib/maple-leaves.ts`). They sway down, settle into a pile
 // and dissolve; the pointer blows wind and pressing an action sweeps them off.
@@ -45,19 +47,22 @@ interface Bit {
 }
 
 const hex = (h: string): Rgb => [
-	Number.parseInt(h.slice(1, 3), 16),
-	Number.parseInt(h.slice(3, 5), 16),
-	Number.parseInt(h.slice(5, 7), 16),
+	Number.parseInt(Str.slice(1, 3)(h), 16),
+	Number.parseInt(Str.slice(3, 5)(h), 16),
+	Number.parseInt(Str.slice(5, 7)(h), 16),
 ]
 
-const PALETTES: readonly (readonly Rgb[])[] = [
-	["#f2c14e", "#e8892c", "#c9412a"],
-	["#f0a03c", "#d9542b", "#a8281f"],
-	["#e9c46a", "#e9a23b", "#d0702a"],
-	["#d8452c", "#b52a22", "#7e1d1a"],
-	["#f4d35e", "#f0b73f", "#e07a2e"],
-	["#c98b4a", "#a5612f", "#6e3b22"],
-].map((p) => p.map(hex))
+const PALETTES: Arr.NonEmptyReadonlyArray<readonly Rgb[]> = Arr.map(
+	Arr.make(
+		["#f2c14e", "#e8892c", "#c9412a"],
+		["#f0a03c", "#d9542b", "#a8281f"],
+		["#e9c46a", "#e9a23b", "#d0702a"],
+		["#d8452c", "#b52a22", "#7e1d1a"],
+		["#f4d35e", "#f0b73f", "#e07a2e"],
+		["#c98b4a", "#a5612f", "#6e3b22"],
+	),
+	(p) => Arr.map(p, hex),
+)
 const STEM = hex("#6b4226")
 const CHARS = ["-", "|", "/", "\\"]
 
@@ -81,10 +86,10 @@ const LOBES: readonly (readonly [number, number])[] = [
 ]
 const RT = new Float32Array(512).map((_, k) => {
 	const th = (k / 512) * Math.PI * 2 - Math.PI
-	const r = LOBES.reduce((acc, [a, amp]) => {
+	const r = Arr.reduce(LOBES, 0.2, (acc, [a, amp]) => {
 		const c = Math.cos(th - a)
 		return c > 0 ? Math.max(acc, 0.2 + amp * c ** 14) : acc
-	}, 0.2)
+	})
 	return r + 0.06 * Math.abs(Math.sin(th * 13)) ** 3 * ((r - 0.2) / 0.76)
 })
 const radiusAt = (th: number) => RT[Math.min(511, Math.floor(((th + Math.PI) / (Math.PI * 2)) * 512))] ?? 0.2
@@ -126,7 +131,7 @@ export function mountMapleLeaves(
 
 	function resize() {
 		const r = host.getBoundingClientRect()
-		const dpr = Math.min(2, window.devicePixelRatio || 1)
+		const dpr = Math.min(2, nonZeroOr(window.devicePixelRatio, 1))
 		grid.w = r.width
 		grid.h = r.height
 		grid.floor = grid.h - 18
@@ -174,7 +179,7 @@ export function mountMapleLeaves(
 			flipV: rand(1.2, 2.2),
 			asx: 1,
 			back: false,
-			pal: PALETTES[Math.floor(Math.random() * PALETTES.length)] ?? PALETTES[0]!,
+			pal: PALETTES[Math.floor(Math.random() * PALETTES.length)] ?? Arr.headNonEmpty(PALETTES),
 			groundY: groundFor(z),
 			resting,
 			sy: 1,
@@ -262,7 +267,7 @@ export function mountMapleLeaves(
 	}
 
 	function step(dt: number, t: number) {
-		const airborne = leaves.filter((l) => !l.resting).length
+		const airborne = Arr.filter(leaves, (l) => !l.resting).length
 		if (airborne < maxAirborne() && leaves.length < 30 && Math.random() < dt * 0.9) spawn(spawnX(), -80)
 
 		const wind = 6 + Math.sin(t * 0.07) * 8
@@ -334,16 +339,21 @@ export function mountMapleLeaves(
 		mouse.vx *= 0.85
 		mouse.vy *= 0.85
 
-		const resting = leaves.filter((l) => l.resting)
-		const oldest = resting.length > 18 ? resting.reduce((a, b) => (b.age > a.age ? b : a)) : undefined
+		const resting = Arr.filter(leaves, (l) => l.resting)
+		const oldest =
+			resting.length > 18 && Arr.isReadonlyArrayNonEmpty(resting)
+				? Arr.reduce(resting, Arr.headNonEmpty(resting), (a, b) => (b.age > a.age ? b : a))
+				: undefined
 		if (oldest) oldest.age = Math.max(oldest.age, oldest.life)
 
 		for (let k = leaves.length - 1; k >= 0; k--) {
-			const l = leaves[k]!
+			const l = leaves[k]
+			if (l === undefined) continue
 			if (l.alpha <= 0 || l.x < -160 || l.x > grid.w + 160 || l.y < -300) leaves.splice(k, 1)
 		}
 		for (let k = bits.length - 1; k >= 0; k--) {
-			const b = bits[k]!
+			const b = bits[k]
+			if (b === undefined) continue
 			b.x += b.vx * dt
 			b.y += b.vy * dt
 			b.vx *= 1 - Math.min(1, dt * 2.5)
@@ -380,7 +390,8 @@ export function mountMapleLeaves(
 				let rgb: Rgb
 				if (rho < edge) {
 					const t = rho / edge
-					const vein = LOBES.some(
+					const vein = Arr.some(
+						LOBES,
 						([a]) =>
 							Math.cos(th - a) > 0 &&
 							rho * Math.abs(Math.sin(th - a)) < veinW &&
@@ -406,7 +417,7 @@ export function mountMapleLeaves(
 		const i = Math.floor(b.x / cell)
 		const j = Math.floor(b.y / cell)
 		if (i < 0 || j < 0 || i >= cols || j >= rows) return
-		const sp = Math.hypot(b.vx, b.vy) || 1
+		const sp = nonZeroOr(Math.hypot(b.vx, b.vy), 1)
 		const c = b.vx / sp
 		const s = b.vy / sp
 		const k = b.dot ? 4 : Math.abs(c) > 0.92 ? 0 : Math.abs(s) > 0.92 ? 1 : c * s > 0 ? 3 : 2
@@ -443,7 +454,7 @@ export function mountMapleLeaves(
 		ctx.fillStyle = state.ink
 		for (let idx = 0; idx < glyph.length; idx++) {
 			const k = glyph[idx] ?? 0
-			if (!k || (color[idx] ?? -1) >= 0) continue
+			if (k === 0 || (color[idx] ?? -1) >= 0) continue
 			ctx.globalAlpha = (glyphA[idx] ?? 0) * 0.45
 			ctx.fillText(
 				k === 5 ? "." : (CHARS[k - 1] ?? "-"),

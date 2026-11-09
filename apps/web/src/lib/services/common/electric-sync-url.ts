@@ -1,4 +1,9 @@
-const configuredElectricSyncUrl = import.meta.env.VITE_ELECTRIC_SYNC_URL?.trim()
+import { Option, String as Str } from "effect"
+
+const configuredElectricSyncUrl = Option.map(
+	Option.fromNullishOr(import.meta.env.VITE_ELECTRIC_SYNC_URL),
+	Str.trim,
+).pipe(Option.getOrUndefined)
 
 /**
  * selfhost (PATCHES.md #2): a path-only value (`/_api`) resolves against the page's origin at
@@ -17,3 +22,6 @@ export const electricSyncBaseUrl =
 	configuredElectricSyncUrl && configuredElectricSyncUrl.length > 0
 		? sameOrigin(configuredElectricSyncUrl).replace(/\/$/, "")
 		: "http://127.0.0.1:3476"
+
+/** Off on a deploy with no Electric upstream (`VITE_ELECTRIC_SYNC_DISABLED=1`, `preview:web`). */
+export const electricSyncEnabled = import.meta.env.VITE_ELECTRIC_SYNC_DISABLED !== "1"

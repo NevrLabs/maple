@@ -3,7 +3,7 @@
  * document is decoded through its real domain schema, so the fixture cannot
  * drift from the wire format, and the overview runs through `deriveOverview`.
  */
-import { Schema } from "effect"
+import { Option, Order, Schema, Array as Arr, String as Str } from "effect"
 
 import {
 	AlertDeliveryEventDocument,
@@ -33,7 +33,7 @@ const HOUR = 60 * MIN
 const DAY = 24 * HOUR
 const ORG = "org_lab_alerts"
 
-const uuid = (n: number): string => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`
+const uuid = (n: number): string => `00000000-0000-4000-8000-${Str.padStart(12, "0")(String(n))}`
 
 /* Destinations ---------------------------------------------------------------------------- */
 
@@ -387,6 +387,8 @@ interface IncidentSpec {
 	readonly endAgo: number | null
 	readonly value: number
 	readonly held?: boolean
+	/** Acknowledged this long ago, from Slack. */
+	readonly ackedAgo?: number
 }
 
 const OPEN_INCIDENTS: ReadonlyArray<IncidentSpec> = [
@@ -405,6 +407,7 @@ const OPEN_INCIDENTS: ReadonlyArray<IncidentSpec> = [
 		startAgo: 41 * MIN,
 		endAgo: null,
 		value: 1920,
+		ackedAgo: 33 * MIN,
 	},
 	{
 		id: INCIDENT.ingest,
@@ -542,7 +545,13 @@ const incidentFrom = (spec: IncidentSpec, rule: AlertRuleDocument, nowMs: number
 		lastNotifiedAt: iso(nowMs - (open ? 8 * MIN : (spec.endAgo ?? 0))),
 		holdReason: spec.held ? "volume_collapsed" : null,
 		heldSince: spec.held ? iso(nowMs - 58 * MIN) : null,
+		acknowledgedAt: spec.ackedAgo === undefined ? null : iso(nowMs - spec.ackedAgo),
+		acknowledgedByUserId: null,
+		acknowledgedByName: spec.ackedAgo === undefined ? null : "Dana Kim",
+		acknowledgedVia: spec.ackedAgo === undefined ? null : "slack",
 		errorIssueId: null,
+		silenceId: null,
+		silencedAt: null,
 	})
 }
 
@@ -630,7 +639,7 @@ const allDeliveries = (nowMs: number): AlertDeliveryEventDocument[] => {
 		["email", RULE.scraper, 5 * DAY],
 		["discord", RULE.alertingP99, 6.2 * DAY],
 	]
-	const routine = history.map(([destination, ruleId, ago]): DeliverySpec => ({
+	const routine = Arr.map(history, ([destination, ruleId, ago]): DeliverySpec => ({
 		destination,
 		ruleId,
 		incidentId: null,
@@ -646,9 +655,13 @@ const allDeliveries = (nowMs: number): AlertDeliveryEventDocument[] => {
 		atMs: nowMs - 4.6 * DAY + i * 2 * HOUR,
 		failed: { code: 410, message: "HTTP 410 Gone" },
 	}))
-	return [...specs, ...routine, ...legacy]
-		.toSorted((a, b) => b.atMs - a.atMs)
-		.map((spec, i) => deliveryFrom(spec, i))
+	return Arr.map(
+		Arr.sort(
+			[...specs, ...routine, ...legacy],
+			Order.flip(Order.mapInput(Order.Number, (spec: { readonly atMs: number }) => spec.atMs)),
+		),
+		(spec, i) => deliveryFrom(spec, i),
+	)
 }
 
 /* Incident page --------------------------------------------------------------------------- */
@@ -689,7 +702,7 @@ const chatPreview = (nowMs: number, range: { start: number; end: number }): Aler
 }
 
 const chatInvestigation = (nowMs: number): V2Investigation => {
-	const base = VERDICT_LAB_CASES[0]!.investigation
+	const base = Arr.getUnsafe(VERDICT_LAB_CASES, 0).investigation
 	const opened = nowMs - 23 * MIN
 	const iso = (ms: number) => new Date(ms).toISOString()
 	return decodeInvestigation({
@@ -727,10 +740,10 @@ export interface AlertsLabFixture {
 }
 
 export function buildAlertsLabFixture(nowMs: number): AlertsLabFixture {
-	const rules = RULE_SPECS.map((spec) => ruleFrom(spec, nowMs))
-	const ruleById = new Map<string, AlertRuleDocument>(rules.map((rule) => [rule.id, rule]))
+	const rules = Arr.map(RULE_SPECS, (spec) => ruleFrom(spec, nowMs))
+	const ruleById = new Map<string, AlertRuleDocument>(Arr.map(rules, (rule) => [rule.id, rule]))
 	const incidentsOf = (specs: ReadonlyArray<IncidentSpec>) =>
-		specs.flatMap((spec) => {
+		Arr.flatMap(specs, (spec) => {
 			const rule = ruleById.get(spec.ruleId)
 			return rule === undefined ? [] : [incidentFrom(spec, rule, nowMs)]
 		})
@@ -742,7 +755,7 @@ export function buildAlertsLabFixture(nowMs: number): AlertsLabFixture {
 	// Quiet inbox: the open incidents resolved and two blind spots fixed, leaving two.
 	const fixed = new Set<string>([RULE.errorTick, RULE.pgPermission, RULE.ingestSilent])
 	const quietIncidents = incidentsOf([
-		...OPEN_INCIDENTS.map((spec) => ({
+		...Arr.map(OPEN_INCIDENTS, (spec) => ({
 			...spec,
 			startAgo: spec.startAgo + 3 * HOUR,
 			endAgo: 2 * HOUR,
@@ -751,15 +764,18 @@ export function buildAlertsLabFixture(nowMs: number): AlertsLabFixture {
 		...RESOLVED_INCIDENTS,
 	])
 	const quiet = deriveOverview({
-		rules: rules.filter((rule) => rule.id !== RULE.errorTick && rule.id !== RULE.pgPermission),
+		rules: Arr.filter(rules, (rule) => rule.id !== RULE.errorTick && rule.id !== RULE.pgPermission),
 		incidents: quietIncidents,
-		states: states.filter((row) => row.last_status !== "breached" && !fixed.has(row.rule_id)),
+		states: Arr.filter(states, (row) => row.last_status !== "breached" && !fixed.has(row.rule_id)),
 		deliveryEvents: deliveries,
 		now: nowMs,
 	})
 
-	const chatRule = ruleById.get(RULE.errorRate) ?? rules[0]!
-	const chat = incidents.find((incident) => incident.id === INCIDENT.chat) ?? incidents[0]!
+	const chatRule = ruleById.get(RULE.errorRate) ?? Arr.getUnsafe(rules, 0)
+	const chat = Option.getOrElse(
+		Arr.findFirst(incidents, (incident) => incident.id === INCIDENT.chat),
+		() => Arr.getUnsafe(incidents, 0),
+	)
 	const opened = Date.parse(chat.firstTriggeredAt)
 	const range = { start: opened - 30 * MIN, end: nowMs }
 
@@ -771,11 +787,11 @@ export function buildAlertsLabFixture(nowMs: number): AlertsLabFixture {
 		incident: {
 			incident: chat,
 			rule: chatRule,
-			ruleIncidents: incidents.filter((incident) => incident.ruleId === chatRule.id),
-			states: states.filter((row) => row.rule_id === chatRule.id),
+			ruleIncidents: Arr.filter(incidents, (incident) => incident.ruleId === chatRule.id),
+			states: Arr.filter(states, (row) => row.rule_id === chatRule.id),
 			preview: chatPreview(nowMs, range),
 			range,
-			deliveries: deliveries.filter((event) => event.incidentId === INCIDENT.chat),
+			deliveries: Arr.filter(deliveries, (event) => event.incidentId === INCIDENT.chat),
 			investigation: chatInvestigation(nowMs),
 		},
 	}

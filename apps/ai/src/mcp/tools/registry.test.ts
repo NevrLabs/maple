@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
-import { Effect, Exit, Schema } from "effect"
-import { mapleToolCatalog, mapleToolPhrase, toInputSchema } from "./registry"
+import { Effect, Exit, Schema, Array as Arr, String as Str } from "effect"
+import { mapleToolCatalog, mapleToolPhrase, readToolCall, toInputSchema } from "./registry"
 import * as P from "../lib/params"
 
 const jsonOf = (schema: unknown): string => JSON.stringify(schema)
@@ -27,7 +27,7 @@ describe("toInputSchema nullable-union collapse", () => {
 			}
 			for (const name of schema.required ?? []) {
 				const branches = schema.properties?.[name]?.anyOf ?? []
-				if (branches.some((branch) => branch.type === "null")) {
+				if (Arr.some(branches, (branch) => branch.type === "null")) {
 					nullableRequired.push(`${definition.name}.${name}`)
 				}
 			}
@@ -36,9 +36,12 @@ describe("toInputSchema nullable-union collapse", () => {
 	})
 
 	it("publishes no null branch on any tool", () => {
-		const withNull = mapleToolCatalog
-			.filter((d) => jsonOf(toInputSchema(d.schema)).includes('"type":"null"'))
-			.map((d) => d.name)
+		const withNull = Arr.map(
+			Arr.filter(mapleToolCatalog, (d) =>
+				Str.includes('"type":"null"')(jsonOf(toInputSchema(d.schema))),
+			),
+			(d) => d.name,
+		)
 		expect(withNull).toEqual([])
 	})
 
@@ -57,7 +60,7 @@ describe("toInputSchema nullable-union collapse", () => {
 	it("leaves a non-nullable union alone", () => {
 		const schema = toInputSchema(Schema.Struct({ a: Schema.Union([Schema.String, Schema.Number]) }))
 		const properties = schema.properties as Record<string, Record<string, unknown>>
-		const types = (properties.a?.anyOf as Array<{ type?: string }>).map((member) => member.type)
+		const types = Arr.map(properties.a?.anyOf as Array<{ type?: string }>, (member) => member.type)
 		expect(types).toContain("string")
 		expect(types).toContain("number")
 		expect(types).not.toContain("null")
@@ -68,7 +71,7 @@ describe("toInputSchema nullable-union collapse", () => {
 			Schema.Struct({ a: Schema.optional(Schema.Union([Schema.Literal("x"), Schema.Number])) }),
 		)
 		const properties = schema.properties as Record<string, Record<string, unknown>>
-		const types = (properties.a?.anyOf as Array<{ type?: string }>).map((member) => member.type)
+		const types = Arr.map(properties.a?.anyOf as Array<{ type?: string }>, (member) => member.type)
 		expect(types).toContain("number")
 		expect(types).not.toContain("null")
 	})
@@ -98,9 +101,10 @@ describe("P.optionalNumber", () => {
 	})
 
 	it("publishes no non-finite enum branch on any tool in the catalog", () => {
-		const withEnum = mapleToolCatalog
-			.filter((d) => jsonOf(toInputSchema(d.schema)).includes('"-Infinity"'))
-			.map((d) => d.name)
+		const withEnum = Arr.map(
+			Arr.filter(mapleToolCatalog, (d) => Str.includes('"-Infinity"')(jsonOf(toInputSchema(d.schema)))),
+			(d) => d.name,
+		)
 		expect(withEnum).toEqual([])
 	})
 
@@ -145,7 +149,7 @@ describe("P.optionalNumber", () => {
 
 	// Absence still means absence — the leniency is about encoding, not presence.
 	it("leaves an omitted parameter omitted", () => {
-		expect(Effect.runSync(Schema.decodeUnknownEffect(schema)({}))).toEqual({})
+		expect(Effect.runSync(Schema.decodeEffect(schema)({}))).toEqual({})
 	})
 })
 
@@ -156,5 +160,50 @@ describe("mapleToolPhrase", () => {
 
 	it("has nothing to say for a tool outside the registry", () => {
 		expect(mapleToolPhrase("submit_diagnosis")).toBeUndefined()
+	})
+})
+
+describe("enum values as models spell them", () => {
+	const feedback = (kind: string) =>
+		readToolCall("send_maple_feedback", { kind, summary: "s", reason: "r" })
+
+	it("reads case, spaces and hyphens as the published value", () => {
+		expect(feedback("Feature Request")?.args.kind).toBe("feature_request")
+		expect(feedback("feature-request")?.decodes).toBe(true)
+	})
+
+	it("reads a declared alias as its target", () => {
+		expect(feedback("docs")?.args.kind).toBe("documentation")
+		expect(feedback("bug_report")?.args.kind).toBe("bug")
+		expect(feedback("enhancement")?.decodes).toBe(true)
+	})
+
+	it("maps every declared value alias to a value its parameter publishes", () => {
+		const broken = Arr.flatMap(mapleToolCatalog, (tool) =>
+			Arr.flatMap(Object.entries(tool.valueAliases), ([parameter, aliases]) => {
+				const properties = toInputSchema(tool.schema).properties
+				const property =
+					typeof properties === "object" && properties !== null
+						? Object.entries(properties).find(([name]) => name === parameter)?.[1]
+						: undefined
+				const published =
+					typeof property === "object" &&
+					property !== null &&
+					"enum" in property &&
+					Arr.isArray(property.enum)
+						? property.enum
+						: []
+				return Arr.flatMap(Object.entries(aliases), ([alias, target]) =>
+					published.includes(target) && !published.includes(alias)
+						? []
+						: [`${tool.name}.${parameter}: ${alias}`],
+				)
+			}),
+		)
+		expect(broken).toEqual([])
+	})
+
+	it("still rejects a value nothing maps to", () => {
+		expect(feedback("telepathy")?.decodes).toBe(false)
 	})
 })

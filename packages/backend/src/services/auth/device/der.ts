@@ -1,3 +1,4 @@
+import { Array as Arr, Option } from "effect"
 /**
  * Just enough DER and X.509 to verify an App Attest chain: TLV walking, OIDs, times, SPKI,
  * extensions, and ECDSA signature conversion. Every reader returns `undefined` on malformed
@@ -66,7 +67,7 @@ const decodeArcs = (body: Uint8Array): ReadonlyArray<number> =>
 	body.reduce<{ arcs: ReadonlyArray<number>; pending: number }>(
 		(state, byte) => {
 			const pending = state.pending * 128 + (byte & 0x7f)
-			return byte & 0x80
+			return (byte & 0x80) !== 0
 				? { arcs: state.arcs, pending }
 				: { arcs: [...state.arcs, pending], pending: 0 }
 		},
@@ -78,7 +79,10 @@ export const decodeOid = (bytes: Uint8Array, tlv: Tlv): string | undefined => {
 	const [head, ...rest] = decodeArcs(value(bytes, tlv))
 	if (head === undefined) return undefined
 	const first = head < 80 ? Math.floor(head / 40) : 2
-	return [first, head - first * 40, ...rest].join(".")
+	return Arr.join(
+		Arr.map([first, head - first * 40, ...rest], (arc) => `${arc}`),
+		".",
+	)
 }
 
 const TIME = /^(\d{2}|\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})Z$/u
@@ -87,7 +91,7 @@ export const decodeTime = (bytes: Uint8Array, tlv: Tlv): number | undefined => {
 	if (tlv.tag !== TAG.utcTime && tlv.tag !== TAG.generalizedTime) return undefined
 	const match = TIME.exec(new TextDecoder().decode(value(bytes, tlv)))
 	if (match === null) return undefined
-	const [year, month, day, hour, minute, second] = match.slice(1).map(Number)
+	const [year, month, day, hour, minute, second] = Arr.map(match.slice(1), Number)
 	if (
 		year === undefined ||
 		month === undefined ||
@@ -138,8 +142,8 @@ const parseExtensions = (der: Uint8Array, wrapper: Tlv | undefined): Map<string,
 	const [list] = children(der, wrapper) ?? []
 	const entries = list === undefined ? undefined : children(der, list)
 	if (entries === undefined) return undefined
-	const parsed = entries.map((entry) => parseExtension(der, entry))
-	return parsed.every((entry) => entry !== undefined) ? new Map(parsed) : undefined
+	const parsed = Arr.map(entries, (entry) => parseExtension(der, entry))
+	return Arr.every(parsed, (entry) => entry !== undefined) ? new Map(parsed) : undefined
 }
 
 const BASIC_CONSTRAINTS = "2.5.29.19"
@@ -169,7 +173,7 @@ export const parseCertificate = (der: Uint8Array): Certificate | undefined => {
 	const [signatureOid] = children(der, signatureAlgorithm) ?? []
 	const extensions = parseExtensions(
 		der,
-		rest.find((field) => field.tag === TAG.context3),
+		Option.getOrUndefined(Arr.findFirst(rest, (field) => field.tag === TAG.context3)),
 	)
 	const notBeforeMs = notBefore === undefined ? undefined : decodeTime(der, notBefore)
 	const notAfterMs = notAfter === undefined ? undefined : decodeTime(der, notAfter)

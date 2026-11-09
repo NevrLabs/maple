@@ -96,7 +96,6 @@ export {
 	type MetricsTimeseriesOpts,
 	type MetricsTimeseriesOutput,
 	type MetricsRateTimeseriesOpts,
-	type MetricsRateTimeseriesOutput,
 	type MetricsBreakdownOpts,
 	type MetricsBreakdownOutput,
 	listMetricsQuery,
@@ -163,6 +162,7 @@ export {
 	sessionActivityAggregateQuery,
 	IDLE_GAP_THRESHOLD_MS,
 	type SessionTranscriptOutput,
+	type SessionTranscriptOpts,
 	type SessionEventMatchOpts,
 	type SessionActivityOpts,
 	type SessionActivityOutput,
@@ -225,6 +225,9 @@ export {
 	type ScannerTimelineOutput,
 	type RuntimeVersionsOutput,
 } from "./queries/security-telemetry"
+
+// Queries: Users (`user_activity_hourly`, per-user traces, logs and issues)
+export * from "./queries/user-activity"
 
 // Queries — Product events (funnels over `product_events`)
 export {
@@ -389,6 +392,7 @@ export {
 	errorTickBootstrapIssuesQuery,
 	errorTickFirstErrorMinuteQuery,
 	errorTickIssuesQuery,
+	errorFingerprintLineageQuery,
 	errorFingerprintsQuery,
 	errorIssueTimeseriesQuery,
 	errorIssueSampleTracesQuery,
@@ -612,6 +616,22 @@ export {
 	type AuditLogEntriesOutput,
 } from "./queries/audit-log"
 
+// Queries — Cancellation evidence (what a cancelling org sent and did)
+export {
+	CANCELLATION_RESOURCE_KEYS,
+	cancellationAlertChecksQuery,
+	cancellationAuditActionsQuery,
+	cancellationAuditActorsQuery,
+	cancellationErrorFingerprintsQuery,
+	cancellationErrorsByDayQuery,
+	cancellationProductEventsQuery,
+	cancellationResourceAttributesQuery,
+	cancellationResourceSpansQuery,
+	cancellationServiceCountsQuery,
+	cancellationServiceUsageQuery,
+	cancellationToolCallsQuery,
+} from "./queries/cancellation-evidence"
+
 // Queries — Cloudflare integration usage (integrations-page ingest proof)
 
 // Queries — Cloudflare service-map stats (per-zone / per-Worker node rollups)
@@ -653,17 +673,78 @@ export {
 
 // Queries — Top Operations (per-service operation ranking by metric)
 export {
+	isRollupTopOperationsMetric,
 	topOperationsQuery,
+	topOperationsRollupQuery,
 	type TopOperationsMetric,
 	type TopOperationsOpts,
 	type TopOperationsOutput,
 } from "./queries/top-operations"
+
+// Queries - MCP hub (MCP server spans per the OpenTelemetry MCP conventions)
+export {
+	mcpCallListQuery,
+	mcpCallSeriesQuery,
+	mcpCallSplitSeriesQuery,
+	mcpCallTotalsQuery,
+	mcpClientName,
+	mcpClientReachQuery,
+	mcpClientsQuery,
+	mcpErrorGroupsQuery,
+	mcpErrorTrendQuery,
+	mcpFirstSeenQuery,
+	mcpClientInfoQuery,
+	mcpMethodsQuery,
+	mcpServerClientsQuery,
+	mcpServerSparkQuery,
+	mcpServerStatsQuery,
+	mcpServersSessionListQuery,
+	mcpServersUserActivityQuery,
+	mcpServicesQuery,
+	mcpSessionActivityQuery,
+	mcpSessionListQuery,
+	mcpSessionRequestsQuery,
+	mcpSessionTotalsQuery,
+	mcpSpanSummaryQuery,
+	mcpUserActivityQuery,
+	mcpUserSessionRequestsQuery,
+	mcpToolErrorsQuery,
+	mcpToolStatsQuery,
+	type McpCallFilter,
+	type McpCallOrder,
+	type McpSessionFilter,
+} from "./queries/mcp"
+
+// Queries - end users (`/users`: replays, product events and MCP spans per user id)
+export {
+	hasUserSources,
+	usersAnonymousVisitorsQuery,
+	usersFacetsQuery,
+	usersListQuery,
+	usersGroupNamesQuery,
+	usersGroupsQuery,
+	usersMcpNamesQuery,
+	usersMcpNameSearchQuery,
+	usersServiceNamespacesQuery,
+	usersSummaryQuery,
+	readsServiceSources,
+	userDevicesQuery,
+	userEventsQuery,
+	userEventsSummaryQuery,
+	userMcpSummaryQuery,
+	userReplayProfileQuery,
+	userServicesQuery,
+	userVisitorIdsQuery,
+	type UsersListFilter,
+	type UsersScope,
+} from "./queries/users"
 
 // Queries — Infrastructure (host-centric aggregations over hostmetrics)
 export {
 	listHostsQuery,
 	hostDetailSummaryQuery,
 	hostGaugeTimeseriesQuery,
+	hostFilesystemTimeseriesQuery,
 	hostNetworkTimeseriesQuery,
 	hostFilesystemsQuery,
 	listPodsQuery,
@@ -686,6 +767,7 @@ export {
 	type HostDetailSummaryOutput,
 	type HostGaugeTimeseriesOpts,
 	type HostGaugeTimeseriesOutput,
+	type HostFilesystemTimeseriesOpts,
 	type HostNetworkTimeseriesOpts,
 	type HostNetworkTimeseriesOutput,
 	type HostFilesystemsOpts,
@@ -716,8 +798,6 @@ export {
 	type WorkloadFacetsOutput,
 	type WorkloadKind,
 	infraPresenceQuery,
-	FILESYSTEM_USED_STATES,
-	PSEUDO_FS_TYPES,
 	type InfraSurface,
 	type InfraPresenceOutput,
 } from "./queries/infra"
@@ -801,3 +881,20 @@ export {
 	type UptimeChecksOutput,
 	type UptimePhaseTimingsOutput,
 } from "./queries/uptime"
+export {
+	sloBucketsQuery,
+	sloBucketsRowSchema,
+	sloBurnByServiceQuery,
+	sloBurnByServiceRowSchema,
+	sloTotalsByServiceQuery,
+	sloTotalsByServiceRowSchema,
+	type SloBurnByServiceOutput,
+	type SloGroupQueryOpts,
+	type SloTotalsByServiceOutput,
+	sloTotalsQuery,
+	sloTotalsRowSchema,
+	type SloBucketsOutput,
+	type SloReadGrain,
+	type SloSliQueryOpts,
+	type SloTotalsOutput,
+} from "./queries/slos"

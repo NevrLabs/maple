@@ -14,20 +14,26 @@ import {
 	gcpWorkloadTone,
 } from "../../components/infra/gcp/tabs"
 import type { Html, HtmlBuilder } from "foldkit/html"
+import { heading } from "@maple/views/ui/heading"
 import { AppRoute, hrefOf } from "../../route"
-import { emptyMessage } from "../../ui/empty"
-import { icon } from "../../ui/icon"
-import { panel, panelHeader } from "../../ui/panel"
-import { skeleton } from "../../ui/skeleton"
-import { statusDot } from "../../ui/status-dot"
+import { emptyMessage } from "@maple/views/ui/empty"
+import { icon } from "@maple/views/ui/icon"
+import { panel, panelHeader } from "@maple/views/ui/panel"
+import { skeleton } from "@maple/views/ui/skeleton"
+import { statusDot } from "@maple/views/ui/status-dot"
 import { countChipItem } from "./kit/count-chip"
-import * as ToggleGroup from "../../ui/toggle-group"
-import { truncatedText } from "../../ui/truncated-text"
+import * as ToggleGroup from "@maple/views/ui/toggle-group"
+import { truncatedText } from "@maple/views/ui/truncated-text"
 import { statRail } from "../kit/stat-rail"
 import { valueClass } from "../infra-integrations/gcp/list/view-tables"
 import { Message } from "./message"
 import type { Model } from "./model"
 import { fleetOf, gcpTitles, inventoryOf, logTiles, metricsTiles } from "./view-gcp-band"
+import { typography, typographyClass } from "@maple/views/ui/typography"
+import { hstack, vstack } from "@maple/views/ui/stack"
+import { Array as Arr, String as Str, Order } from "effect"
+import { textLink } from "@maple/views/ui/text-link"
+import { selectableRow } from "@maple/views/ui/selectable-row"
 
 // `Workloads`, `Resources` and `GcpUsageBand`.
 
@@ -41,36 +47,34 @@ const WINDOW = "24h"
 const workloads = (h: H, model: Model, className: string): Html => {
 	const fleet = fleetOf(model)
 	if (fleet === null) return skeleton(h, cn("h-40 rounded-md", className))
-	const services = fleet === "failed" ? [] : fleet.filter(({ workloads: list }) => list.length > 0)
-	const unread = fleet === "failed" ? [] : fleet.filter(({ failed }) => failed)
+	const services = fleet === "failed" ? [] : Arr.filter(fleet, ({ workloads: list }) => list.length > 0)
+	const unread = fleet === "failed" ? [] : Arr.filter(fleet, ({ failed }) => failed)
 	const chosen = model.gcpCard.workloadFilter.values[0] ?? "all"
-	const service = services.some((entry) => entry.service === chosen) ? chosen : "all"
-	const all = services.flatMap((entry) =>
-		entry.workloads.map((workload) => ({ service: entry.service, workload })),
+	const service = Arr.some(services, (entry) => entry.service === chosen) ? chosen : "all"
+	const all = Arr.flatMap(services, (entry) =>
+		Arr.map(entry.workloads, (workload) => ({ service: entry.service, workload })),
 	)
-	const rows = all
-		.filter((row) => service === "all" || row.service === service)
-		.toSorted(
-			(a, b) =>
-				TONE_ORDER.indexOf(gcpWorkloadTone(a.workload)) -
-					TONE_ORDER.indexOf(gcpWorkloadTone(b.workload)) ||
-				gcpWorkloadName(a.service, a.workload.keys).localeCompare(
-					gcpWorkloadName(b.service, b.workload.keys),
+	type Row = (typeof all)[number]
+	const rows = Arr.sort(
+		Arr.filter(all, (row) => service === "all" || row.service === service),
+		Order.combine(
+			Order.mapInput(Order.Number, (row: Row) => TONE_ORDER.indexOf(gcpWorkloadTone(row.workload))),
+			(a: Row, b: Row) =>
+				Str.localeCompare(gcpWorkloadName(b.service, b.workload.keys))(
+					gcpWorkloadName(a.service, a.workload.keys),
 				),
-		)
+		),
+	)
 	const manyProjects =
-		new Set(all.map((row) => gcpWorkloadProject(row.service, row.workload.keys))).size > 1
+		new Set(Arr.map(all, (row) => gcpWorkloadProject(row.service, row.workload.keys))).size > 1
 	return panel(h, { className: cn("@container border-border-subtle", className) }, [
 		panelHeader(h, {
 			className: "gap-2 border-border-subtle pr-2.5",
 			children: [
-				h.div(
-					[h.Class("flex min-w-0 flex-1 items-baseline gap-3")],
-					[
-						h.h3([h.Class("text-sm font-semibold")], ["Workloads"]),
-						h.span([h.Class("truncate text-2xs text-muted-foreground")], ["last 24h"]),
-					],
-				),
+				hstack(h, { gap: "3", align: "baseline", shrink: true, grow: true }, [
+					heading(h, { level: 3, variant: "section" }, ["Workloads"]),
+					typography(h, { size: "2xs", tone: "muted", truncate: true }, ["last 24h"]),
+				]),
 				...(services.length > 1
 					? [
 							ToggleGroup.view(h, {
@@ -81,7 +85,7 @@ const workloads = (h: H, model: Model, className: string): Html => {
 								className: "gap-1.5",
 								items: [
 									countChipItem(h, { value: "all", label: "All", count: all.length }),
-									...services.map((entry) =>
+									...Arr.map(services, (entry) =>
 										countChipItem(h, {
 											value: entry.service,
 											label: GCP_INFRA_SERVICES[entry.service].title,
@@ -108,60 +112,61 @@ const workloads = (h: H, model: Model, className: string): Html => {
 				: [
 						emptyMessage(h, { className: "px-3 py-10" }, [
 							fleet === "failed"
-								? "Not available right now."
-								: "No workload reported metrics in 24 hours.",
+								? "Not available right now"
+								: "No workload reported metrics in 24 hours",
 						]),
 					]
 			: [
 					h.div(
 						[h.Class("max-h-[22rem] overflow-y-auto overscroll-contain")],
-						rows.map(({ service: rowService, workload }) => {
+						Arr.map(rows, ({ service: rowService, workload }) => {
 							const tone = gcpWorkloadTone(workload)
-							return h.a(
-								[
-									h.Href(
-										hrefOf(
-											AppRoute.InfraGcpResource({
-												service: rowService,
-												name: workload.keys[0] ?? "",
-												search: {
-													...gcpWorkloadSearch(rowService, workload.keys),
-													timePreset: WINDOW,
-												},
-											}),
-										),
+							return selectableRow(
+								h,
+								{
+									href: hrefOf(
+										AppRoute.InfraGcpResource({
+											service: rowService,
+											name: workload.keys[0] ?? "",
+											search: {
+												...gcpWorkloadSearch(rowService, workload.keys),
+												timePreset: WINDOW,
+											},
+										}),
 									),
-									h.Class(
+									isSelected: false,
+									className:
 										"group flex items-center gap-3 border-b border-border-subtle px-4 py-2.5 last:border-0 hover:bg-surface-sunken active:bg-surface-sunken focus-visible:bg-surface-sunken focus-visible:outline-none",
-									),
-								],
+								},
 								[
 									statusDot(h, { tone: tone === "neutral" ? "ok" : tone }),
-									h.div(
-										[h.Class("flex min-w-0 flex-1 flex-col gap-0.5")],
-										[
-											truncatedText(h, {
-												text: gcpWorkloadName(rowService, workload.keys),
-												className:
-													"text-xs font-medium text-foreground group-hover:text-primary",
-											}),
-											truncatedText(h, {
-												text: [
-													GCP_INFRA_SERVICES[rowService].title,
-													gcpWorkloadLocation(rowService, workload.keys),
-													manyProjects
-														? gcpWorkloadProject(rowService, workload.keys)
-														: undefined,
-												]
-													.filter((part) => part !== undefined && part !== "")
-													.join(" · "),
-												className: "text-2xs text-muted-foreground",
-											}),
-										],
-									),
-									...GCP_INFRA_COLUMNS[rowService]
-										.slice(0, VALUES_SHOWN)
-										.map((spec, index) =>
+									vstack(h, { gap: "0.5", shrink: true, grow: true }, [
+										truncatedText(h, {
+											text: gcpWorkloadName(rowService, workload.keys),
+											className:
+												"text-xs font-medium text-foreground group-hover:text-primary",
+										}),
+										truncatedText(h, {
+											text: Arr.join(
+												Arr.filter(
+													[
+														GCP_INFRA_SERVICES[rowService].title,
+														gcpWorkloadLocation(rowService, workload.keys),
+														manyProjects
+															? gcpWorkloadProject(rowService, workload.keys)
+															: undefined,
+													],
+													(part): part is string =>
+														part !== undefined && part !== "",
+												),
+												" · ",
+											),
+											className: typographyClass({ size: "2xs", tone: "muted" }),
+										}),
+									]),
+									...Arr.map(
+										GCP_INFRA_COLUMNS[rowService].slice(0, VALUES_SHOWN),
+										(spec, index) =>
 											h.div(
 												[
 													h.Class(
@@ -183,13 +188,12 @@ const workloads = (h: H, model: Model, className: string): Html => {
 														],
 														[formatGcpValue(spec.format, workload.values[index])],
 													),
-													h.span(
-														[h.Class("text-2xs text-muted-foreground")],
-														[spec.label],
-													),
+													typography(h, { size: "2xs", tone: "muted" }, [
+														spec.label,
+													]),
 												],
 											),
-										),
+									),
 								],
 							)
 						}),
@@ -203,41 +207,50 @@ const TYPES_SHOWN = 8
 const resources = (h: H, model: Model, className: string): Html => {
 	const inventory = inventoryOf(model)
 	if (inventory === null) return skeleton(h, cn("h-40 rounded-md", className))
-	const types = inventory === "failed" ? [] : inventory.types.toSorted((a, b) => b.count - a.count)
+	const types =
+		inventory === "failed"
+			? []
+			: Arr.sort(
+					inventory.types,
+					Order.flip(
+						Order.mapInput(Order.Number, (type: { readonly count: number }) => type.count),
+					),
+				)
 	return panel(h, { className: cn("h-fit border-border-subtle", className) }, [
 		panelHeader(h, {
 			className: "border-border-subtle",
-			children: [h.h3([h.Class("text-sm font-semibold")], ["Resources"])],
-			action: h.span([h.Class("text-2xs text-muted-foreground")], ["listed hourly"]),
+			children: [heading(h, { level: 3, variant: "section" }, ["Resources"])],
+			action: typography(h, { size: "2xs", tone: "muted" }, ["listed hourly"]),
 		}),
 		types.length === 0
 			? h.p(
 					[h.Class("px-4 py-3 text-xs text-muted-foreground")],
 					[inventory === "failed" ? "Not available right now" : "Listed within an hour of setup"],
 				)
-			: h.ul(
-					[h.Class("flex flex-col px-2 py-1.5")],
-					types.slice(0, TYPES_SHOWN).map(({ assetType, count }) =>
+			: vstack(
+					h,
+					{ as: "ul", className: "px-2 py-1.5" },
+					Arr.map(types.slice(0, TYPES_SHOWN), ({ assetType, count }) =>
 						h.li(
 							[],
 							[
-								h.a(
-									[
-										h.Href(
-											hrefOf(
-												AppRoute.InfraGcp({
-													search: { tab: GCP_RESOURCES_TAB, type: assetType },
-												}),
-											),
+								selectableRow(
+									h,
+									{
+										href: hrefOf(
+											AppRoute.InfraGcp({
+												search: { tab: GCP_RESOURCES_TAB, type: assetType },
+											}),
 										),
-										h.Class(
+										isSelected: false,
+										className:
 											"flex items-center justify-between gap-3 rounded-sm px-2 py-1.5 text-xs hover:bg-surface-sunken active:bg-surface-sunken focus-visible:bg-surface-sunken focus-visible:outline-none",
-										),
-									],
+									},
 									[
 										truncatedText(h, { text: gcpAssetTypeLabel(assetType) }),
-										h.span(
-											[h.Class("shrink-0 tabular-nums text-muted-foreground")],
+										typography(
+											h,
+											{ tone: "muted", numeric: true, className: "shrink-0" },
 											[formatNumber(count)],
 										),
 									],
@@ -249,12 +262,16 @@ const resources = (h: H, model: Model, className: string): Html => {
 		...(inventory === "failed" || inventory.total === 0
 			? []
 			: [
-					h.footer(
-						[
-							h.Class(
-								"flex items-center justify-between gap-3 border-t border-border-subtle px-4 py-2.5 text-xs text-muted-foreground",
-							),
-						],
+					hstack(
+						h,
+						{
+							gap: "3",
+							align: "center",
+							justify: "between",
+							as: "footer",
+							className:
+								"border-t border-border-subtle px-4 py-2.5 text-xs text-muted-foreground",
+						},
 						[
 							h.span(
 								[],
@@ -264,13 +281,14 @@ const resources = (h: H, model: Model, className: string): Html => {
 									countLabel(inventory.projects, "project"),
 								],
 							),
-							h.a(
-								[
-									h.Href(hrefOf(AppRoute.InfraGcp({ search: { tab: GCP_RESOURCES_TAB } }))),
-									h.Class(
-										"inline-flex shrink-0 items-center gap-1 text-foreground hover:text-primary active:text-primary",
-									),
-								],
+							textLink(
+								h,
+								{
+									href: hrefOf(AppRoute.InfraGcp({ search: { tab: GCP_RESOURCES_TAB } })),
+									tone: "inherit",
+									className:
+										"shrink-0 text-foreground hover:text-primary active:text-primary",
+								},
 								[
 									types.length > TYPES_SHOWN
 										? `All ${countLabel(types.length, "type")}`
@@ -286,37 +304,33 @@ const resources = (h: H, model: Model, className: string): Html => {
 
 /** `GcpUsageBand`: shown once a connection has delivered logs or metrics. */
 export const usageBand = (h: H, model: Model, connectors: ReadonlyArray<V2GcpConnector>): Html | null => {
-	const logs = connectors.some((connector) => connector.last_log_received_at !== null)
-	const metrics = connectors.some((connector) => connector.last_metrics_received_at !== null)
+	const logs = Arr.some(connectors, (connector) => connector.last_log_received_at !== null)
+	const metrics = Arr.some(connectors, (connector) => connector.last_metrics_received_at !== null)
 	if (!logs && !metrics) return null
-	return h.div(
-		[h.Class("flex flex-col gap-4")],
-		[
-			logs && metrics
-				? statRail(
-						h,
-						{
-							className:
-								"md:grid-cols-2 md:divide-y @2xl/page:grid-cols-4 @2xl/page:divide-y-0",
-						},
-						[...logTiles(h, model, false), ...metricsTiles(h, model, false)],
-					)
-				: statRail(
-						h,
-						{ className: "md:grid-cols-2 md:divide-y @md/page:grid-cols-3 @md/page:divide-y-0" },
-						logs ? logTiles(h, model, true) : metricsTiles(h, model, true),
+	return vstack(h, { gap: "4" }, [
+		logs && metrics
+			? statRail(
+					h,
+					{
+						className: "md:grid-cols-2 md:divide-y @2xl/page:grid-cols-4 @2xl/page:divide-y-0",
+					},
+					[...logTiles(h, model, false), ...metricsTiles(h, model, false)],
+				)
+			: statRail(
+					h,
+					{ className: "md:grid-cols-2 md:divide-y @md/page:grid-cols-3 @md/page:divide-y-0" },
+					logs ? logTiles(h, model, true) : metricsTiles(h, model, true),
+				),
+		...(metrics
+			? [
+					h.div(
+						[h.Class("flex flex-col gap-4 lg:flex-row lg:items-start")],
+						[
+							workloads(h, model, "min-w-0 flex-1"),
+							resources(h, model, "lg:w-72 lg:shrink-0 xl:w-80"),
+						],
 					),
-			...(metrics
-				? [
-						h.div(
-							[h.Class("flex flex-col gap-4 lg:flex-row lg:items-start")],
-							[
-								workloads(h, model, "min-w-0 flex-1"),
-								resources(h, model, "lg:w-72 lg:shrink-0 xl:w-80"),
-							],
-						),
-					]
-				: []),
-		],
-	)
+				]
+			: []),
+	])
 }

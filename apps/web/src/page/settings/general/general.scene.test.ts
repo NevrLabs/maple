@@ -1,21 +1,34 @@
-import { Result } from "effect"
+import * as Policy from "@maple/domain/policy"
+import { Result, Array as Arr } from "effect"
 import { describe, expect, test } from "vitest"
 import { PageOutMessage } from "../../contract"
 import { Message } from "./model"
 import { init, isNameDirty, leaveEligibilityOf, nameDraftOf, update } from "./update"
 
-const names = (commands: ReadonlyArray<{ readonly name: string }> | undefined) => (commands ?? []).map(({ name }) => name)
+const ADMIN = Policy.grantsOf(["org:admin"])
+const MEMBER = Policy.grantsOf(["org:member"])
+
+const names = (commands: ReadonlyArray<{ readonly name: string }> | undefined) =>
+	Arr.map(commands ?? [], ({ name }) => name)
 
 const acme = { id: "org_acme", name: "Acme Shop", hasImage: false, region: "us" } as const
 
-const loaded = (isAdmin = true) => {
-	const org = update(init(isAdmin).model, Message.CompletedFetchOrganization({ result: Result.succeed(acme) })).model
-	return update(org, Message.CompletedFetchAdmins({ result: Result.succeed({ count: 1, firstAdminName: "Ada Lovelace" }) })).model
+const loaded = (canEdit = true) => {
+	const org = update(
+		init(canEdit ? ADMIN : MEMBER).model,
+		Message.CompletedFetchOrganization({ result: Result.succeed(acme) }),
+	).model
+	return update(
+		org,
+		Message.CompletedFetchAdmins({
+			result: Result.succeed({ count: 1, firstAdminName: "Ada Lovelace" }),
+		}),
+	).model
 }
 
 describe("general tab", () => {
 	test("reads the organization and its admins from Clerk", () => {
-		expect(names(init(true).commands)).toEqual(
+		expect(names(init(ADMIN).commands)).toEqual(
 			expect.arrayContaining(["FetchClerkOrganization", "FetchClerkOrganizationAdmins"]),
 		)
 	})
@@ -34,10 +47,20 @@ describe("general tab", () => {
 		const saving = update(edited, Message.ClickedSaveName()).model
 		const done = update(
 			saving,
-			Message.CompletedSaveName({ submitted: "Acme Retail", sent: "Acme Retail", result: Result.succeed(undefined) }),
+			Message.CompletedSaveName({
+				submitted: "Acme Retail",
+				sent: "Acme Retail",
+				result: Result.succeed(undefined),
+			}),
 		)
 		expect(names(done.commands)).toEqual(["FetchClerkOrganization"])
-		expect(done.outMessage).toEqual(PageOutMessage.RequestedToast({ type: "success", title: "Organization renamed", description: "" }))
+		expect(done.outMessage).toEqual(
+			PageOutMessage.RequestedToast({
+				type: "success",
+				title: "Organization renamed",
+				description: "",
+			}),
+		)
 		expect(isNameDirty(done.model)).toBe(false)
 		expect(nameDraftOf(done.model)).toBe("Acme Retail")
 	})

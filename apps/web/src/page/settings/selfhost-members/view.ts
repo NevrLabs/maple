@@ -3,19 +3,19 @@ import { formatRelativeTime } from "@maple/ui/lib/time-format"
 import { cn } from "@maple/ui/lib/utils"
 import { AsyncData, Submodel } from "foldkit"
 import type { Html, HtmlBuilder } from "foldkit/html"
-import { warmAvatarTone } from "../../../ui/avatar-tone"
-import { button } from "../../../ui/button"
-import { avatarFallback } from "../../../ui/display"
-import { skeleton } from "../../../ui/skeleton"
-import { table, tableBody, tableCell, tableHead, tableHeader, tableRow } from "../../../ui/table"
-import { truncatedText } from "../../../ui/truncated-text"
+import { warmAvatarTone } from "@maple/views/ui/avatar-tone"
+import { button } from "@maple/views/ui/button"
+import { avatarFallback } from "@maple/views/ui/display"
+import { skeleton } from "@maple/views/ui/skeleton"
+import { table, tableBody, tableCell, tableHead, tableHeader, tableRow } from "@maple/views/ui/table"
+import { truncatedText } from "@maple/views/ui/truncated-text"
 import { adminOnlyNote, sectionNote, settingsSection, settingsSections } from "../kit/section"
 import { Message, type Model, type UserAction, type UserRow } from "./model"
 
 type H = HtmlBuilder<Message>
 type Inputs = Readonly<{ nowMs: number }>
 
-const COLUMN = { role: "w-24", seen: "w-32", idp: "w-44", actions: "w-56" } as const
+const COLUMN = { role: "w-24", seen: "w-32", idp: "w-44", actions: "w-72" } as const
 
 export const description = "People who signed in through your identity provider. Roles are managed in your identity provider."
 
@@ -145,7 +145,7 @@ export const view = Submodel.defineView<Model, Message, Inputs>((model, inputs, 
 	const failure = AsyncData.isFailure(model.users) ? model.users.error : null
 	return settingsSections(h, [
 		settingsSection(h, { id: "settings-selfhost-members", title: "Members", isLead: true, padded: false }, [
-			table(h, { className: "table-fixed" }, [
+			table(h, { className: "min-w-4xl table-fixed" }, [
 				tableHeader(h, [
 					tableRow(h, [
 						tableHead(h, ["Member"]),

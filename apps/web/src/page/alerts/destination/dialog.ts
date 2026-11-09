@@ -2,7 +2,9 @@ import {
 	type AlertDestinationDocument,
 	AlertDestinationId,
 	AlertDestinationType,
+	isIncidentIoAlertSourceId,
 	parseGoogleChatWebhookUrl,
+	teamsWebhookUrlProblem,
 } from "@maple/domain/http"
 import {
 	V2AlertDestinationCreateParams,
@@ -20,15 +22,15 @@ import {
 	suggestedDestinationName,
 } from "@maple/web-data/alerts/form-utils"
 import { displayError } from "@maple/web-data/lib/error-messages"
-import { Effect, Option, Result, Schema, Stream } from "effect"
+import { Effect, Option, Result, Schema, Stream, Array as Arr, String as Str } from "effect"
 import { Command, type Update } from "foldkit"
 import { defineMessageUnion } from "foldkit/message"
 import type { ChatWorkspaceId } from "@maple/domain/primitives"
 import { isClerkAuthEnabled } from "../../../lib/services/common/auth-mode"
-import { toLoadFailure } from "../../../data/load-failure"
+import { toLoadFailure } from "@maple/views/data/load-failure"
 import { MapleApiV2Client } from "../../../platform/api-clients"
 import type { Resources } from "../../../platform/resources"
-import * as Dialog from "../../../ui/dialog"
+import * as Dialog from "@maple/views/ui/dialog"
 import * as ChatConnect from "../shared/chat-connect"
 import * as ChatConnectStream from "../shared/chat-connect-stream"
 import { connectReturns } from "../../integrations/connect-returns"
@@ -181,6 +183,10 @@ const createRequest = (payload: V2AlertDestinationCreateParams) => {
 			return { payload }
 		case "google-chat":
 			return { payload }
+		case "microsoft-teams":
+			return { payload }
+		case "incident-io":
+			return { payload }
 		case "email":
 			return { payload }
 		case "chat":
@@ -202,6 +208,10 @@ const updateRequest = (id: AlertDestinationId, payload: V2AlertDestinationUpdate
 		case "telegram":
 			return { params, payload }
 		case "google-chat":
+			return { params, payload }
+		case "microsoft-teams":
+			return { params, payload }
+		case "incident-io":
 			return { params, payload }
 		case "email":
 			return { params, payload }
@@ -244,31 +254,43 @@ const UpdateDestination = Command.define("UpdateAlertDestinationFromDialog", {
 
 // FORM READINESS (`isFormReady`, `isValidPagerDutyKey`, `isValidTelegramToken`)
 
-export const isValidPagerDutyKey = (key: string): boolean => /^[A-Za-z0-9]{32}$/.test(key.trim())
+export const isValidPagerDutyKey = (key: string): boolean => /^[A-Za-z0-9]{32}$/.test(Str.trim(key))
 export const isValidTelegramToken = (token: string): boolean =>
-	/^\d{5,}:[A-Za-z0-9_-]{30,}$/.test(token.trim())
+	/^\d{5,}:[A-Za-z0-9_-]{30,}$/.test(Str.trim(token))
 
 /** The server's own check, so a pasted space link or bare token is caught before save. */
 export const isValidGoogleChatWebhookUrl = (raw: string): boolean =>
 	Option.isSome(parseGoogleChatWebhookUrl(raw))
 
 export const isFormReady = (form: DestinationForm, isEditing: boolean): boolean => {
-	if (isEditing && form.name.trim().length === 0) return false
+	if (isEditing && Str.trim(form.name).length === 0) return false
 	switch (form.type) {
 		case "discord":
-			return isEditing || form.webhookUrl.trim().length > 0
+			return isEditing || Str.trim(form.webhookUrl).length > 0
 		case "google-chat":
 			return (
-				(isEditing && form.webhookUrl.trim().length === 0) ||
+				(isEditing && Str.trim(form.webhookUrl).length === 0) ||
 				isValidGoogleChatWebhookUrl(form.webhookUrl)
+			)
+		case "microsoft-teams":
+			return (
+				(isEditing && Str.trim(form.webhookUrl).length === 0) ||
+				teamsWebhookUrlProblem(form.webhookUrl) === null
+			)
+		case "incident-io":
+			return (
+				isIncidentIoAlertSourceId(form.incidentIoAlertSourceId) &&
+				(Str.trim(form.incidentIoToken).length > 0 ||
+					(isEditing &&
+						Str.trim(form.incidentIoAlertSourceId) === form.incidentIoStoredAlertSourceId))
 			)
 		case "telegram":
 			return (
-				form.telegramChatId.trim().length > 0 &&
-				(isEditing || form.telegramBotToken.trim().length > 0)
+				Str.trim(form.telegramChatId).length > 0 &&
+				(isEditing || Str.trim(form.telegramBotToken).length > 0)
 			)
 		case "pagerduty":
-			return isEditing && form.integrationKey.trim().length === 0
+			return isEditing && Str.trim(form.integrationKey).length === 0
 				? true
 				: isValidPagerDutyKey(form.integrationKey)
 		case "email":
@@ -276,7 +298,7 @@ export const isFormReady = (form: DestinationForm, isEditing: boolean): boolean 
 		case "chat":
 			return form.chatWorkspaceId !== null && (isEditing || form.chatChannelId.length > 0)
 		case "linear":
-			return form.linearTeamId.trim().length > 0
+			return Str.trim(form.linearTeamId).length > 0
 		default:
 			return true
 	}
@@ -358,13 +380,16 @@ const pickChatWorkspace = (model: Model, connector: string, workspaceId: ChatWor
 	mountFields({ model: { ...model, form: chatDestinationForm(connector, workspaceId) } })
 
 const connectChat = (model: Model, connectorId: string): Return =>
-	Option.match(Option.fromNullishOr((model.connectors ?? []).find((entry) => entry.id === connectorId)), {
-		onNone: () => ({ model }),
-		onSome: (connector) =>
-			ChatConnect.waitingFor(model.chatConnect) !== null
-				? { model }
-				: { model: { ...model, chatConnect: ChatConnect.start(model.chatConnect, connector) } },
-	})
+	Option.match(
+		Arr.findFirst(model.connectors ?? [], (entry) => entry.id === connectorId),
+		{
+			onNone: () => ({ model }),
+			onSome: (connector) =>
+				ChatConnect.waitingFor(model.chatConnect) !== null
+					? { model }
+					: { model: { ...model, chatConnect: ChatConnect.start(model.chatConnect, connector) } },
+		},
+	)
 
 const chatConnectStep = (model: Model, message: ChatConnect.Message): Return => {
 	const step = ChatConnect.update(model.chatConnect, message)
@@ -426,7 +451,7 @@ const save = (model: Model): Return => {
 				}),
 			],
 		}
-	const named = form.name.trim().length > 0 ? form : { ...form, name: suggestedDestinationName(form) }
+	const named = Str.trim(form.name).length > 0 ? form : { ...form, name: suggestedDestinationName(form) }
 	return {
 		model: { ...model, isSaving: true },
 		commands: [
@@ -489,10 +514,9 @@ export const update = (model: Model, message: Message): Return =>
 		ClickedChatWorkspace: ({ connector, workspaceId }) =>
 			Option.match(
 				Option.flatMap(Option.fromNullishOr(model.connectors), (connectors) =>
-					Option.fromNullishOr(
-						connectors
-							.flatMap((entry) => entry.workspaces)
-							.find((workspace) => workspace.id === workspaceId),
+					Arr.findFirst(
+						Arr.flatMap(connectors, (entry) => entry.workspaces),
+						(workspace) => workspace.id === workspaceId,
 					),
 				),
 				{
@@ -515,14 +539,14 @@ export const update = (model: Model, message: Message): Return =>
 						commands: [
 							DetectTelegramChats({
 								openCount: model.openCount,
-								botToken: model.form.telegramBotToken.trim(),
+								botToken: Str.trim(model.form.telegramBotToken),
 							}),
 						],
 					},
 		CompletedDetectChats: ({ openCount, botToken, result }) =>
 			openCount !== model.openCount
 				? { model }
-				: botToken !== model.form.telegramBotToken.trim()
+				: botToken !== Str.trim(model.form.telegramBotToken)
 					? { model: { ...model, isDetectingChats: false } }
 					: detected(model, result),
 		ClickedTelegramChat: ({ chatId }) => ({

@@ -1,4 +1,4 @@
-import { Effect, Schema } from "effect"
+import { Effect, Option, Schema, Array as Arr, String as Str } from "effect"
 import {
 	StatusPageComponentId,
 	StatusPageComponentStatus,
@@ -395,9 +395,9 @@ const FONT_STACKS = {
 } as const satisfies Record<StatusPageThemeFont, string>
 
 const hexChannels = (hex: string): readonly [number, number, number] => [
-	Number.parseInt(hex.slice(1, 3), 16),
-	Number.parseInt(hex.slice(3, 5), 16),
-	Number.parseInt(hex.slice(5, 7), 16),
+	Number.parseInt(Str.slice(1, 3)(hex), 16),
+	Number.parseInt(Str.slice(3, 5)(hex), 16),
+	Number.parseInt(Str.slice(5, 7)(hex), 16),
 ]
 
 /** `weight` of `a` mixed into `b`, as `#rrggbb`. */
@@ -405,15 +405,13 @@ const mixHex = (a: string, b: string, weight: number): string => {
 	const [ar, ag, ab] = hexChannels(a)
 	const [br, bg, bb] = hexChannels(b)
 	const channel = (x: number, y: number) =>
-		Math.round(x * weight + y * (1 - weight))
-			.toString(16)
-			.padStart(2, "0")
+		Str.padStart(2, "0")(Math.round(x * weight + y * (1 - weight)).toString(16))
 	return `#${channel(ar, br)}${channel(ag, bg)}${channel(ab, bb)}`
 }
 
 /** WCAG 2 relative luminance of a `#rrggbb` colour. */
 export const relativeLuminance = (hex: string): number => {
-	const [r, g, b] = hexChannels(hex).map((value) => {
+	const [r, g, b] = Arr.map(hexChannels(hex), (value) => {
 		const c = value / 255
 		return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4
 	})
@@ -428,11 +426,15 @@ export const contrastRatio = (a: string, b: string): number => {
 
 /** The most-blended mix of `fg` into `bg` (from 62% up to 100%) that keeps AA on `bg` and `card`. */
 const readableMix = (fg: string, bg: string, card: string): string =>
-	MUTED_WEIGHTS.map((weight) => mixHex(fg, bg, weight)).find(
-		(muted) =>
-			contrastRatio(muted, bg) >= STATUS_PAGE_MIN_CONTRAST &&
-			contrastRatio(muted, card) >= STATUS_PAGE_MIN_CONTRAST,
-	) ?? fg
+	Option.getOrElse(
+		Arr.findFirst(
+			Arr.map(MUTED_WEIGHTS, (weight) => mixHex(fg, bg, weight)),
+			(muted) =>
+				contrastRatio(muted, bg) >= STATUS_PAGE_MIN_CONTRAST &&
+				contrastRatio(muted, card) >= STATUS_PAGE_MIN_CONTRAST,
+		),
+		() => fg,
+	)
 
 const MUTED_WEIGHTS = Array.from({ length: 39 }, (_, step) => 0.62 + step * 0.01)
 
@@ -462,9 +464,13 @@ const TINT_WEIGHTS = Array.from({ length: 10 }, (_, step) => 0.22 - step * 0.02)
 
 /** The strongest mix of `status` into `card` (22% down to 4%) that keeps `fg` text at AA on it. */
 const statusTint = (status: string, card: string, fg: string): string =>
-	TINT_WEIGHTS.map((weight) => mixHex(status, card, weight)).find(
-		(tint) => contrastRatio(fg, tint) >= STATUS_PAGE_MIN_CONTRAST,
-	) ?? card
+	Option.getOrElse(
+		Arr.findFirst(
+			Arr.map(TINT_WEIGHTS, (weight) => mixHex(status, card, weight)),
+			(tint) => contrastRatio(fg, tint) >= STATUS_PAGE_MIN_CONTRAST,
+		),
+		() => card,
+	)
 
 /**
  * Links take the accent only where it stays readable on that mode's background; else the text
@@ -500,7 +506,7 @@ const withAccent = (tokens: StatusPageThemeTokens, accent: string | null): Resol
  */
 export const resolveStatusPageTheme = (theme: StatusPageTheme): ResolvedStatusPageTheme => {
 	const preset = PRESET_TOKENS[theme.preset]
-	const accent = theme.accent?.toLowerCase() ?? null
+	const accent = theme.accent == null ? null : Str.toLowerCase(theme.accent)
 	const forced = (mode: "light" | "dark") =>
 		theme.appearance === mode ? withOverrides(preset[mode], theme) : preset[mode]
 	return {
@@ -534,7 +540,7 @@ const STATUS_COLOR_TOKENS = ["ok", "degraded", "partial", "major", "maint"] as c
 
 /** Why the theme's text would be hard to read (below WCAG AA 4.5:1), or null when it is readable. */
 export const themeContrastIssue = (theme: StatusPageTheme): string | null => {
-	const issues = visibleThemeTokens(resolveStatusPageTheme(theme)).flatMap((tokens) => {
+	const issues = Arr.flatMap(visibleThemeTokens(resolveStatusPageTheme(theme)), (tokens) => {
 		const onBackground = contrastRatio(tokens.fg, tokens.bg)
 		const onCard = contrastRatio(tokens.fg, tokens.card)
 		if (onBackground < STATUS_PAGE_MIN_CONTRAST)
@@ -545,7 +551,7 @@ export const themeContrastIssue = (theme: StatusPageTheme): string | null => {
 			return [`Text on cards has a contrast of ${formatRatio(onCard)}; it needs at least 4.5:1.`]
 		// Status colours come from the preset, so an overridden card or background can wash them out.
 		const statusRatio = Math.min(
-			...STATUS_COLOR_TOKENS.flatMap((key) => [
+			...Arr.flatMap(STATUS_COLOR_TOKENS, (key) => [
 				contrastRatio(tokens[key], tokens.bg),
 				contrastRatio(tokens[key], tokens.card),
 			]),
@@ -634,8 +640,8 @@ const MAINTENANCE_STATUSES = ["scheduled", "in_progress", "completed"] as const
 /** Whether a status belongs to the kind: incidents and maintenance have separate lifecycles. */
 export const statusFitsKind = (kind: StatusPageIncidentKind, status: StatusPageIncidentStatus): boolean =>
 	kind === "incident"
-		? INCIDENT_STATUSES.some((allowed) => allowed === status)
-		: MAINTENANCE_STATUSES.some((allowed) => allowed === status)
+		? Arr.some(INCIDENT_STATUSES, (allowed) => allowed === status)
+		: Arr.some(MAINTENANCE_STATUSES, (allowed) => allowed === status)
 
 export const STATUS_PAGE_OVERLAY_MAX_ENTRIES = 50
 
@@ -648,8 +654,8 @@ const isResolvedStatus = (status: StatusPageIncidentStatus): boolean =>
 /** Break-glass entries already imported into the snapshot; the edge skips them. */
 const importedEntryIds = (snapshot: StatusPageSnapshot): ReadonlySet<string> =>
 	new Set(
-		snapshot.incidents.flatMap((incident) =>
-			incident.updates.flatMap((update) =>
+		Arr.flatMap(snapshot.incidents, (incident) =>
+			Arr.flatMap(incident.updates, (update) =>
 				update.overlayEntryId === null ? [] : [update.overlayEntryId],
 			),
 		),
@@ -667,11 +673,15 @@ export const applyOverlay = (
 	overlay: StatusPageOverlay,
 ): StatusPageSnapshot => {
 	const imported = importedEntryIds(snapshot)
-	const entries = overlay.entries.filter((entry) => !imported.has(entry.id)).sort((a, b) => a.at - b.at)
+	const entries = Arr.filter(overlay.entries, (entry) => !imported.has(entry.id)).sort(
+		(a, b) => a.at - b.at,
+	)
 	if (entries.length === 0) return snapshot
-	const incidents = entries.reduce<ReadonlyArray<StatusPageSnapshotIncident>>((list, entry) => {
+	const incidents = Arr.reduce(entries, snapshot.incidents, (list, entry) => {
 		const targetId = entry.incidentId ?? overlayIncidentId(entry.id)
-		const existing = list.find((incident) => matchesTarget(incident, targetId))
+		const existing = Option.getOrUndefined(
+			Arr.findFirst(list, (incident) => matchesTarget(incident, targetId)),
+		)
 		if (existing === undefined) {
 			const status =
 				entry.status !== null && statusFitsKind("incident", entry.status)
@@ -715,7 +725,7 @@ export const applyOverlay = (
 			source: "break_glass",
 			overlayEntryId: entry.id,
 		}
-		return list.map((incident) =>
+		return Arr.map(list, (incident) =>
 			incident === existing
 				? {
 						...incident,
@@ -729,7 +739,7 @@ export const applyOverlay = (
 					}
 				: incident,
 		)
-	}, snapshot.incidents)
+	})
 	return { ...snapshot, incidents, components: withIncidentImpact(snapshot.components, incidents) }
 }
 
@@ -744,9 +754,10 @@ const STATUS_RANK = {
 } as const satisfies Record<StatusPageComponentStatus, number>
 
 export const worstStatus = (statuses: ReadonlyArray<StatusPageComponentStatus>): StatusPageComponentStatus =>
-	statuses.reduce<StatusPageComponentStatus>(
-		(worst, status) => (STATUS_RANK[status] > STATUS_RANK[worst] ? status : worst),
+	Arr.reduce<StatusPageComponentStatus, StatusPageComponentStatus>(
+		statuses,
 		"operational",
+		(worst, status) => (STATUS_RANK[status] > STATUS_RANK[worst] ? status : worst),
 	)
 
 const IMPACT_STATUS = {
@@ -828,26 +839,23 @@ const withIncidentImpact = (
 	components: ReadonlyArray<StatusPageSnapshotComponent>,
 	incidents: ReadonlyArray<StatusPageSnapshotIncident>,
 ): ReadonlyArray<StatusPageSnapshotComponent> => {
-	const active = incidents.filter(isActiveIncident)
+	const active = Arr.filter(incidents, isActiveIncident)
 	// From `baseStatus`, not `status`: an incident the overlay resolves must stop counting.
-	return components.map((component) => ({
+	return Arr.map(components, (component) => ({
 		...component,
 		status: worstStatus([
 			component.baseStatus,
-			...active
-				.filter((incident) => incident.componentIds.includes(component.id))
-				.map(incidentComponentStatus),
+			...Arr.map(
+				Arr.filter(active, (incident) => incident.componentIds.includes(component.id)),
+				incidentComponentStatus,
+			),
 		]),
 	}))
 }
 
 /** The banner status: the worst non-informational component, or `operational` for an empty page. */
 export const overallStatus = (snapshot: StatusPageSnapshot): StatusPageComponentStatus =>
-	worstStatus(
-		snapshot.components
-			.filter((component) => !isInformationalGroup(component.group))
-			.map((component) => component.status),
-	)
+	worstStatus(Arr.map(Arr.filter(snapshot.components, (component) => !isInformationalGroup(component.group)), (component) => component.status))
 
 // --- Bars ---
 
@@ -860,7 +868,7 @@ export const dayState = (bar: StatusPageDayBar): StatusPageDayState =>
  * checks below the down threshold showed an orange bar next to "100% uptime".)
  */
 export const uptimePercent = (days: ReadonlyArray<StatusPageDayBar>): number | null => {
-	const checks = days.reduce((sum, day) => sum + day.checks, 0)
+	const checks = Arr.reduce(days, 0, (sum, day) => sum + day.checks)
 	if (checks === 0) return null
 	const failed = days.reduce((sum, day) => sum + day.failures, 0)
 	return ((checks - failed) / checks) * 100
@@ -876,7 +884,7 @@ export const rowStatus = (component: StatusPageSnapshotComponent): StatusPageCom
 	return state === "degraded" || state === "down" ? worstStatus([component.status, "degraded"]) : component.status
 }
 
-export const utcDay = (ms: number): string => new Date(ms).toISOString().slice(0, 10)
+export const utcDay = (ms: number): string => Str.slice(0, 10)(new Date(ms).toISOString())
 
 /** The last `count` UTC days ending today, oldest first. */
 export const lastDays = (nowMs: number, count: number): ReadonlyArray<string> =>
@@ -887,8 +895,8 @@ export const fillDays = (
 	days: ReadonlyArray<string>,
 	rows: ReadonlyArray<StatusPageDayBar>,
 ): ReadonlyArray<StatusPageDayBar> => {
-	const byDay = new Map(rows.map((row) => [row.day, row]))
-	return days.map((day) => byDay.get(day) ?? { day, checks: 0, failures: 0, downChecks: 0 })
+	const byDay = new Map(Arr.map(rows, (row) => [row.day, row]))
+	return Arr.map(days, (day) => byDay.get(day) ?? { day, checks: 0, failures: 0, downChecks: 0 })
 }
 
 // --- Freshness ---
@@ -908,7 +916,7 @@ export const pageFreshness = (input: {
 	readonly nowMs: number
 }): StatusPageFreshness => {
 	const publisherAt = Math.max(input.snapshot.generatedAt, input.heartbeat?.at ?? 0)
-	const monitored = input.snapshot.components.some((component) => component.monitored)
+	const monitored = Arr.some(input.snapshot.components, (component) => component.monitored)
 	const probesSeenAt = input.heartbeat?.probesSeenAt ?? null
 	// Monitors with no probe time to confirm them (heartbeat unreadable, or no probe ran) are not live.
 	if (monitored && probesSeenAt === null) return { _tag: "delayed", updatedAt: publisherAt }
@@ -925,15 +933,20 @@ export const STATUS_PAGE_BREAK_GLASS_PREFIX = "mstat_"
 /** SHA-256 of the token, base64url: the token carries 256 random bits, so no key is needed. */
 export const sha256Base64Url = async (value: string): Promise<string> => {
 	const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value))
-	return btoa(String.fromCharCode(...new Uint8Array(digest)))
-		.replaceAll("+", "-")
-		.replaceAll("/", "_")
-		.replace(/=+$/u, "")
+	return Str.replace(
+		/=+$/u,
+		"",
+	)(
+		Str.replaceAll(
+			"/",
+			"_",
+		)(Str.replaceAll("+", "-")(btoa(String.fromCharCode(...new Uint8Array(digest))))),
+	)
 }
 
 /** Edge storage keys, shared by the publisher and the status Worker. */
 export const StatusPageKeys = {
-	host: (hostname: string) => `host:${hostname.toLowerCase()}`,
+	host: (hostname: string) => `host:${Str.toLowerCase(hostname)}`,
 	/** Path addressing (`/s/<slug>`), for hosts without a page of their own such as workers.dev. */
 	slug: (slug: string) => `slug:${slug}`,
 	snapshot: (pageId: string) => `page:${pageId}:snapshot`,
@@ -947,7 +960,7 @@ export const StatusPageKeys = {
 	heartbeat: "meta:heartbeat",
 	/** R2 copy of the snapshot, read when KV fails. */
 	snapshotObject: (pageId: string) => `pages/${pageId}/snapshot.json`,
-	hostObject: (hostname: string) => `hosts/${hostname.toLowerCase()}`,
+	hostObject: (hostname: string) => `hosts/${Str.toLowerCase(hostname)}`,
 	slugObject: (slug: string) => `slugs/${slug}`,
 } as const
 

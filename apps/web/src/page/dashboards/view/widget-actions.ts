@@ -1,6 +1,10 @@
+import { Schema } from "effect"
+import { Base64Url } from "effect/encoding"
 import type { DashboardDocument } from "@maple/domain/http"
 import { dataSourceRawSql, isQueryDataSource } from "@maple/widgets/dashboard"
 import type { AlertsCreateSearch } from "../../../route/search"
+
+const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown))
 
 // The widget actions: which actions a
 // tile's menu offers, and the alert prefill it hands /alerts/create.
@@ -12,18 +16,14 @@ export const isAlertable = (widget: Widget): boolean =>
 	isQueryDataSource(widget.dataSource) || dataSourceRawSql(widget.dataSource) !== null
 
 // `toBase64Url` (unpadded UTF-8 base64url) and `encodeAlertChartToSearchParam`.
-const toBase64Url = (input: string): string =>
-	btoa(unescape(encodeURIComponent(input)))
-		.replace(/\+/g, "-")
-		.replace(/\//g, "_")
-		.replace(/=+$/, "")
+const toBase64Url = (input: string): string => Base64Url.encode(input)
 
 /** Keeps the encoded param well under practical URL limits (`MAX_ENCODED_LENGTH`). */
 const MAX_ENCODED_LENGTH = 12_000
 
 const encodeAlertChart = (dashboardId: string, widget: Widget): string | undefined => {
 	const encoded = toBase64Url(
-		JSON.stringify({
+		encodeJson({
 			dashboardId,
 			widget: {
 				id: widget.id,

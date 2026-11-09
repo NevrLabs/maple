@@ -1,26 +1,15 @@
 import { Layer } from "effect"
+import { AiCredits } from "@maple/backend/services/billing/AiCredits"
 import { BillingCustomerResolver } from "@maple/backend/services/billing/BillingCustomerResolver"
-import { McpToolExecutor } from "../mcp/dispatcher"
+import { McpServicesLive } from "./mcp-tool-graph"
 import { EdgeCacheServiceLive } from "@maple/backend/platform/CacheBackendLive"
 import { Env } from "@maple/backend/platform/Env"
 import { ErrorActorsService } from "@maple/backend/services/errors/ErrorActorsService"
 import { OrgMembershipService } from "@maple/backend/services/auth/OrgMembershipService"
 import { InvestigationService } from "@maple/backend/services/errors/InvestigationService"
-import { OrganizationFeatureFlagsService } from "@maple/backend/services/org/OrganizationFeatureFlagsService"
 import { OrgOpenRouterKeyService } from "@maple/backend/services/org/OrgOpenRouterKeyService"
 import { PrReviewService } from "@maple/backend/services/pr-review/PrReviewService"
 import { PrReviewConversationService } from "@maple/backend/services/pr-review/PrReviewConversationService"
-
-/** The tool executor over the given org rollout flags; tests pass a fixed answer. */
-export const mcpServicesWithFeatureFlags = (
-	featureFlags: Layer.Layer<OrganizationFeatureFlagsService, never, Env>,
-) =>
-	McpToolExecutor.layer.pipe(
-		Layer.provide(featureFlags),
-		Layer.provide(Layer.mergeAll(Env.layer, EdgeCacheServiceLive)),
-	)
-
-export const McpServicesLive = mcpServicesWithFeatureFlags(OrganizationFeatureFlagsService.layer)
 
 /**
  * What applying a proposal somebody approved from a chat platform needs, and nothing else.
@@ -54,4 +43,6 @@ export const InvestigationServicesLive = Layer.mergeAll(
 	OrgOpenRouterKeyService.layer.pipe(Layer.provide(Layer.mergeAll(Env.layer, EdgeCacheServiceLive))),
 	// Which org pays for the turn: a member org's AI credits are its billing org's.
 	BillingCustomerResolver.layer.pipe(Layer.provide(EdgeCacheServiceLive)),
+	// Whether the paying org may spend AI credits on the turn at all, checked before the model runs.
+	AiCredits.layer.pipe(Layer.provide(Layer.mergeAll(Env.layer, EdgeCacheServiceLive))),
 )

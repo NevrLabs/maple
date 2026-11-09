@@ -1,8 +1,9 @@
+import * as Policy from "@maple/domain/policy"
 import { AsyncData, Submodel } from "foldkit"
 import type { Html, HtmlBuilder } from "foldkit/html"
 import { AppRoute, hrefOf } from "../../route"
-import { alert, alertDescription } from "../../ui/alert"
-import { linkButton } from "../../ui/button"
+import { alert, alertDescription } from "@maple/views/ui/alert"
+import { linkButton } from "@maple/views/ui/button"
 import {
 	empty as emptyBlock,
 	emptyContent,
@@ -11,13 +12,13 @@ import {
 	emptyMedia,
 	emptyMessage,
 	emptyTitle,
-} from "../../ui/empty"
-import { icon } from "../../ui/icon"
-import { skeleton } from "../../ui/skeleton"
+} from "@maple/views/ui/empty"
+import { icon } from "@maple/views/ui/icon"
+import { skeleton } from "@maple/views/ui/skeleton"
 import type { PageViewInputs } from "../contract"
 import { dashboardPage } from "../kit/dashboard-page"
 import type { BreadcrumbEntry } from "../../shell"
-import { navShell } from "./kit/nav-shell"
+import { navShell } from "../kit/nav-shell"
 import { INLINE_LINK_CLASS } from "./kit/section"
 import * as IngestionView from "./ingestion/view"
 import * as KeysView from "./keys/view"
@@ -60,7 +61,7 @@ const tabContent = (h: H, model: Model, inputs: PageViewInputs): ReadonlyArray<H
 					view: McpView.view,
 					toParentMessage: (message) => Message.GotMcpMessage({ message }),
 					viewInputs: {
-						isAdmin: visibilityOf(model).isAdmin,
+						grants: visibilityOf(model).grants,
 						nowMs: model.nowMs,
 						timeZone: inputs.context.timeZone,
 					},
@@ -223,7 +224,7 @@ const gatedTabReason = (model: Model, tab: SettingsTab): string => {
 	const label = settingsTabLabels[tab]
 	const visibility = visibilityOf(model)
 	if (!visibility.isClerk) return `${label} isn't available on this deployment.`
-	if (tab === "data-platform" && visibility.isAdmin)
+	if (tab === "data-platform" && Policy.has(visibility.grants, "warehouse:manage"))
 		return `${label} needs the Bring your own cloud add-on.`
 	return `You need admin access to view ${label}.`
 }
@@ -260,7 +261,9 @@ const pageNote = (h: H, model: Model): ReadonlyArray<Html> => {
 			: gatedTabReason(model, model.deniedTab)
 	// The add-on gate is the one a viewer can lift themselves, so it links to the plans.
 	const linksToPlans =
-		!isRoleUnknown(model) && model.deniedTab === "data-platform" && visibilityOf(model).isAdmin
+		!isRoleUnknown(model) &&
+		model.deniedTab === "data-platform" &&
+		Policy.has(visibilityOf(model).grants, "warehouse:manage")
 	return reason === null
 		? []
 		: [
@@ -362,7 +365,7 @@ export const view = Submodel.defineView<Model, Message, PageViewInputs>((model, 
 		isLoading
 			? [loadingSkeleton(h)]
 			: empty
-				? [emptyMessage(h, {}, ["No settings are available for the current account."])]
+				? [emptyMessage(h, {}, ["No settings are available for the current account"])]
 				: activeTabOf(model) === "data-platform" && visibilityOf(model).isDataPlatformLocked === true
 					? [lockedDataPlatform(h)]
 					: [...pageNote(h, model), ...tabContent(h, model, inputs)],

@@ -44,7 +44,7 @@ import {
 	type StatusPageSnapshotIncident,
 	utcDay,
 } from "@maple/domain/status-page"
-import { Context, Effect, Layer, Schema } from "effect"
+import { Context, Effect, Layer, Order, Schema, Array as Arr, String as Str } from "effect"
 import { Database } from "@maple/backend/platform/DatabaseLive"
 import { makeDbExecute, makePersistenceErrorMapper } from "@maple/backend/platform/db-execute"
 import { ensureMonitorsInOrg } from "./monitors"
@@ -137,18 +137,29 @@ export const isIndexedIncident = (incident: SnapshotIncidentInput, nowMs: number
 	(incident.resolvedAt ?? nowMs) >= nowMs - STATUS_PAGE_HISTORY_DAYS * DAY_MS
 
 /** The snapshot for already-read rows; no I/O, so the rules are testable without a database. */
+const byStartedAtDesc = Order.flip(
+	Order.mapInput(Order.Number, (incident: SnapshotIncidentInput) => incident.startedAt),
+)
+const updatesNewestFirst = Order.combine(
+	Order.flip(Order.mapInput(Order.Number, (update: SnapshotUpdateInput) => update.createdAt)),
+	(a: SnapshotUpdateInput, b: SnapshotUpdateInput) => Str.localeCompare(a.id)(b.id),
+)
+
 export const toSnapshot = (input: SnapshotInput): StatusPageSnapshot => {
 	const days = lastDays(input.nowMs, STATUS_PAGE_HISTORY_DAYS)
 	const firstDay = days[0] ?? ""
-	const daily = input.daily.filter((row) => row.day >= firstDay)
+	const daily = Arr.filter(input.daily, (row) => row.day >= firstDay)
 
-	const incidents: ReadonlyArray<StatusPageSnapshotIncident> = input.incidents
-		.filter((incident) => isListedIncident(incident, input.nowMs))
-		.toSorted((a, b) => b.startedAt - a.startedAt)
-		.map((incident) => {
-			const updates = input.updates
-				.filter((update) => update.incidentId === incident.id)
-				.toSorted((a, b) => b.createdAt - a.createdAt || b.id.localeCompare(a.id))
+	const incidents: ReadonlyArray<StatusPageSnapshotIncident> = Arr.map(
+		Arr.sort(
+			Arr.filter(input.incidents, (incident) => isListedIncident(incident, input.nowMs)),
+			byStartedAtDesc,
+		),
+		(incident) => {
+			const updates = Arr.sort(
+				Arr.filter(input.updates, (update) => update.incidentId === incident.id),
+				updatesNewestFirst,
+			)
 			const first = updates.at(-1)
 			return {
 				id: incident.id,
@@ -160,12 +171,13 @@ export const toSnapshot = (input: SnapshotInput): StatusPageSnapshot => {
 				resolvedAt: incident.resolvedAt,
 				scheduledStart: incident.scheduledStart,
 				scheduledEnd: incident.scheduledEnd,
-				componentIds: input.incidentComponents
-					.filter((link) => link.incidentId === incident.id)
-					.map((link) => link.componentId),
+				componentIds: Arr.map(
+					Arr.filter(input.incidentComponents, (link) => link.incidentId === incident.id),
+					(link) => link.componentId,
+				),
 				// The first update came from break-glass: `bg-<entry>` follow-ups still target it.
 				openedByOverlayEntryId: first?.source === "break_glass" ? first.overlayEntryId : null,
-				updates: updates.map((update) => ({
+				updates: Arr.map(updates, (update) => ({
 					// An imported break-glass update keeps the id visitors and feed readers already saw.
 					id: update.overlayEntryId ?? update.id,
 					status: update.status,
@@ -175,21 +187,25 @@ export const toSnapshot = (input: SnapshotInput): StatusPageSnapshot => {
 					overlayEntryId: update.overlayEntryId,
 				})),
 			}
-		})
-	const active = incidents.filter(isActiveIncident)
-	const incidentHistory: ReadonlyArray<StatusPageIncidentHistoryEntry> = input.incidents
-		.filter((incident) => isIndexedIncident(incident, input.nowMs))
-		.toSorted((a, b) => b.startedAt - a.startedAt)
-		.map((incident) => ({
+		},
+	)
+	const active = Arr.filter(incidents, isActiveIncident)
+	const incidentHistory: ReadonlyArray<StatusPageIncidentHistoryEntry> = Arr.map(
+		Arr.sort(
+			Arr.filter(input.incidents, (incident) => isIndexedIncident(incident, input.nowMs)),
+			byStartedAtDesc,
+		),
+		(incident) => ({
 			id: incident.id,
 			title: incident.title,
 			kind: incident.kind,
 			impact: incident.impact,
 			startedAt: incident.startedAt,
 			resolvedAt: incident.resolvedAt,
-		}))
+		}),
+	)
 
-	const components = input.components.map((component) => ({
+	const components = Arr.map(input.components, (component) => ({
 		id: component.id,
 		name: component.name,
 		description: component.description,
@@ -198,9 +214,10 @@ export const toSnapshot = (input: SnapshotInput): StatusPageSnapshot => {
 			monitorStatus: component.monitorStatus,
 			manualStatus: component.manualStatus,
 			informational: isInformationalGroup(component.groupName),
-			incidentStatuses: active
-				.filter((incident) => incident.componentIds.includes(component.id))
-				.map(incidentComponentStatus),
+			incidentStatuses: Arr.map(
+				Arr.filter(active, (incident) => incident.componentIds.includes(component.id)),
+				incidentComponentStatus,
+			),
 		}),
 		baseStatus: deriveComponentStatus({
 			monitorStatus: component.monitorStatus,
@@ -215,14 +232,15 @@ export const toSnapshot = (input: SnapshotInput): StatusPageSnapshot => {
 				? []
 				: fillDays(
 						days,
-						daily
-							.filter((row) => row.monitorId === component.monitorId)
-							.map((row) => ({
+						Arr.map(
+							Arr.filter(daily, (row) => row.monitorId === component.monitorId),
+							(row) => ({
 								day: row.day,
 								checks: row.checks,
 								failures: row.failures,
 								downChecks: row.downChecks,
-							})),
+							}),
+						),
 					),
 	}))
 
@@ -256,7 +274,7 @@ export interface StatusPageDraft {
 }
 
 /** Synthetic ids for a draft: fixed UUIDs, the page's ending in 0 and component `i`'s in `i + 1`. */
-const draftUuid = (n: number) => `00000000-0000-4000-8000-${n.toString(16).padStart(12, "0")}`
+const draftUuid = (n: number) => `00000000-0000-4000-8000-${Str.padStart(12, "0")(n.toString(16))}`
 export const DRAFT_PAGE_ID = StatusPageId.make(draftUuid(0))
 export const draftComponentId = (index: number) => StatusPageComponentId.make(draftUuid(index + 1))
 
@@ -287,7 +305,7 @@ export const toStatusPageDraft = (params: StatusPagePreviewParams): StatusPageDr
 			theme,
 			showPoweredBy: config.show_powered_by,
 		},
-		components: config.components.map((component) => ({
+		components: Arr.map(config.components, (component) => ({
 			name: component.name,
 			description: component.description,
 			groupName: component.group,
@@ -323,11 +341,11 @@ const readMonitorData = Effect.fnUntraced(function* (
 			.select(($) => ({ monitorId: $.monitorId, status: $.status }))
 			.where(($) => [$.orgId.eq(orgId), PG.inList($.monitorId, monitorIds)]),
 	)
-	return { daily, statuses: new Map(states.map((state) => [state.monitorId, state.status])) }
+	return { daily, statuses: new Map(Arr.map(states, (state) => [state.monitorId, state.status])) }
 })
 
 const uniqueMonitorIds = (components: ReadonlyArray<{ readonly monitorId: UptimeMonitorId | null }>) => [
-	...new Set(components.flatMap((c) => (c.monitorId === null ? [] : [c.monitorId]))),
+	...new Set(Arr.flatMap(components, (c) => (c.monitorId === null ? [] : [c.monitorId]))),
 ]
 
 export interface StatusPageSnapshotBuilderApi {
@@ -419,7 +437,7 @@ export class StatusPageSnapshotBuilder extends Context.Service<
 						uniqueMonitorIds(rows),
 						firstDay,
 					)
-					const components = rows.map((row) => ({
+					const components = Arr.map(rows, (row) => ({
 						...row,
 						monitorStatus: row.monitorId === null ? null : (statuses.get(row.monitorId) ?? null),
 					}))
@@ -456,9 +474,10 @@ export class StatusPageSnapshotBuilder extends Context.Service<
 							.limit(STATUS_PAGE_INCIDENT_INDEX_LIMIT),
 					)
 					const incidents = [...open, ...resolved]
-					const incidentIds = incidents
-						.filter((incident) => isListedIncident(incident, nowMs))
-						.map((incident) => incident.id)
+					const incidentIds = Arr.map(
+						Arr.filter(incidents, (incident) => isListedIncident(incident, nowMs)),
+						(incident) => incident.id,
+					)
 					const updates =
 						incidentIds.length === 0
 							? []
@@ -523,7 +542,7 @@ export class StatusPageSnapshotBuilder extends Context.Service<
 			)
 			return toSnapshot({
 				page: { ...draft.page, id: DRAFT_PAGE_ID, breakGlassTokenSha256: null, revision: 0 },
-				components: draft.components.map((component, index) => ({
+				components: Arr.map(draft.components, (component, index) => ({
 					...component,
 					id: draftComponentId(index),
 					monitorStatus:

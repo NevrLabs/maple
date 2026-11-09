@@ -1,10 +1,14 @@
 import type { SecurityAuditFinding } from "@maple/domain/http"
 import { cn } from "@maple/ui/lib/utils"
 import type { Html, HtmlBuilder } from "foldkit/html"
-import { badge } from "../../../ui/display"
-import { eyebrow } from "../../../ui/eyebrow"
-import { panel, panelHeader } from "../../../ui/panel"
+import { badge } from "@maple/views/ui/display"
+import { eyebrow } from "@maple/views/ui/eyebrow"
+import { panel, panelHeader } from "@maple/views/ui/panel"
 import type { FindingRecord } from "./format"
+import { typography, typographyClass } from "@maple/views/ui/typography"
+import { hstack, vstack } from "@maple/views/ui/stack"
+import { Array as Arr } from "effect"
+import { stripClass } from "@maple/views/ui/rule"
 
 // The finding's own record: what is wrong, the trace, how it is exploited, how to fix it.
 
@@ -23,19 +27,19 @@ const section = <M>(
 			h,
 			hint === null
 				? { title }
-				: { title, action: h.span([h.Class("text-xs text-muted-foreground")], [hint]) },
+				: { title, action: typography(h, { size: "xs", tone: "muted" }, [hint]) },
 		),
-		h.div([h.Class("flex flex-col gap-4 px-4 py-4")], children),
+		vstack(h, { gap: "4", className: "px-4 py-4" }, children),
 	])
 
 const prose = <M>(h: HtmlBuilder<M>, text: string, className?: string): Html =>
 	h.p([h.Class(cn("whitespace-pre-line text-sm leading-relaxed", className))], [text])
 
 const labelled = <M>(h: HtmlBuilder<M>, label: string, text: string): Html =>
-	h.div(
-		[h.Class("flex flex-col gap-1.5 rounded-md border p-3")],
-		[eyebrow(h, { as: "div" }, [label]), h.p([h.Class("text-sm")], [text])],
-	)
+	vstack(h, { gap: "1.5", className: stripClass("box") }, [
+		eyebrow(h, { as: "div" }, [label]),
+		typography(h, { size: "sm", as: "p" }, [text]),
+	])
 
 const codeBlock = <M>(h: HtmlBuilder<M>, text: string, label?: string): Html =>
 	h.div(
@@ -81,54 +85,36 @@ const whatIsWrong = <M>(h: HtmlBuilder<M>, record: FindingRecord): Html =>
 
 const traceAndEvidence = <M>(h: HtmlBuilder<M>, record: FindingRecord): Html => {
 	const files = new Set([
-		...record.trace.map((step) => step.file),
-		...record.evidence.map((item) => item.file),
+		...Arr.map(record.trace, (step) => step.file),
+		...Arr.map(record.evidence, (item) => item.file),
 	])
 	return section(
 		h,
 		"Trace and evidence",
 		`${files.size} ${files.size === 1 ? "file" : "files"} · every cited line re-read by the validator`,
 		[
-			...record.trace.map((step, index) =>
-				h.div(
-					[h.Key(`trace-${index}`), h.Class("flex flex-col gap-1")],
-					[
-						h.div(
-							[h.Class("flex flex-wrap items-center gap-2")],
-							[
-								badge(h, { variant: "tag" }, [step.kind]),
-								h.span([h.Class("font-mono text-sm")], [`${step.file}:${step.line}`]),
-								h.span([h.Class("font-mono text-xs text-muted-foreground")], [step.scope]),
-							],
-						),
-						h.p([h.Class("text-sm text-muted-foreground")], [step.description]),
-					],
-				),
+			...Arr.map(record.trace, (step, index) =>
+				vstack(h, { gap: "1", attributes: [h.Key(`trace-${index}`)] }, [
+					hstack(h, { gap: "2", wrap: true }, [
+						badge(h, { variant: "tag" }, [step.kind]),
+						typography(h, { size: "sm", mono: true }, [`${step.file}:${step.line}`]),
+						typography(h, { size: "xs", tone: "muted", mono: true }, [step.scope]),
+					]),
+					typography(h, { size: "sm", tone: "muted", as: "p" }, [step.description]),
+				]),
 			),
 			...(record.evidence.length === 0
 				? []
 				: [
-						h.div(
-							[h.Class("flex flex-col gap-2 border-t pt-3")],
-							[
-								eyebrow(h, { as: "div" }, ["Evidence"]),
-								...record.evidence.map((item, index) =>
-									h.div(
-										[h.Key(`evidence-${index}`), h.Class("flex flex-col gap-0.5")],
-										[
-											h.span(
-												[h.Class("font-mono text-sm")],
-												[`${item.file}:${item.line}`],
-											),
-											h.span(
-												[h.Class("text-sm text-muted-foreground")],
-												[item.description],
-											),
-										],
-									),
-								),
-							],
-						),
+						vstack(h, { gap: "2", className: "border-t pt-3" }, [
+							eyebrow(h, { as: "div" }, ["Evidence"]),
+							...Arr.map(record.evidence, (item, index) =>
+								vstack(h, { gap: "0.5", attributes: [h.Key(`evidence-${index}`)] }, [
+									typography(h, { size: "sm", mono: true }, [`${item.file}:${item.line}`]),
+									typography(h, { size: "sm", tone: "muted" }, [item.description]),
+								]),
+							),
+						]),
 					]),
 		],
 	)
@@ -140,42 +126,36 @@ const exploitation = <M>(h: HtmlBuilder<M>, record: Confirmed): Html =>
 		...(record.conditions.length === 0
 			? []
 			: [
-					h.div(
-						[h.Class("flex flex-wrap items-center gap-2 text-xs")],
-						[
-							h.span([h.Class("text-muted-foreground")], ["Conditions"]),
-							...record.conditions.map((condition, index) =>
-								badge(
-									h,
-									{
-										variant: "meta",
-										className: "h-auto whitespace-normal py-0.5",
-										attributes: [h.Key(`c-${index}`)],
-									},
-									[`${CONDITION_LABEL[condition.kind]}: ${condition.description}`],
-								),
+					hstack(h, { gap: "2", wrap: true, className: typographyClass({ size: "xs" }) }, [
+						typography(h, { tone: "muted" }, ["Conditions"]),
+						...Arr.map(record.conditions, (condition, index) =>
+							badge(
+								h,
+								{
+									variant: "meta",
+									className: "h-auto whitespace-normal py-0.5",
+									attributes: [h.Key(`c-${index}`)],
+								},
+								[`${CONDITION_LABEL[condition.kind]}: ${condition.description}`],
 							),
-						],
-					),
+						),
+					]),
 				]),
-		...record.execution.payloads.map((payload) => codeBlock(h, payload)),
+		...Arr.map(record.execution.payloads, (payload) => codeBlock(h, payload)),
 		...(record.execution.instructions.length === 0
 			? []
 			: [
 					h.ol(
 						[h.Class("flex list-decimal flex-col gap-1.5 pl-5 text-sm")],
-						record.execution.instructions.map((step, index) =>
+						Arr.map(record.execution.instructions, (step, index) =>
 							h.li([h.Key(`i-${index}`)], [step]),
 						),
 					),
 				]),
-		h.div(
-			[h.Class("flex flex-col gap-1 border-l-2 pl-3")],
-			[
-				eyebrow(h, { as: "div" }, ["Observed result"]),
-				h.p([h.Class("text-sm text-muted-foreground")], [record.execution.observed_result]),
-			],
-		),
+		vstack(h, { gap: "1", className: "border-l-2 pl-3" }, [
+			eyebrow(h, { as: "div" }, ["Observed result"]),
+			typography(h, { size: "sm", tone: "muted", as: "p" }, [record.execution.observed_result]),
+		]),
 	])
 
 const assessment = <M>(h: HtmlBuilder<M>, record: Confirmed): Html =>
@@ -197,7 +177,7 @@ const assessment = <M>(h: HtmlBuilder<M>, record: Confirmed): Html =>
 const remediation = <M>(h: HtmlBuilder<M>, record: Confirmed): Html =>
 	section(h, "How to fix it", null, [
 		prose(h, record.remediation.strategy),
-		...(record.remediation.code_changes ?? []).map((change) =>
+		...Arr.map(record.remediation.code_changes ?? [], (change) =>
 			codeBlock(h, change.fixed_code, change.file_name),
 		),
 	])
@@ -220,9 +200,10 @@ const whyNotProven = <M>(h: HtmlBuilder<M>, record: NeedsValidation): Html | nul
 	record.blockers.length === 0
 		? null
 		: section(h, "Why it is not proven", null, [
-				h.ul(
-					[h.Class("flex list-disc flex-col gap-1.5 pl-5 text-sm")],
-					record.blockers.map((blocker, index) => h.li([h.Key(`b-${index}`)], [blocker])),
+				vstack(
+					h,
+					{ gap: "1.5", as: "ul", className: "list-disc pl-5 text-sm" },
+					Arr.map(record.blockers, (blocker, index) => h.li([h.Key(`b-${index}`)], [blocker])),
 				),
 			])
 

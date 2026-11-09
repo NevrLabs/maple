@@ -1,9 +1,10 @@
 import { assert, describe, it } from "@effect/vitest"
-import { Duration, Effect, Fiber, Layer, Redacted } from "effect"
+import { Duration, Effect, Exit, Fiber, Layer, Redacted, Array as Arr } from "effect"
 import { FetchHttpClient } from "effect/http"
 import { TestClock } from "effect/testing"
 import { ApiClient } from "./ApiClient"
 import { ScraperEnv, type ScraperEnvConfig } from "./Env"
+import { endedSpansNamed, makeCapturingTracer } from "./testing/capturing-tracer"
 
 const testEnv: ScraperEnvConfig = {
 	MAPLE_API_URL: "http://api.test",
@@ -83,7 +84,7 @@ describe("ApiClient", () => {
 		Effect.gen(function* () {
 			const recorded: Array<RecordedRequest> = []
 			const client = yield* ApiClient
-			const targets = yield* client.listTargets().pipe(
+			const targets = yield* client.listTargets.pipe(
 				Effect.provideService(
 					FetchHttpClient.Fetch,
 					stubFetch(recorded, () => Response.json([VALID_TARGET])),
@@ -103,7 +104,7 @@ describe("ApiClient", () => {
 	it.effect("fails with a typed error on non-2xx target list responses", () =>
 		Effect.gen(function* () {
 			const client = yield* ApiClient
-			const result = yield* client.listTargets().pipe(
+			const result = yield* client.listTargets.pipe(
 				Effect.provideService(
 					FetchHttpClient.Fetch,
 					stubFetch([], () => new Response("nope", { status: 401 })),
@@ -118,7 +119,7 @@ describe("ApiClient", () => {
 	it.effect("fails with a typed error when the payload does not match the schema", () =>
 		Effect.gen(function* () {
 			const client = yield* ApiClient
-			const result = yield* client.listTargets().pipe(
+			const result = yield* client.listTargets.pipe(
 				Effect.provideService(
 					FetchHttpClient.Fetch,
 					stubFetch([], () => Response.json([{ nonsense: true }])),
@@ -209,7 +210,7 @@ describe("ApiClient", () => {
 			const recorded: Array<RecordedRequest> = []
 			const client = yield* ApiClient
 			const fiber = yield* Effect.forkChild(
-				client.listTargets().pipe(
+				client.listTargets.pipe(
 					Effect.provideService(
 						FetchHttpClient.Fetch,
 						stubFetch(recorded, () => {
@@ -223,6 +224,39 @@ describe("ApiClient", () => {
 			const targets = yield* Fiber.join(fiber)
 			assert.lengthOf(recorded, 2)
 			assert.lengthOf(targets, 1)
+		}).pipe(Effect.provide(TestLayer)),
+	)
+
+	it.effect("records a body that fails mid-read on the attempt span and retries", () =>
+		Effect.gen(function* () {
+			const recorded: Array<RecordedRequest> = []
+			const tracer = makeCapturingTracer()
+			const client = yield* ApiClient
+			const brokenBody = () =>
+				new Response(
+					new ReadableStream({
+						start: (controller) => controller.error(new TypeError("socket closed")),
+					}),
+					{ status: 200 },
+				)
+			const fiber = yield* Effect.forkChild(
+				client.listTargets.pipe(
+					Effect.provideService(
+						FetchHttpClient.Fetch,
+						stubFetch(recorded, () =>
+							recorded.length === 1 ? brokenBody() : Response.json([VALID_TARGET]),
+						),
+					),
+					Effect.provide(tracer.layer),
+				),
+			)
+			yield* settleAndAdvance(2)
+			assert.lengthOf(yield* Fiber.join(fiber), 1)
+			const attempts = endedSpansNamed(tracer.ended, "GET")
+			assert.lengthOf(attempts, 2)
+			assert.isTrue(Arr.every(attempts, (span) => Exit.isSuccess(span.exit)))
+			assert.strictEqual(Arr.getUnsafe(attempts, 0).attributes.get("http.response.status_code"), 200)
+			assert.isString(Arr.getUnsafe(attempts, 0).attributes.get("maple.attempt.error"))
 		}).pipe(Effect.provide(TestLayer)),
 	)
 })

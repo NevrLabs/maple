@@ -1,4 +1,4 @@
-import { Array, Option, Predicate, Schema } from "effect"
+import { Array, Option, Predicate, Schema, Record as Rec } from "effect"
 import { Subscription } from "foldkit"
 import type { Command } from "foldkit"
 import type { Html, HtmlBuilder } from "foldkit/html"
@@ -19,14 +19,18 @@ import * as AgentSessionsList from "./agent-sessions/list"
 import * as AgentSession from "./agent-sessions/session"
 import * as AgentSessionTool from "./agent-sessions/tool"
 import * as AgentSessionTools from "./agent-sessions/tools"
+import * as McpServers from "./mcp/hub"
 import * as AlertEditor from "./alerts/editor"
 import * as AlertsHub from "./alerts/hub"
-import * as AnomaliesList from "./anomalies/list"
 import * as AnomalyDetail from "./anomalies/detail"
 import * as AlertIncident from "./alerts/incident"
 import * as AlertRule from "./alerts/rule"
 import * as AlertsUptimeMonitor from "./alerts/uptime-monitor"
 import * as AlertsUptimeNew from "./alerts/uptime-form"
+import * as AlertsSlo from "./alerts/slo"
+import * as AlertsSloNew from "./alerts/slo-form"
+import * as AlertsSchedule from "./alerts/schedule"
+import * as AlertsScheduleNew from "./alerts/schedule-form"
 import * as IngestRuleEditor from "./settings/ingest-rule"
 import * as DashboardsList from "./dashboards/list"
 import * as DashboardTemplates from "./dashboards/templates"
@@ -82,6 +86,8 @@ import * as ServiceDetail from "./services/detail"
 import * as ServiceMap from "./service-map"
 import * as ReplayDetail from "./replays/detail"
 import * as ReplaysList from "./replays/list"
+import * as UsersList from "./users/list"
+import * as UserDetail from "./users/detail"
 import * as ServicesList from "./services/list"
 import * as Settings from "./settings"
 import * as Account from "./settings/account"
@@ -117,6 +123,10 @@ export const pages = [
 	AlertRule.page,
 	AlertsUptimeMonitor.page,
 	AlertsUptimeNew.page,
+	AlertsSlo.page,
+	AlertsSloNew.page,
+	AlertsSchedule.page,
+	AlertsScheduleNew.page,
 	StatusPagesList.page,
 	StatusPageBuilder.page,
 	StatusPageEditor.page,
@@ -160,11 +170,11 @@ export const pages = [
 	SecurityFinding.page,
 	AgentSessionsList.page,
 	AgentSessionTools.page,
+	McpServers.page,
 	AgentSessionTool.page,
 	AgentSession.page,
 	Integrations.page,
 	Recommendation.page,
-	AnomaliesList.page,
 	AnomalyDetail.page,
 	ReleasesList.page,
 	ReleaseDetail.page,
@@ -179,6 +189,8 @@ export const pages = [
 	Account.page,
 	ReplaysList.page,
 	ReplayDetail.page,
+	UsersList.page,
+	UserDetail.page,
 	Share.page,
 	Analytics.page,
 ]
@@ -188,10 +200,10 @@ const BARE_PAGE_ROUTES: ReadonlyArray<AppRoute["_tag"]> = ["Share"]
 
 export const isBarePageRoute = (route: AppRoute): boolean => BARE_PAGE_ROUTES.includes(route._tag)
 
-export const PageSlot = Schema.Union(pages.map((page) => page.Slot))
+export const PageSlot = Schema.Union(Array.map(pages, (page) => page.Slot))
 export type PageSlot = typeof PageSlot.Type
 
-export const PageMessage = Schema.Union(pages.map((page) => page.Wrapped))
+export const PageMessage = Schema.Union(Array.map(pages, (page) => page.Wrapped))
 export type PageMessage = typeof PageMessage.Type
 
 /** The page slot after a transition, with the Commands and OutMessage that came with it. */
@@ -260,13 +272,13 @@ const ASYNC_DATA_TAGS: ReadonlyArray<string> = [
 
 /** Some `AsyncData` in the Model is in flight; its answer would be dropped while parked. */
 const hasLoadInFlight = (value: unknown): boolean => {
-	if (Array.isArray(value)) return value.some(hasLoadInFlight)
+	if (Array.isArray(value)) return Array.some(value, hasLoadInFlight)
 	if (!Predicate.isReadonlyObject(value)) return false
 	const tag = value["_tag"]
 	// An `AsyncData`'s own data holds no requests: rows are not walked.
 	if (Predicate.isString(tag) && ASYNC_DATA_TAGS.includes(tag))
 		return tag === "Loading" || tag === "Refreshing"
-	return Object.values(value).some(hasLoadInFlight)
+	return Array.some(Rec.values(value), hasLoadInFlight)
 }
 
 /** How many left pages are kept to revive; each holds its last data. */
@@ -284,10 +296,15 @@ export const parkPages = (
 		Array.some(pages, (page) => page.id === left._tag && page.isRevivable) &&
 		!hasLoadInFlight(left.model)
 	const sameSlot = (a: PageSlotBase, b: PageSlotBase) => a._tag === b._tag && a.key === b.key
-	return [...(isLeft ? [left] : []), ...parked]
-		.filter((slot) => entered === null || (slot.orgId === entered.orgId && !sameSlot(slot, entered)))
-		.filter((slot, index, all) => all.findIndex((other) => sameSlot(other, slot)) === index)
-		.slice(0, PARKED_PAGES_MAX)
+	const kept = Array.filter(
+		[...(isLeft ? [left] : []), ...parked],
+		(slot) => entered === null || (slot.orgId === entered.orgId && !sameSlot(slot, entered)),
+	)
+	const next = Array.dedupeWith(kept, sameSlot).slice(0, PARKED_PAGES_MAX)
+	// Nothing parked or taken out: the same array, so the root Model can stay the same reference.
+	return next.length === parked.length && Array.every(next, (slot, index) => slot === parked[index])
+		? parked
+		: next
 }
 
 /** Link intent (`page/preload.ts`): the route's page's preload Commands, or none. */
@@ -345,6 +362,10 @@ export const blockNavigation = (
 	)
 }
 
+/** The open instance holds unsaved state, so a reload or tab close asks first (`beforeunload`). */
+export const isBlockingUnload = (current: PageSlot | null): boolean =>
+	current !== null && Option.exists(pageById(current._tag), (page) => page.isBlockingNavigation(current))
+
 export const changeContext = (current: PageSlot | null, context: PageContext): PageTransition =>
 	current === null
 		? unchanged(current)
@@ -373,7 +394,7 @@ export const pageHasSource = (slot: PageSlotBase): boolean =>
 	Option.match(pageById(slot._tag), { onNone: () => false, onSome: (page) => page.hasSource })
 
 export const pageSubscriptions = Subscription.aggregate<PageHost, PageMessage, Resources>()(
-	...pages.map((page) => page.subscriptions),
+	...Array.map(pages, (page) => page.subscriptions),
 )
 
 /** The page's view boundary: a new instance (another org on the same route, too) mounts afresh. */

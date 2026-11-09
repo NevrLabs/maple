@@ -1,14 +1,15 @@
-import { formatRelativeTime } from "@maple/ui/lib/time-format"
+import { relativeTime } from "../../kit/relative-time"
 import { cn } from "@maple/ui/lib/utils"
 import type { Html, HtmlBuilder } from "foldkit/html"
-import { button } from "../../../ui/button"
-import * as Checkbox from "../../../ui/checkbox"
-import { type FieldIds, type FieldState, field, fieldDescription, fieldLabel } from "../../../ui/field"
-import { icon } from "../../../ui/icon"
-import { iconButton } from "../../../ui/icon-button"
-import { input } from "../../../ui/input"
-import { inputGroup, inputGroupAddon, inputGroupInput, inputGroupText } from "../../../ui/input-group"
-import * as ToggleGroup from "../../../ui/toggle-group"
+import { button } from "@maple/views/ui/button"
+import * as Checkbox from "@maple/views/ui/checkbox"
+import { type FieldIds, type FieldState, field, fieldDescription, fieldLabel } from "@maple/views/ui/field"
+import { icon } from "@maple/views/ui/icon"
+import { iconButton } from "@maple/views/ui/icon-button"
+import { input } from "@maple/views/ui/input"
+import { inputGroup, inputGroupAddon, inputGroupInput, inputGroupText } from "@maple/views/ui/input-group"
+import { label } from "@maple/views/ui/label"
+import * as ToggleGroup from "@maple/views/ui/toggle-group"
 import {
 	type AttributeDraft,
 	expiryChoicesOf,
@@ -21,6 +22,9 @@ import {
 	toggleModel,
 } from "./rules"
 import { MODE_LABELS, SIGNALS } from "./shared"
+import { typography, typographyClass } from "@maple/views/ui/typography"
+import { hstack, vstack } from "@maple/views/ui/stack"
+import { Array as Arr } from "effect"
 
 // `RulesFields` and `AttributeRows`.
 
@@ -29,8 +33,8 @@ export type RulesViewConfig<P> = Readonly<{
 	toParentMessage: (message: Message) => P
 	/** Prefix for control ids, unique on the page. */
 	idPrefix: string
-	/** `Date.now()` for the "Expires in" hint. */
-	nowMs: number
+	/** The page clock for an existing source's "Expires in" hint; `null` when there is none. */
+	clock: Readonly<{ nowMs: number; timeZone: string }> | null
 }>
 
 /** A Base UI field outside a form: never dirty, touched or focused in a capture. */
@@ -56,17 +60,18 @@ const signalCard = <P>(
 ): Html => {
 	const isChecked = config.model.signals.includes(signal.value)
 	const inputId = `${config.idPrefix}-signal-${signal.value}`
-	return h.label(
-		[
-			h.Key(signal.value),
-			h.Id(Checkbox.labelId(inputId)),
-			h.Class(
-				cn(
-					"flex cursor-pointer items-start gap-2.5 rounded-md border p-3 transition-colors",
-					isChecked ? "border-primary/60 bg-primary/[0.06]" : "hover:bg-surface-sunken active:bg-surface-sunken",
-				),
+	return label(
+		h,
+		{
+			// A card: the kit label's centring and medium weight stay off.
+			className: cn(
+				"flex cursor-pointer items-start gap-2.5 rounded-md border p-3 font-normal transition-colors",
+				isChecked
+					? "border-primary-a4 bg-primary-a1"
+					: "hover:bg-surface-sunken active:bg-surface-sunken",
 			),
-		],
+			attributes: [h.Key(signal.value), h.Id(Checkbox.labelId(inputId))],
+		},
 		[
 			...Checkbox.view(h, {
 				model: { isChecked },
@@ -76,13 +81,10 @@ const signalCard = <P>(
 				inputId,
 				className: "mt-0.5",
 			}),
-			h.span(
-				[h.Class("flex flex-col gap-0.5")],
-				[
-					h.span([h.Class(cn("text-sm", !isChecked && "text-muted-foreground"))], [signal.label]),
-					h.span([h.Class("text-muted-foreground font-mono text-2xs")], [signal.hint]),
-				],
-			),
+			vstack(h, { gap: "0.5", as: "span" }, [
+				h.span([h.Class(cn("text-sm", !isChecked && "text-muted-foreground"))], [signal.label]),
+				typography(h, { size: "2xs", tone: "muted", mono: true }, [signal.hint]),
+			]),
 		],
 	)
 }
@@ -92,8 +94,9 @@ const attributeRow = <P>(h: HtmlBuilder<P>, config: RulesViewConfig<P>, attribut
 	const rowId = attribute.rowId
 	const changed = (fieldName: "key" | "value") => (value: string) =>
 		toParentMessage(Message.ChangedAttribute({ rowId, field: fieldName, value }))
-	return h.div(
-		[h.Key(rowId), h.Class("flex flex-wrap items-center gap-2 sm:flex-nowrap")],
+	return hstack(
+		h,
+		{ gap: "2", align: "center", wrap: true, className: "sm:flex-nowrap", attributes: [h.Key(rowId)] },
 		[
 			input(h, {
 				id: `${config.idPrefix}-attr-${rowId}-key`,
@@ -130,7 +133,11 @@ const attributeRow = <P>(h: HtmlBuilder<P>, config: RulesViewConfig<P>, attribut
 				h,
 				{
 					label: "Remove attribute",
-					className: "text-muted-foreground hover:text-foreground active:text-foreground shrink-0",
+					className: typographyClass({
+						tone: "muted",
+						hoverTone: "foreground",
+						className: "shrink-0",
+					}),
 					attributes: [h.OnClick(toParentMessage(Message.ClickedRemoveAttribute({ rowId })))],
 				},
 				[icon(h, "XmarkIcon")],
@@ -143,39 +150,32 @@ const attributeRow = <P>(h: HtmlBuilder<P>, config: RulesViewConfig<P>, attribut
 const attributeRows = <P>(h: HtmlBuilder<P>, config: RulesViewConfig<P>): Html => {
 	const { attributeProblem } = rulesOutcome(config.model)
 	const isDisabled = config.model.attributes.length >= MAX_ATTRIBUTES
-	return h.div(
-		[h.Class("flex flex-col gap-2")],
-		[
-			...config.model.attributes.map((attribute) => attributeRow(h, config, attribute)),
-			h.div(
-				[h.Class("flex items-center gap-3")],
+	return vstack(h, { gap: "2" }, [
+		...Arr.map(config.model.attributes, (attribute) => attributeRow(h, config, attribute)),
+		hstack(h, { gap: "3" }, [
+			button(
+				h,
+				{
+					variant: "ghost",
+					size: "sm",
+					className: "text-primary -ml-2",
+					isDisabled,
+					attributes: [h.OnClick(config.toParentMessage(Message.ClickedAddAttribute()))],
+				},
 				[
-					button(
-						h,
-						{
-							variant: "ghost",
-							size: "sm",
-							className: "text-primary -ml-2",
-							isDisabled,
-							attributes: [h.OnClick(config.toParentMessage(Message.ClickedAddAttribute()))],
-						},
-						[
-							icon(h, "PlusIcon", { attributes: [h.DataAttribute("icon", "inline-start")] }),
-							"Add attribute",
-						],
-					),
-					...(attributeProblem === null
-						? []
-						: [
-								h.span(
-									[h.Class("text-destructive text-xs"), h.Role("alert")],
-									[attributeProblem],
-								),
-							]),
+					icon(h, "PlusIcon", { attributes: [h.DataAttribute("icon", "inline-start")] }),
+					"Add attribute",
 				],
 			),
-		],
-	)
+			...(attributeProblem === null
+				? []
+				: [
+						typography(h, { size: "xs", tone: "destructive", attributes: [h.Role("alert")] }, [
+							attributeProblem,
+						]),
+					]),
+		]),
+	])
 }
 
 /** Signals, rate limit, expiry and resource attributes for a push source. */
@@ -195,7 +195,7 @@ export const view = <P>(h: HtmlBuilder<P>, config: RulesViewConfig<P>): Html => 
 				fieldLabel(h, { ids: signalsIds, state: STATIC }, "Signals"),
 				h.div(
 					[h.Class("grid gap-2 sm:grid-cols-2")],
-					SIGNALS.map((signal) => signalCard(h, config, signal)),
+					Arr.map(SIGNALS, (signal) => signalCard(h, config, signal)),
 				),
 				fieldDescription(
 					h,
@@ -210,7 +210,7 @@ export const view = <P>(h: HtmlBuilder<P>, config: RulesViewConfig<P>): Html => 
 				inputGroup(h, { className: "w-44" }, [
 					inputGroupInput(h, {
 						id: rateIds.control,
-						controlClassName: "font-mono tabular-nums",
+						controlClassName: typographyClass({ mono: true, numeric: true }),
 						attributes: [
 							h.Attribute("inputmode", "numeric"),
 							h.Placeholder("No limit"),
@@ -233,20 +233,23 @@ export const view = <P>(h: HtmlBuilder<P>, config: RulesViewConfig<P>): Html => 
 				ToggleGroup.view(h, {
 					model: toggleModel(
 						"Expires",
-						choices.map((choice) => choice.value),
+						Arr.map(choices, (choice) => choice.value),
 						model.expiry,
 					),
 					toParentMessage: (message) => toParentMessage(Message.GotExpiryMessage({ message })),
 					variant: "outline",
 					size: "sm",
-					items: choices.map((choice) => ({ value: choice.value, label: choice.label })),
+					items: Arr.map(choices, (choice) => ({ value: choice.value, label: choice.label })),
 				}),
-				...(existing !== null && existing.expires_at !== null && model.expiry === "keep"
+				...(existing !== null &&
+				existing.expires_at !== null &&
+				config.clock !== null &&
+				model.expiry === "keep"
 					? [
 							fieldDescription(h, { ids: expiryIds, state: STATIC }, [
 								existing.status === "expired" ? "Expired" : "Expires",
 								" ",
-								formatRelativeTime(existing.expires_at, config.nowMs),
+								relativeTime(h, { value: existing.expires_at, ...config.clock }),
 								".",
 							]),
 						]

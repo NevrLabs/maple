@@ -1,18 +1,17 @@
 import { resolveRefreshIntervalSeconds } from "../../../lib/dashboard-controls/search-params"
 import { Duration, Effect, Queue, Schema, Stream } from "effect"
-import { Subscription } from "foldkit"
+import { Dom, Subscription } from "foldkit"
 import type { Resources } from "../../../platform/resources"
 import type { PageSubscriptionInput } from "../../contract"
 import { documentStream, orgTagsStream } from "../kit/document-stream"
+import { loadTimeout } from "../kit/live-sync"
 import { Message } from "./message"
 import type { Model } from "./model"
 import { isEditing } from "./update"
 import { pollTicks } from "../../../data/poll"
 
-type PointerMessage =
-	| typeof Message.MovedPointer.Type
-	| typeof Message.ReleasedPointer.Type
-	| typeof Message.CancelledPointer.Type
+const PointerMessage = Schema.Union([Message.MovedPointer, Message.ReleasedPointer, Message.CancelledPointer])
+type PointerMessage = typeof PointerMessage.Type
 
 /** Auto-scroll while the pointer is this close to the scroller's edge, this far per frame. */
 const EDGE_PX = 50
@@ -50,59 +49,69 @@ const autoScroll = (scroller: HTMLElement, clientY: number): boolean => {
  * The gesture's window listeners and its per-frame step: each frame auto-scrolls if the pointer
  * is near the edge and reports the pointer with the grid's position, so the tile stays under it.
  */
-export const pointerEvents = (widgetId: string) => Stream.callback<PointerMessage>((queue) =>
-	Effect.acquireRelease(
-		Effect.sync(() => {
-			// The gesture's own grid: a sectioned board has one per container.
-			const grid =
-				document
-					.querySelector<HTMLElement>(`[data-grid-item="${CSS.escape(widgetId)}"]`)
-					?.closest<HTMLElement>("[data-dashboard-grid]") ?? null
-			const scroller = grid === null ? null : nearestScroller(grid)
-			const pointer = { x: 0, y: 0, frame: 0 }
-			const step = () => {
-				pointer.frame = 0
-				if (grid === null) return
-				const isScrolled = scroller !== null && autoScroll(scroller, pointer.y)
-				const rect = grid.getBoundingClientRect()
-				Queue.offerUnsafe(
-					queue,
-					Message.MovedPointer({
-						clientX: pointer.x,
-						clientY: pointer.y,
-						gridLeft: rect.left,
-						gridTop: rect.top,
-					}),
-				)
-				if (isScrolled) pointer.frame = requestAnimationFrame(step)
-			}
-			const onMove = (event: PointerEvent) => {
-				pointer.x = event.clientX
-				pointer.y = event.clientY
-				if (pointer.frame === 0) pointer.frame = requestAnimationFrame(step)
-			}
-			const onUp = () => Queue.offerUnsafe(queue, Message.ReleasedPointer())
-			const onCancel = () => Queue.offerUnsafe(queue, Message.CancelledPointer())
-			const onKey = (event: KeyboardEvent) => {
-				if (event.key !== "Escape") return
-				event.preventDefault()
-				Queue.offerUnsafe(queue, Message.CancelledPointer())
-			}
-			window.addEventListener("pointermove", onMove)
-			window.addEventListener("pointerup", onUp)
-			window.addEventListener("pointercancel", onCancel)
-			window.addEventListener("keydown", onKey)
-			return () => {
-				cancelAnimationFrame(pointer.frame)
-				window.removeEventListener("pointermove", onMove)
-				window.removeEventListener("pointerup", onUp)
-				window.removeEventListener("pointercancel", onCancel)
-				window.removeEventListener("keydown", onKey)
-			}
-		}),
-		(detach) => Effect.sync(detach),
-	).pipe(Effect.flatMap(() => Effect.never)),
-)
+export const pointerEvents = (widgetId: string) =>
+	Stream.callback<PointerMessage>((queue) =>
+		Effect.acquireRelease(
+			Effect.sync(() => {
+				// The gesture's own grid: a sectioned board has one per container.
+				const grid =
+					document
+						.querySelector<HTMLElement>(`[data-grid-item="${CSS.escape(widgetId)}"]`)
+						?.closest<HTMLElement>("[data-dashboard-grid]") ?? null
+				const scroller = grid === null ? null : nearestScroller(grid)
+				const pointer = { x: 0, y: 0, frame: 0 }
+				const step = () => {
+					pointer.frame = 0
+					if (grid === null) return
+					const isScrolled = scroller !== null && autoScroll(scroller, pointer.y)
+					const rect = grid.getBoundingClientRect()
+					Queue.offerUnsafe(
+						queue,
+						Message.MovedPointer({
+							clientX: pointer.x,
+							clientY: pointer.y,
+							gridLeft: rect.left,
+							gridTop: rect.top,
+						}),
+					)
+					if (isScrolled) pointer.frame = requestAnimationFrame(step)
+				}
+				const onMove = (event: PointerEvent) => {
+					// No button held: the release came before these listeners attached (a quick tap).
+					if (event.buttons === 0) {
+						Queue.offerUnsafe(queue, Message.ReleasedPointer())
+						return
+					}
+					pointer.x = event.clientX
+					pointer.y = event.clientY
+					if (pointer.frame === 0) pointer.frame = requestAnimationFrame(step)
+				}
+				const onUp = () => Queue.offerUnsafe(queue, Message.ReleasedPointer())
+				const onCancel = () => Queue.offerUnsafe(queue, Message.CancelledPointer())
+				// Switching windows mid-drag: the release would land elsewhere, so the tile goes back.
+				const onWindowBlur = () => Queue.offerUnsafe(queue, Message.CancelledPointer())
+				const onKey = (event: KeyboardEvent) => {
+					if (event.key !== "Escape") return
+					event.preventDefault()
+					Queue.offerUnsafe(queue, Message.CancelledPointer())
+				}
+				window.addEventListener("pointermove", onMove)
+				window.addEventListener("pointerup", onUp)
+				window.addEventListener("pointercancel", onCancel)
+				window.addEventListener("keydown", onKey)
+				window.addEventListener("blur", onWindowBlur)
+				return () => {
+					cancelAnimationFrame(pointer.frame)
+					window.removeEventListener("pointermove", onMove)
+					window.removeEventListener("pointerup", onUp)
+					window.removeEventListener("pointercancel", onCancel)
+					window.removeEventListener("keydown", onKey)
+					window.removeEventListener("blur", onWindowBlur)
+				}
+			}),
+			(detach) => Effect.sync(detach),
+		).pipe(Effect.flatMap(() => Effect.never)),
+	)
 
 export const subscriptions = Subscription.make<PageSubscriptionInput<Model>, Message, Resources>()(
 	(entry) => ({
@@ -119,13 +128,29 @@ export const subscriptions = Subscription.make<PageSubscriptionInput<Model>, Mes
 					),
 			},
 		),
-		/** The org's tags, for the tag editor's suggestions. */
-		orgTags: entry(
-			{ orgId: Schema.String },
+		/** `useCollectionLoadFailed`: a live board still loading after the bounded wait has failed. */
+		loadWatchdog: entry(
+			{ orgId: Schema.NullOr(Schema.String) },
 			{
-				modelToDependencies: ({ context }) => ({ orgId: context.orgId }),
+				modelToDependencies: ({ model, context }) => ({
+					orgId:
+						model.status === "Loading" && model.snapshot._tag === "Idle" ? context.orgId : null,
+				}),
 				dependenciesToStream: ({ orgId }) =>
-					orgTagsStream(orgId, (tags) => Message.UpdatedOrgTags({ tags })),
+					orgId === null ? Stream.empty : loadTimeout(Message.TimedOutLiveDashboard({ orgId })),
+			},
+		),
+		/** The org's tags, for the tag editor's suggestions: read only while the editor is open. */
+		orgTags: entry(
+			{ orgId: Schema.NullOr(Schema.String) },
+			{
+				modelToDependencies: ({ model, context }) => ({
+					orgId: model.tagEditor.dialog.isOpen ? context.orgId : null,
+				}),
+				dependenciesToStream: ({ orgId }) =>
+					orgId === null
+						? Stream.empty
+						: orgTagsStream(orgId, (tags) => Message.UpdatedOrgTags({ tags })),
 			},
 		),
 		/** `useGridInteraction`'s window listeners, attached for the life of a pointer gesture. */
@@ -133,7 +158,23 @@ export const subscriptions = Subscription.make<PageSubscriptionInput<Model>, Mes
 			{ widgetId: Schema.NullOr(Schema.String) },
 			{
 				modelToDependencies: ({ model }) => ({ widgetId: model.gesture?.widgetId ?? null }),
-				dependenciesToStream: ({ widgetId }) => (widgetId === null ? Stream.empty : pointerEvents(widgetId)),
+				dependenciesToStream: ({ widgetId }) =>
+					widgetId === null ? Stream.empty : pointerEvents(widgetId),
+			},
+		),
+		/** While a write failure blocks editing: the browser's return online lifts it. */
+		reconnect: entry(
+			{ isBlocked: Schema.Boolean },
+			{
+				modelToDependencies: ({ model }) => ({ isBlocked: model.persistenceError !== null }),
+				dependenciesToStream: ({ isBlocked }) =>
+					!isBlocked || typeof window === "undefined"
+						? Stream.empty
+						: Dom.streamFromEvent({
+								target: window,
+								type: "online",
+								mapEvent: () => Message.CameBackOnline(),
+							}),
 			},
 		),
 		/** `useIntervalRefresh`: paused in edit mode and in a preview; paused while hidden or offline. */

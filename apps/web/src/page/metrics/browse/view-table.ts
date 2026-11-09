@@ -2,8 +2,8 @@ import { formatNumber } from "@maple/ui/lib/format"
 import { refreshingClass } from "@maple/ui/lib/refreshing"
 import { cn } from "@maple/ui/lib/utils"
 import type { Html, HtmlBuilder } from "foldkit/html"
-import { badge } from "../../../ui/display"
-import { listFooter } from "../../../ui/list-footer"
+import { badge } from "@maple/views/ui/display"
+import { listFooter } from "@maple/views/ui/list-footer"
 import {
 	ROW_LINK_LIFT,
 	rowLink,
@@ -13,15 +13,18 @@ import {
 	tableHead,
 	tableHeader,
 	tableRow,
-} from "../../../ui/table"
-import { tableSkeleton } from "../../../ui/table-skeleton"
-import { truncatedText } from "../../../ui/truncated-text"
-import { emptyValue, serviceDot } from "../../../ui/values"
+} from "@maple/views/ui/table"
+import { tableSkeleton } from "@maple/views/ui/table-skeleton"
+import { truncatedText } from "@maple/views/ui/truncated-text"
+import { emptyValue, serviceDot } from "@maple/views/ui/values"
 import { metricTypeBadge, type MetricRow } from "../shared"
 import { Message } from "./message"
 import type { Model } from "./model"
 import { metricLink } from "./update"
 import { relativeTime } from "../../kit/relative-time"
+import { vstack } from "@maple/views/ui/stack"
+import { Array as Arr } from "effect"
+import { typography } from "@maple/views/ui/typography"
 
 type H = HtmlBuilder<Message>
 
@@ -65,33 +68,29 @@ const metricRow = (h: H, model: Model, metric: MetricRow, timeZone: string): Htm
 		h,
 		[
 			tableCell(h, [
-				h.div(
-					[h.Class("flex min-w-0 flex-col gap-0.5")],
-					[
-						rowLink(
-							h,
-							{
-								href: metricLink(model, metric.metricName, metric.metricType),
-								className: "block min-w-0",
-							},
-							[
-								truncatedText(h, {
-									text: metric.metricName,
-									mono: true,
-									className: cn("text-xs", ROW_LINK_LIFT),
-								}),
-							],
-						),
-						...(metric.metricDescription === ""
-							? []
-							: [
-									h.span(
-										[h.Class("text-3xs text-muted-foreground line-clamp-1")],
-										[metric.metricDescription],
-									),
+				vstack(h, { gap: "0.5", shrink: true }, [
+					rowLink(
+						h,
+						{
+							href: metricLink(model, metric.metricName, metric.metricType),
+							className: "block min-w-0",
+						},
+						[
+							truncatedText(h, {
+								text: metric.metricName,
+								mono: true,
+								className: cn("text-xs", ROW_LINK_LIFT),
+							}),
+						],
+					),
+					...(metric.metricDescription === ""
+						? []
+						: [
+								typography(h, { size: "3xs", tone: "muted", className: "line-clamp-1" }, [
+									metric.metricDescription,
 								]),
-					],
-				),
+							]),
+				]),
 			]),
 			tableCell(h, [metricTypeBadge(h, metric.metricType)], MD_CELL),
 			tableCell(
@@ -110,7 +109,9 @@ const metricRow = (h: H, model: Model, metric: MetricRow, timeZone: string): Htm
 								},
 								[
 									serviceDot(h, { serviceName: metric.serviceName, size: "sm" }),
-									h.span([h.Class("min-w-0 truncate")], [metric.serviceName]),
+									typography(h, { truncate: true, className: "min-w-0" }, [
+										metric.serviceName,
+									]),
 								],
 							),
 				],
@@ -119,7 +120,7 @@ const metricRow = (h: H, model: Model, metric: MetricRow, timeZone: string): Htm
 			tableCell(h, [formatNumber(metric.dataPointCount)], `${MD_CELL} font-mono text-xs`),
 			tableCell(
 				h,
-				[relativeTime(h, { value: metric.lastSeen, nowMs: model.nowMs, timeZone, tooltip: "title" })],
+				[relativeTime(h, { value: metric.lastSeen, nowMs: model.nowMs, timeZone })],
 				`${MD_CELL} text-xs text-muted-foreground`,
 			),
 		],
@@ -154,7 +155,7 @@ export const metricsTable = (
 						]),
 						tableBody(
 							h,
-							metrics.map((metric) => metricRow(h, model, metric, timeZone)),
+							Arr.map(metrics, (metric) => metricRow(h, model, metric, timeZone)),
 						),
 					]),
 				],

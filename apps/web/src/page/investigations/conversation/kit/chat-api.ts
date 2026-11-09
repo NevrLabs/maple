@@ -5,7 +5,7 @@ import {
 	decodeChatEvent,
 } from "@maple/domain/chat-session"
 import { apiBaseUrl } from "../../../../lib/services/common/api-base-url"
-import { Clock, Effect, Option, Ref, Schema, Stream } from "effect"
+import { Clock, Effect, Option, Ref, Schema, Stream, Array as Arr, String as Str } from "effect"
 import { HttpClientRequest, HttpClientResponse } from "effect/http"
 import { MapleSyncHttpClient } from "../../../../platform/api-clients"
 import { taskOf } from "./fold"
@@ -27,12 +27,14 @@ export const TURN_IN_FLIGHT_MESSAGE =
 const sessionUrl = (sessionId: string, suffix: string): string =>
 	`${apiBaseUrl}/api/chat/sessions/${encodeURIComponent(sessionId)}${suffix}`
 
+const isChatRequestError = Schema.is(ChatRequestError)
+
 /** A browser `TypeError` and friends surface as their own `message` text. */
 const failWith =
 	(message: string) =>
 	<A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, ChatRequestError, R> =>
 		Effect.mapError(effect, (error) =>
-			error instanceof ChatRequestError ? error : new ChatRequestError({ message }),
+			isChatRequestError(error) ? error : new ChatRequestError({ message }),
 		)
 
 /** `GET .../history`: the durable transcript, its resume cursor, and whether a turn is running. */
@@ -75,11 +77,13 @@ const QUICK_CLOSE_MS = 5_000
 
 /** One SSE frame's `data:` lines joined (a payload may span several), or `None`. */
 const frameData = (frame: string): Option.Option<string> => {
-	const data = frame
-		.split("\n")
-		.filter((line) => line.startsWith("data:"))
-		.map((line) => line.slice(5).trimStart())
-		.join("\n")
+	const data = Arr.join(
+		Arr.map(
+			Arr.filter(Str.split("\n")(frame), (line) => Str.startsWith("data:")(line)),
+			(line) => Str.trimStart(Str.slice(5)(line)),
+		),
+		"\n",
+	)
 	return data === "" ? Option.none() : Option.some(data)
 }
 
@@ -133,19 +137,20 @@ export const tailEvents = (
 							return yield* new ChatRequestError({
 								message: `Chat stream request failed: ${response.status}`,
 							})
-						yield* Ref.set(openedAt, yield* Clock.currentTimeMillis)
+						const nowMs = yield* Clock.currentTimeMillis
+						yield* Ref.set(openedAt, nowMs)
 						return response.stream.pipe(
 							Stream.decodeText(),
 							Stream.mapAccum(
 								() => "",
 								(buffer, chunk) => {
-									const frames = (buffer + chunk).split("\n\n")
+									const frames = Str.split("\n\n")(buffer + chunk)
 									const rest = frames.pop() ?? ""
 									return [rest, [frames]] as const
 								},
 							),
 							Stream.map((frames) =>
-								frames.flatMap((frame) =>
+								Arr.flatMap(frames, (frame) =>
 									Option.toArray(
 										Option.flatMap(frameData(frame), (data) =>
 											Option.fromNullishOr(decodeChatEvent(data)),
@@ -155,13 +160,18 @@ export const tailEvents = (
 							),
 							Stream.filter((events) => events.length > 0),
 							Stream.mapEffect((events) => {
-								const endIndex = events.findIndex(isTopLevelTurnEnd)
-								const kept = endIndex === -1 ? events : events.slice(0, endIndex + 1)
+								const endIndex = Arr.findFirstIndex(events, (event) =>
+									isTopLevelTurnEnd(event),
+								)
+								const kept = Option.match(endIndex, {
+									onNone: () => events,
+									onSome: (end) => events.slice(0, end + 1),
+								})
 								const last = kept[kept.length - 1]
 								return Effect.as(
 									Effect.andThen(
 										last === undefined ? Effect.void : Ref.set(seq, last.seq),
-										endIndex === -1 ? Effect.void : Ref.set(ended, true),
+										Option.isNone(endIndex) ? Effect.void : Ref.set(ended, true),
 									),
 									kept,
 								)
@@ -187,7 +197,7 @@ export const tailEvents = (
 					Stream.catch((error) =>
 						retry(
 							failures,
-							error instanceof ChatRequestError ? error.message : "Lost connection to chat.",
+							isChatRequestError(error) ? error.message : "Lost connection to chat.",
 						),
 					),
 				)
@@ -195,4 +205,4 @@ export const tailEvents = (
 		}),
 	)
 
-const isEndBatch = (events: ReadonlyArray<ChatEvent>): boolean => events.some(isTopLevelTurnEnd)
+const isEndBatch = (events: ReadonlyArray<ChatEvent>): boolean => Arr.some(events, isTopLevelTurnEnd)

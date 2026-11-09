@@ -16,7 +16,19 @@ import {
 	type PlanetScaleDatabaseRow,
 } from "@maple/db/tables"
 import * as PlanetScale from "@distilled.cloud/planetscale"
-import { Cause, Clock, Context, Effect, Layer, Redacted, Schema, SchemaGetter } from "effect"
+import {
+	Cause,
+	Clock,
+	Context,
+	Effect,
+	Layer,
+	Option,
+	Redacted,
+	Schema,
+	SchemaGetter,
+	Array as Arr,
+	String as Str,
+} from "effect"
 import { FetchHttpClient, HttpClient } from "effect/http"
 import { decryptAes256Gcm, encryptAes256Gcm, parseBase64Aes256GcmKey } from "@maple/backend/platform/Crypto"
 import { Database } from "@maple/backend/platform/DatabaseLive"
@@ -35,22 +47,28 @@ const WEBHOOK_PATH = "/api/integrations/planetscale/webhook/"
 /** Deploy requests and keyspaces are Vitess concepts; Postgres databases never send them. */
 const eventsFor = (kind: string): ReadonlyArray<string> =>
 	kind === "postgresql"
-		? PLANETSCALE_WEBHOOK_EVENTS.filter(
-				(event) => !event.startsWith("deploy_request.") && event !== "keyspace.storage",
+		? Arr.filter(
+				PLANETSCALE_WEBHOOK_EVENTS,
+				(event) => !Str.startsWith("deploy_request.")(event) && event !== "keyspace.storage",
 			)
 		: PLANETSCALE_WEBHOOK_EVENTS
 
 /** Whether a grant's scopes allow creating webhooks (organization `write_databases`). */
 export const grantsWebhookManagement = (scopes: ReadonlyArray<string>): boolean =>
-	scopes.some((scope) => scope === "write_databases" || scope.endsWith(":write_databases"))
+	Arr.some(scopes, (scope) => scope === "write_databases" || Str.endsWith(":write_databases")(scope))
 
 /** The card's webhook summary, from the grant's scopes and the org's live database rows. */
 export const planetScaleWebhookStatus = (
 	scopes: ReadonlyArray<string>,
 	databases: ReadonlyArray<Pick<PlanetScaleDatabaseRow, "webhookId" | "webhookError">>,
 ): PlanetScaleWebhookStatus => {
-	const registeredDatabases = databases.filter((row) => row.webhookId !== null).length
-	const lastError = databases.find((row) => row.webhookError !== null)?.webhookError ?? null
+	const registeredDatabases = Arr.filter(databases, (row) => row.webhookId !== null).length
+	const lastError = Option.getOrNull(
+		Option.flatMapNullishOr(
+			Arr.findFirst(databases, (row) => row.webhookError !== null),
+			(row) => row.webhookError,
+		),
+	)
 	return new PlanetScaleWebhookStatus({
 		state: !grantsWebhookManagement(scopes)
 			? "needs_reauthorization"
@@ -68,7 +86,7 @@ export const planetScaleWebhookStatus = (
 /** The SDK wraps the signing secret in `Redacted`; a body it passes through unchecked holds a string. */
 const SecretSchema = Schema.Union([
 	Schema.String,
-	Schema.declare((value): value is Redacted.Redacted<string> => Redacted.isRedacted(value)).pipe(
+	Schema.declare((value): value is Redacted.Redacted => Redacted.isRedacted(value)).pipe(
 		Schema.decodeTo(Schema.String, {
 			decode: SchemaGetter.transform((secret) => String(Redacted.value(secret))),
 			encode: SchemaGetter.transform((secret) => Redacted.make(secret)),
@@ -113,7 +131,7 @@ const toPersistenceError = (error: unknown) =>
 	})
 
 const sameEvents = (left: ReadonlyArray<string>, right: ReadonlyArray<string>) =>
-	left.length === right.length && left.every((event) => right.includes(event))
+	left.length === right.length && Arr.every(left, (event) => right.includes(event))
 
 export class PlanetScaleWebhookService extends Context.Service<
 	PlanetScaleWebhookService,
@@ -129,7 +147,7 @@ export class PlanetScaleWebhookService extends Context.Service<
 			Redacted.value(env.MAPLE_INGEST_KEY_ENCRYPTION_KEY),
 			(message) => new IntegrationsPersistenceError({ message }),
 		)
-		const webhookBase = `${env.MAPLE_API_BASE_URL.replace(/\/$/, "")}${WEBHOOK_PATH}`
+		const webhookBase = `${Str.replace(/\/$/, "")(env.MAPLE_API_BASE_URL)}${WEBHOOK_PATH}`
 		const webhookUrl = (connection: PlanetScaleConnectionRow) => `${webhookBase}${connection.id}`
 
 		const callApi = <A, E extends SdkError>(
@@ -266,8 +284,8 @@ export class PlanetScaleWebhookService extends Context.Service<
 						.where(($) => [$.id.in_(...ids)]),
 				),
 			)
-			const liveIds = new Set(live.map((row) => row.id))
-			return new Set(ids.filter((id) => !liveIds.has(id)))
+			const liveIds = new Set(Arr.map(live, (row) => row.id))
+			return new Set(Arr.filter(ids, (id) => !liveIds.has(id)))
 		})
 
 		/** One database: adopt or create Maple's webhook, delete webhooks of earlier connections. */
@@ -298,17 +316,17 @@ export class PlanetScaleWebhookService extends Context.Service<
 
 			// Maple's URL more than once, or under a connection id that no longer exists (a reconnect
 			// mints a new one). A live id is another Maple org bound to the same PlanetScale org.
-			const ours = webhooks.filter((hook) => hook.url === url)
+			const ours = Arr.filter(webhooks, (hook) => hook.url === url)
 			const retired = yield* retiredConnectionIds(
-				webhooks.flatMap((hook) =>
-					hook.url.startsWith(webhookBase) && hook.url !== url
-						? [hook.url.slice(webhookBase.length)]
+				Arr.flatMap(webhooks, (hook) =>
+					Str.startsWith(webhookBase)(hook.url) && hook.url !== url
+						? [Str.slice(webhookBase.length)(hook.url)]
 						: [],
 				),
 			)
 			const stale = [
 				...ours.slice(1),
-				...webhooks.filter((hook) => retired.has(hook.url.slice(webhookBase.length))),
+				...Arr.filter(webhooks, (hook) => retired.has(Str.slice(webhookBase.length)(hook.url))),
 			]
 			yield* Effect.forEach(
 				stale,
@@ -360,7 +378,7 @@ export class PlanetScaleWebhookService extends Context.Service<
 					Effect.as({ skipped, registered: 0, failed: 0 }),
 				)
 			// PlanetScale only delivers to public HTTPS endpoints; a local API never gets one.
-			if (!webhookBase.startsWith("https://")) return yield* skip("not_https")
+			if (!Str.startsWith("https://")(webhookBase)) return yield* skip("not_https")
 			const grant = yield* psOAuth.grantStatus(connection.orgId)
 			if (grant.revokedAt !== null) return yield* skip("grant_revoked")
 			if (!grantsWebhookManagement(grant.scopes)) return yield* skip("missing_scope")
@@ -376,7 +394,7 @@ export class PlanetScaleWebhookService extends Context.Service<
 							Cause.hasInterruptsOnly(cause)
 								? Effect.interrupt
 								: Effect.gen(function* () {
-										const error = summarizeCause(cause).slice(0, 500)
+										const error = Str.slice(0, 500)(summarizeCause(cause))
 										yield* Effect.logWarning(
 											"PlanetScale webhook registration failed",
 										).pipe(
@@ -397,7 +415,7 @@ export class PlanetScaleWebhookService extends Context.Service<
 					),
 				{ concurrency: DATABASE_CONCURRENCY },
 			)
-			const registered = outcomes.filter(Boolean).length
+			const registered = Arr.filter(outcomes, Boolean).length
 			const failed = outcomes.length - registered
 			yield* Effect.annotateCurrentSpan({
 				"maple.planetscale.webhook.registered": registered,
@@ -413,7 +431,7 @@ export class PlanetScaleWebhookService extends Context.Service<
 				const grant = yield* psOAuth.grantStatus(connection.orgId)
 				const canDelete = grant.revokedAt === null && grantsWebhookManagement(grant.scopes)
 				yield* Effect.forEach(
-					rows.filter((row) => row.webhookId !== null),
+					Arr.filter(rows, (row) => row.webhookId !== null),
 					(row) =>
 						Effect.gen(function* () {
 							if (canDelete && row.webhookId !== null) {

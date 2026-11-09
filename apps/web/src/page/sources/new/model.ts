@@ -1,9 +1,10 @@
 import { V2Source } from "@maple/domain/http/v2"
 import { PushSourcePlatform } from "@maple/domain/primitives"
+import * as Policy from "@maple/domain/policy"
 import { Schema } from "effect"
-import { KeyedSchema } from "../../../data/keyed"
-import { LoadFailure } from "../../../data/load-failure"
-import * as CopyButton from "../../../ui/copy-button"
+import { KeyedSchema } from "@maple/views/data/keyed"
+import { LoadFailure } from "@maple/views/data/load-failure"
+import * as CopyButton from "@maple/views/ui/copy-button"
 import { SourceList } from "../kit/data"
 import * as Rules from "../kit/rules"
 import * as Setup from "../kit/setup"
@@ -21,6 +22,8 @@ export const Created = Schema.Struct({ source: V2Source, secret: Schema.String }
 export type Created = typeof Created.Type
 
 export const Model = Schema.Struct({
+	/** The session's permissions on the page (`null` until read; the drawer never reads them). */
+	grants: Schema.NullOr(Schema.Array(Policy.PermissionName)),
 	/** `?platform=`: step 2 when set. */
 	platform: Schema.NullOr(PushSourcePlatform),
 	name: Schema.String,

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { Schema } from "effect"
+import { Schema, String as Str } from "effect"
 import { compileUnsafe } from "@maple-dev/effect-orm/clickhouse"
 import { NORMALIZED_SPAN_NAME_SQL } from "@maple/domain/tinybird/span-display-name"
 import {
@@ -55,10 +55,10 @@ describe("serviceOperationsSummaryQuery", () => {
 		expect(sql).toContain("http.route")
 		expect(sql).toContain("url.path")
 		// The builder qualifies source columns; the shared write-side fragment does not.
-		const onTraces = NORMALIZED_SPAN_NAME_SQL.replace(
+		const onTraces = Str.replace(
 			/(?<![\w.])(SpanName|SpanAttributes)\b/g,
 			"traces.$1",
-		)
+		)(NORMALIZED_SPAN_NAME_SQL)
 		// oxlint-disable-next-line test-slop/no-sql-text-pin -- raw edges must normalize names like the rollup write side, or rows never merge
 		expect(sql).toContain(`${onTraces} AS bSpanName`)
 	})
@@ -211,7 +211,7 @@ describe("hybrid minute coverage", () => {
 
 describe("row schemas (BYO-CH UInt64-as-string)", () => {
 	it("decodes numeric strings in summary rows", () => {
-		const decoded = Schema.decodeUnknownSync(serviceOperationsSummaryRowSchema)({
+		const decoded = Schema.decodeSync(serviceOperationsSummaryRowSchema)({
 			spanName: "GET /users",
 			spanCount: "1200",
 			estimatedSpanCount: 1200,
@@ -230,7 +230,7 @@ describe("row schemas (BYO-CH UInt64-as-string)", () => {
 	})
 
 	it("decodes numeric strings in timeseries rows", () => {
-		const decoded = Schema.decodeUnknownSync(serviceOperationsTimeseriesRowSchema)({
+		const decoded = Schema.decodeSync(serviceOperationsTimeseriesRowSchema)({
 			bucket: "2024-01-01 00:00:00",
 			spanName: "GET /users",
 			count: "17",

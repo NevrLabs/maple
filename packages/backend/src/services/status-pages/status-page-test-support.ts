@@ -1,19 +1,22 @@
 // Seeds status pages, monitors and incidents for the status-pages tests.
 import { Effect, Schema } from "effect"
+import * as SecureRandom from "effect/crypto/SecureRandom"
 import { OrgId, StatusPageId } from "@maple/domain/primitives"
 import { executeSql, queryFirstRow, type TestDb } from "@maple/backend/platform/test-pglite"
 
-export const ORG = Schema.decodeUnknownSync(OrgId)("org_status_pages")
+export const ORG = Schema.decodeSync(OrgId)("org_status_pages")
 export const USER = "user_status_pages"
 /** 2026-10-28T12:00:00Z */
 export const NOW = Date.UTC(2026, 9, 28, 12)
 export const DAY_MS = 86_400_000
 
+const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown))
+
 const iso = (ms: number) => new Date(ms).toISOString()
 const sql = (testDb: TestDb, text: string, params: unknown[]) =>
 	Effect.promise(() => executeSql(testDb, text, params))
 
-export const newPageId = () => StatusPageId.make(crypto.randomUUID())
+export const newPageId = () => StatusPageId.make(SecureRandom.uuidV4Unsafe())
 
 export const seedPage = (
 	testDb: TestDb,
@@ -71,7 +74,7 @@ export const seedMonitor = (
 		[
 			input.id,
 			input.orgId ?? ORG,
-			JSON.stringify({
+			encodeJson({
 				_tag: "http",
 				url: "https://example.com/health",
 				method: "GET",
@@ -208,7 +211,7 @@ export const seedIncident = (
 				`INSERT INTO status_page_incident_updates (id, org_id, incident_id, status, body, source, created_at)
 				 VALUES ($1, $2, $3, $4, $5, 'dashboard', $6)`,
 				[
-					crypto.randomUUID(),
+					SecureRandom.uuidV4Unsafe(),
 					ORG,
 					input.id,
 					input.status,
@@ -266,7 +269,7 @@ export const seedCleanup = (
 		testDb,
 		`INSERT INTO status_page_cleanups (id, org_id, page_id, slug, delete_snapshot, created_at)
 		 VALUES ($1, $2, $3, $4, $5, $6)`,
-		[crypto.randomUUID(), ORG, input.pageId, input.slug, input.deleteSnapshot, iso(input.at)],
+		[SecureRandom.uuidV4Unsafe(), ORG, input.pageId, input.slug, input.deleteSnapshot, iso(input.at)],
 	)
 
 export const cleanupRows = (testDb: TestDb) =>
@@ -294,7 +297,7 @@ export const seedAlertIncident = (
 		[
 			input.id,
 			ORG,
-			input.ruleId ?? crypto.randomUUID(),
+			input.ruleId ?? SecureRandom.uuidV4Unsafe(),
 			input.status,
 			iso(input.firstTriggeredAt ?? NOW - DAY_MS),
 			input.status === "resolved" ? iso(NOW - 60_000) : null,

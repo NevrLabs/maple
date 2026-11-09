@@ -24,7 +24,7 @@
  * Native `.../ai/run/{model}` calls (the Clef decision model) take the binding too, body unchanged.
  * Every other request falls through to the wrapped client untouched.
  */
-import { Context, Effect, Layer, Option, Predicate, Schema } from "effect"
+import { Context, Effect, Layer, Option, Predicate, Schema, Array as Arr, String as Str } from "effect"
 import { HttpClient, HttpClientError, HttpClientResponse, type HttpClientRequest } from "effect/http"
 
 /** The subset of the Cloudflare `Ai` binding this shim uses. */
@@ -83,8 +83,8 @@ const isWorkersAiChatUrl = (url: string): boolean =>
 	Option.exists(
 		pathnameOf(url),
 		(pathname) =>
-			pathname.endsWith("/chat/completions") &&
-			(pathname.includes("/ai/v1/") || pathname.includes("/compat/")),
+			Str.endsWith("/chat/completions")(pathname) &&
+			(Str.includes("/ai/v1/")(pathname) || Str.includes("/compat/")(pathname)),
 	)
 
 const encodeError = (request: HttpClientRequest.HttpClientRequest, cause: WorkersAiShimRequestError) =>
@@ -116,17 +116,18 @@ const readJsonBody = (request: HttpClientRequest.HttpClientRequest) => {
 			),
 		)
 	}
-	return Schema.decodeUnknownEffect(JsonObjectFromString)(text).pipe(
-		Effect.map((parsed): Record<string, unknown> => ({ ...parsed })),
-		Effect.mapError((cause) =>
-			encodeError(
-				request,
-				new WorkersAiShimRequestError({
-					message: "Workers AI request body is not a JSON object",
-					cause,
-				}),
-			),
-		),
+	return Schema.decodeEffect(JsonObjectFromString)(text).pipe(
+		Effect.mapBoth({
+			onSuccess: (parsed): Record<string, unknown> => ({ ...parsed }),
+			onFailure: (cause) =>
+				encodeError(
+					request,
+					new WorkersAiShimRequestError({
+						message: "Workers AI request body is not a JSON object",
+						cause,
+					}),
+				),
+		}),
 	)
 }
 
@@ -142,7 +143,7 @@ const readJsonBody = (request: HttpClientRequest.HttpClientRequest) => {
 const isNativeWorkersAiTrailer = (payload: string): boolean =>
 	payload !== "[DONE]" &&
 	Option.exists(
-		Schema.decodeUnknownOption(JsonObjectFromString)(payload),
+		Schema.decodeOption(JsonObjectFromString)(payload),
 		(frame) =>
 			!("choices" in frame) &&
 			!("object" in frame) &&
@@ -156,32 +157,41 @@ const isNativeWorkersAiTrailer = (payload: string): boolean =>
  * Frame-aligned rather than line-based: SSE separates events with a blank line, and rewriting at
  * any finer granularity risks corrupting a multi-line `data:` payload.
  */
-const stripNativeTrailer = (body: ReadableStream<Uint8Array>): ReadableStream<Uint8Array> => {
+// The Workers runtime types a response body as `ReadableStream<any>`; chunks are checked as bytes.
+const stripNativeTrailer = (body: ReadableStream<unknown>): ReadableStream<Uint8Array> => {
 	const decoder = new TextDecoder()
 	const encoder = new TextEncoder()
 	let buffer = ""
 
 	const emit = (frame: string, controller: TransformStreamDefaultController<Uint8Array>): void => {
-		const payload = frame
-			.split("\n")
-			.filter((line) => line.startsWith("data:"))
-			.map((line) => line.slice(5).trimStart())
-			.join("\n")
+		const payload = Arr.join(
+			Arr.map(
+				Arr.filter(Str.split("\n")(frame), (line) => Str.startsWith("data:")(line)),
+				(line) => Str.trimStart(Str.slice(5)(line)),
+			),
+			"\n",
+		)
 		if (payload !== "" && isNativeWorkersAiTrailer(payload)) return
 		controller.enqueue(encoder.encode(`${frame}\n\n`))
 	}
 
 	return body.pipeThrough(
-		new TransformStream<Uint8Array, Uint8Array>({
+		new TransformStream<unknown, Uint8Array>({
 			transform(chunk, controller) {
+				if (!ArrayBuffer.isView(chunk)) {
+					controller.error(
+						new WorkersAiShimRequestError({ message: "Workers AI stream chunk is not bytes" }),
+					)
+					return
+				}
 				buffer += decoder.decode(chunk, { stream: true })
-				const frames = buffer.split("\n\n")
+				const frames = Str.split("\n\n")(buffer)
 				buffer = frames.pop() ?? ""
 				for (const frame of frames) emit(frame, controller)
 			},
 			flush(controller) {
 				buffer += decoder.decode()
-				if (buffer.trim() !== "") emit(buffer.replace(/\n+$/, ""), controller)
+				if (Str.trim(buffer) !== "") emit(Str.replace(/\n+$/, "")(buffer), controller)
 			},
 		}),
 	)
@@ -195,8 +205,14 @@ const RUN_MARKER = "/ai/run/"
 
 const workersAiRunModel = (url: string): Option.Option<string> =>
 	pathnameOf(url).pipe(
-		Option.filter((pathname) => pathname.includes("/accounts/") && pathname.includes(RUN_MARKER)),
-		Option.map((pathname) => pathname.slice(pathname.indexOf(RUN_MARKER) + RUN_MARKER.length)),
+		Option.filter(
+			(pathname) => Str.includes("/accounts/")(pathname) && Str.includes(RUN_MARKER)(pathname),
+		),
+		Option.flatMap((pathname) =>
+			Option.map(Str.indexOf(RUN_MARKER)(pathname), (at) =>
+				Str.slice(at + RUN_MARKER.length)(pathname),
+			),
+		),
 		Option.flatMap((encoded) => Option.liftThrowable(decodeURIComponent)(encoded)),
 		Option.filter((model) => model !== ""),
 	)

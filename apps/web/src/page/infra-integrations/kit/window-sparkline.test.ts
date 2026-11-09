@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest"
 import { sparkSegments } from "./window-sparkline"
+import { Array as Arr } from "effect"
 
 const MINUTE = 60_000
 const start = Date.parse("2026-10-21T17:00:00Z")
@@ -18,7 +19,7 @@ describe("sparkSegments", () => {
 			window,
 		)
 		expect(runs).toHaveLength(1)
-		expect(runs[0]?.map(([x]) => Number(x.toFixed(2)))).toEqual([95.83, 97.22, 98.61])
+		expect(Arr.map(runs[0] ?? [], ([x]) => Number(x.toFixed(2)))).toEqual([95.83, 97.22, 98.61])
 	})
 
 	test("a missing bucket or a null value breaks the line instead of bridging it", () => {
@@ -33,7 +34,7 @@ describe("sparkSegments", () => {
 			],
 			window,
 		)
-		expect(runs.map((run) => run.length)).toEqual([2, 1, 1])
+		expect(Arr.map(runs, (run) => run.length)).toEqual([2, 1, 1])
 	})
 
 	test("the highest value draws at the top and the lowest at the bottom; a flat series in the middle", () => {
@@ -44,7 +45,7 @@ describe("sparkSegments", () => {
 			],
 			window,
 		)
-		expect(run?.map(([, y]) => y)).toEqual([26, 2])
+		expect(Arr.map(run ?? [], ([, y]) => y)).toEqual([26, 2])
 		const [flat] = sparkSegments([{ bucket: at(0), value: 4 }], window)
 		expect(flat?.[0]?.[1]).toBe(14)
 	})
@@ -55,7 +56,7 @@ describe("sparkSegments", () => {
 			{ bucket: at(5), value: 2 },
 		]
 		const [run] = sparkSegments(points, window, 0)
-		expect(run?.map(([, y]) => y)).toEqual([8, 2])
+		expect(Arr.map(run ?? [], ([, y]) => y)).toEqual([8, 2])
 	})
 
 	test("nothing to draw without a value", () => {

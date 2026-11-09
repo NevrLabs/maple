@@ -1,3 +1,4 @@
+import { Array as Arr, Option, String as Str } from "effect"
 // Formatters whose output is baked into derived data — finding labels, turn
 // subtitles, cost text — so the page and the MCP print the same strings. They
 // live here, below both `@maple/ui` and `@maple/agent-sessions`, because the
@@ -35,7 +36,7 @@ export function formatDuration(ms: number): string {
 /** One decimal, without a trailing ".0": 12.2 reads "12.2", 193.0 reads "193". */
 const compactDigits = (value: number): string => {
 	const fixed = value.toFixed(1)
-	return fixed.endsWith(".0") ? fixed.slice(0, -2) : fixed
+	return Str.endsWith(".0")(fixed) ? Str.slice(0, -2)(fixed) : fixed
 }
 
 const COMPACT_TIERS = [
@@ -59,13 +60,14 @@ const COMPACT_TIERS = [
 export function formatNumber(num: number): string {
 	if (!Number.isFinite(num)) return "—"
 	const abs = Math.abs(num)
-	const tier = COMPACT_TIERS.find(
+	const tier = Arr.findFirst(
+		COMPACT_TIERS,
 		([size], i) =>
 			// A tier above K also takes what the tier below would round to "1000.0".
 			abs >= (i === 0 ? size : size * 0.99995) &&
 			(i === COMPACT_TIERS.length - 1 || Number((abs / size).toFixed(1)) < 1000),
 	)
-	if (tier !== undefined) return `${compactDigits(num / tier[0])}${tier[1]}`
+	if (Option.isSome(tier)) return `${compactDigits(num / tier.value[0])}${tier.value[1]}`
 	if (abs > 0 && abs < 1) {
 		return num.toLocaleString(undefined, { maximumSignificantDigits: 3 })
 	}
@@ -96,7 +98,7 @@ const currencyFormatters = new Map<string, Intl.NumberFormat>()
 
 /** Format an amount in dollars (Autumn totals are dollars, not cents). */
 export function formatCurrency(amount: number, currency: string): string {
-	const key = currency.toUpperCase()
+	const key = Str.toUpperCase(currency)
 	let formatter = currencyFormatters.get(key)
 	if (!formatter) {
 		formatter = new Intl.NumberFormat("en-US", {

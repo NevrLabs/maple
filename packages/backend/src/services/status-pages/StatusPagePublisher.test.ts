@@ -1,5 +1,6 @@
 import { afterEach, assert, describe, it } from "@effect/vitest"
-import { Effect, Exit, Layer, Option } from "effect"
+import { Effect, Exit, Layer, Option, Array as Arr, String as Str } from "effect"
+import * as SecureRandom from "effect/crypto/SecureRandom"
 import { TestClock } from "effect/testing"
 import { decodeStatusPageSnapshotJson, StatusPageKeys, utcDay } from "@maple/domain/status-page"
 import { StatusPageId } from "@maple/domain/primitives"
@@ -52,7 +53,12 @@ describe("StatusPagePublisher.publish", () => {
 			Effect.gen(function* () {
 				const pageId = newPageId()
 				yield* seedPage(testDb, { id: pageId, slug: "acme", revision: 3 })
-				yield* seedComponent(testDb, { id: crypto.randomUUID(), pageId, name: "API", position: 0 })
+				yield* seedComponent(testDb, {
+					id: SecureRandom.uuidV4Unsafe(),
+					pageId,
+					name: "API",
+					position: 0,
+				})
 
 				const result = yield* publisher.publish(pageId)
 				assert.isTrue(result.written)
@@ -62,7 +68,7 @@ describe("StatusPagePublisher.publish", () => {
 				if (Option.isSome(snapshot)) {
 					assert.strictEqual(snapshot.value.revision, 3)
 					assert.deepStrictEqual(
-						snapshot.value.components.map((c) => c.name),
+						Arr.map(snapshot.value.components, (c) => c.name),
 						["API"],
 					)
 				}
@@ -163,7 +169,7 @@ describe("StatusPagePublisher.publish", () => {
 					yield* seedPage(testDb, { id: pageId, slug: "acme-race", revision: 3 })
 					yield* publisher.publish(pageId)
 					yield* seedComponent(testDb, {
-						id: crypto.randomUUID(),
+						id: SecureRandom.uuidV4Unsafe(),
 						pageId,
 						name: "API",
 						position: 0,
@@ -300,7 +306,7 @@ describe("StatusPagePublisher.sweep", () => {
 				const second = newPageId()
 				yield* seedPage(testDb, { id: first, slug: "first" })
 				yield* seedPage(testDb, { id: second, slug: "second" })
-				yield* store.setFailing((key) => key.includes(first))
+				yield* store.setFailing((key) => Str.includes(first)(key))
 
 				const counts = { cleaned: 0, cleanupsFailed: 0 }
 				const partial = yield* publisher.sweep(NOW)
@@ -349,9 +355,9 @@ describe("StatusPagePublisher.sweep", () => {
 	it.effect("writes the heartbeat with the newest scheduled check after a sweep", () =>
 		withPublisher(({ testDb, store, publisher }) =>
 			Effect.gen(function* () {
-				const probe = crypto.randomUUID()
-				const heartbeatMonitor = crypto.randomUUID()
-				const paused = crypto.randomUUID()
+				const probe = SecureRandom.uuidV4Unsafe()
+				const heartbeatMonitor = SecureRandom.uuidV4Unsafe()
+				const paused = SecureRandom.uuidV4Unsafe()
 				yield* seedMonitor(testDb, { id: probe, status: "up" })
 				yield* seedMonitor(testDb, { id: heartbeatMonitor, status: "up", kind: "heartbeat" })
 				yield* seedMonitor(testDb, { id: paused, status: "up", enabled: false })

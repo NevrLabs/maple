@@ -1,5 +1,5 @@
 import { ChatEvent } from "@maple/domain/chat-session"
-import { Effect, Result, Schema } from "effect"
+import { Effect, Result, Schema, Array as Arr, Record as Rec, Option, Order } from "effect"
 import { describe, expect, test } from "vitest"
 import { parseMarkdownTexts } from "../../kit/markdown"
 import { TURN_IN_FLIGHT_MESSAGE } from "./kit/chat-api"
@@ -16,7 +16,7 @@ const NOW = Date.parse("2026-10-01T12:00:00Z")
 
 const step = (model: Model, message: Message) => update(model, message)
 const names = (commands: ReadonlyArray<{ readonly name: string }> | undefined) =>
-	(commands ?? []).map(({ name }) => name)
+	Arr.map(commands ?? [], ({ name }) => name)
 
 /** History read, empty. */
 const ready = (): Model =>
@@ -29,7 +29,11 @@ const ready = (): Model =>
 	).model
 
 const events = (generation: number, raw: ReadonlyArray<Record<string, unknown>>) =>
-	Message.ReceivedChatEvents({ generation, events: raw.map((event) => decodeEvent(event)), nowMs: NOW })
+	Message.ReceivedChatEvents({
+		generation,
+		events: Arr.map(raw, (event) => decodeEvent(event)),
+		nowMs: NOW,
+	})
 
 describe("chat conversation", () => {
 	test("entry reads the durable history; a stale answer is dropped", () => {
@@ -62,7 +66,7 @@ describe("chat conversation", () => {
 		const sent = step(typed, Message.SubmittedComposer())
 		expect(sent.model.draft).toBe("")
 		expect(sent.model.status).toBe("submitted")
-		expect(sent.model.messages.map((message) => message.role)).toEqual(["user"])
+		expect(Arr.map(sent.model.messages, (message) => message.role)).toEqual(["user"])
 		expect(names(sent.commands)).toContain("PostChatMessage")
 	})
 
@@ -110,7 +114,10 @@ describe("chat conversation", () => {
 			]),
 		).model
 		expect(streamed.status).toBe("streaming")
-		expect(streamed.messages[1]?.parts.map((part) => part._tag)).toEqual(["dynamic-tool", "text"])
+		expect(Arr.map(Arr.getUnsafe(streamed.messages, 1)?.parts, (part) => part._tag)).toEqual([
+			"dynamic-tool",
+			"text",
+		])
 		const ended = step(
 			streamed,
 			events(sending.generation, [
@@ -260,7 +267,7 @@ describe("chat conversation", () => {
 			result: Result.succeed({ messages: [earlier], cursor: 3, running: false }),
 		})
 		const loaded = step(early.model, history).model
-		expect(loaded.messages.map((message) => message.id)).toEqual(["m1"])
+		expect(Arr.map(loaded.messages, (message) => message.id)).toEqual(["m1"])
 		const sent = step(loaded, Message.SubmittedComposer())
 		expect(names(sent.commands)).toContain("PostChatMessage")
 	})
@@ -276,7 +283,7 @@ describe("chat conversation", () => {
 		const early = step(failed, Message.ClickedSuggestion({ text: "Hi" }))
 		expect(early.commands ?? []).toEqual([])
 		const retried = step(failed, Message.ClickedRetryHistory())
-		expect(retried.commands?.map((command) => command.args)).toEqual([
+		expect(Arr.map(retried.commands ?? [], (command) => command.args)).toEqual([
 			{ sessionId: "org_acme:default", generation: 2 },
 		])
 		const earlier = {
@@ -310,17 +317,31 @@ describe("chat conversation", () => {
 		const delta = (seq: number, text: string) =>
 			events(sending.generation, [{ type: "text-delta", seq, messageId: "r", text }])
 		const first = step(accepted, delta(1, "All "))
-		expect(first.commands?.find((command) => command.name === "ParseChatMarkdown")?.args).toEqual({
+		expect(
+			Option.getOrUndefined(
+				Option.map(
+					Arr.findFirst(first.commands ?? [], (command) => command.name === "ParseChatMarkdown"),
+					(command) => command.args,
+				),
+			),
+		).toEqual({
 			texts: ["All "],
 		})
 		const second = step(first.model, delta(2, "good"))
 		expect(names(second.commands)).not.toContain("ParseChatMarkdown")
 		const parsed = await Effect.runPromise(parseMarkdownTexts(["Hi", "All "]))
 		const landed = step(second.model, Message.CompletedParseMarkdown({ parsed }))
-		expect(landed.commands?.find((command) => command.name === "ParseChatMarkdown")?.args).toEqual({
+		expect(
+			Option.getOrUndefined(
+				Option.map(
+					Arr.findFirst(landed.commands ?? [], (command) => command.name === "ParseChatMarkdown"),
+					(command) => command.args,
+				),
+			),
+		).toEqual({
 			texts: ["All good"],
 		})
-		expect(Object.keys(landed.model.markdown).toSorted()).toEqual(["All good", "Hi"])
+		expect(Arr.sort(Rec.keys(landed.model.markdown), Order.String)).toEqual(["All good", "Hi"])
 		expect(landed.model.markdown["All good"]).toEqual({ document: parsed[1]?.document, isStale: true })
 	})
 })

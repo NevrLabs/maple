@@ -2,10 +2,11 @@ import { getReleases } from "@maple/web-data/warehouse/releases"
 import { Clock, Duration, Effect, Queue, Schema, Stream } from "effect"
 import { Command, Mount } from "foldkit"
 import { IdleTtl } from "../../../data/idle-ttl"
-import { toLoadFailure } from "../../../data/load-failure"
+import { toLoadFailure } from "@maple/views/data/load-failure"
 import { readThrough } from "../../../data/read-cache"
 import { resolveWindow } from "../../../data/time-range"
 import { readCommitDetails } from "../../kit/commit-card"
+import { loadSignalPresences } from "../../kit/signal-presence"
 import { MapleApiV2Client, MapleInternalApiClient } from "../../../platform/api-clients"
 import { Message, RequestMode } from "./message"
 import { ReleasesData } from "./model"
@@ -74,7 +75,9 @@ export const FetchReleaseIssues = Command.define("FetchReleaseIssues", {
 	execute: ({ key, introducedAfter }) =>
 		Effect.gen(function* () {
 			const client = yield* MapleApiV2Client
-			const page = yield* client.errorIssues.list({ query: { introduced_after: introducedAfter, limit: 100 } })
+			const page = yield* client.errorIssues.list({
+				query: { introduced_after: introducedAfter, limit: 100 },
+			})
 			return { data: page.data, hasMore: page.has_more }
 		}).pipe(
 			Effect.mapError(toLoadFailure),
@@ -114,10 +117,18 @@ export const FetchReleaseRanges = Command.define("FetchReleaseRanges", {
 		),
 })
 
+export const LoadReleasesSignalPresence = Command.define("LoadReleasesSignalPresence", {
+	args: { orgId: Schema.String },
+	messages: [Message.CompletedLoadSignalPresence],
+	execute: ({ orgId }) =>
+		Effect.map(loadSignalPresences(orgId), (result) => Message.CompletedLoadSignalPresence({ result })),
+})
+
 export const CompleteReleasesReloadSpin = Command.define("CompleteReleasesReloadSpin", {
 	args: { version: Schema.Number },
 	messages: [Message.CompletedReloadSpin],
-	execute: ({ version }) => Effect.as(Effect.sleep(Duration.millis(600)), Message.CompletedReloadSpin({ version })),
+	execute: ({ version }) =>
+		Effect.as(Effect.sleep(Duration.millis(600)), Message.CompletedReloadSpin({ version })),
 })
 
 /** The table is on screen: what `ReleasesTable` reads once it mounts follows. */
@@ -139,10 +150,17 @@ export const MeasureReleasesTrack = Mount.defineStream("MeasureReleasesTrack", {
 		Stream.callback<ReturnType<typeof Message.MeasuredTrack>>((queue) =>
 			Effect.acquireRelease(
 				Effect.sync(() => {
-					Queue.offerUnsafe(queue, Message.MeasuredTrack({ width: element.getBoundingClientRect().width }))
+					Queue.offerUnsafe(
+						queue,
+						Message.MeasuredTrack({ width: element.getBoundingClientRect().width }),
+					)
 					const observer = new ResizeObserver((entries) => {
 						const entry = entries[0]
-						if (entry) Queue.offerUnsafe(queue, Message.MeasuredTrack({ width: entry.contentRect.width }))
+						if (entry !== undefined)
+							Queue.offerUnsafe(
+								queue,
+								Message.MeasuredTrack({ width: entry.contentRect.width }),
+							)
 					})
 					observer.observe(element)
 					return () => observer.disconnect()

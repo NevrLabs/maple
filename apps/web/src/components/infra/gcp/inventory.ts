@@ -13,9 +13,10 @@ import {
 import type { GcpCloudSqlSettings, GcpResource } from "@maple/domain/http"
 
 import { appendWhereFilter } from "../../metrics/where-filter"
-import { encodeLogAttributeFilter } from "../../../lib/logs/log-attribute-filters"
+import { encodeLogAttributeFilter } from "@maple/views/lib/log-attribute-filters"
 
 import { gcpWorkloadLocation, gcpWorkloadProject } from "./tabs"
+import { Array as Arr, Option, String as Str } from "effect"
 
 const RUN_SERVICE = "run.googleapis.com/Service"
 const FUNCTION = "cloudfunctions.googleapis.com/CloudFunction"
@@ -25,26 +26,31 @@ const SQL_INSTANCE = "sqladmin.googleapis.com/Instance"
 const SUBSCRIPTION = "pubsub.googleapis.com/Subscription"
 const URL_MAP = "compute.googleapis.com/UrlMap"
 
+/** The part of `text` after the first `separator`; all of it when there is none. */
+const afterFirst = (text: string, separator: string) =>
+	Str.slice(Option.match(Str.indexOf(separator)(text), { onNone: () => 0, onSome: (at) => at + 1 }))(text)
+
 /** The inventory type behind a service's workloads, and the identity value that names the resource. */
 const RESOURCE_OF: Record<
 	GcpInfraServiceId,
 	{ readonly assetType: string; readonly name: (keys: ReadonlyArray<string>) => string }
 > = {
-	cloudRun: { assetType: RUN_SERVICE, name: (keys) => keys[0] },
-	cloudFunctions: { assetType: FUNCTION, name: (keys) => keys[0] },
+	cloudRun: { assetType: RUN_SERVICE, name: (keys) => keys[0] ?? "" },
+	cloudFunctions: { assetType: FUNCTION, name: (keys) => keys[0] ?? "" },
 	// A container has no inventory entry of its own: its cluster has.
-	gke: { assetType: CLUSTER, name: (keys) => keys[2] },
-	computeEngine: { assetType: INSTANCE, name: (keys) => keys[0] },
+	gke: { assetType: CLUSTER, name: (keys) => keys[2] ?? "" },
+	computeEngine: { assetType: INSTANCE, name: (keys) => keys[0] ?? "" },
 	// Cloud Monitoring names an instance `<project>:<instance>`.
-	cloudSql: { assetType: SQL_INSTANCE, name: (keys) => keys[0].slice(keys[0].indexOf(":") + 1) },
-	pubsub: { assetType: SUBSCRIPTION, name: (keys) => keys[0] },
-	loadBalancing: { assetType: URL_MAP, name: (keys) => keys[0] },
+	cloudSql: { assetType: SQL_INSTANCE, name: (keys) => afterFirst(keys[0] ?? "", ":") },
+	pubsub: { assetType: SUBSCRIPTION, name: (keys) => keys[0] ?? "" },
+	loadBalancing: { assetType: URL_MAP, name: (keys) => keys[0] ?? "" },
 } satisfies Record<
 	GcpInfraServiceId,
 	{ readonly assetType: string; readonly name: (keys: ReadonlyArray<string>) => string }
 >
 
-const lastSegment = (name: string) => name.slice(name.lastIndexOf("/") + 1)
+const lastSegment = (name: string) =>
+	Str.slice(Option.match(Str.lastIndexOf("/")(name), { onNone: () => 0, onSome: (at) => at + 1 }))(name)
 
 /** A Cloud SQL instance's settings from the inventory, by the `<project>:<instance>` the metrics name it. */
 export interface GcpCloudSqlInstance extends GcpCloudSqlSettings {
@@ -60,7 +66,7 @@ export const GCP_CLOUD_SQL_INVENTORY_QUERY = { assetType: SQL_INSTANCE }
 export const gcpCloudSqlInstances = (
 	resources: ReadonlyArray<GcpResource>,
 ): ReadonlyArray<GcpCloudSqlInstance> =>
-	resources.flatMap((resource) =>
+	Arr.flatMap(resources, (resource) =>
 		resource.assetType !== SQL_INSTANCE || resource.details === null
 			? []
 			: [
@@ -90,7 +96,8 @@ export function gcpMatchResource(
 ): GcpResource | undefined {
 	const { assetType, projectId, name } = gcpResourceQuery(service, keys)
 	const location = gcpWorkloadLocation(service, keys)
-	const matches = resources.filter(
+	const matches = Arr.filter(
+		resources,
 		(resource) =>
 			resource.assetType === assetType &&
 			resource.projectId === projectId &&
@@ -132,7 +139,10 @@ export interface GcpConsoleLinks {
 }
 
 const resourceFilter = (resourceType: string, labels: ReadonlyArray<readonly [string, string]>) =>
-	[`resource.type="${resourceType}"`, ...labels.map(([label, value]) => `${label}="${value}"`)].join("\n")
+	Arr.join(
+		[`resource.type="${resourceType}"`, ...Arr.map(labels, ([label, value]) => `${label}="${value}"`)],
+		"\n",
+	)
 
 /**
  * A workload's console pages, from its identity alone: Cloud Run, Cloud Functions, Compute Engine,
@@ -206,7 +216,7 @@ export function gcpConsoleLinks(service: GcpInfraServiceId, keys: ReadonlyArray<
 		}
 		case "cloudSql": {
 			// The instance's id is `project:instance`.
-			const instance = name.slice(name.indexOf(":") + 1)
+			const instance = afterFirst(name, ":")
 			return {
 				page: {
 					label: "Cloud SQL instance",
@@ -252,12 +262,15 @@ export function gcpConsoleScopePage(scope: {
 export const gcpConsoleProjectPages = (
 	project: string,
 ): ReadonlyArray<{ readonly label: string; readonly href: string }> =>
-	[
-		["Dashboard", "home/dashboard"],
-		["Metrics Explorer", "monitoring/metrics-explorer"],
-		["Logs Explorer", "logs/query"],
-		["Asset Inventory", "iam-admin/asset-inventory/dashboard"],
-	].map(([label, path]) => ({ label, href: consoleUrl(path, "project", project) }))
+	Arr.map(
+		[
+			["Dashboard", "home/dashboard"],
+			["Metrics Explorer", "monitoring/metrics-explorer"],
+			["Logs Explorer", "logs/query"],
+			["Asset Inventory", "iam-admin/asset-inventory/dashboard"],
+		] as const,
+		([label, path]) => ({ label, href: consoleUrl(path, "project", project) }),
+	)
 
 /**
  * Where a workload's other telemetry is. Its metrics, and its traces when it is instrumented, are
@@ -291,8 +304,8 @@ export function gcpWorkloadTelemetry(
 				// Cloud Logging labels a subscription with its full path, Cloud Monitoring with its id.
 				value:
 					service === "pubsub"
-						? `projects/${gcpWorkloadProject(service, keys)}/subscriptions/${keys[0]}`
-						: keys[0],
+						? `projects/${gcpWorkloadProject(service, keys)}/subscriptions/${keys[0] ?? ""}`
+						: (keys[0] ?? ""),
 				negated: false,
 			}),
 		],
@@ -305,5 +318,5 @@ export function gcpWorkloadTelemetry(
  */
 export const gcpExplorerWhere = (source: GcpInfraSourceId, keys: ReadonlyArray<string>): string =>
 	gcpInfraNamesService(source)
-		? appendWhereFilter("", "service.name", keys[0])
-		: appendWhereFilter("", `resource.${GCP_INFRA_SOURCES[source].identity[0][1]}`, keys[0])
+		? appendWhereFilter("", "service.name", keys[0] ?? "")
+		: appendWhereFilter("", `resource.${GCP_INFRA_SOURCES[source].identity[0][1]}`, keys[0] ?? "")

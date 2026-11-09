@@ -22,6 +22,7 @@ import {
 	supabaseOAuthEnv,
 	tinybirdEnv,
 } from "@maple/infra/env"
+import { Array as Arr } from "effect"
 
 export const apiConfiguredEnv = (stage: MapleStage, region: MapleRegion, domains: MapleDomains) =>
 	merge(
@@ -34,8 +35,14 @@ export const apiConfiguredEnv = (stage: MapleStage, region: MapleRegion, domains
 		optionalSecret("CLICKHOUSE_PASSWORD"),
 		// Dev-only; the runtime ignores it outside MAPLE_ENVIRONMENT=development.
 		optionalPlain("MAPLE_IGNORE_ORG_CLICKHOUSE"),
-		// Dev only: on a deploy a pin would point the whole API at one tenant.
-		...(stage.kind === "dev" ? [optionalPlain("MAPLE_ORG_ID_OVERRIDE")] : []),
+		// Dev only: on a deploy a pin would point the whole API at one tenant. The local stack's
+		// pin names a seeded org the dev user is not a member of, so it admits non-members.
+		...(stage.kind === "dev"
+			? [
+					optionalPlain("MAPLE_ORG_ID_OVERRIDE"),
+					plainWithDefault("MAPLE_ORG_ID_OVERRIDE_ADMITS_NONMEMBERS", "true"),
+				]
+			: []),
 		// PR previews only: the shared key behind the sign-in page's preview access form.
 		...(stage.kind === "pr" ? [optionalSecret("PREVIEW_SIGNIN_KEY")] : []),
 		authEnv,
@@ -69,7 +76,7 @@ export const apiConfiguredEnv = (stage: MapleStage, region: MapleRegion, domains
 		optionalPlain("LINEAR_OAUTH_CLIENT_ID"),
 		optionalSecret("LINEAR_OAUTH_CLIENT_SECRET"),
 		// Each connector's declared install and outbound config; unset means unavailable.
-		...[...chatConnectorConfigKeys, ...chatConnectorOutboundConfigKeys].map((key) =>
+		...Arr.map([...chatConnectorConfigKeys, ...chatConnectorOutboundConfigKeys], (key) =>
 			key.secret ? optionalSecret(key.name) : optionalPlain(key.name),
 		),
 		apnsEnv,

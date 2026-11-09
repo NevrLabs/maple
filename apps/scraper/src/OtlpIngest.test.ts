@@ -1,6 +1,6 @@
 import { gunzipSync } from "node:zlib"
 import { assert, describe, it } from "@effect/vitest"
-import { Duration, Effect, Exit, Fiber, Layer, Redacted } from "effect"
+import { Duration, Effect, Exit, Fiber, Layer, Redacted, Array as Arr } from "effect"
 import { TestClock } from "effect/testing"
 import { FetchHttpClient } from "effect/http"
 import { OtlpIngest } from "./OtlpIngest"
@@ -73,14 +73,17 @@ interface RecordedRequest {
 	wireBytes: number
 }
 
-const stubFetch = (recorded: Array<RecordedRequest>, respond: () => Response): typeof globalThis.fetch =>
+const stubFetch = (
+	recorded: Array<RecordedRequest>,
+	respond: () => Response | Promise<Response>,
+): typeof globalThis.fetch =>
 	(async (input: string | URL | Request, init?: RequestInit) => {
 		const headers: Record<string, string> = {}
 		new Headers(init?.headers).forEach((value, key) => {
 			headers[key] = value
 		})
 		recorded.push({
-			url: String(input),
+			url: input instanceof Request ? input.url : input.toString(),
 			method: init?.method ?? "GET",
 			headers,
 			body:
@@ -150,8 +153,9 @@ describe("OtlpIngest", () => {
 			assert.strictEqual(error.reason, "scrape_failed")
 			assert.strictEqual(error.statusCode, 401)
 			const [span] = endedSpansNamed(tracer.ended, "OtlpIngest.send")
-			assert.isTrue(Exit.isFailure(span!.exit))
-			assert.strictEqual(span!.attributes.get("http.response.status_code"), 401)
+			assert.isDefined(span)
+			assert.isTrue(Exit.isFailure(span.exit))
+			assert.strictEqual(span.attributes.get("http.response.status_code"), 401)
 		}).pipe(Effect.provide(TestLayer)),
 	)
 
@@ -177,6 +181,41 @@ describe("OtlpIngest", () => {
 		}).pipe(Effect.provide(TestLayer)),
 	)
 
+	it.effect("errors no span for a dropped connection the retry recovers from", () =>
+		Effect.gen(function* () {
+			const recorded: Array<RecordedRequest> = []
+			const tracer = makeCapturingTracer()
+			const otlp = yield* OtlpIngest
+			const fiber = yield* Effect.forkChild(
+				otlp.send("maple_pk_test_key", SAMPLE_REQUEST).pipe(
+					Effect.provideService(
+						FetchHttpClient.Fetch,
+						stubFetch(recorded, () =>
+							recorded.length === 1
+								? Promise.reject(new TypeError("socket closed"))
+								: Response.json({ partialSuccess: {} }),
+						),
+					),
+					Effect.provide(tracer.layer),
+				),
+			)
+			yield* advanceUntilDone(fiber)
+			yield* Fiber.join(fiber)
+
+			assert.lengthOf(recorded, 2)
+			assert.isTrue(Arr.every(tracer.ended, (span) => Exit.isSuccess(span.exit)))
+			const attempts = endedSpansNamed(tracer.ended, "POST")
+			assert.lengthOf(attempts, 2)
+			assert.strictEqual(Arr.getUnsafe(attempts, 0).attributes.get("error.type"), "TransportError")
+			assert.strictEqual(Arr.getUnsafe(attempts, 1).attributes.get("http.response.status_code"), 200)
+			const [chunk] = endedSpansNamed(tracer.ended, "OtlpIngest.send_chunk")
+			assert.isDefined(chunk)
+			assert.isTrue(Arr.every(attempts, (attempt) => attempt.parentSpanId === chunk.spanId))
+			// Each attempt propagates its own span, so ingest's server span parents to it.
+			assert.include(Arr.getUnsafe(recorded, 1).headers.traceparent, Arr.getUnsafe(attempts, 1).spanId)
+		}).pipe(Effect.provide(TestLayer)),
+	)
+
 	// A billing block is the expected, caller-side outcome for an org over its
 	// limit: the typed error still reaches the caller, but the span stays Ok.
 	it.effect("annotates rather than errors its span on a billing rejection (402)", () =>
@@ -194,9 +233,9 @@ describe("OtlpIngest", () => {
 
 			const spans = endedSpansNamed(tracer.ended, "OtlpIngest.send")
 			assert.lengthOf(spans, 1)
-			assert.isTrue(Exit.isSuccess(spans[0]!.exit))
-			assert.strictEqual(spans[0]!.attributes.get("error.type"), "delivery_blocked")
-			assert.strictEqual(spans[0]!.attributes.get("http.response.status_code"), 402)
+			assert.isTrue(Exit.isSuccess(Arr.getUnsafe(spans, 0).exit))
+			assert.strictEqual(Arr.getUnsafe(spans, 0).attributes.get("error.type"), "delivery_blocked")
+			assert.strictEqual(Arr.getUnsafe(spans, 0).attributes.get("http.response.status_code"), 402)
 		}).pipe(Effect.provide(TestLayer)),
 	)
 
@@ -278,9 +317,9 @@ describe("OtlpIngest", () => {
 			// Annotated rather than asserted: `JSON.parse` is `any`, and the body is
 			// the request this test just handed to the client.
 			const parsed: OtlpExportRequest = JSON.parse(body ?? '{"resourceMetrics":[]}')
-			return parsed.resourceMetrics.flatMap((resourceMetrics) =>
-				resourceMetrics.scopeMetrics.flatMap((scopeMetrics) =>
-					scopeMetrics.metrics.flatMap((metric) => metric.gauge?.dataPoints ?? []),
+			return Arr.flatMap(parsed.resourceMetrics, (resourceMetrics) =>
+				Arr.flatMap(resourceMetrics.scopeMetrics, (scopeMetrics) =>
+					Arr.flatMap(scopeMetrics.metrics, (metric) => metric.gauge?.dataPoints ?? []),
 				),
 			)
 		}
@@ -301,11 +340,13 @@ describe("OtlpIngest", () => {
 
 				assert.lengthOf(recorded, 3)
 				assert.deepStrictEqual(
-					recorded.map((request) => pointsIn(request.body).length),
+					Arr.map(recorded, (request) => pointsIn(request.body).length),
 					[2, 2, 1],
 				)
 				assert.deepStrictEqual(
-					recorded.flatMap((request) => pointsIn(request.body).map((point) => point.asDouble)),
+					Arr.flatMap(recorded, (request) =>
+						Arr.map(pointsIn(request.body), (point) => point.asDouble),
+					),
 					[0, 1, 2, 3, 4],
 				)
 				for (const request of recorded) {
@@ -332,7 +373,9 @@ describe("OtlpIngest", () => {
 					assert.isAtMost(new TextEncoder().encode(request.body ?? "").byteLength, 600)
 				}
 				assert.deepStrictEqual(
-					recorded.flatMap((request) => pointsIn(request.body).map((point) => point.asDouble)),
+					Arr.flatMap(recorded, (request) =>
+						Arr.map(pointsIn(request.body), (point) => point.asDouble),
+					),
 					[0, 1, 2, 3, 4],
 				)
 			}).pipe(Effect.provide(ByteCappedLayer)),
@@ -382,11 +425,12 @@ describe("OtlpIngest", () => {
 				)
 
 				const [span] = endedSpansNamed(tracer.ended, "OtlpIngest.send")
-				assert.isTrue(Exit.isSuccess(span!.exit))
-				assert.strictEqual(span!.attributes.get("error.type"), "delivery_blocked")
-				assert.strictEqual(span!.attributes.get("maple.otlp.data_points"), 5)
-				assert.strictEqual(span!.attributes.get("maple.otlp.chunk_count"), 3)
-				assert.strictEqual(span!.attributes.get("maple.otlp.chunks_delivered"), 1)
+				assert.isDefined(span)
+				assert.isTrue(Exit.isSuccess(span.exit))
+				assert.strictEqual(span.attributes.get("error.type"), "delivery_blocked")
+				assert.strictEqual(span.attributes.get("maple.otlp.data_points"), 5)
+				assert.strictEqual(span.attributes.get("maple.otlp.chunk_count"), 3)
+				assert.strictEqual(span.attributes.get("maple.otlp.chunks_delivered"), 1)
 				assert.lengthOf(endedSpansNamed(tracer.ended, "OtlpIngest.send_chunk"), 2)
 			}).pipe(Effect.provide(ChunkedLayer)),
 		)
@@ -406,8 +450,9 @@ describe("OtlpIngest", () => {
 
 				assert.lengthOf(recorded, 1)
 				const [span] = endedSpansNamed(tracer.ended, "OtlpIngest.send")
-				assert.strictEqual(span!.attributes.get("maple.otlp.chunk_count"), 1)
-				assert.strictEqual(span!.attributes.get("maple.otlp.chunks_delivered"), 1)
+				assert.isDefined(span)
+				assert.strictEqual(span.attributes.get("maple.otlp.chunk_count"), 1)
+				assert.strictEqual(span.attributes.get("maple.otlp.chunks_delivered"), 1)
 			}).pipe(Effect.provide(TestLayer)),
 		)
 	})

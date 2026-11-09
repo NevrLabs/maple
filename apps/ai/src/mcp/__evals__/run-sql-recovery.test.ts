@@ -3,7 +3,7 @@
  * names it fixes by itself and the internal SQL it keeps out of the error.
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
-import { Schema } from "effect"
+import { Schema, Array as Arr, String as Str } from "effect"
 import { RunSqlOutput } from "@maple/domain/mcp-outputs"
 import { makeEvalRuntime, runToolDirect, markdown, type EvalRuntime } from "./eval-runtime"
 import { installFakeWarehouse, restoreWarehouse } from "./fake-warehouse"
@@ -21,6 +21,11 @@ const GATEWAY_WRAPPED = {
 	type: "UNKNOWN_IDENTIFIER",
 }
 
+const SYNTAX = {
+	message: "DB::Exception: Syntax error: failed at position 39 (FROM) (line 2, col 23): FROM logs",
+	type: "SYNTAX_ERROR",
+}
+
 const FALLBACK_ID = "aaaaaaaaaaaaaaaabbbbbbbbbbbbbbbb"
 const issued: Array<string> = []
 let rt: EvalRuntime
@@ -36,23 +41,40 @@ beforeAll(() => {
 			rows: [],
 		},
 		{
-			match: (sql) => sql.includes(FALLBACK_ID) && sql.includes("FROM trace_index"),
+			match: (sql) => Str.includes(FALLBACK_ID)(sql) && Str.includes("FROM trace_index")(sql),
 			failure: unknown("ServiceName"),
 		},
-		{ match: (sql) => sql.includes(FALLBACK_ID), rows: [{ n: 1 }] },
+		{ match: (sql) => Str.includes(FALLBACK_ID)(sql), rows: [{ n: 1 }] },
+		// Sizes attribute scans: 900M spans over the six-day window, 10M over two hours.
 		{
-			match: (sql) => sql.includes("FROM product_events"),
+			match: (sql) => /\bFROM service_usage\b/.test(sql),
+			rows: (sql) => [
+				{
+					serviceName: "big",
+					spanCount: Str.includes("2026-09-18")(sql) ? 900_000_000 : 10_000_000,
+					firstHourSpanCount: 0,
+					lastHourSpanCount: 0,
+				},
+			],
+		},
+		{ match: (sql) => /\bany\(Body\) sample\b/.test(sql), failure: SYNTAX },
+		{ match: (sql) => Str.includes("`sample`")(sql), rows: [{ n: 2, sample: "x" }] },
+		{ match: (sql) => Str.includes("EXCEPT (DurationQuantiles)")(sql), rows: [{ SpanName: "op" }] },
+		{ match: (sql) => /\(SeverityNumber >= 17 OR Body ILIKE/.test(sql), rows: [{ n: 3 }] },
+		{ match: (sql) => Str.includes("SpanAttributes['k']")(sql), rows: [{ n: 4 }] },
+		{
+			match: (sql) => Str.includes("FROM product_events")(sql),
 			rows: Array.from({ length: 1000 }, (_, i) => ({ n: i })),
 		},
-		{ match: (sql) => sql.includes("service.name"), failure: unknown("service.name") },
-		{ match: (sql) => sql.includes("FROM alert_checks"), failure: GATEWAY_WRAPPED },
+		{ match: (sql) => Str.includes("service.name")(sql), failure: unknown("service.name") },
+		{ match: (sql) => Str.includes("FROM alert_checks")(sql), failure: GATEWAY_WRAPPED },
 		{ match: (sql) => /\bbogus\b/.test(sql), failure: unknown("bogus") },
 		// Every pass fixes one name and the warehouse names the next one.
-		{ match: (sql) => sql.includes("trace_id"), failure: unknown("trace_id") },
-		{ match: (sql) => sql.includes("span_id"), failure: unknown("span_id") },
-		{ match: (sql) => sql.includes("span_name"), failure: unknown("span_name") },
-		{ match: (sql) => sql.includes("status_code"), failure: unknown("status_code") },
-		{ match: (sql) => sql.includes("ServiceName"), rows: [{ ServiceName: "checkout", c: 3 }] },
+		{ match: (sql) => Str.includes("trace_id")(sql), failure: unknown("trace_id") },
+		{ match: (sql) => Str.includes("span_id")(sql), failure: unknown("span_id") },
+		{ match: (sql) => Str.includes("span_name")(sql), failure: unknown("span_name") },
+		{ match: (sql) => Str.includes("status_code")(sql), failure: unknown("status_code") },
+		{ match: (sql) => Str.includes("ServiceName")(sql), rows: [{ ServiceName: "checkout", c: 3 }] },
 	])
 	rt = makeEvalRuntime()
 })
@@ -151,9 +173,65 @@ describe("run_sql recovery", () => {
 		})
 		expect(result.isError).not.toBe(true)
 		expect(Schema.decodeUnknownSync(RunSqlOutput)(result.structuredContent).rows).toEqual([{ n: 1 }])
-		const lookups = issued.filter((sql) => sql.includes(FALLBACK_ID))
+		const lookups = Arr.filter(issued, (sql) => Str.includes(FALLBACK_ID)(sql))
 		expect(lookups).toHaveLength(2)
 		expect(lookups[0]).toContain("FROM trace_index")
 		expect(lookups[1]).not.toContain("FROM trace_index")
+	})
+
+	it("reruns with a keyword alias quoted", async () => {
+		const result = await runToolDirect(rt, "run_sql", {
+			...WINDOW,
+			sql: "SELECT count() n, any(Body) sample FROM logs WHERE $__orgFilter",
+		})
+		expect(result.isError).not.toBe(true)
+		const output = Schema.decodeUnknownSync(RunSqlOutput)(result.structuredContent)
+		expect(output.rows).toEqual([{ n: 2, sample: "x" }])
+		expect(markdown(result)).toContain(
+			"Ran with `AS `sample`` for `sample`: a keyword is an alias only after AS.",
+		)
+	})
+
+	it("parenthesises an OR beside the org filter and runs it", async () => {
+		const result = await runToolDirect(rt, "run_sql", {
+			...WINDOW,
+			sql: "SELECT count() AS n FROM logs WHERE $__orgFilter AND SeverityNumber >= 17 OR Body ILIKE '%error%'",
+		})
+		expect(result.isError).not.toBe(true)
+		expect(Schema.decodeUnknownSync(RunSqlOutput)(result.structuredContent).rows).toEqual([{ n: 3 }])
+	})
+
+	it("leaves aggregate states out of SELECT * before the first run", async () => {
+		const result = await runToolDirect(rt, "run_sql", {
+			...WINDOW,
+			sql: "SELECT * FROM service_operations_hourly WHERE $__orgFilter LIMIT 5",
+		})
+		expect(result.isError).not.toBe(true)
+		expect(Arr.some(issued, (sql) => /SELECT \* FROM service_operations_hourly/.test(sql))).toBe(false)
+	})
+
+	it("refuses an attribute scan too large for the time limit, naming a window that fits", async () => {
+		const before = issued.length
+		const result = await runToolDirect(rt, "run_sql", {
+			start_time: "2026-09-18 00:00:00",
+			end_time: "2026-09-24 00:00:00",
+			sql: "SELECT count() AS n FROM traces WHERE $__orgFilter AND $__timeFilter(Timestamp) AND SpanAttributes['k'] LIKE '%x%'",
+		})
+		expect(result.isError).toBe(true)
+		const text = markdown(result)
+		expect(text).toContain("about 900M spans across every service")
+		expect(text).toContain("Narrow the window to 4 hours or less (e.g. start_time='2026-09-23 20:00:00'")
+		// Only the estimate ran, never the scan.
+		expect(Arr.some(issued.slice(before), (sql) => Str.includes("SpanAttributes['k']")(sql))).toBe(false)
+	})
+
+	it("runs the same scan over a window that fits", async () => {
+		const result = await runToolDirect(rt, "run_sql", {
+			start_time: "2026-09-23 22:00:00",
+			end_time: "2026-09-24 00:00:00",
+			sql: "SELECT count() AS n FROM traces WHERE $__orgFilter AND $__timeFilter(Timestamp) AND SpanAttributes['k'] LIKE '%x%'",
+		})
+		expect(result.isError).not.toBe(true)
+		expect(Schema.decodeUnknownSync(RunSqlOutput)(result.structuredContent).rows).toEqual([{ n: 4 }])
 	})
 })

@@ -1,27 +1,30 @@
+import * as Policy from "@maple/domain/policy"
 import { V2AttributeMapping, V2Recommendation } from "@maple/domain/http/v2"
-import { Result, Schema } from "effect"
+import { Result, Schema, Array as Arr } from "effect"
 import { describe, expect, test } from "vitest"
-import * as Combobox from "../../../ui/combobox"
-import * as Dialog from "../../../ui/dialog"
-import * as Field from "../../../ui/field"
-import { toLoadFailure } from "../../../data/load-failure"
+import * as Combobox from "@maple/views/ui/combobox"
+import * as Dialog from "@maple/views/ui/dialog"
+import * as Field from "@maple/views/ui/field"
+import { toLoadFailure } from "@maple/views/data/load-failure"
 import { PageOutMessage } from "../../contract"
 import * as MappingDialog from "./mapping-dialog"
 import { Message } from "./message"
 import type { Model } from "./model"
 import { init, type InitOptions, update } from "./update"
 
+const ADMIN = Policy.grantsOf(["org:admin"])
+
 const options: InitOptions = {
-	isAdmin: true,
+	grants: ADMIN,
 	orgKey: "default",
 	timeZone: "UTC",
 	pinnedNamespace: null,
 }
 const names = (commands: ReadonlyArray<{ readonly name: string }> | undefined) =>
-	(commands ?? []).map(({ name }) => name)
+	Arr.map(commands ?? [], ({ name }) => name)
 const step = (model: Model, message: Message) => update(model, message, options)
 
-const rename = Schema.decodeUnknownSync(V2Recommendation)({
+const rename = Schema.decodeSync(V2Recommendation)({
 	id: "rec_YofPTrK9782DWwcnXhpcCw",
 	object: "recommendation",
 	number: 7,
@@ -35,7 +38,7 @@ const rename = Schema.decodeUnknownSync(V2Recommendation)({
 	updated_at: "2026-07-15T09:12:00.000Z",
 	resolved_at: null,
 })
-const mapping = Schema.decodeUnknownSync(V2AttributeMapping)({
+const mapping = Schema.decodeSync(V2AttributeMapping)({
 	id: "amap_YofPTrK9782DWwcnXhpcCw",
 	object: "attribute_mapping",
 	name: "Promote team label",
@@ -49,10 +52,14 @@ const mapping = Schema.decodeUnknownSync(V2AttributeMapping)({
 })
 
 const loaded = (): Model =>
-	[
-		Message.CompletedFetchRecommendations({ result: Result.succeed([rename]) }),
-		Message.CompletedFetchMappings({ result: Result.succeed([mapping]) }),
-	].reduce((model, message) => step(model, message).model, init(options).model)
+	Arr.reduce(
+		[
+			Message.CompletedFetchRecommendations({ result: Result.succeed([rename]) }),
+			Message.CompletedFetchMappings({ result: Result.succeed([mapping]) }),
+		],
+		init(options).model,
+		(model, message) => step(model, message).model,
+	)
 
 describe("ingestion tab", () => {
 	test("entry reads the overview, ingest keys, both rule lists and the stored framework", () => {
@@ -88,6 +95,13 @@ describe("ingestion tab", () => {
 		)
 	})
 
+	test("an engineer cannot open the regenerate dialog; rolling a key is admin-only", () => {
+		const engineer = { ...loaded(), grants: Policy.grantsOf(["org:engineer"]) }
+		expect(
+			step(engineer, Message.ClickedRegenerateKey({ kind: "private" })).model.rollDialog.isOpen,
+		).toBe(false)
+	})
+
 	test("a failed regenerate closes the dialog with an error toast and keeps the pair", () => {
 		const rolling = step(
 			step(loaded(), Message.ClickedRegenerateKey({ kind: "public" })).model,
@@ -103,7 +117,7 @@ describe("ingestion tab", () => {
 		expect(failed.outMessage).toEqual(
 			PageOutMessage.RequestedToast({
 				type: "error",
-				title: "Unable to complete request",
+				title: "Couldn't regenerate the key",
 				description: failure.message,
 			}),
 		)
@@ -155,25 +169,29 @@ describe("ingestion tab", () => {
 		const dialog = (message: MappingDialog.Message) => Message.GotMappingDialogMessage({ message })
 		const opened = step(loaded(), Message.ClickedAddMapping())
 		expect(names(opened.commands)).toContain("FetchMappingAttributeKeys")
-		const filled = [
-			dialog(
-				MappingDialog.Message.GotNameMessage({
-					message: Field.Message.ChangedValue({ value: " Status " }),
-				}),
-			),
-			dialog(
-				MappingDialog.Message.GotKeyMessage({
-					field: "sourceKey",
-					message: Combobox.Message.ChangedInput({ value: "a.b" }),
-				}),
-			),
-			dialog(
-				MappingDialog.Message.GotKeyMessage({
-					field: "targetKey",
-					message: Combobox.Message.ChangedInput({ value: "c.d" }),
-				}),
-			),
-		].reduce((model, message) => step(model, message).model, opened.model)
+		const filled = Arr.reduce(
+			[
+				dialog(
+					MappingDialog.Message.GotNameMessage({
+						message: Field.Message.ChangedValue({ value: " Status " }),
+					}),
+				),
+				dialog(
+					MappingDialog.Message.GotKeyMessage({
+						field: "sourceKey",
+						message: Combobox.Message.ChangedInput({ value: "a.b" }),
+					}),
+				),
+				dialog(
+					MappingDialog.Message.GotKeyMessage({
+						field: "targetKey",
+						message: Combobox.Message.ChangedInput({ value: "c.d" }),
+					}),
+				),
+			],
+			opened.model,
+			(model, message) => step(model, message).model,
+		)
 		const saving = step(filled, dialog(MappingDialog.Message.ClickedSave()))
 		expect(saving.commands?.[0]).toMatchObject({
 			name: "SaveAttributeMapping",
@@ -196,19 +214,29 @@ describe("ingestion tab", () => {
 		const isOpen = (model: Model) => model.mappingDialog.dialog.isOpen
 		// One keydown is two Messages: the input's, then the dialog portal's as it bubbles.
 		const pressEscape = (model: Model) =>
+			Arr.reduce(
+				[
+					dialog(MappingDialog.Message.GotKeyMessage({ field: "sourceKey", message: escape })),
+					dialog(
+						MappingDialog.Message.GotDialogMessage({ message: Dialog.Message.PressedEscape() }),
+					),
+				],
+				model,
+				(current, message) => step(current, message).model,
+			)
+		const typed = Arr.reduce(
 			[
-				dialog(MappingDialog.Message.GotKeyMessage({ field: "sourceKey", message: escape })),
-				dialog(MappingDialog.Message.GotDialogMessage({ message: Dialog.Message.PressedEscape() })),
-			].reduce((current, message) => step(current, message).model, model)
-		const typed = [
-			Message.ClickedAddMapping(),
-			dialog(
-				MappingDialog.Message.GotKeyMessage({
-					field: "sourceKey",
-					message: Combobox.Message.ChangedInput({ value: "http" }),
-				}),
-			),
-		].reduce((model, message) => step(model, message).model, loaded())
+				Message.ClickedAddMapping(),
+				dialog(
+					MappingDialog.Message.GotKeyMessage({
+						field: "sourceKey",
+						message: Combobox.Message.ChangedInput({ value: "http" }),
+					}),
+				),
+			],
+			loaded(),
+			(model, message) => step(model, message).model,
+		)
 		expect(typed.mappingDialog.sourceKey.isOpen).toBe(true)
 		const once = pressEscape(typed)
 		expect([once.mappingDialog.sourceKey.isOpen, isOpen(once)]).toEqual([false, true])

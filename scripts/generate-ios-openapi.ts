@@ -31,6 +31,7 @@
  */
 import { readFileSync, writeFileSync } from "node:fs"
 import { fileURLToPath } from "node:url"
+import { Schema } from "effect"
 import { OpenApi } from "effect/http-api"
 import { MapleApiV2 } from "../packages/domain/src/http/v2/api"
 
@@ -118,6 +119,9 @@ interface JsonObject {
 	[key: string]: JsonValue | undefined
 }
 
+const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown))
+const encodeJsonPretty = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown, { space: 2 }))
+
 const asObject = (value: JsonValue | undefined): JsonObject | undefined =>
 	typeof value === "object" && value !== null && !Array.isArray(value) ? (value as JsonObject) : undefined
 
@@ -129,7 +133,7 @@ const asObjectArray = (value: JsonValue | undefined): ReadonlyArray<JsonObject> 
 	const entries = asArray(value)
 	if (entries === undefined) return undefined
 	const objects = entries.map(asObject)
-	return objects.every((entry) => entry !== undefined) ? (objects as ReadonlyArray<JsonObject>) : undefined
+	return objects.every((entry) => entry !== undefined) ? objects : undefined
 }
 
 const asString = (value: JsonValue | undefined): string | undefined =>
@@ -138,9 +142,7 @@ const asString = (value: JsonValue | undefined): string | undefined =>
 const asStringArray = (value: JsonValue | undefined): ReadonlyArray<string> | undefined => {
 	const entries = asArray(value)
 	if (entries === undefined) return undefined
-	return entries.every((entry) => typeof entry === "string")
-		? (entries as ReadonlyArray<string>)
-		: undefined
+	return entries.every((entry) => typeof entry === "string") ? entries : undefined
 }
 
 const HTTP_METHODS = ["get", "put", "post", "delete", "options", "head", "patch", "trace"] as const
@@ -183,7 +185,7 @@ function render(): { text: string; doc: JsonObject } {
 	sweepUnreachableSchemas(doc)
 
 	const sorted = sortKeysDeep(doc)
-	return { text: `${JSON.stringify(sorted, null, 2)}\n`, doc: asObject(sorted) ?? {} }
+	return { text: `${encodeJsonPretty(sorted)}\n`, doc: asObject(sorted) ?? {} }
 }
 
 /**
@@ -545,7 +547,7 @@ function flattenedConstraintAllOf(schema: JsonObject): JsonObject | undefined {
 function singleBranchUnion(schema: JsonObject): JsonObject | undefined {
 	const branches = asObjectArray(schema.anyOf)
 	if (branches === undefined || branches.length !== 1) return undefined
-	return mergeAnnotations(schema, branches[0]!)
+	return mergeAnnotations(schema, branches[0])
 }
 
 /** Fold a wrapper's sibling annotations (title, description) onto its inner schema. */
@@ -619,6 +621,14 @@ function errorEnvelopeSchema(): JsonObject {
 					},
 					retry_at: string("Absolute time after which a retry is permitted."),
 					param: string("The request parameter at fault, for validation failures."),
+					details: {
+						type: "object",
+						additionalProperties: {
+							oneOf: [{ type: "string" }, { type: "number" }, { type: "boolean" }],
+						},
+						description:
+							"Safe, failure-specific scalar values, e.g. an upstream provider's HTTP status.",
+					},
 				},
 			},
 		},
@@ -661,7 +671,7 @@ function mergeDuplicateComponents(doc: JsonObject): void {
 	 */
 	const identity = (schema: JsonObject): string => {
 		const { description: _description, examples: _examples, title: _title, ...rest } = schema
-		return JSON.stringify(sortKeysDeep(rest))
+		return encodeJson(sortKeysDeep(rest))
 	}
 
 	const groups = new Map<string, Array<{ readonly name: string; readonly index: number }>>()

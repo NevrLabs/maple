@@ -1,10 +1,10 @@
-import { type ErrorIssueId, WORKFLOW_STATE_ORDER } from "@maple/domain/http"
+import { type ErrorIssueId, WORKFLOW_STATE_ORDER, type WorkflowState } from "@maple/domain/http"
 import { Command, type Update } from "foldkit"
-import { Option } from "effect"
-import * as Keyed from "../../../data/keyed"
-import { requestKey } from "../../../data/request-key"
+import { Option, Record as Rec, Array as Arr } from "effect"
+import * as Keyed from "@maple/views/data/keyed"
+import { requestKey } from "@maple/views/data/request-key"
 import { AppRoute, hrefOf } from "../../../route"
-import * as Menu from "../../../ui/menu"
+import * as Menu from "@maple/views/ui/menu"
 import * as QuickPick from "../kit/quick-pick"
 import { type PageContext, PageOutMessage, type PageReturn } from "../../contract"
 import { SEVERITY_ORDER } from "../kit/severity"
@@ -19,16 +19,20 @@ import { type HubWrite, outcomeToast, type WriteOutcome } from "./writes"
 
 type Return = PageReturn<Model, Message>
 
-const orderedIds = (model: Model): ReadonlyArray<ErrorIssueId> => signalsOf(model).map((signal) => signal.id)
+const orderedIds = (model: Model): ReadonlyArray<ErrorIssueId> =>
+	Arr.map(signalsOf(model), (signal) => signal.id)
 
 /** A toggle, or with Shift a range from the anchor (which stays put). */
 export const toggledSelection = (model: Model, id: string, isShift: boolean): Model => {
 	const ids = orderedIds(model)
-	if (!ids.some((candidate) => candidate === id)) return model
+	if (!Arr.some(ids, (candidate) => candidate === id)) return model
 	if (isShift && model.selectionAnchor !== null) {
-		const from = ids.findIndex((candidate) => candidate === model.selectionAnchor)
-		const to = ids.findIndex((candidate) => candidate === id)
-		if (from !== -1 && to !== -1) {
+		const ends = Option.all([
+			Arr.findFirstIndex(ids, (candidate) => candidate === model.selectionAnchor),
+			Arr.findFirstIndex(ids, (candidate) => candidate === id),
+		])
+		if (Option.isSome(ends)) {
+			const [from, to] = ends.value
 			const range = ids.slice(Math.min(from, to), Math.max(from, to) + 1)
 			return { ...model, selectedIds: [...new Set([...model.selectedIds, ...range])] }
 		}
@@ -36,7 +40,7 @@ export const toggledSelection = (model: Model, id: string, isShift: boolean): Mo
 	return {
 		...model,
 		selectedIds: model.selectedIds.includes(id)
-			? model.selectedIds.filter((selected) => selected !== id)
+			? Arr.filter(model.selectedIds, (selected) => selected !== id)
 			: [...model.selectedIds, id],
 		selectionAnchor: id,
 	}
@@ -52,7 +56,13 @@ export const pressedListKey = (
 	openPicker: (model: Model, id: string, kind: "state" | "severity") => Return,
 ): Return => {
 	const ids = orderedIds(model)
-	const current = model.focusedId === null ? -1 : ids.findIndex((id) => id === model.focusedId)
+	const current =
+		model.focusedId === null
+			? -1
+			: Option.getOrElse(
+					Arr.findFirstIndex(ids, (id) => id === model.focusedId),
+					() => -1,
+				)
 	switch (key) {
 		case "j":
 		case "J":
@@ -114,19 +124,35 @@ export const startHubWrite = (
 		? { model }
 		: {
 				model: { ...model, writingIds: [...model.writingIds, ...ids] },
-				commands: [RunHubWrite({ ids, write, isBulk })],
+				commands: [RunHubWrite({ ids, write, isBulk, expectedStates: shownStates(model, ids) })],
 			}
+
+/**
+ * The workflow state each written row shows now: what a transition expects to move from. A row
+ * with a write still out shows a state that write may change, so it sends no expectation.
+ */
+const shownStates = (
+	model: Model,
+	ids: ReadonlyArray<ErrorIssueId>,
+): Readonly<Record<string, WorkflowState>> =>
+	Rec.fromEntries(
+		Arr.flatMap(signalsOf(model), (signal): ReadonlyArray<readonly [string, WorkflowState]> =>
+			ids.includes(signal.id) && !model.writingIds.includes(signal.id)
+				? [[signal.id, signal.issue.workflowState]]
+				: [],
+		),
+	)
 
 /** Drops one in-flight entry per written id (a row can have two writes out). */
 const settledWriting = (writing: ReadonlyArray<string>, ids: ReadonlyArray<string>) =>
-	ids.reduce((left, id) => {
+	Arr.reduce(ids, writing, (left, id) => {
 		const at = left.indexOf(id)
 		return at === -1 ? left : [...left.slice(0, at), ...left.slice(at + 1)]
-	}, writing)
+	})
 
 /** The bulk bar acts on the selection and clears it at once (`onClear` after each action). */
 export const bulkWrite = (model: Model, write: HubWrite): Return => {
-	const ids = orderedIds(model).filter((id) => model.selectedIds.includes(id))
+	const ids = Arr.filter(orderedIds(model), (id) => model.selectedIds.includes(id))
 	return startHubWrite(cleared(model), ids, write, true)
 }
 
@@ -135,7 +161,7 @@ type PageQuery = (model: Model, cursor: string | null) => Parameters<typeof Fetc
 
 const refreshIssues = (model: Model, context: PageContext, pageQuery: PageQuery): Return => {
 	// Invalidation restarts reads already in flight: an answer from before the write is dropped.
-	const pages = model.pages.map((slot) => {
+	const pages = Arr.map(model.pages, (slot) => {
 		if (slot.page.key === null) return { slot, command: Option.none<typeof slot>() }
 		const next = { ...slot, page: Keyed.supersede(slot.page, slot.page.key) }
 		return { slot: next, command: Option.some(next) }
@@ -146,11 +172,11 @@ const refreshIssues = (model: Model, context: PageContext, pageQuery: PageQuery)
 	return {
 		model: {
 			...model,
-			pages: pages.map(({ slot }) => slot),
+			pages: Arr.map(pages, ({ slot }) => slot),
 			serviceCounts: Option.getOrElse(counts, () => model.serviceCounts),
 		},
 		commands: [
-			...pages.flatMap(({ command }) =>
+			...Arr.flatMap(pages, ({ command }) =>
 				Option.match(command, {
 					onNone: () => [],
 					onSome: (slot) =>
@@ -178,16 +204,18 @@ export const completedHubWrite = (
 ): Return => {
 	const settled = { ...model, writingIds: settledWriting(model.writingIds, ids) }
 	const toast = outcomeToast(write, outcome, isBulk)
-	if (outcome.succeeded === 0) return { model: settled, outMessage: toast }
+	// A conflict means the rows are stale, so they are re-read even when nothing was written.
+	const isStale = outcome.firstFailure?.type === "conflict_error"
+	if (outcome.succeeded === 0 && !isStale) return { model: settled, outMessage: toast }
 	// Only the bulk bar clears the selection, when it is clicked (`bulkWrite`); a row's write keeps it.
 	const refreshed = refreshIssues(settled, context, pageQuery)
 	return { ...refreshed, outMessage: toast }
 }
 
-/** The bulk bar's menus: a picked severity or state writes the selection. */
+/** The bulk bar's menus: a picked severity or state writes the selection; a picked issue keeps it. */
 export const bulkMenuStep = (
 	model: Model,
-	which: "bulkSeverityMenu" | "bulkMoveMenu",
+	which: "bulkSeverityMenu" | "bulkMoveMenu" | "bulkMergeMenu",
 	message: Menu.Message,
 ): Return => {
 	const next: Update.ReturnWithOutMessage<Menu.Model, Menu.Message, Menu.OutMessage> = Menu.update(
@@ -197,20 +225,43 @@ export const bulkMenuStep = (
 	const wrap = (inner: Menu.Message) =>
 		which === "bulkSeverityMenu"
 			? Message.GotBulkSeverityMenuMessage({ message: inner })
-			: Message.GotBulkMoveMenuMessage({ message: inner })
+			: which === "bulkMoveMenu"
+				? Message.GotBulkMoveMenuMessage({ message: inner })
+				: Message.GotBulkMergeMenuMessage({ message: inner })
 	const lifted: Return = {
 		model: { ...model, [which]: next.model },
 		commands: Command.mapMessages(next.commands ?? [], wrap),
 	}
 	if (next.outMessage?._tag !== "SelectedItem") return lifted
 	const value = next.outMessage.value
+	if (which === "bulkMergeMenu") {
+		const ids = Arr.filter(orderedIds(lifted.model), (id) => lifted.model.selectedIds.includes(id))
+		const target = Arr.findFirst(ids, (id) => id === value)
+		if (Option.isNone(target)) return lifted
+		const targetId = target.value
+		const merged = startHubWrite(
+			cleared(lifted.model),
+			Arr.filter(ids, (id) => id !== targetId),
+			{ _tag: "Merge", targetId },
+			true,
+		)
+		return { ...merged, commands: [...(lifted.commands ?? []), ...(merged.commands ?? [])] }
+	}
 	const write: HubWrite | null =
 		which === "bulkSeverityMenu"
-			? { _tag: "SetSeverity", severity: SEVERITY_ORDER.find((severity) => severity === value) ?? null }
-			: Option.match(Option.fromNullishOr(WORKFLOW_STATE_ORDER.find((state) => state === value)), {
-					onNone: () => null,
-					onSome: (toState) => ({ _tag: "Transition", toState }),
-				})
+			? {
+					_tag: "SetSeverity",
+					severity: Option.getOrNull(
+						Arr.findFirst(SEVERITY_ORDER, (severity) => severity === value),
+					),
+				}
+			: Option.match(
+					Arr.findFirst(WORKFLOW_STATE_ORDER, (state) => state === value),
+					{
+						onNone: () => null,
+						onSome: (toState) => ({ _tag: "Transition", toState }),
+					},
+				)
 	if (write === null) return lifted
 	const written = bulkWrite(lifted.model, write)
 	return { ...written, commands: [...(lifted.commands ?? []), ...(written.commands ?? [])] }
@@ -240,22 +291,28 @@ export const pickerStep = (model: Model, message: QuickPick.Message): Return => 
 	const closed = { ...model, picker: null }
 	if (next.outMessage._tag === "Closed") return { model: closed, commands }
 	const value = next.outMessage.value
-	const signal = signalsOf(model).find((candidate) => candidate.id === picker.issueId)
-	if (signal === undefined) return { model: closed, commands }
+	const found = Arr.findFirst(signalsOf(model), (candidate) => candidate.id === picker.issueId)
+	if (Option.isNone(found)) return { model: closed, commands }
+	const signal = found.value
 	const write: HubWrite | null =
 		picker.kind === "severity"
 			? value === (signal.severity ?? "none")
 				? null
 				: {
 						_tag: "SetSeverity",
-						severity: SEVERITY_ORDER.find((severity) => severity === value) ?? null,
+						severity: Option.getOrNull(
+							Arr.findFirst(SEVERITY_ORDER, (severity) => severity === value),
+						),
 					}
 			: value === signal.issue.workflowState
 				? null
-				: Option.match(Option.fromNullishOr(WORKFLOW_STATE_ORDER.find((state) => state === value)), {
-						onNone: () => null,
-						onSome: (toState) => ({ _tag: "Transition", toState }),
-					})
+				: Option.match(
+						Arr.findFirst(WORKFLOW_STATE_ORDER, (state) => state === value),
+						{
+							onNone: () => null,
+							onSome: (toState) => ({ _tag: "Transition", toState }),
+						},
+					)
 	if (write === null) return { model: closed, commands }
 	const written = startHubWrite(closed, [signal.id], write, false)
 	return { ...written, commands: [...commands, ...(written.commands ?? [])] }

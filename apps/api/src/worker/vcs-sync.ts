@@ -3,7 +3,7 @@
  * fetch handler and applies the outcomes, and the fetch route that runs the batch.
  */
 import type { Message } from "@cloudflare/workers-types"
-import { Effect, Layer } from "effect"
+import { Effect, Layer, Array as Arr } from "effect"
 import { HttpServerResponse } from "effect/http"
 import type { VcsSyncIsolateCaches } from "@maple/backend/services/integrations/vcs/vcs-sync-isolate-caches"
 import type { ApiPortsLayer } from "./bindings"
@@ -25,20 +25,17 @@ import {
 export type HandOff =
 	| { readonly run: "placed" }
 	| { readonly run: "inline" }
-	| { readonly run: "exhausted"; readonly messages: ReadonlyArray<Message<unknown>> }
+	| { readonly run: "exhausted"; readonly messages: ReadonlyArray<Message> }
 
-const isFinalDelivery = (message: Message<unknown>) => message.attempts > VCS_SYNC_MAX_RETRIES
+const isFinalDelivery = (message: Message) => message.attempts > VCS_SYNC_MAX_RETRIES
 
 /**
  * Hands `messages` to the placed fetch handler and applies its outcomes. The whole batch runs
  * inline only when nothing ran there. A hop that failed after it may have started retries every
  * message, except those on their final delivery: those still get their terminal status recorded.
  */
-export const handOffVcsSyncBatch = (
-	env: Record<string, unknown>,
-	messages: ReadonlyArray<Message<unknown>>,
-) =>
-	dispatchVcsSyncBatch(messages.map(toPlacedMessage), env).pipe(
+export const handOffVcsSyncBatch = (env: Record<string, unknown>, messages: ReadonlyArray<Message>) =>
+	dispatchVcsSyncBatch(Arr.map(messages, toPlacedMessage), env).pipe(
 		Effect.flatMap((outcomes) => applyOutcomes(messages, outcomes)),
 		Effect.andThen(Effect.annotateCurrentSpan("maple.vcs.dispatch", "placed")),
 		Effect.as<HandOff>({ run: "placed" }),
@@ -53,12 +50,12 @@ export const handOffVcsSyncBatch = (
 					Effect.andThen(Effect.annotateCurrentSpan("maple.vcs.dispatch", "failed")),
 					Effect.andThen(
 						Effect.forEach(
-							messages.filter((message) => !isFinalDelivery(message)),
+							Arr.filter(messages, (message) => !isFinalDelivery(message)),
 							(message) => applyOutcome(message, undefined),
 							{ discard: true },
 						),
 					),
-					Effect.as<HandOff>({ run: "exhausted", messages: messages.filter(isFinalDelivery) }),
+					Effect.as<HandOff>({ run: "exhausted", messages: Arr.filter(messages, isFinalDelivery) }),
 				),
 		}),
 		Effect.withSpan("VcsSyncQueue.dispatch", {
@@ -108,7 +105,7 @@ export const consumeVcsSyncBatch = (
 	ports: ApiPortsLayer,
 	env: Record<string, unknown>,
 	caches: VcsSyncIsolateCaches,
-	messages: ReadonlyArray<Message<unknown>>,
+	messages: ReadonlyArray<Message>,
 ) =>
 	handOffVcsSyncBatch(env, messages).pipe(
 		// Released here, which flushes the dispatch span before an inline run builds its own graph.
@@ -137,7 +134,8 @@ export const vcsSyncBatchRoute = (
 	caches: VcsSyncIsolateCaches,
 ) =>
 	serveVcsSyncBatch(env, (messages, placement) =>
-		Effect.flatMap(Effect.all([vcsSyncModule, vcsSyncLayer(ports, caches)]), ([{ processPlacedBatch }, layer]) =>
-			runEvent(processPlacedBatch(messages, placement), layer),
+		Effect.flatMap(
+			Effect.all([vcsSyncModule, vcsSyncLayer(ports, caches)]),
+			([{ processPlacedBatch }, layer]) => runEvent(processPlacedBatch(messages, placement), layer),
 		),
 	)

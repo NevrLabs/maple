@@ -1,30 +1,31 @@
 import type { Html, HtmlBuilder } from "foldkit/html"
-import * as SelectView from "../../ui/select-view"
+import * as SelectView from "@maple/views/ui/select-view"
 import { FILTER_MODES } from "./gcp-configure-copy"
 import type { ConfigureModel } from "./gcp-configure-schema"
 import { Message } from "./message"
+import { typography } from "@maple/views/ui/typography"
+import { Array as Arr, Option } from "effect"
+import { hstack } from "@maple/views/ui/stack"
 
 // The `Select` of `GcpLogFilterField`: keep an existing sink's filter, or replace it.
 
 type H = HtmlBuilder<Message>
 
-const ENTRIES: ReadonlyArray<SelectView.SelectEntry> = FILTER_MODES.map((mode) => ({
+const ENTRIES: ReadonlyArray<SelectView.SelectEntry> = Arr.map(FILTER_MODES, (mode) => ({
 	_tag: "Item",
 	item: { value: mode.value, label: mode.label },
 }))
 
 /** `FilterMode`: the mode by name, with what it does beside it. */
 const filterMode = (h: H, value: string): ReadonlyArray<Html> => {
-	const mode = FILTER_MODES.find((entry) => entry.value === value)
-	if (mode === undefined) return []
+	const found = Arr.findFirst(FILTER_MODES, (entry) => entry.value === value)
+	if (Option.isNone(found)) return []
+	const mode = found.value
 	return [
-		h.span(
-			[h.Class("flex min-w-0 items-baseline gap-2.5")],
-			[
-				h.span([h.Class("shrink-0 font-medium")], [mode.label]),
-				h.span([h.Class("truncate text-xs text-muted-foreground")], [mode.hint]),
-			],
-		),
+		hstack(h, { gap: "2.5", align: "baseline", shrink: true, as: "span" }, [
+			typography(h, { weight: "medium", className: "shrink-0" }, [mode.label]),
+			typography(h, { size: "xs", tone: "muted", truncate: true }, [mode.hint]),
+		]),
 	]
 }
 

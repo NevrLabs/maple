@@ -1,9 +1,10 @@
 import { afterAll, beforeAll, describe, expect, it } from "@effect/vitest"
-import { Schema } from "effect"
+import { Schema, Array as Arr, String as Str } from "effect"
 import {
 	DbQueryVolumeOutput,
 	IngestFreshnessOutput,
 	IngestUsageOutput,
+	GetServiceTopOperationsOutput,
 	RouteUsageOutput,
 	ServiceDeploymentsOutput,
 } from "@maple/domain/mcp-outputs"
@@ -18,7 +19,7 @@ const sqlSeen: string[] = []
 // Each tool reads one distinctive table; the probe and history unions of ingest_freshness differ by table.
 const fixtures: FixtureRule[] = [
 	{
-		match: (sql) => (sql.includes("totalSizeBytes") ? (sqlSeen.push(sql), true) : false),
+		match: (sql) => (Str.includes("totalSizeBytes")(sql) ? (sqlSeen.push(sql), true) : false),
 		rows: [
 			{
 				serviceName: "api",
@@ -56,7 +57,7 @@ const fixtures: FixtureRule[] = [
 	},
 	{
 		match: (sql) =>
-			sql.includes("service_map_db_query_shapes_hourly") ? (sqlSeen.push(sql), true) : false,
+			Str.includes("service_map_db_query_shapes_hourly")(sql) ? (sqlSeen.push(sql), true) : false,
 		rows: [
 			{
 				serviceName: "api",
@@ -73,7 +74,7 @@ const fixtures: FixtureRule[] = [
 		],
 	},
 	{
-		match: (sql) => (sql.includes("AS commitSha") ? (sqlSeen.push(sql), true) : false),
+		match: (sql) => (Str.includes("AS commitSha")(sql) ? (sqlSeen.push(sql), true) : false),
 		rows: [
 			{
 				serviceName: "api",
@@ -106,7 +107,7 @@ const fixtures: FixtureRule[] = [
 		],
 	},
 	{
-		match: (sql) => (sql.includes("route_windows") ? (sqlSeen.push(sql), true) : false),
+		match: (sql) => (Str.includes("route_windows")(sql) ? (sqlSeen.push(sql), true) : false),
 		rows: [
 			{
 				serviceName: "api",
@@ -117,10 +118,43 @@ const fixtures: FixtureRule[] = [
 				firstSeen: "2026-09-02 10:00:00",
 				lastSeen: "2026-09-20 14:00:00",
 			},
+			{
+				serviceName: "api",
+				spanName: "POST /v1/orders",
+				spanCount: "120",
+				errorCount: "0",
+				p95DurationMs: 50,
+				firstSeen: "2026-09-02 10:00:00",
+				lastSeen: "2026-09-30 14:00:00",
+			},
 		],
 	},
 	{
-		match: (sql) => (sql.includes("metric_catalog") ? (sqlSeen.push(sql), true) : false),
+		// A different missing table: a real failure, not a reason to retry on raw spans.
+		// Only the rollup SQL fails: a wrongful retry would then succeed on raw spans.
+		match: (sql) => Str.includes("FROM service_operations_")(sql) && Str.includes("'byo-broken'")(sql),
+		failure: {
+			message: "Unknown table expression identifier 'some_other_table'",
+			type: "UNKNOWN_TABLE",
+		},
+	},
+	{
+		// A cluster without the operation rollups that the capability probe could not see.
+		match: (sql) => Str.includes("FROM service_operations_")(sql) && Str.includes("'byo-api'")(sql),
+		failure: {
+			message: "Unknown table expression identifier 'service_operations_minutely'",
+			type: "UNKNOWN_TABLE",
+		},
+	},
+	{
+		match: (sql) =>
+			Str.includes("GROUP BY name")(sql) && Str.includes(" AS name,")(sql)
+				? (sqlSeen.push(sql), true)
+				: false,
+		rows: [{ name: "GET /v1/users/{id}", value: 42 }],
+	},
+	{
+		match: (sql) => (Str.includes("metric_catalog")(sql) ? (sqlSeen.push(sql), true) : false),
 		rows: [
 			{ signal: "traces", count: "12", lastSeen: "2026-10-01 11:59:00" },
 			{ signal: "metrics", count: "0", lastSeen: "1970-01-01 00:00:00" },
@@ -131,7 +165,7 @@ const fixtures: FixtureRule[] = [
 		rows: [{ signal: "logs", count: "0", lastSeen: "1970-01-01 00:00:00" }],
 	},
 	{
-		match: (sql) => sql.includes("service_usage"),
+		match: (sql) => Str.includes("service_usage")(sql),
 		rows: [
 			{
 				signal: "traces",
@@ -182,7 +216,7 @@ describe("service_deployments", () => {
 		expect(result.isError).toBeUndefined()
 		const output = Schema.decodeUnknownSync(ServiceDeploymentsOutput)(result.structuredContent)
 		expect(output.lastSeenPrecision).toBe("minute")
-		expect(output.versions.map((v) => [v.commitSha.slice(0, 1), v.live])).toEqual([
+		expect(Arr.map(output.versions, (v) => [Str.slice(0, 1)(v.commitSha), v.live])).toEqual([
 			["b", true],
 			["a", false],
 		])
@@ -241,13 +275,100 @@ describe("route_usage", () => {
 	})
 })
 
+describe("route_usage paging", () => {
+	it("says a page was cut and hands over the call for the next one, in the same window", async () => {
+		const result = await call("route_usage", { limit: 1, offset: 3, end_time: END })
+		const output = Schema.decodeUnknownSync(RouteUsageOutput)(result.structuredContent)
+		expect(output.routes).toHaveLength(1)
+		expect(output.truncated).toBe(true)
+		// One extra row says whether another page exists.
+		expect(sqlSeen.at(-1)).toMatch(/LIMIT 2\s+OFFSET 3/)
+		const text = markdown(result)
+		expect(text).toContain("Showing 1 routes from #4.")
+		expect(text).toContain(`end_time="${END}"`)
+		expect(text).toContain("offset=4 limit=1")
+	})
+
+	it("offers no next page past the offset cap, where it would read the same page again", async () => {
+		const result = await call("route_usage", { limit: 1, offset: 5000, end_time: END })
+		expect(Schema.decodeUnknownSync(RouteUsageOutput)(result.structuredContent).truncated).toBe(true)
+		expect(markdown(result)).not.toContain("Next page")
+	})
+
+	it("reads a full last page as complete", async () => {
+		const output = Schema.decodeUnknownSync(RouteUsageOutput)(
+			(await call("route_usage", { limit: 2, end_time: END })).structuredContent,
+		)
+		expect(output.truncated).toBe(false)
+		expect(output.routes).toHaveLength(2)
+	})
+})
+
+describe("get_service_top_operations", () => {
+	it("filters by environment and reads the latency spellings agents send", async () => {
+		const result = await call("get_service_top_operations", {
+			service: "api",
+			environment: "production",
+			metric: "p95",
+			end_time: END,
+		})
+		expect(result.isError).toBeUndefined()
+		const output = Schema.decodeUnknownSync(GetServiceTopOperationsOutput)(result.structuredContent)
+		expect(output.metric).toBe("p95_duration")
+		expect(output.environment).toBe("production")
+		expect(sqlSeen.at(-1)).toContain("'production'")
+		// The second of the merged (0.5, 0.95, 0.99) levels, off the operation rollups.
+		expect(sqlSeen.at(-1)).toContain("FROM service_operations_hourly")
+		expect(sqlSeen.at(-1)).toContain("(bDurationQuantiles), 2)")
+	})
+
+	it("falls back to raw spans on a cluster without the operation rollups", async () => {
+		const result = await call("get_service_top_operations", {
+			service: "byo-api",
+			metric: "count",
+			end_time: END,
+		})
+		expect(result.isError).toBeUndefined()
+		expect(sqlSeen.at(-1)).toContain("FROM traces")
+		expect(sqlSeen.at(-1)).not.toContain("service_operations_")
+	})
+
+	it("does not retry on raw spans for another missing table", async () => {
+		const before = sqlSeen.length
+		const result = await call("get_service_top_operations", {
+			service: "byo-broken",
+			metric: "count",
+			end_time: END,
+		})
+		expect(result.isError).toBe(true)
+		expect(sqlSeen.length).toBe(before)
+	})
+
+	it("ranks apdex off raw spans, which the rollups cannot score", async () => {
+		const result = await call("get_service_top_operations", {
+			service: "api",
+			metric: "apdex",
+			end_time: END,
+		})
+		expect(result.isError).toBeUndefined()
+		expect(sqlSeen.at(-1)).toContain("FROM traces")
+		expect(sqlSeen.at(-1)).not.toContain("service_operations_")
+	})
+
+	it("reads every environment when none is given", async () => {
+		await call("get_service_top_operations", { service: "api", metric: "P99", end_time: END })
+		expect(sqlSeen.at(-1)).not.toContain("'production'")
+		expect(sqlSeen.at(-1)).toContain("(bDurationQuantiles), 3)")
+	})
+})
+
 describe("ingest_freshness", () => {
 	it("tells a receiving signal from a stalled one and one never sent", async () => {
 		const result = await call("ingest_freshness", { end_time: END })
 		expect(result.isError).toBeUndefined()
 		const output = Schema.decodeUnknownSync(IngestFreshnessOutput)(result.structuredContent)
 		expect(output.probeWindow).toEqual({ start: "2026-10-01 11:00:00", end: END })
-		expect(output.signals.map((s) => [s.signal, s.status])).toEqual([
+		expect(Arr.map(output.signals, (s) => [s.signal, s.status])).toEqual([
 			["traces", "receiving"],
 			["logs", "stalled"],
 			["metrics", "none"],

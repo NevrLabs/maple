@@ -1,12 +1,12 @@
 import { OrgId } from "@maple/domain"
 import { DashboardDocument } from "@maple/domain/http"
-import { Option, Result, Schema } from "effect"
+import { Option, Result, Schema, Array as Arr } from "effect"
 import { describe, expect, test } from "vitest"
 import { PageOutMessage, type PageContext } from "../../contract"
-import { FetchWidget } from "./command"
+import { CloneWidget, ExportDashboard, FetchWidget, RemoveWidget } from "./command"
 import { Message } from "./message"
 import type { Model } from "./model"
-import { slotOf } from "./plan"
+import { optionsByNameOf, slotOf, variablesOf } from "./plan"
 import { subscriptions } from "./subscription"
 import { init, update } from "./update"
 
@@ -14,12 +14,16 @@ const orgId = Schema.decodeSync(OrgId)("org_acme")
 const context: PageContext = { orgId, pinnedNamespace: null, timeZone: "UTC" }
 const pageUpdate = (model: Model, message: Message) => update(model, message, context)
 const run = (model: Model, messages: ReadonlyArray<Message>) =>
-	messages.reduce((current, message) => pageUpdate(current, message).model, model)
+	Arr.reduce(messages, model, (current, message) => pageUpdate(current, message).model)
 
 const stat = (id: string, endpoint: string, target?: { sectionId: string; tabId: string }) => ({
 	id,
 	visualization: "stat",
-	dataSource: { kind: "route", endpoint, transform: { reduceToValue: { field: "value", aggregate: "first" } } },
+	dataSource: {
+		kind: "route",
+		endpoint,
+		transform: { reduceToValue: { field: "value", aggregate: "first" } },
+	},
 	display: { title: id, unit: "number" },
 	layout: { x: 0, y: 0, w: 3, h: 2 },
 	...target,
@@ -62,8 +66,10 @@ const ready = (): Model =>
 		Message.CompletedReadClock({ nowMs: Date.parse("2026-10-01T12:00:00Z") }),
 		Message.UpdatedDashboard({ orgId, maybeDocument: Option.some(live) }),
 		Message.RevealedWidget({ widgetId: "w" }),
-		Message.GotMoreMenuMessage({ message: { _tag: "ClickedItem", index: 4, item: { kind: "Item", value: "history" } } }),
-		Message.CompletedFetchVersions({ generation: 1, result: Result.succeed([version]) }),
+		Message.GotMoreMenuMessage({
+			message: { _tag: "ClickedItem", index: 4, item: { kind: "Item", value: "history" } },
+		}),
+		Message.CompletedFetchVersions({ generation: 1, nowMs: 0, result: Result.succeed([version]) }),
 	])
 
 const keyOf = (model: Model, widgetId: string) => {
@@ -73,41 +79,125 @@ const keyOf = (model: Model, widgetId: string) => {
 
 const previewed = () => {
 	const opened = run(ready(), [Message.ClickedVersion({ versionId: version.id })])
-	return pageUpdate(opened, Message.CompletedFetchSnapshot({ versionId: version.id, result: Result.succeed(snapshot) }))
+	return pageUpdate(
+		opened,
+		Message.CompletedFetchSnapshot({ versionId: version.id, result: Result.succeed(snapshot) }),
+	)
 }
 
 describe("previewing a version", () => {
+	test("a previewed version's own variables resolve, though the live board dropped them", () => {
+		const withEnv = Schema.decodeSync(DashboardDocument)({
+			...Schema.encodeSync(DashboardDocument)(snapshot),
+			variables: [
+				{ name: "env", type: "custom", options: [{ value: "production" }, { value: "staging" }] },
+			],
+		})
+		const opened = run(ready(), [Message.ClickedVersion({ versionId: version.id })])
+		const shown = pageUpdate(
+			opened,
+			Message.CompletedFetchSnapshot({ versionId: version.id, result: Result.succeed(withEnv) }),
+		).model
+		expect(optionsByNameOf(shown, context).env?.options).toEqual(["production", "staging"])
+		expect(variablesOf(shown, context).values.env?.value).toBe("production")
+	})
+
 	test("a snapshot's tiles plan the snapshot's own queries, not the live board's", () => {
 		const liveKey = keyOf(ready(), "w")
 		const loaded = previewed()
 		expect(keyOf(loaded.model, "w")).not.toBe(liveKey)
-		expect(loaded.commands?.map(({ name }) => name)).toContain(FetchWidget.name)
+		expect(Arr.map(loaded.commands ?? [], ({ name }) => name)).toContain(FetchWidget.name)
 		const revealed = pageUpdate(loaded.model, Message.RevealedWidget({ widgetId: "gone" })).model
 		expect(keyOf(revealed, "gone")).not.toBeNull()
 		expect(keyOf(pageUpdate(revealed, Message.ClickedCancelPreview()).model, "w")).toBe(liveKey)
 	})
 
+	test("a failed export says so instead of doing nothing", () => {
+		const failed = pageUpdate(previewed().model, Message.CompletedExport({ error: "Disk full" }))
+		expect(failed.outMessage).toEqual(
+			PageOutMessage.RequestedToast({
+				type: "error",
+				title: "Couldn't export the dashboard",
+				description: "Disk full",
+			}),
+		)
+		expect(
+			pageUpdate(previewed().model, Message.CompletedExport({ error: null })).outMessage,
+		).toBeUndefined()
+	})
+
+	test("Export JSON during a preview exports the previewed version, not the live board", () => {
+		const exported = pageUpdate(
+			previewed().model,
+			Message.GotMoreMenuMessage({
+				message: { _tag: "ClickedItem", index: 0, item: { kind: "Item", value: "export" } },
+			}),
+		)
+		const command = Option.getOrUndefined(
+			Arr.findFirst(exported.commands ?? [], ({ name }) => name === ExportDashboard.name),
+		)
+		const sent = command?.args?.snapshot
+		expect(Schema.is(DashboardDocument)(sent) ? Arr.map(sent.widgets, ({ id }) => id) : null).toEqual([
+			"w",
+			"gone",
+		])
+	})
+
+	test("a preview offers no writes and no embeds on its tiles", () => {
+		const loaded = run(previewed().model, [
+			Message.GotShareMessage({
+				message: { _tag: "CompletedFetchShares", seq: 1, result: Result.succeed([]) },
+			}),
+		])
+		const pick = (value: string) =>
+			pageUpdate(
+				loaded,
+				Message.GotWidgetMenuMessage({
+					widgetId: "w",
+					message: { _tag: "ClickedItem", index: 0, item: { kind: "Item", value } },
+				}),
+			)
+		const names = (value: string) => Arr.map(pick(value).commands ?? [], ({ name }) => name)
+		expect(names("delete")).not.toContain(RemoveWidget.name)
+		expect(names("clone")).not.toContain(CloneWidget.name)
+		expect(pick("embed").model.sharing).toEqual(loaded.sharing)
+	})
+
 	test("auto-refresh pauses while a version is previewed", () => {
-		const seconds = (model: Model) => subscriptions.autoRefresh.modelToDependencies({ model, context }).seconds
+		const seconds = (model: Model) =>
+			subscriptions.autoRefresh.modelToDependencies({ model, context }).seconds
 		const viewing = { ...ready(), search: {} }
 		expect(seconds(viewing)).toBe(60)
 		expect(seconds(run(viewing, [Message.ClickedVersion({ versionId: version.id })]))).toBe(0)
 	})
 
 	test("a preview's groups collapse locally and leave the URL alone", () => {
-		const collapsed = pageUpdate(previewed().model, Message.ClickedSectionChevron({ sectionId: "s1", collapsed: true }))
+		const collapsed = pageUpdate(
+			previewed().model,
+			Message.ClickedSectionChevron({ sectionId: "s1", collapsed: true }),
+		)
 		expect(collapsed.outMessage).toBeUndefined()
 		expect(collapsed.model.history.sectionView).toEqual({ collapsed: "s1" })
-		expect(pageUpdate(collapsed.model, Message.ClickedCancelPreview()).model.history.sectionView).toEqual({})
+		expect(pageUpdate(collapsed.model, Message.ClickedCancelPreview()).model.history.sectionView).toEqual(
+			{},
+		)
 	})
 
 	test("view-state changes keep edit mode in the URL while writes are unavailable", () => {
 		const failed = pageUpdate(
-			run(init(ROUTE, context).model, [Message.UpdatedDashboard({ orgId, maybeDocument: Option.some(live) })]),
+			run(init(ROUTE, context).model, [
+				Message.UpdatedDashboard({ orgId, maybeDocument: Option.some(live) }),
+			]),
 			Message.CompletedWrite({ result: Result.fail("Write failed") }),
 		).model
-		expect(pageUpdate(failed, Message.ClickedSectionChevron({ sectionId: "s1", collapsed: true })).outMessage).toEqual(
-			PageOutMessage.RequestedNavigation({ url: "/dashboards/dash_hist?mode=edit&collapsed=s1", isReplace: true }),
+		expect(
+			pageUpdate(failed, Message.ClickedSectionChevron({ sectionId: "s1", collapsed: true }))
+				.outMessage,
+		).toEqual(
+			PageOutMessage.RequestedNavigation({
+				url: "/dashboards/dash_hist?mode=edit&collapsed=s1",
+				isReplace: true,
+			}),
 		)
 	})
 })

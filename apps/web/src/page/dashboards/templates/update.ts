@@ -2,16 +2,16 @@ import { DashboardWidgetSchema } from "@maple/domain/http"
 import type { V2DashboardTemplate } from "@maple/domain/http/v2"
 import { resolveTimeRangeWindow } from "@maple/query-engine"
 import { AsyncData } from "foldkit"
-import { Option, Result, Schema } from "effect"
+import { Option, Result, Schema, Array as Arr, Record as Rec, String as Str } from "effect"
 import { Command } from "foldkit"
-import * as Chart from "../../../charts/chart"
-import { LoadChartRuntime } from "../../../charts/chart-runtime"
-import * as Keyed from "../../../data/keyed"
-import { requestKey } from "../../../data/request-key"
+import * as Chart from "@maple/views/charts/chart"
+import { LoadChartRuntime } from "@maple/views/charts/chart-runtime"
+import * as Keyed from "@maple/views/data/keyed"
+import { requestKey } from "@maple/views/data/request-key"
 import { AppRoute, hrefOf } from "../../../route"
 import type { DashboardsTemplatesSearch } from "../../../route/search"
 import { type PageContext, PageOutMessage, type PageReturn } from "../../contract"
-import * as Dialog from "../../../ui/dialog"
+import * as Dialog from "@maple/views/ui/dialog"
 import { planWidget } from "../kit/widget-data"
 import {
 	AwaitCreated,
@@ -21,10 +21,11 @@ import {
 	FetchTemplates,
 	FetchWidget,
 	ReadClock,
+	WaitParameterDebounce,
 	WaitPreviewDelay,
 	WaitSearchDebounce,
 } from "./command"
-import { previewVariableValues } from "./derive"
+import { filledParametersOf, missingRequiredOf, previewVariableValues } from "./derive"
 import { Message } from "./message"
 import type { Model } from "./model"
 
@@ -88,7 +89,7 @@ export const templatesOf = (model: Model): ReadonlyArray<V2DashboardTemplate> =>
 	Option.getOrElse(AsyncData.getData(model.templates.data), () => [])
 
 export const selectedOf = (model: Model): V2DashboardTemplate | null =>
-	templatesOf(model).find((template) => template.id === model.search.template) ?? null
+	Option.getOrNull(Arr.findFirst(templatesOf(model), (template) => template.id === model.search.template))
 
 export const PANEL_SHEET_ID = "dashboard-template-panel"
 
@@ -118,19 +119,22 @@ export const routeChanged = (model: Model, route: Route): Return =>
 		? { model: { ...model, search: route.search } }
 		: reselect({ ...model, search: route.search })
 
-/** The preview request for the selection and its current parameters (`useDeferredValue`). */
+/** The preview request for the selection and its filled parameters; none while a required one is empty. */
 const requestPreview = (model: Model, context: PageContext): Return => {
 	const selected = selectedOf(model)
 	if (selected === null || !model.isPreviewArmed) return { model }
+	if (missingRequiredOf(selected, model.parameters).length > 0)
+		return { model: { ...model, preview: Keyed.idle() } }
+	const parameters = filledParametersOf(model.parameters)
 	const key = requestKey(context.orgId, "dashboards.previewTemplate", {
 		templateId: selected.id,
-		parameters: model.parameters,
+		parameters,
 	})
 	return Option.match(Keyed.request(model.preview, key, "Load"), {
 		onNone: () => ({ model }),
 		onSome: (preview) => ({
 			model: { ...model, preview },
-			commands: [FetchPreview({ key, templateId: selected.id, parameters: model.parameters })],
+			commands: [FetchPreview({ key, templateId: selected.id, parameters })],
 		}),
 	})
 }
@@ -154,7 +158,7 @@ const planPreview = (model: Model, context: PageContext): Return => {
 	// `ResolvedDashboardVariablesProvider` declares no variables, so nothing waits on one.
 	const variables = { names: [], values: previewVariableValues(preview.variables) }
 	const initial: PreviewPlan = { gates: model.gates, requests: model.requests, commands: [], asked: [] }
-	const planned = shown.reduce((state, widget) => {
+	const planned = Arr.reduce(shown, initial, (state, widget) => {
 		const gate = planWidget({
 			orgId: context.orgId,
 			dataSource: widget.dataSource,
@@ -165,7 +169,7 @@ const planPreview = (model: Model, context: PageContext): Return => {
 		const gates = { ...state.gates, [widget.id]: gate }
 		if (gate._tag !== "Request" || state.asked.includes(gate.request.key)) return { ...state, gates }
 		const { key, endpoint, params } = gate.request
-		return Option.match(Keyed.request(state.requests[key] ?? Keyed.idle(), key, "Load"), {
+		return Option.match(Keyed.request(Keyed.at(state.requests, key), key, "Load"), {
 			onNone: () => ({ ...state, gates }),
 			onSome: (slot) => ({
 				gates,
@@ -174,14 +178,14 @@ const planPreview = (model: Model, context: PageContext): Return => {
 				asked: [...state.asked, key],
 			}),
 		})
-	}, initial)
+	})
 	return {
 		model: {
 			...model,
 			gates: planned.gates,
 			requests: planned.requests,
-			charts: Object.fromEntries(
-				shown.map((widget) => [widget.id, model.charts[widget.id] ?? Chart.init()]),
+			charts: Rec.fromEntries(
+				Arr.map(shown, (widget) => [widget.id, model.charts[widget.id] ?? Chart.init()]),
 			),
 		},
 		commands: planned.commands,
@@ -199,11 +203,7 @@ const selectionHref = (templateId: string | undefined) =>
 /** `createFromTemplate`: only filled parameters are sent. */
 const create = (model: Model, templateId: string): Return => {
 	if (model.isCreating) return { model }
-	const parameters = Object.fromEntries(
-		Object.entries(model.parameters)
-			.map(([key, value]) => [key, value.trim()] as const)
-			.filter(([, value]) => value.length > 0),
-	)
+	const parameters = filledParametersOf(model.parameters)
 	return {
 		model: { ...model, isCreating: true },
 		commands: [CreateFromTemplate({ templateId, parameters })],
@@ -240,7 +240,7 @@ export const update = (model: Model, message: Message, context: PageContext): Re
 			const preview = Keyed.accept(model.preview, key, result)
 			const widgets = Option.match(AsyncData.getData(preview.data), {
 				onNone: () => model.previewWidgets,
-				onSome: (data) => data.widgets.flatMap((widget) => Option.toArray(decodeWidget(widget))),
+				onSome: (data) => Arr.flatMap(data.widgets, (widget) => Option.toArray(decodeWidget(widget))),
 			})
 			return planPreview({ ...model, preview, previewWidgets: widgets }, context)
 		},
@@ -280,7 +280,7 @@ export const update = (model: Model, message: Message, context: PageContext): Re
 		},
 		ElapsedSearchDebounce: ({ generation }) =>
 			generation === model.searchGeneration
-				? { model: { ...model, query: model.searchDraft.trim() } }
+				? { model: { ...model, query: Str.trim(model.searchDraft) } }
 				: { model },
 		ChangedFilter: ({ filter }) => ({ model: { ...model, filter } }),
 		ClickedTemplate: ({ templateId }) => navigate(model, selectionHref(templateId), true),
@@ -311,8 +311,25 @@ export const update = (model: Model, message: Message, context: PageContext): Re
 					commands: [FetchTemplates({ key: templatesKey(context) })],
 				}),
 			}),
-		ChangedParameter: ({ key, value }) =>
-			requestPreview({ ...model, parameters: { ...model.parameters, [key]: value } }, context),
+		// The preview asks once typing settles; a new selection's generation drops a pending one.
+		ChangedParameter: ({ key, value }) => {
+			const previewGeneration = model.previewGeneration + 1
+			const parameters = { ...model.parameters, [key]: value }
+			const selected = selectedOf(model)
+			// A missing required value drops the old preview now, not after the debounce.
+			const preview: Model["preview"] =
+				selected !== null && missingRequiredOf(selected, parameters).length > 0
+					? Keyed.idle()
+					: model.preview
+			return {
+				model: { ...model, previewGeneration, parameters, preview },
+				commands: [WaitParameterDebounce({ generation: previewGeneration })],
+			}
+		},
+		ElapsedParameterDebounce: ({ generation }) =>
+			generation === model.previewGeneration
+				? requestPreview({ ...model, isPreviewArmed: true }, context)
+				: { model },
 		ClickedCreate: ({ templateId }) => create(model, templateId),
 		CompletedCreate: ({ result }) =>
 			Result.match(result, {

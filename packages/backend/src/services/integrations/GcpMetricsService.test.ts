@@ -1,5 +1,20 @@
 import { afterEach, assert, beforeAll, describe, it } from "@effect/vitest"
-import { ConfigProvider, Effect, Exit, Fiber, Layer, Logger, References, Schema, Tracer } from "effect"
+import {
+	ConfigProvider,
+	Effect,
+	Exit,
+	Fiber,
+	Layer,
+	Logger,
+	References,
+	Schema,
+	Tracer,
+	Array as Arr,
+	Record as Rec,
+	String as Str,
+	DateTime,
+	Option,
+} from "effect"
 import { TestClock } from "effect/testing"
 import { FetchHttpClient, HttpClient } from "effect/http"
 import { GCP_ASSET_TYPES, GCP_METRIC_GROUPS } from "@maple/domain/gcp-metrics"
@@ -22,13 +37,14 @@ const minute = 60_000
 const now = Date.UTC(2026, 9, 8, 12, 30, 30)
 /** Five minutes behind `now`, on a minute boundary. */
 const horizon = Date.UTC(2026, 9, 8, 12, 25, 0)
-const METRIC_COUNT = GCP_METRIC_GROUPS.reduce((sum, group) => sum + group.metrics.length, 0)
+const METRIC_COUNT = Arr.reduce(GCP_METRIC_GROUPS, 0, (sum, group) => sum + group.metrics.length)
 /** Queries of a poll in which no statement ranks: Query Insights reads only its ranking metric. */
 const QUERY_COUNT =
 	METRIC_COUNT -
-	GCP_METRIC_GROUPS.reduce(
-		(sum, group) => sum + (group.top === undefined ? 0 : group.metrics.length - 1),
+	Arr.reduce(
+		GCP_METRIC_GROUPS,
 		0,
+		(sum, group) => sum + (group.top === undefined ? 0 : group.metrics.length - 1),
 	)
 
 describe("nextWindow", () => {
@@ -76,7 +92,7 @@ beforeAll(async () => {
 	)
 	publicKey = pair.publicKey
 	privateKeyBody = Buffer.from(await crypto.subtle.exportKey("pkcs8", pair.privateKey)).toString("base64")
-	const lines = privateKeyBody.match(/.{1,64}/g)!.join("\n")
+	const lines = Arr.join(Option.getOrThrow(Str.match(/.{1,64}/g)(privateKeyBody)), "\n")
 	encodedKey = Buffer.from(
 		JSON.stringify({
 			type: "service_account",
@@ -212,12 +228,12 @@ const statementSeries = (
 	metricType: string,
 	statements: ReadonlyArray<readonly [instance: string, hash: string, value: number]>,
 ) => ({
-	timeSeries: statements.map(([instance, hash, value]) => ({
+	timeSeries: Arr.map(statements, ([instance, hash, value]) => ({
 		metric: {
 			type: metricType,
 			labels: {
 				query_hash: hash,
-				...(metricType.endsWith("/execution_time") && { querystring: `select ${hash}` }),
+				...(Str.endsWith("/execution_time")(metricType) && { querystring: `select ${hash}` }),
 			},
 		},
 		resource: {
@@ -231,7 +247,7 @@ const statementSeries = (
 		points: [
 			{
 				interval: { startTime: "2026-10-08T11:25:00Z", endTime: "2026-10-08T12:25:00Z" },
-				value: metricType.endsWith("/latencies")
+				value: Str.endsWith("/latencies")(metricType)
 					? {
 							distributionValue: {
 								count: String(value),
@@ -247,18 +263,24 @@ const statementSeries = (
 
 /** Every data point a tick shipped: its metric, point attributes and value. */
 const shippedPoints = (calls: Calls) =>
-	calls.ingest.flatMap((request) => {
+	Arr.flatMap(calls.ingest, (request) => {
 		const payload: OtlpMetricsPayload = JSON.parse(request.body)
-		return payload.resourceMetrics.flatMap((resource) =>
-			resource.scopeMetrics.flatMap((scope) =>
-				scope.metrics.flatMap((metric) =>
-					[...(metric.sum?.dataPoints ?? []), ...(metric.gauge?.dataPoints ?? [])].map((point) => ({
-						metric: metric.name,
-						attributes: Object.fromEntries(
-							point.attributes.map((attribute) => [attribute.key, attribute.value.stringValue]),
-						),
-						value: point.asDouble,
-					})),
+		return Arr.flatMap(payload.resourceMetrics, (resource) =>
+			Arr.flatMap(resource.scopeMetrics, (scope) =>
+				Arr.flatMap(scope.metrics, (metric) =>
+					Arr.map(
+						[...(metric.sum?.dataPoints ?? []), ...(metric.gauge?.dataPoints ?? [])],
+						(point) => ({
+							metric: metric.name,
+							attributes: Rec.fromEntries(
+								Arr.map(point.attributes, (attribute) => [
+									attribute.key,
+									attribute.value.stringValue,
+								]),
+							),
+							value: point.asDouble,
+						}),
+					),
 				),
 			),
 		)
@@ -300,9 +322,10 @@ const stubFetch = (calls: Calls, options: StubOptions = {}) =>
 		}
 		if (url.host === "iamcredentials.googleapis.com") {
 			const account = decodeURIComponent(
-				url.pathname
-					.replace("/v1/projects/-/serviceAccounts/", "")
-					.replace(":generateAccessToken", ""),
+				Str.replace(
+					":generateAccessToken",
+					"",
+				)(Str.replace("/v1/projects/-/serviceAccounts/", "")(url.pathname)),
 			)
 			calls.impersonate.push({ account, authorization, quotaProject, body: JSON.parse(body) })
 			return options.impersonate?.(account) ?? json({ accessToken: READER_TOKEN })
@@ -310,7 +333,7 @@ const stubFetch = (calls: Calls, options: StubOptions = {}) =>
 		if (url.host === "monitoring.googleapis.com") {
 			const filter = url.searchParams.get("filter") ?? ""
 			const call = {
-				scope: url.pathname.replace("/v3/", "").replace("/timeSeries", ""),
+				scope: Str.replace("/timeSeries", "")(Str.replace("/v3/", "")(url.pathname)),
 				metricType: /metric\.type = "([^"]+)"/.exec(filter)?.[1] ?? "",
 				params: url.searchParams,
 				authorization,
@@ -321,12 +344,15 @@ const stubFetch = (calls: Calls, options: StubOptions = {}) =>
 		}
 		if (url.host === "cloudasset.googleapis.com") {
 			const call = {
-				scope: url.pathname.replace("/v1/", "").replace(/(:searchAllResources|\/assets)$/, ""),
+				scope: Str.replace(
+					/(:searchAllResources|\/assets)$/,
+					"",
+				)(Str.replace("/v1/", "")(url.pathname)),
 				params: url.searchParams,
 				authorization,
 				quotaProject,
 			}
-			if (url.pathname.endsWith("/assets")) {
+			if (Str.endsWith("/assets")(url.pathname)) {
 				calls.instances.push(call)
 				return options.instances?.(call) ?? json({})
 			}
@@ -365,7 +391,7 @@ const makeRecorder = () => {
 	})
 	/** Spans that ended in a failure: what an exporter would report as an error. */
 	const failedSpans = () =>
-		spans.flatMap((span) =>
+		Arr.flatMap(spans, (span) =>
 			span.status._tag === "Ended" && Exit.isFailure(span.status.exit)
 				? [`${span.name}: ${String(span.status.exit.cause)}`]
 				: [],
@@ -377,7 +403,7 @@ const makeRecorder = () => {
 		text: () =>
 			JSON.stringify([
 				logs,
-				spans.map((span) => [span.name, [...span.attributes], span.events]),
+				Arr.map(spans, (span) => [span.name, [...span.attributes], span.events]),
 				failedSpans(),
 			]),
 	}
@@ -443,7 +469,11 @@ const insertConnector = (
 	const orgId = options.orgId ?? "org_gcp"
 	// With its source, as GcpConnectorService.create writes it.
 	return Effect.promise(async () => {
-		const sourceId = await insertTestSource(testDb, { orgId, platform: "gcp", name: `Google Cloud ${scopeId}` })
+		const sourceId = await insertTestSource(testDb, {
+			orgId,
+			platform: "gcp",
+			name: `Google Cloud ${scopeId}`,
+		})
 		await executeSql(
 			testDb,
 			`INSERT INTO gcp_connectors
@@ -505,7 +535,7 @@ const inventory = (testDb: TestDb, id: string) =>
 		),
 	).pipe(Effect.map((row) => row?.resources ?? []))
 
-const pollAll = GcpMetricsService.use((gcp) => gcp.pollAll())
+const pollAll = GcpMetricsService.use((gcp) => gcp.pollAll)
 
 const decodeJwtPart = (part: string) => JSON.parse(Buffer.from(part, "base64url").toString("utf8"))
 
@@ -524,7 +554,7 @@ describe("GcpMetricsService", () => {
 
 				// The assertion is an RS256 JWT from Maple's account, valid for ten minutes.
 				assert.lengthOf(calls.oauth, 1)
-				const [header, claims, signature] = calls.oauth[0]!.split(".") as [string, string, string]
+				const [header, claims, signature] = Str.split(".")(calls.oauth[0]) as [string, string, string]
 				assert.deepStrictEqual(decodeJwtPart(header), { alg: "RS256", typ: "JWT", kid: "key-1" })
 				assert.deepStrictEqual(decodeJwtPart(claims), {
 					iss: MAPLE_ACCOUNT,
@@ -559,14 +589,17 @@ describe("GcpMetricsService", () => {
 
 				assert.lengthOf(calls.monitoring, QUERY_COUNT)
 				assert.isTrue(
-					calls.monitoring.every(
+					Arr.every(
+						calls.monitoring,
 						(call) =>
 							call.scope === "projects/acme-prod" &&
 							call.authorization === `Bearer ${READER_TOKEN}` &&
 							call.quotaProject === "acme-prod",
 					),
 				)
-				const query = calls.monitoring.find((call) => call.metricType === REQUEST_COUNT)!
+				const query = Option.getOrThrow(
+					Arr.findFirst(calls.monitoring, (call) => call.metricType === REQUEST_COUNT),
+				)
 				assert.includeDeepMembers(
 					[...query.params],
 					[
@@ -586,19 +619,23 @@ describe("GcpMetricsService", () => {
 					],
 				)
 				// The Compute Engine instance name is a metric label: grouped on, for the resource.
-				const network = calls.monitoring.find(
-					(call) => call.metricType === "compute.googleapis.com/instance/network/sent_bytes_count",
-				)!
+				const network = Option.getOrThrow(
+					Arr.findFirst(
+						calls.monitoring,
+						(call) =>
+							call.metricType === "compute.googleapis.com/instance/network/sent_bytes_count",
+					),
+				)
 				assert.include(
 					network.params.getAll("aggregation.groupByFields"),
 					"metric.label.instance_name",
 				)
 
 				assert.lengthOf(calls.ingest, 1)
-				assert.match(calls.ingest[0]!.authorization ?? "", /^Bearer maple_pk_/)
-				const payload = JSON.parse(calls.ingest[0]!.body)
+				assert.match(calls.ingest[0].authorization ?? "", /^Bearer maple_pk_/)
+				const payload = JSON.parse(calls.ingest[0].body)
 				const resource = payload.resourceMetrics[0]
-				const attributes = Object.fromEntries(
+				const attributes = Rec.fromEntries(
 					resource.resource.attributes.map(
 						(attribute: { key: string; value: { stringValue: string } }) => [
 							attribute.key,
@@ -620,7 +657,7 @@ describe("GcpMetricsService", () => {
 				)
 				assert.strictEqual(
 					attributes.maple_source_id,
-					publicSourceId(Schema.decodeUnknownSync(SourceId)(source!.id)),
+					publicSourceId(Schema.decodeSync(SourceId)(source!.id)),
 				)
 				const metric = resource.scopeMetrics[0].metrics[0]
 				assert.strictEqual(metric.name, "gcp.cloud_run.requests")
@@ -643,7 +680,12 @@ describe("GcpMetricsService", () => {
 				// The HTTP client's spans are in there, with the Authorization header redacted.
 				assert.include(recorded, "iamcredentials.googleapis.com")
 				assert.include(recorded, '["http.request.header.authorization","<redacted>"]')
-				for (const secret of [MAPLE_TOKEN, READER_TOKEN, privateKeyBody.slice(0, 40), signature]) {
+				for (const secret of [
+					MAPLE_TOKEN,
+					READER_TOKEN,
+					Str.slice(0, 40)(privateKeyBody),
+					signature,
+				]) {
 					assert.notInclude(recorded, secret)
 				}
 			}),
@@ -674,23 +716,32 @@ describe("GcpMetricsService", () => {
 				yield* insertConnector(testDb, CONNECTOR_A, { scope: ["organization", "123456789012"] })
 				assert.deepInclude(yield* pollAll, { polled: 1, rowsIngested: 4, failures: 0 })
 				assert.deepStrictEqual(
-					calls.impersonate.map((call) => call.account),
+					Arr.map(calls.impersonate, (call) => call.account),
 					[READER_A],
 				)
 				assert.lengthOf(calls.monitoring, QUERY_COUNT)
-				assert.isTrue(calls.monitoring.every((call) => call.scope === "organizations/123456789012"))
+				assert.isTrue(
+					Arr.every(calls.monitoring, (call) => call.scope === "organizations/123456789012"),
+				)
 				assert.deepStrictEqual(
-					calls.assets.map((call) => call.scope),
+					Arr.map(calls.assets, (call) => call.scope),
 					["organizations/123456789012"],
 				)
 
-				const payload = JSON.parse(calls.ingest[0]!.body)
+				const payload = JSON.parse(calls.ingest[0].body)
 				const accounts = payload.resourceMetrics.map(
 					(resource: {
 						resource: { attributes: Array<{ key: string; value: { stringValue: string } }> }
 					}) =>
-						resource.resource.attributes.find((attribute) => attribute.key === "cloud.account.id")
-							?.value.stringValue,
+						Option.getOrUndefined(
+							Option.map(
+								Arr.findFirst(
+									resource.resource.attributes,
+									(attribute) => attribute.key === "cloud.account.id",
+								),
+								(attribute) => attribute.value.stringValue,
+							),
+						),
 				)
 				assert.sameMembers(accounts, ["shop-prod", "shop-staging"])
 				assert.deepStrictEqual(yield* inventory(testDb, CONNECTOR_A), [
@@ -755,7 +806,7 @@ describe("GcpMetricsService", () => {
 				yield* insertConnector(testDb, CONNECTOR_B, { projectId: "acme-staging" })
 				assert.deepInclude(yield* pollAll, { polled: 1 })
 				assert.deepStrictEqual(
-					calls.impersonate.map((call) => call.account),
+					Arr.map(calls.impersonate, (call) => call.account),
 					["maple-028f2b3c4d5e4f708192a3b4@acme-staging.iam.gserviceaccount.com"],
 				)
 			}),
@@ -771,9 +822,11 @@ describe("GcpMetricsService", () => {
 			Effect.gen(function* () {
 				yield* insertConnector(testDb, CONNECTOR_A)
 				yield* Effect.promise(() =>
-					executeSql(testDb, "UPDATE sources SET paused_at = now() WHERE id = (SELECT source_id FROM gcp_connectors WHERE id = $1)", [
-						CONNECTOR_A,
-					]),
+					executeSql(
+						testDb,
+						"UPDATE sources SET paused_at = now() WHERE id = (SELECT source_id FROM gcp_connectors WHERE id = $1)",
+						[CONNECTOR_A],
+					),
 				)
 				assert.deepInclude(yield* pollAll, { polled: 1, rowsIngested: 0 })
 				assert.deepStrictEqual(
@@ -819,7 +872,7 @@ describe("GcpMetricsService", () => {
 				const summary = yield* pollAll
 				// The denied connector does not hold back the other organization's.
 				assert.deepInclude(summary, { polled: 2, failures: 1, rowsIngested: 2 })
-				assert.isTrue(calls.monitoring.every((call) => call.scope === "projects/other-prod"))
+				assert.isTrue(Arr.every(calls.monitoring, (call) => call.scope === "projects/other-prod"))
 
 				const denied = yield* pollState(testDb, CONNECTOR_A)
 				assert.strictEqual(denied.last_metrics_error, CANNOT_SIGN_IN)
@@ -830,13 +883,13 @@ describe("GcpMetricsService", () => {
 				yield* TestClock.setTime(now + 5 * minute)
 				yield* pollAll
 				assert.lengthOf(
-					calls.impersonate.filter((call) => call.account === READER_A),
+					Arr.filter(calls.impersonate, (call) => call.account === READER_A),
 					2,
 				)
 				assert.notInclude(recorder.text(), "must not be stored")
 				// The HTTP client fails its own span on the 403 (OTel client semantics); Maple's do not.
 				assert.deepStrictEqual(
-					recorder.failedSpans().filter((span) => !span.startsWith("POST: ")),
+					Arr.filter(recorder.failedSpans(), (span) => !Str.startsWith("POST: ")(span)),
 					[],
 				)
 			}),
@@ -963,9 +1016,9 @@ describe("GcpMetricsService", () => {
 				yield* insertConnector(testDb, CONNECTOR_A)
 				const summary = yield* pollAll
 				assert.deepInclude(summary, { polled: 1, failures: 0, incompleteMetrics: 1 })
-				const pages = calls.monitoring.filter((call) => call.metricType === REQUEST_COUNT)
+				const pages = Arr.filter(calls.monitoring, (call) => call.metricType === REQUEST_COUNT)
 				assert.lengthOf(pages, MAX_PAGES_PER_METRIC)
-				assert.isNull(pages[0]!.params.get("pageToken"))
+				assert.isNull(pages[0].params.get("pageToken"))
 				assert.isNotNull(pages.at(-1)!.params.get("pageToken"))
 				// What was read is kept, and the window is not read again.
 				assert.strictEqual(summary.rowsIngested, 2 * MAX_PAGES_PER_METRIC)
@@ -1050,7 +1103,7 @@ describe("GcpMetricsService", () => {
 		]
 		const stub = stubFetch(calls, {
 			monitoring: (call) =>
-				call.metricType.startsWith(PER_QUERY)
+				Str.startsWith(PER_QUERY)(call.metricType)
 					? json(statementSeries(call.metricType, statements))
 					: undefined,
 		})
@@ -1062,9 +1115,12 @@ describe("GcpMetricsService", () => {
 				assert.deepInclude(yield* pollAll, { polled: 1, failures: 0 })
 				// Something ranked, so every metric was read.
 				assert.lengthOf(calls.monitoring, METRIC_COUNT)
-				const ranking = calls.monitoring.find(
-					(call) => call.metricType === `${PER_QUERY}/execution_time`,
-				)!
+				const ranking = Option.getOrThrow(
+					Arr.findFirst(
+						calls.monitoring,
+						(call) => call.metricType === `${PER_QUERY}/execution_time`,
+					),
+				)
 				// One point over the whole window, per instance and statement.
 				assert.strictEqual(ranking.params.get("aggregation.alignmentPeriod"), "3600s")
 				assert.includeMembers(ranking.params.getAll("aggregation.groupByFields"), [
@@ -1075,9 +1131,10 @@ describe("GcpMetricsService", () => {
 
 				const points = shippedPoints(calls)
 				const kept = (metric: string) =>
-					points
-						.filter((point) => point.metric === metric)
-						.map((point) => point.attributes["gcp.metric.labels.query_hash"])
+					Arr.map(
+						Arr.filter(points, (point) => point.metric === metric),
+						(point) => point.attributes["gcp.metric.labels.query_hash"],
+					)
 				const top = [...Array.from({ length: 25 }, (_, index) => `q${index + 2}`), "b1"]
 				assert.sameMembers(kept("gcp.cloud_sql.query.statement.execution.time"), top)
 				assert.sameMembers(kept("gcp.cloud_sql.query.statement.calls"), top)
@@ -1085,11 +1142,14 @@ describe("GcpMetricsService", () => {
 				// p50, p95 and p99 of each.
 				assert.lengthOf(kept("gcp.cloud_sql.query.statement.duration"), 3 * top.length)
 
-				const execution = points.find(
-					(point) =>
-						point.metric === "gcp.cloud_sql.query.statement.execution.time" &&
-						point.attributes["gcp.metric.labels.query_hash"] === "q26",
-				)!
+				const execution = Option.getOrThrow(
+					Arr.findFirst(
+						points,
+						(point) =>
+							point.metric === "gcp.cloud_sql.query.statement.execution.time" &&
+							point.attributes["gcp.metric.labels.query_hash"] === "q26",
+					),
+				)
 				// Microseconds, stored as seconds; the text under the semantic convention's name.
 				assert.deepInclude(execution, { value: 0.026 })
 				assert.strictEqual(execution.attributes["db.query.text"], "select q26")
@@ -1107,9 +1167,10 @@ describe("GcpMetricsService", () => {
 				yield* insertConnector(testDb, CONNECTOR_A)
 				yield* pollAll
 				assert.deepStrictEqual(
-					calls.monitoring
-						.filter((call) => call.metricType.startsWith(PER_QUERY))
-						.map((call) => call.metricType),
+					Arr.map(
+						Arr.filter(calls.monitoring, (call) => Str.startsWith(PER_QUERY)(call.metricType)),
+						(call) => call.metricType,
+					),
 					[`${PER_QUERY}/execution_time`],
 				)
 				assert.isNull((yield* pollState(testDb, CONNECTOR_A)).last_metrics_error)
@@ -1210,7 +1271,7 @@ describe("GcpMetricsService", () => {
 				yield* pollAll
 				assert.strictEqual(
 					yield* metricsError,
-					CANNOT_SIGN_IN.replace("DENIED)", "DENIED, SERVICE_DISABLED)"),
+					Str.replace("DENIED)", "DENIED, SERVICE_DISABLED)")(CANNOT_SIGN_IN),
 				)
 
 				// Details of another form cost neither the status code nor the poll.
@@ -1338,7 +1399,7 @@ describe("GcpMetricsService", () => {
 				yield* insertConnector(testDb, CONNECTOR_B, { projectId: "acme-staging" })
 				yield* Effect.promise(() =>
 					executeSql(testDb, "UPDATE gcp_connectors SET metrics_lease_until = $1 WHERE id = $2", [
-						new Date(now + minute).toISOString(),
+						DateTime.formatIso(DateTime.makeUnsafe(now + minute)),
 						CONNECTOR_B,
 					]),
 				)
@@ -1378,7 +1439,10 @@ describe("GcpMetricsService", () => {
 				yield* TestClock.setTime(now + 5 * minute)
 				const before = calls.impersonate.length
 				assert.deepInclude(yield* pollAll, { polled: 11, deferred: 2 })
-				const taken = calls.impersonate.slice(before).map((call) => call.account.split("@")[1])
+				const taken = Arr.map(
+					calls.impersonate.slice(before),
+					(call) => Str.split("@")(call.account)[1],
+				)
 				assert.includeMembers(taken, [
 					"acme-prod-10.iam.gserviceaccount.com",
 					"acme-prod-11.iam.gserviceaccount.com",
@@ -1466,7 +1530,7 @@ describe("GcpMetricsService resource inventory", () => {
 					authorization: `Bearer ${READER_TOKEN}`,
 					quotaProject: "acme-prod",
 				})
-				assert.deepStrictEqual(calls.assets[0]!.params.getAll("assetTypes"), [...GCP_ASSET_TYPES])
+				assert.deepStrictEqual(calls.assets[0].params.getAll("assetTypes"), [...GCP_ASSET_TYPES])
 				assert.deepStrictEqual(yield* inventory(testDb, CONNECTOR_A), [
 					["acme-prod", "cloudresourcemanager.googleapis.com/Project", "acme-prod"],
 					["acme-prod", "run.googleapis.com/Service", "cart"],
@@ -1508,7 +1572,7 @@ describe("GcpMetricsService resource inventory", () => {
 		const stub = stubFetch(calls, {
 			assets: () =>
 				json({
-					results: ["orders-db", "orders-replica"].map((name) => ({
+					results: Arr.map(["orders-db", "orders-replica"], (name) => ({
 						name: instanceName(name),
 						assetType: "sqladmin.googleapis.com/Instance",
 						displayName: name,
@@ -1549,9 +1613,9 @@ describe("GcpMetricsService resource inventory", () => {
 					authorization: `Bearer ${READER_TOKEN}`,
 					quotaProject: "acme-prod",
 				})
-				assert.strictEqual(calls.instances[0]!.params.get("contentType"), "RESOURCE")
+				assert.strictEqual(calls.instances[0].params.get("contentType"), "RESOURCE")
 				assert.strictEqual(
-					calls.instances[0]!.params.get("assetTypes"),
+					calls.instances[0].params.get("assetTypes"),
 					"sqladmin.googleapis.com/Instance",
 				)
 				const stored = yield* Effect.promise(() =>
@@ -1628,7 +1692,7 @@ describe("GcpMetricsService resource inventory", () => {
 				)
 				// Counted as synced, so the next attempt is in an hour, and nothing was removed.
 				assert.strictEqual(state.resources_synced_at?.getTime(), now + 60 * minute)
-				const names = (yield* inventory(testDb, CONNECTOR_A)).map((row) => row[2])
+				const names = Arr.map(yield* inventory(testDb, CONNECTOR_A), (row) => row[2])
 				assert.lengthOf(names, 1 + MAX_RESOURCE_PAGES)
 				assert.include(names, "checkout")
 			}),

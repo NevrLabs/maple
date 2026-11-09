@@ -1,5 +1,5 @@
-import { Option } from "effect"
-import { describe, expect, it } from "vitest"
+import { Option, Array as Arr } from "effect"
+import { assert, describe, expect, it } from "vitest"
 import { StatusPageComponentId, StatusPageId } from "./primitives"
 import {
 	applyOverlay,
@@ -168,7 +168,7 @@ describe("pageFreshness", () => {
 		)
 		// A monitored component that hides its bars still counts as monitored.
 		const hidden = snapshot({
-			components: snapshot().components.map((component) => ({
+			components: Arr.map(snapshot().components, (component) => ({
 				...component,
 				showUptime: false,
 				days: [],
@@ -176,7 +176,7 @@ describe("pageFreshness", () => {
 		})
 		expect(pageFreshness({ snapshot: hidden, heartbeat: beat(NOW, 0), nowMs: NOW })._tag).toBe("delayed")
 		const manualOnly = snapshot({
-			components: snapshot().components.map((component) => ({
+			components: Arr.map(snapshot().components, (component) => ({
 				...component,
 				monitored: false,
 				days: [],
@@ -214,9 +214,10 @@ describe("applyOverlay", () => {
 		const merged = applyOverlay(snapshot(), { entries: [followUp, opened] })
 		expect(merged.incidents).toHaveLength(1)
 		const incident = merged.incidents[0]
-		expect(incident?.title).toBe("API errors")
+		assert.isDefined(incident)
+		expect(incident.title).toBe("API errors")
 		expect(incident?.status).toBe("identified")
-		expect(incident?.updates.map((update) => update.body)).toEqual([
+		expect(Arr.map(incident?.updates, (update) => update.body)).toEqual([
 			"A bad deploy; rolling back.",
 			"We are looking into elevated errors.",
 		])
@@ -279,7 +280,7 @@ describe("applyOverlay", () => {
 	it("lowers components again when the overlay resolves an incident the snapshot already applied", () => {
 		const applied = snapshot({
 			incidents: [criticalIncident],
-			components: snapshot().components.map((component) => ({
+			components: Arr.map(snapshot().components, (component) => ({
 				...component,
 				status: "major_outage" as const,
 			})),
@@ -325,7 +326,7 @@ describe("applyOverlay", () => {
 			],
 		})
 		expect(merged.incidents).toHaveLength(1)
-		expect(merged.incidents[0]?.updates.map((update) => update.body)).toEqual([
+		expect(Arr.map(Arr.getUnsafe(merged.incidents, 0)?.updates, (update) => update.body)).toEqual([
 			"Still working on it.",
 			"Imported.",
 		])
@@ -352,9 +353,9 @@ describe("resolveStatusPageTheme", () => {
 	const theme = { ...DEFAULT_STATUS_PAGE_THEME }
 
 	it("keeps text on every preset's brand fill readable at AA", () => {
-		const fills = StatusPageThemePreset.literals.flatMap((preset) => {
+		const fills = Arr.flatMap(StatusPageThemePreset.literals, (preset) => {
 			const resolved = resolveStatusPageTheme({ ...theme, preset })
-			return [resolved.light, resolved.dark].map((tokens) =>
+			return Arr.map([resolved.light, resolved.dark], (tokens) =>
 				contrastRatio(tokens.primaryFg, tokens.primary),
 			)
 		})
@@ -371,20 +372,23 @@ describe("resolveStatusPageTheme", () => {
 
 	it("tints the status banner visibly in every preset and mode while text on it stays AA", () => {
 		const themes: ReadonlyArray<StatusPageTheme> = [
-			...StatusPageThemePreset.literals.map((preset) => ({ ...theme, preset })),
+			...Arr.map(StatusPageThemePreset.literals, (preset) => ({ ...theme, preset })),
 			// A custom pale card with mid-grey text: the tint backs off to stay readable.
 			{ ...theme, appearance: "light", card: "#ffffff", text: "#595959" },
 		]
-		const tints = themes.flatMap((t) => {
+		const tints = Arr.flatMap(themes, (t) => {
 			const resolved = resolveStatusPageTheme(t)
-			return [resolved.light, resolved.dark].flatMap((tokens) =>
-				[
-					tokens.okTint,
-					tokens.degradedTint,
-					tokens.partialTint,
-					tokens.majorTint,
-					tokens.maintTint,
-				].map((tint) => ({ tint, fg: tokens.fg, card: tokens.card })),
+			return Arr.flatMap([resolved.light, resolved.dark], (tokens) =>
+				Arr.map(
+					[
+						tokens.okTint,
+						tokens.degradedTint,
+						tokens.partialTint,
+						tokens.majorTint,
+						tokens.maintTint,
+					],
+					(tint) => ({ tint, fg: tokens.fg, card: tokens.card }),
+				),
 			)
 		})
 		expect(tints).toHaveLength((StatusPageThemePreset.literals.length + 1) * 10)
@@ -490,10 +494,10 @@ describe("theme readability", () => {
 
 	it("keeps every preset's status text readable on its background and cards", () => {
 		const presets = StatusPageThemePreset.literals
-		const worst = presets.flatMap((preset) => {
+		const worst = Arr.flatMap(presets, (preset) => {
 			const resolved = resolveStatusPageTheme(theme({ preset }))
-			return [resolved.light, resolved.dark].flatMap((tokens) =>
-				[tokens.ok, tokens.degraded, tokens.partial, tokens.major].map((colour) =>
+			return Arr.flatMap([resolved.light, resolved.dark], (tokens) =>
+				Arr.map([tokens.ok, tokens.degraded, tokens.partial, tokens.major], (colour) =>
 					Math.min(contrastRatio(colour, tokens.bg), contrastRatio(colour, tokens.card)),
 				),
 			)
@@ -507,12 +511,12 @@ describe("themeContrastIssue", () => {
 	const appearances = ["auto", "light", "dark"] as const
 
 	it("passes every preset in every appearance", () => {
-		const issues = presets.flatMap((preset) =>
-			appearances.map((appearance) =>
+		const issues = Arr.flatMap(presets, (preset) =>
+			Arr.map(appearances, (appearance) =>
 				themeContrastIssue({ ...DEFAULT_STATUS_PAGE_THEME, preset, appearance }),
 			),
 		)
-		expect(issues.filter((issue) => issue !== null)).toEqual([])
+		expect(Arr.filter(issues, (issue) => issue !== null)).toEqual([])
 	})
 
 	it("flags #777777 text on a white background at 4.48:1", () => {

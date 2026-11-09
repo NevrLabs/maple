@@ -1,6 +1,6 @@
 import { AsyncData, Submodel } from "foldkit"
 import type { Html, HtmlBuilder } from "foldkit/html"
-import { errorState } from "../../../../ui/error-state"
+import { errorState } from "@maple/views/ui/error-state"
 import type { PageViewInputs } from "../../../contract"
 import { dashboardPage } from "../../../kit/dashboard-page"
 import type { ProxmoxSnapshot } from "../model"

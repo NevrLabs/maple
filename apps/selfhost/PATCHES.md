@@ -1,6 +1,42 @@
 # Upstream files modified by the NevrLabs selfhost fork
 
-Keep this list minimal; every entry is a rebase conflict risk.
+Keep this list minimal; every entry is a merge conflict risk.
+
+## Upstream merge reconciliation (2026-11-08)
+
+Merge base `d2b1413e`; fork input `2c94e431`; upstream `e231894bc`.
+PATCHES #1–#17 remain intentional. No behavioral patch is declared superseded without verification.
+Upstream commit `5447a6c3` extracted the shared UI/charts into `@maple/views`:
+- #3 Proxmox and #5 Members import the extracted primitives/data helpers.
+- #3 Proxmox presence augments the combined infra-surfaces response; the old per-provider sidebar commands
+  are superseded by upstream's combined probe (not the Proxmox behavior).
+- #5 settings/Alerts use upstream permissions while the selfhost route gate remains authoritative for
+  viewers. OIDC/root identity, revocation and Members management are retained.
+- #6 provides upstream's new VCS backfill port through the existing durable Postgres consumer. The new
+  cancellation-review port remains disabled like other cloud-only queues; share links get the upstream
+  6000/minute aggregate limiter. `ports.test.ts` exercises the added runtime dependencies.
+- #1 provides a fresh upstream WorkerExecutionContext at the Bun request boundary, preserving caller
+  services for deferred waitUntil work. Without it query handlers fail500 despite healthy login/health.
+  `request-context.test.ts` covers that boundary; candidate Services reads verify real warehouse data.
+- The image bundler externalizes optional Astro configuration and React devtools imports, consistent
+  with its existing build-tool exclusions; no runtime dependency was added.
+- The revive Services fixture completes the fork liveness request before asserting a parked view;
+  the lab registry retains the existing `/lab/bench/ui-lag` entry after upstream registry changes.
+- Warehouse driver tests distinguish the managed read-only gateway from vanilla selfhost ClickHouse;
+  direct driver construction bypasses env routing, so unsetting `CLICKHOUSE_WRITE_USER` cannot make
+  that low-level vanilla driver reject inserts. Mocked wire framing covers the retained fork write path.
+- #15 first-mount sizing is ported to `packages/views/src/charts/chart-mounts.ts`. Upstream still created
+  every chart at 320px then measured; therefore the performance fix is NOT superseded by the move.
+- #11 retains informational groups, failure-based uptime and row icons alongside upstream status changes.
+  Both the editor badge and page-list summary exclude informational groups from the overall banner,
+  matching the public preview; component rows remain visible. Members keeps a minimum-width table
+  inside the existing scroll wrapper so identity names and roles do not overlap on phones.
+- #13 retains its existing tier migration and schema; migration rehearsal must verify divergent snapshot
+  lineages before any deployment.
+- #16/#17 retain native-scope/all-kind audit and capability-based Cloudflare recovery alongside upstream
+  Effect collection refactors. Neither is replaced by suppressing disabled datasets.
+
+
 
 ## 1. `packages/backend/src/services/warehouse/WarehouseQueryService.ts` — internal writes to ClickHouse
 

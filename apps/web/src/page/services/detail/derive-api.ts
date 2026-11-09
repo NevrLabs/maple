@@ -1,5 +1,6 @@
 import { parseBucketMs } from "@maple/ui/lib/format"
 import type { ApiBucket, ApiTotals, Endpoint, StatusRow } from "./model-tabs"
+import { Array as Arr, String as Str, Option, Order } from "effect"
 
 // Pure halves of the API tab: status mix, KPI figures, the responses chart, the non-2xx breakdown,
 // the table filters and the drawer's latency distribution.
@@ -73,9 +74,10 @@ export const bucketAxis = (
 	window: WindowMs,
 ): ReadonlyArray<number> => {
 	const step = Math.max(1, bucketSeconds) * 1000
-	const anchor = buckets.reduce<number | null>(
-		(found, bucket) => found ?? parseBucketMs(bucket.bucket),
+	const anchor = Arr.reduce<ApiBucket, number | null>(
+		buckets,
 		null,
+		(found, bucket) => found ?? parseBucketMs(bucket.bucket),
 	)
 	const origin = anchor ?? Math.floor(window.startMs / step) * step
 	// The first slot at or before the window start, the last one starting before its end.
@@ -90,11 +92,11 @@ export const onAxis = (
 	buckets: ReadonlyArray<ApiBucket>,
 	value: (bucket: ApiBucket) => number,
 ): ReadonlyArray<number> => {
-	const sums = buckets.reduce((acc, bucket) => {
+	const sums = Arr.reduce(buckets, new Map<number, number>(), (acc, bucket) => {
 		const ms = parseBucketMs(bucket.bucket)
 		return ms === null ? acc : acc.set(ms, (acc.get(ms) ?? 0) + value(bucket))
-	}, new Map<number, number>())
-	return axis.map((time) => sums.get(time) ?? 0)
+	})
+	return Arr.map(axis, (time) => sums.get(time) ?? 0)
 }
 
 /** One series per KPI tile across the window; a silent bucket reads 0, not a gap. */
@@ -119,13 +121,13 @@ export type StatusClass = (typeof STATUS_CLASSES)[number]
  */
 export const responseRows = (buckets: ReadonlyArray<ApiBucket>, bucketSeconds: number, window: WindowMs) => {
 	const byTime = new Map(
-		buckets.flatMap((bucket) => {
+		Arr.flatMap(buckets, (bucket) => {
 			const ms = parseBucketMs(bucket.bucket)
 			return ms === null ? [] : [[ms, bucket] as const]
 		}),
 	)
 	// Every slot of the window gets rows, so the x axis spans the window and quiet buckets read 0.
-	return bucketAxis(buckets, bucketSeconds, window).flatMap((ms) => {
+	return Arr.flatMap(bucketAxis(buckets, bucketSeconds, window), (ms) => {
 		const iso = new Date(ms).toISOString()
 		const bucket = byTime.get(ms)
 		if (bucket === undefined)
@@ -147,7 +149,7 @@ export const responseRows = (buckets: ReadonlyArray<ApiBucket>, bucketSeconds: n
 
 /** Whether any bucket's status mix is unknown, so the chart legend names the grey band. */
 export const hasUnknownBuckets = (buckets: ReadonlyArray<ApiBucket>) =>
-	buckets.some((bucket) => knownStatusMix(bucket) === null && bucket.estimatedSpanCount > 0)
+	Arr.some(buckets, (bucket) => knownStatusMix(bucket) === null && bucket.estimatedSpanCount > 0)
 
 /** Status-code reason phrases the breakdown names; unknown codes print bare. */
 const REASON_PHRASES = new Map<string, string>([
@@ -174,7 +176,7 @@ const REASON_PHRASES = new Map<string, string>([
 
 export const reasonPhrase = (code: string): string => REASON_PHRASES.get(code) ?? ""
 
-export const isServerError = (code: string) => code.startsWith("5")
+export const isServerError = (code: string) => Str.startsWith("5")(code)
 
 /** Codes 400 and up; 1xx-3xx are what the breakdown leaves out. */
 const isNonOk = (code: string) => Number(code) >= 400
@@ -182,7 +184,14 @@ const isNonOk = (code: string) => Number(code) >= 400
 type Ranked = ReadonlyArray<Readonly<{ name: string; count: number }>>
 
 const ranked = (counts: ReadonlyMap<string, number>): Ranked =>
-	[...counts].map(([name, count]) => ({ name, count })).toSorted((a, b) => b.count - a.count)
+	Arr.sort(
+		Arr.map([...counts], ([name, count]) => ({ name, count })),
+		byCountDesc,
+	)
+
+const byCountDesc = Order.flip(
+	Order.mapInput(Order.Number, (entry: { readonly count: number }) => entry.count),
+)
 
 const add = (map: Map<string, number>, key: string, count: number) =>
 	map.set(key, (map.get(key) ?? 0) + count)
@@ -200,9 +209,10 @@ export type StatusCodeSummary = Readonly<{
 
 /** The non-2xx responses by status code, busiest first. */
 export const statusCodeSummaries = (rows: ReadonlyArray<StatusRow>): ReadonlyArray<StatusCodeSummary> => {
-	const groups = rows
-		.filter((row) => isNonOk(row.httpStatusCode))
-		.reduce((acc, row) => {
+	const groups = Arr.reduce(
+		Arr.filter(rows, (row) => isNonOk(row.httpStatusCode)),
+		new Map<string, { count: number; errorTypes: Map<string, number>; routes: Map<string, number> }>(),
+		(acc, row) => {
 			const entry = acc.get(row.httpStatusCode) ?? {
 				count: 0,
 				errorTypes: new Map<string, number>(),
@@ -212,35 +222,50 @@ export const statusCodeSummaries = (rows: ReadonlyArray<StatusRow>): ReadonlyArr
 			if (row.errorType !== "") add(entry.errorTypes, row.errorType, row.estimatedSpanCount)
 			add(entry.routes, row.spanName, row.estimatedSpanCount)
 			return acc.set(row.httpStatusCode, entry)
-		}, new Map<string, { count: number; errorTypes: Map<string, number>; routes: Map<string, number> }>())
-	const total = [...groups.values()].reduce((sum, entry) => sum + entry.count, 0)
-	return [...groups]
-		.map(([code, entry]) => ({
+		},
+	)
+	const total = Arr.reduce([...groups.values()], 0, (sum, entry) => sum + entry.count)
+	return Arr.sort(
+		Arr.map([...groups], ([code, entry]) => ({
 			code,
 			count: entry.count,
 			share: total > 0 ? entry.count / total : 0,
 			errorTypes: ranked(entry.errorTypes),
 			routes: ranked(entry.routes),
-		}))
-		.toSorted((a, b) => b.count - a.count)
+		})),
+		byCountDesc,
+	)
 }
 
 /** Every status code of one endpoint (2xx included), busiest first, with its share of the endpoint. */
 export const endpointStatusCodes = (rows: ReadonlyArray<StatusRow>, spanName: string) => {
-	const counts = rows
-		.filter((row) => row.spanName === spanName)
-		.reduce((acc, row) => add(acc, row.httpStatusCode, row.estimatedSpanCount), new Map<string, number>())
-	const total = [...counts.values()].reduce((sum, count) => sum + count, 0)
-	return ranked(counts).map((entry) => ({ ...entry, share: total > 0 ? entry.count / total : 0 }))
+	const counts = Arr.reduce(
+		Arr.filter(rows, (row) => row.spanName === spanName),
+		new Map<string, number>(),
+		(acc, row) => add(acc, row.httpStatusCode, row.estimatedSpanCount),
+	)
+	const total = Arr.reduce([...counts.values()], 0, (sum, count) => sum + count)
+	return Arr.map(ranked(counts), (entry) => ({ ...entry, share: total > 0 ? entry.count / total : 0 }))
 }
 
 /** "/v1/traces, /v1/logs +3": the leading routes of a code, by their path only. */
 export const routeList = (routes: Ranked, shown = 2): string => {
 	// GET and POST of one path read the same once the method is dropped: list each path once.
-	const all = [...new Set(routes.map((route) => route.name.slice(route.name.indexOf(" ") + 1)))]
+	const all = [
+		...new Set(
+			Arr.map(routes, (route) =>
+				Str.slice(
+					Option.match(Str.indexOf(" ")(route.name), {
+						onNone: () => 0,
+						onSome: (space) => space + 1,
+					}),
+				)(route.name),
+			),
+		),
+	]
 	const paths = all.slice(0, shown)
 	const rest = all.length - shown
-	return rest > 0 ? `${paths.join(", ")} +${rest}` : paths.join(", ")
+	return rest > 0 ? `${Arr.join(paths, ", ")} +${rest}` : Arr.join(paths, ", ")
 }
 
 export const ENDPOINT_FILTERS = ["all", "rejecting", "slow"] as const
@@ -265,8 +290,8 @@ export const serverShare = (endpoint: Endpoint): number =>
 	knownStatusMix(endpoint)?.server ?? endpoint.errorRate
 
 export const matchesFilter = (endpoint: Endpoint, filter: EndpointFilter, query: string): boolean => {
-	const needle = query.trim().toLowerCase()
-	if (needle !== "" && !endpoint.spanName.toLowerCase().includes(needle)) return false
+	const needle = Str.toLowerCase(Str.trim(query))
+	if (needle !== "" && !Str.includes(needle)(Str.toLowerCase(endpoint.spanName))) return false
 	switch (filter) {
 		case "all":
 			return true
@@ -279,9 +304,8 @@ export const matchesFilter = (endpoint: Endpoint, filter: EndpointFilter, query:
 
 /** The endpoint the "slowest" badge marks: the worst p95, when it is past the slow line. */
 export const slowestEndpoint = (endpoints: ReadonlyArray<Endpoint>): string | null => {
-	const worst = endpoints.reduce<Endpoint | null>(
-		(acc, endpoint) => (acc === null || endpoint.p95DurationMs > acc.p95DurationMs ? endpoint : acc),
-		null,
+	const worst = Arr.reduce<Endpoint, Endpoint | null>(endpoints, null, (acc, endpoint) =>
+		acc === null || endpoint.p95DurationMs > acc.p95DurationMs ? endpoint : acc,
 	)
 	return worst !== null && worst.p95DurationMs > SLOW_P95_MS ? worst.spanName : null
 }
@@ -307,16 +331,20 @@ export const latencyHistogram = (
 	valuesMs: ReadonlyArray<number>,
 ): ReadonlyArray<HistogramBin> => {
 	// t-digest quantiles can dip out of order; a running max keeps the CDF monotone.
-	const points = levels
-		.map((level, index) => ({ level, ms: Math.max(MIN_LATENCY_MS, valuesMs[index] ?? 0) }))
-		.filter((point) => Number.isFinite(point.ms))
-		.reduce<Array<{ level: number; ms: number }>>(
-			(acc, point) => [
-				...acc,
-				{ level: point.level, ms: Math.max(point.ms, acc[acc.length - 1]?.ms ?? 0) },
-			],
-			[],
-		)
+	const points = Arr.reduce<{ level: number; ms: number }, Array<{ level: number; ms: number }>>(
+		Arr.filter(
+			Arr.map(levels, (level, index) => ({
+				level,
+				ms: Math.max(MIN_LATENCY_MS, valuesMs[index] ?? 0),
+			})),
+			(point) => Number.isFinite(point.ms),
+		),
+		[],
+		(acc, point) => [
+			...acc,
+			{ level: point.level, ms: Math.max(point.ms, acc[acc.length - 1]?.ms ?? 0) },
+		],
+	)
 	const first = points[0]
 	const last = points[points.length - 1]
 	if (first === undefined || last === undefined || last.ms <= first.ms) return []
@@ -325,14 +353,19 @@ export const latencyHistogram = (
 		const x = logOf(ms)
 		if (x <= logOf(first.ms)) return first.level
 		if (x >= logOf(last.ms)) return last.level
-		const upper = points.findIndex((point) => logOf(point.ms) >= x)
-		const hi = points[upper]
-		const lo = points[upper - 1]
+		const upper = Arr.findFirstIndex(points, (point) => logOf(point.ms) >= x)
+		if (Option.isNone(upper)) return last.level
+		const hi = points[upper.value]
+		const lo = points[upper.value - 1]
 		if (hi === undefined || lo === undefined) return last.level
 		const span = logOf(hi.ms) - logOf(lo.ms)
 		return span <= 0 ? hi.level : lo.level + ((x - logOf(lo.ms)) / span) * (hi.level - lo.level)
 	}
-	const quantileAt = (level: number) => points.find((point) => point.level >= level)?.ms ?? last.ms
+	const quantileAt = (level: number) =>
+		Option.match(
+			Arr.findFirst(points, (point) => point.level >= level),
+			{ onNone: () => last.ms, onSome: (point) => point.ms },
+		)
 	const p95 = quantileAt(0.95)
 	const p99 = quantileAt(0.99)
 	const step = (logOf(last.ms) - logOf(first.ms)) / HISTOGRAM_BINS

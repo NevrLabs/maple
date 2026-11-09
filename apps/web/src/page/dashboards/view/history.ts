@@ -1,8 +1,8 @@
 import { DashboardDocument, DashboardVersionChangeKind } from "@maple/domain/http"
 import { AsyncData } from "foldkit"
-import { Schema } from "effect"
-import { LoadFailure } from "../../../data/load-failure"
-import * as Dialog from "../../../ui/dialog"
+import { Schema, String as Str } from "effect"
+import { LoadFailure } from "@maple/views/data/load-failure"
+import * as Dialog from "@maple/views/ui/dialog"
 
 // Version history: the panel's timeline, the previewed version and
 // its snapshot, read through `dashboards.listVersions` / `retrieveVersion`.
@@ -71,6 +71,8 @@ export const HistoryState = Schema.Struct({
 	 * `Keyed` slot: the read has no org-scoped request key and reopening resets to `Loading`.
 	 */
 	versionsGeneration: Schema.Number,
+	/** When the version list was read: its relative times count from here, not from page load. */
+	listedAtMs: Schema.Number,
 	previewed: Schema.NullOr(VersionRow),
 	snapshot: SnapshotData.schema,
 	restoreDialog: Dialog.Model,
@@ -88,6 +90,7 @@ export const initHistory = (): HistoryState => ({
 	isOpen: false,
 	versions: AsyncData.Idle(),
 	versionsGeneration: 0,
+	listedAtMs: 0,
 	previewed: null,
 	snapshot: AsyncData.Idle(),
 	restoreDialog: Dialog.init("dashboard-restore-version", "alert-dialog"),
@@ -97,8 +100,8 @@ export const initHistory = (): HistoryState => ({
 
 /** `actorInitials`: the first two alphanumerics of the opaque user id. */
 export const actorInitials = (userId: string): string => {
-	const upper = userId.trim().toUpperCase()
+	const upper = Str.toUpperCase(Str.trim(userId))
 	if (upper === "") return "?"
-	const chars = upper.replace(/[^A-Z0-9]/g, "")
-	return chars.slice(0, 2) || upper.slice(0, 2)
+	const chars = Str.replace(/[^A-Z0-9]/g, "")(upper)
+	return Str.slice(0, 2)(chars) || Str.slice(0, 2)(upper)
 }

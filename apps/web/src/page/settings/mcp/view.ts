@@ -1,3 +1,4 @@
+import * as Policy from "@maple/domain/policy"
 import { cn } from "@maple/ui/lib/utils"
 import { mcpUrl } from "../../../lib/services/common/mcp-url"
 import {
@@ -9,11 +10,12 @@ import {
 import { REPLAY_BLOCK_CLASS } from "../../../components/common/replay-privacy"
 import type { Html, HtmlBuilder } from "foldkit/html"
 import { Submodel } from "foldkit"
-import { button } from "../../../ui/button"
-import * as CopyButton from "../../../ui/copy-button"
-import { copyableField } from "../../../ui/copyable-field"
-import { inlineCode } from "../../../ui/inline-code"
-import * as TabsView from "../../../ui/tabs-view"
+import { button } from "@maple/views/ui/button"
+import * as CopyButton from "@maple/views/ui/copy-button"
+import { copyableField } from "@maple/views/ui/copyable-field"
+import { inlineCode } from "@maple/views/ui/inline-code"
+import { label } from "@maple/views/ui/label"
+import * as TabsView from "@maple/views/ui/tabs-view"
 import * as CreateKeyView from "../keys/create-dialog-view"
 import { codeBlock } from "../kit/code-block"
 import { INLINE_LINK_CLASS, settingsSection, settingsSections } from "../kit/section"
@@ -21,8 +23,13 @@ import { Message } from "./message"
 import { CLIENT_LABELS, type Model } from "./model"
 import { connectedClientsSection } from "./view-clients"
 import { toolsSection } from "./view-tools"
+import { typography } from "@maple/views/ui/typography"
 
-export type ViewInputs = Readonly<{ isAdmin: boolean; nowMs: number; timeZone: string }>
+export type ViewInputs = Readonly<{
+	grants: ReadonlyArray<Policy.Permission>
+	nowMs: number
+	timeZone: string
+}>
 
 type H = HtmlBuilder<Message>
 
@@ -40,7 +47,7 @@ const snippet = (
 	h.div(
 		[h.Class("space-y-2")],
 		[
-			h.p([h.Class("font-prose text-xs text-muted-foreground")], hint),
+			typography(h, { size: "xs", tone: "muted", as: "p", className: "font-prose" }, hint),
 			codeBlock(h, {
 				code,
 				language,
@@ -147,10 +154,12 @@ const oauthNote = (h: H, model: Model): Html =>
 					keysLink(h),
 				],
 			)
-		: h.p(
-				[h.Class("text-muted-foreground")],
-				["Key created and added to the snippets above. Manage it in", " ", keysLink(h), "."],
-			)
+		: typography(h, { tone: "muted", as: "p" }, [
+				"Key created and added to the snippets above. Manage it in",
+				" ",
+				keysLink(h),
+				".",
+			])
 
 const connectSection = (h: H, model: Model): Html =>
 	settingsSection(
@@ -168,11 +177,13 @@ const connectSection = (h: H, model: Model): Html =>
 						[h.Class("space-y-1.5")],
 						[
 							// A sans field label: mono is for the value, not its name.
-							h.label(
-								[
-									h.For("mcp-server-url"),
-									h.Class("block font-prose text-xs text-muted-foreground"),
-								],
+							label(
+								h,
+								{
+									className:
+										"block font-prose text-xs font-normal text-muted-foreground sm:text-xs",
+									attributes: [h.For("mcp-server-url")],
+								},
 								["Server URL"],
 							),
 							copyableField(h, {
@@ -200,10 +211,9 @@ const connectSection = (h: H, model: Model): Html =>
 					h.div(
 						[h.Class("space-y-1 border-t pt-3 font-prose text-xs")],
 						[
-							h.p(
-								[h.Class("text-muted-foreground")],
-								["Your client opens Maple in the browser to approve access."],
-							),
+							typography(h, { tone: "muted", as: "p" }, [
+								"Your client opens Maple in the browser to approve access.",
+							]),
 							oauthNote(h, model),
 						],
 					),

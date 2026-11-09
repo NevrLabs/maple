@@ -1,9 +1,9 @@
 import type { OrganizationFeatureFlags } from "@maple/domain/organization-feature-flags"
-import { Option, Schema } from "effect"
+import { Option, Predicate, Schema } from "effect"
 import { AppRoute } from "./app-route"
 import { hrefOf } from "./routers"
 import { DATA_INTEGRATIONS } from "./data-integrations"
-import { ErrorsSearch } from "./search"
+import { type AlertsSearch, type AnomaliesSearch, ErrorsSearch } from "./search"
 
 /** Where a route sends the browser instead of rendering, and whether it replaces history. */
 export const Redirect = Schema.Struct({ url: Schema.String, isReplace: Schema.Boolean })
@@ -36,12 +36,36 @@ const errorsSearchOf = ({ search }: typeof AppRoute.ErrorIssues.Type): typeof Er
 	)
 }
 
+const decodeServices = Schema.decodeUnknownOption(
+	Schema.Union([Schema.NonEmptyString, Schema.Array(Schema.String)]),
+)
+
+/** The one service an old anomalies link named, under either spelling, or none. */
+const anomalyServiceOf = (search: typeof AnomaliesSearch.Type): string | undefined => {
+	const named = Option.match(decodeServices(search.services ?? search.service), {
+		onNone: (): ReadonlyArray<string> => [],
+		onSome: (value): ReadonlyArray<string> => (Predicate.isString(value) ? [value] : value),
+	})
+	return named.length === 1 ? named[0] : undefined
+}
+
+const anomaliesViewSearch = (search: typeof AnomaliesSearch.Type): typeof AlertsSearch.Type => {
+	const serviceName = anomalyServiceOf(search)
+	return {
+		signal: "anomaly",
+		...(serviceName === undefined ? undefined : { serviceName }),
+		...(search.status === "resolved" || search.status === "all"
+			? { anomalyStatus: search.status }
+			: undefined),
+	}
+}
+
 const DATA_INTEGRATION_IDS: ReadonlySet<string> = new Set(DATA_INTEGRATIONS)
 
 const redirect = (to: AppRoute, isReplace: boolean) =>
 	Option.some(Redirect.make({ url: hrefOf(to), isReplace }))
 
-/** Redirects of retired paths (connectors, developer, infra, errors/issues, alerts status pages) and moved integrations. */
+/** Redirects of retired paths (connectors, developer, infra, errors/issues, alerts status pages, anomalies, security) and moved integrations. */
 export const routeRedirect = (route: AppRoute): Option.Option<Redirect> =>
 	AppRoute.matchOrElse<Option.Option<Redirect>>(
 		route,
@@ -73,6 +97,9 @@ export const routeRedirect = (route: AppRoute): Option.Option<Redirect> =>
 			InfraDiscover: () => redirect(AppRoute.Infra({ search: {} }), true),
 			InfraLegacyHost: ({ hostName }) => redirect(AppRoute.InfraHost({ hostName, search: {} }), true),
 			AlertIncidentsIndex: () => redirect(AppRoute.Alerts({ search: {} }), true),
+			/** The anomalies list is the Alerts Inbox's Anomalies view; one service and the status carry over. */
+			Anomalies: ({ search }) =>
+				redirect(AppRoute.Alerts({ search: anomaliesViewSearch(search) }), true),
 			/** Status pages left the Alerts hub for their own sidebar entry. */
 			Alerts: ({ search }) =>
 				search.tab === "status-pages" ? redirect(AppRoute.StatusPages(), true) : Option.none(),
@@ -88,6 +115,13 @@ export const routeRedirect = (route: AppRoute): Option.Option<Redirect> =>
 			RecommendationsIndex: () => redirect(AppRoute.Settings({ search: { tab: "ingestion" } }), true),
 			InfraKubernetes: ({ search }) => redirect(AppRoute.InfraKubernetesPods({ search }), true),
 			ErrorIssues: (issues) => redirect(AppRoute.Errors({ search: errorsSearchOf(issues) }), true),
+			/** The code audit moved under `/security/code`; `/security` opens it until the hub has an overview. */
+			Security: () => redirect(AppRoute.SecurityCode(), true),
+			SecurityLegacyFindings: ({ search }) => redirect(AppRoute.SecurityCodeFindings({ search }), true),
+			SecurityLegacyRuns: ({ search }) => redirect(AppRoute.SecurityCodeRuns({ search }), true),
+			SecurityLegacyRun: ({ runId }) => redirect(AppRoute.SecurityRun({ runId }), true),
+			SecurityLegacyFinding: ({ targetId, fingerprint }) =>
+				redirect(AppRoute.SecurityFinding({ targetId, fingerprint }), true),
 		},
 		() => Option.none(),
 	)

@@ -3,8 +3,8 @@ import { EMPTY_VALUE, formatNumber } from "@maple/ui/lib/format"
 import { cn } from "@maple/ui/lib/utils"
 import type { Html, HtmlBuilder } from "foldkit/html"
 import { AppRoute, hrefOf } from "../../../../route"
-import { badge } from "../../../../ui/display"
-import { skeleton } from "../../../../ui/skeleton"
+import { badge } from "@maple/views/ui/display"
+import { skeleton } from "@maple/views/ui/skeleton"
 import {
 	columnHead,
 	dataTable,
@@ -24,6 +24,10 @@ import {
 } from "../../../../components/infra/planetscale/metrics"
 import { formatWholePercent } from "../../../../components/infra/format"
 import { Message, type SortKey } from "./model"
+import { typography } from "@maple/views/ui/typography"
+import { column, columnClass } from "@maple/views/ui/column"
+import { Array as Arr, String as Str } from "effect"
+import { hstack } from "@maple/views/ui/stack"
 
 // `PlanetScaleDatabaseTable` and its loading state.
 
@@ -53,7 +57,7 @@ const COLUMNS: ReadonlyArray<{
 	hidden?: string
 	metric?: boolean
 }> = [
-	{ label: "Database", key: "name", width: "w-0 flex-1 min-w-56" },
+	{ label: "Database", key: "name", width: columnClass({ min: "56" }) },
 	{ label: "Branches", key: "branchCount", width: "w-20", align: "right", hidden: "hidden md:flex" },
 	{ label: "Connections", key: "connectionsAvg", width: "w-24", align: "right", metric: true },
 	{ label: "CPU (max)", key: "cpuMaxPercent", width: "w-24", align: "right", metric: true },
@@ -71,21 +75,23 @@ const COLUMNS: ReadonlyArray<{
 
 /** `headerCells`: sortable heads only when a sort is given; `metricsPaused` drops the metric columns. */
 const headerCells = (h: H, sort: Sort<SortKey> | undefined, metricsPaused: boolean): ReadonlyArray<Html> =>
-	COLUMNS.filter((column) => !metricsPaused || column.metric !== true).map((column) =>
-		columnHead(h, {
-			label: column.label,
-			width: column.width,
-			align: column.align,
-			hidden: column.hidden,
-			sort:
-				sort === undefined
-					? undefined
-					: {
-							onSort: Message.ClickedSort({ key: column.key }),
-							isActive: sort.key === column.key,
-							dir: sort.dir,
-						},
-		}),
+	Arr.map(
+		Arr.filter(COLUMNS, (column) => !metricsPaused || column.metric !== true),
+		(column) =>
+			columnHead(h, {
+				label: column.label,
+				width: column.width,
+				align: column.align,
+				hidden: column.hidden,
+				sort:
+					sort === undefined
+						? undefined
+						: {
+								onSort: Message.ClickedSort({ key: column.key }),
+								isActive: sort.key === column.key,
+								dir: sort.dir,
+							},
+			}),
 	)
 
 export const databaseTableLoading = (h: H): Html =>
@@ -94,7 +100,7 @@ export const databaseTableLoading = (h: H): Html =>
 		{ ariaLabel: "Databases" },
 		headerCells(h, undefined, false),
 		skeletonRows(h, 3, () => [
-			h.div([h.Class("w-0 min-w-56 flex-1")], [skeleton(h, "h-4 w-44")]),
+			column(h, { min: "56" }, [skeleton(h, "h-4 w-44")]),
 			skeleton(h, "hidden h-3 w-20 md:block"),
 			skeleton(h, "h-3 w-24"),
 			skeleton(h, "h-3 w-24"),
@@ -105,7 +111,7 @@ export const databaseTableLoading = (h: H): Html =>
 	)
 
 const toRow = (db: V2PlanetScaleDatabase, statsByName: ReadonlyMap<string, DatabaseStat>): DatabaseRow => {
-	const stats = statsByName.get(db.name.toLowerCase())
+	const stats = statsByName.get(Str.toLowerCase(db.name))
 	return {
 		id: db.id,
 		name: db.name,
@@ -128,7 +134,7 @@ const CELL = "text-right font-mono text-xs tabular-nums text-foreground-soft"
 const metaChip = (h: H, text: string): Html =>
 	h.span(
 		[h.Class("hidden shrink-0 xl:inline-flex")],
-		[h.span([h.Class("font-mono text-3xs text-foreground-subtle")], [text])],
+		[typography(h, { size: "3xs", tone: "subtle", mono: true }, [text])],
 	)
 
 const metricCells = (h: H, row: DatabaseRow): ReadonlyArray<Html> => [
@@ -138,11 +144,7 @@ const metricCells = (h: H, row: DatabaseRow): ReadonlyArray<Html> => [
 		[row.hasStats ? formatWholePercent(row.cpuMaxPercent / 100) : EMPTY_VALUE],
 	),
 	h.div(
-		[
-			h.Class(
-				cn("hidden w-28", CELL, "md:block", row.hasStats && utilizationClass(row.memMaxPercent)),
-			),
-		],
+		[h.Class(cn("hidden w-28", CELL, "md:block", row.hasStats && utilizationClass(row.memMaxPercent)))],
 		[row.hasStats ? formatWholePercent(row.memMaxPercent / 100) : EMPTY_VALUE],
 	),
 	h.div(
@@ -171,28 +173,23 @@ const databaseRow = (h: H, row: DatabaseRow, metricsPaused: boolean): Html => {
 			h.Href(hrefOf(AppRoute.InfraPlanetscaleDatabase({ dbName: row.name, search: {} }))),
 		],
 		[
-			h.div(
-				[h.Class("flex w-0 min-w-56 flex-1 items-center gap-2 overflow-hidden")],
-				[
-					h.span(
-						[
-							h.Class(
-								"min-w-0 truncate font-mono text-xs font-medium text-foreground transition-colors group-hover:text-primary",
-							),
-							h.Title(row.name),
-						],
-						[row.name],
-					),
-					badge(h, { variant: "outline", className: "shrink-0" }, [
-						row.kind === "postgresql" ? "Postgres" : "MySQL",
-					]),
-					...(state === null
-						? []
-						: [badge(h, { variant: "warn", className: "shrink-0" }, [state])]),
-					...(row.region ? [metaChip(h, row.region)] : []),
-					...(row.plan ? [metaChip(h, row.plan)] : []),
-				],
-			),
+			hstack(h, { gap: "2", align: "center", grow: true, className: "w-0 min-w-56 overflow-hidden" }, [
+				h.span(
+					[
+						h.Class(
+							"min-w-0 truncate font-mono text-xs font-medium text-foreground transition-colors group-hover:text-primary",
+						),
+						h.Title(row.name),
+					],
+					[row.name],
+				),
+				badge(h, { variant: "outline", className: "shrink-0" }, [
+					row.kind === "postgresql" ? "Postgres" : "MySQL",
+				]),
+				...(state === null ? [] : [badge(h, { variant: "warn", className: "shrink-0" }, [state])]),
+				...(row.region ? [metaChip(h, row.region)] : []),
+				...(row.plan ? [metaChip(h, row.plan)] : []),
+			]),
 			h.div([h.Class(cn("hidden w-20", CELL, "md:block"))], [String(row.branchCount)]),
 			...(metricsPaused ? [] : metricCells(h, row)),
 		],
@@ -209,17 +206,15 @@ export type DatabaseTableInputs = Readonly<{
 }>
 
 export const databaseTable = (h: H, inputs: DatabaseTableInputs): Html => {
-	const statsByName = new Map(inputs.stats.map((row) => [row.database.toLowerCase(), row]))
-	const rows = sortRowsByField(
-		inputs.databases.map((db) => toRow(db, statsByName)),
-		inputs.sort,
-	)
+	const statsByName = new Map(Arr.map(inputs.stats, (row) => [Str.toLowerCase(row.database), row]))
+	const unsorted = Arr.map(inputs.databases, (db) => toRow(db, statsByName))
+	const rows = sortRowsByField(unsorted, inputs.sort)
 	return dataTable(
 		h,
 		{ ariaLabel: "PlanetScale databases", isWaiting: inputs.isWaiting },
 		headerCells(h, inputs.sort, inputs.metricsPaused),
 		rows.length === 0
 			? [dataTableEmpty(h, [inputs.emptyMessage])]
-			: rows.map((row) => databaseRow(h, row, inputs.metricsPaused)),
+			: Arr.map(rows, (row) => databaseRow(h, row, inputs.metricsPaused)),
 	)
 }

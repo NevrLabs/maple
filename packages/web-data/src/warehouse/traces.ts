@@ -1,4 +1,4 @@
-import { Clock, Effect, Schema } from "effect"
+import { Clock, Effect, Option, Schema, Array as Arr, Record as Rec } from "effect"
 import {
 	QueryEngineExecuteRequest,
 	TracesFacetDimension,
@@ -184,7 +184,7 @@ function oneOrMany<T extends string>(
 	list: readonly T[] | undefined,
 	scalar: T | undefined,
 ): readonly T[] | undefined {
-	if (list?.length) return list
+	if (list !== undefined && list.length > 0) return list
 	if (scalar) return [scalar]
 	return undefined
 }
@@ -196,7 +196,7 @@ function oneOrMany<T extends string>(
  * bloom/text index prefilters in `buildAttrFilterCondition` still apply.
  */
 function httpAttributeFilter(key: string, values: readonly string[] | undefined): AttributeFilter | null {
-	if (!values?.length) return null
+	if (values === undefined || values.length === 0) return null
 	if (values.length === 1) return { key, value: values[0], mode: "equals" }
 	return { key, values: [...values], mode: "in" }
 }
@@ -216,7 +216,7 @@ function toAttributeFilter(entry: typeof AttributeFilterInput.Type): AttributeFi
 	const { or, ...first } = entry
 	return {
 		...toAttributeFilterLeaf(first),
-		...(or?.length ? { or: or.map(toAttributeFilterLeaf) } : undefined),
+		...(or !== undefined && or.length > 0 ? { or: Arr.map(or, toAttributeFilterLeaf) } : undefined),
 	}
 }
 
@@ -309,7 +309,7 @@ function transformSpanListRow(row: typeof SpanListRow.Type): Trace {
 		if (spanAttrs[key]) rootSpanAttributes[key] = spanAttrs[key]
 	}
 	const services = row.services
-		? Array.from(new Set(row.services.filter((name) => name !== "")))
+		? Array.from(new Set(Arr.filter(row.services, (name) => name !== "")))
 		: row.serviceName
 			? [row.serviceName]
 			: []
@@ -340,7 +340,7 @@ function transformSpanListRow(row: typeof SpanListRow.Type): Trace {
 
 function transformTraceListRow(row: typeof TraceListRow.Type): Trace {
 	const rootSpanAttributes: Record<string, string> = {}
-	for (const [key, value] of Object.entries(row.rootSpanAttributes)) {
+	for (const [key, value] of Rec.toEntries(row.rootSpanAttributes)) {
 		if (value.length > 0) rootSpanAttributes[key] = value
 	}
 	return {
@@ -352,7 +352,7 @@ function transformTraceListRow(row: typeof TraceListRow.Type): Trace {
 		endTime: row.endTime,
 		durationMs: row.durationMs,
 		spanCount: row.spanCount,
-		services: row.services.filter((name) => name !== ""),
+		services: Arr.filter(row.services, (name) => name !== ""),
 		rootSpan: {
 			name: row.rootSpanName,
 			kind: row.rootSpanKind,
@@ -405,7 +405,8 @@ const listTracesEffect = Effect.fn("QueryEngine.listTraces")(function* ({ data }
 	const groupByTrace = rootOnly
 	const hideNoise = groupByTrace && (input.hideNoise ?? true)
 
-	if (input.services?.length) yield* Effect.annotateCurrentSpan("services", input.services.join(","))
+	if (input.services !== undefined && input.services.length > 0)
+		yield* Effect.annotateCurrentSpan("services", Arr.join(input.services, ","))
 	yield* Effect.annotateCurrentSpan("rootOnly", rootOnly)
 	yield* Effect.annotateCurrentSpan("groupByTrace", groupByTrace)
 	yield* Effect.annotateCurrentSpan("limit", limit)
@@ -435,16 +436,26 @@ const listTracesEffect = Effect.fn("QueryEngine.listTraces")(function* ({ data }
 				namespaces: oneOrMany(input.namespaces, input.namespace),
 				minDurationMs: input.minDurationMs,
 				maxDurationMs: input.maxDurationMs,
-				matchModes: Object.keys(matchModes).length > 0 ? matchModes : undefined,
+				matchModes: Rec.keys(matchModes).length > 0 ? matchModes : undefined,
 				attributeFilters: attributeFilters.length > 0 ? attributeFilters : undefined,
 				resourceAttributeFilters:
 					resourceAttributeFilters.length > 0 ? resourceAttributeFilters : undefined,
-				excludedServiceNames: input.excludedServices?.length ? input.excludedServices : undefined,
-				excludedSpanNames: input.excludedSpanNames?.length ? input.excludedSpanNames : undefined,
-				excludedEnvironments: input.excludedDeploymentEnvs?.length
-					? input.excludedDeploymentEnvs
-					: undefined,
-				excludedNamespaces: input.excludedNamespaces?.length ? input.excludedNamespaces : undefined,
+				excludedServiceNames:
+					input.excludedServices !== undefined && input.excludedServices.length > 0
+						? input.excludedServices
+						: undefined,
+				excludedSpanNames:
+					input.excludedSpanNames !== undefined && input.excludedSpanNames.length > 0
+						? input.excludedSpanNames
+						: undefined,
+				excludedEnvironments:
+					input.excludedDeploymentEnvs !== undefined && input.excludedDeploymentEnvs.length > 0
+						? input.excludedDeploymentEnvs
+						: undefined,
+				excludedNamespaces:
+					input.excludedNamespaces !== undefined && input.excludedNamespaces.length > 0
+						? input.excludedNamespaces
+						: undefined,
 			},
 		},
 	})
@@ -452,26 +463,31 @@ const listTracesEffect = Effect.fn("QueryEngine.listTraces")(function* ({ data }
 	const response = yield* executeQueryEngine("queryEngine.listTraces", request)
 
 	if (response.result.kind !== "list") {
-		return yield* Effect.fail(
-			new WarehouseTransformError({
-				operation: "queryEngine.listTraces",
-				message: `Unexpected result kind from query engine: ${response.result.kind}`,
-			}),
-		)
+		return yield* new WarehouseTransformError({
+			operation: "queryEngine.listTraces",
+			message: `Unexpected result kind from query engine: ${response.result.kind}`,
+		})
 	}
 
 	const toTransformError = (cause: Schema.SchemaError) =>
 		new WarehouseTransformError({ operation: "queryEngine.listTraces", message: cause.message, cause })
-	const scanned = groupByTrace
-		? (yield* decodeTraceListRows(response.result.data).pipe(Effect.mapError(toTransformError))).map(
-				transformTraceListRow,
+	const scanned = yield* groupByTrace
+		? decodeTraceListRows(response.result.data).pipe(
+				Effect.mapBoth({
+					onFailure: toTransformError,
+					onSuccess: (rows) => Arr.map(rows, transformTraceListRow),
+				}),
 			)
-		: (yield* decodeSpanListRows(response.result.data).pipe(Effect.mapError(toTransformError))).map(
-				transformSpanListRow,
+		: decodeSpanListRows(response.result.data).pipe(
+				Effect.mapBoth({
+					onFailure: toTransformError,
+					onSuccess: (rows) => Arr.map(rows, transformSpanListRow),
+				}),
 			)
 
 	const minSpanCount = groupByTrace ? input.minSpanCount : undefined
-	const traces = scanned.filter(
+	const traces = Arr.filter(
+		scanned,
 		(trace) =>
 			(!hideNoise || !isNoiseTrace(trace)) &&
 			(minSpanCount === undefined || trace.spanCount >= minSpanCount),
@@ -545,15 +561,14 @@ const getSpanHierarchyEffect = Effect.fn("QueryEngine.getSpanHierarchy")(functio
 		}),
 	)
 
-	const spans = dedupeBySpanId(result.data.map((raw) => transformSpan(raw as SpanHierarchyRow)))
+	const spans = dedupeBySpanId(Arr.map(result.data, (raw) => transformSpan(raw as SpanHierarchyRow)))
 	const rootSpans = buildSpanTree(spans)
 	const totalDurationMs = traceWallClockMs(spans)
-	const traceStartTime =
-		spans.length === 0
-			? undefined
-			: spans.reduce((earliest, candidate) =>
-					new Date(candidate.startTime) < new Date(earliest.startTime) ? candidate : earliest,
-				).startTime
+	const traceStartTime = !Arr.isReadonlyArrayNonEmpty(spans)
+		? undefined
+		: Arr.reduce(spans, Arr.headNonEmpty(spans), (earliest, candidate) =>
+				new Date(candidate.startTime) < new Date(earliest.startTime) ? candidate : earliest,
+			).startTime
 
 	return {
 		traceId: input.traceId,
@@ -679,8 +694,8 @@ export type GetTracesFacetsInput = (typeof GetTracesFacetsInputSchema)["Encoded"
 type GetTracesFacetsDecoded = (typeof GetTracesFacetsInputSchema)["Type"]
 
 function buildTracesFiltersFromInput(input: GetTracesFacetsDecoded) {
-	const attributeFilters = buildAttributeFilters(input as ListTracesDecoded)
-	const resourceAttributeFilters = buildResourceAttributeFilters(input as ListTracesDecoded)
+	const attributeFilters = buildAttributeFilters(input)
+	const resourceAttributeFilters = buildResourceAttributeFilters(input)
 	const matchModes: Record<string, string> = {}
 	if (input.serviceMatchMode === "contains") matchModes.serviceName = "contains"
 	if (input.spanNameMatchMode === "contains") matchModes.spanName = "contains"
@@ -695,7 +710,7 @@ function buildTracesFiltersFromInput(input: GetTracesFacetsDecoded) {
 		maxDurationMs: input.maxDurationMs,
 		environments: oneOrMany(input.deploymentEnvs, input.deploymentEnv),
 		namespaces: oneOrMany(input.namespaces, input.namespace),
-		matchModes: Object.keys(matchModes).length > 0 ? matchModes : undefined,
+		matchModes: Rec.keys(matchModes).length > 0 ? matchModes : undefined,
 		attributeFilters: attributeFilters.length > 0 ? attributeFilters : undefined,
 		resourceAttributeFilters: resourceAttributeFilters.length > 0 ? resourceAttributeFilters : undefined,
 	}
@@ -712,31 +727,36 @@ const getTracesFacetsEffect = Effect.fn("QueryEngine.getTracesFacets")(function*
 }) {
 	const input = yield* decodeInput(GetTracesFacetsInputSchema, data ?? {}, "getTracesFacets")
 
-	if (input.services?.length) yield* Effect.annotateCurrentSpan("services", input.services.join(","))
+	if (input.services !== undefined && input.services.length > 0)
+		yield* Effect.annotateCurrentSpan("services", Arr.join(input.services, ","))
 
 	const filters = buildTracesFiltersFromInput(input)
-	const fallback = defaultTimeRange(yield* Clock.currentTimeMillis)
+	const now = yield* Clock.currentTimeMillis
+	const fallback = defaultTimeRange(now)
 	const startTime = input.startTime ?? fallback.startTime
 	const endTime = input.endTime ?? fallback.endTime
 
-	const [facetsResponse, statsResponse] = yield* Effect.all([
-		executeQueryEngine(
-			"queryEngine.getTracesFacets",
-			new QueryEngineExecuteRequest({
-				startTime,
-				endTime,
-				query: { kind: "facets" as const, source: "traces" as const, filters },
-			}),
-		),
-		executeQueryEngine(
-			"queryEngine.getTracesDurationStats",
-			new QueryEngineExecuteRequest({
-				startTime,
-				endTime,
-				query: { kind: "stats" as const, source: "traces" as const, filters },
-			}),
-		),
-	])
+	const [facetsResponse, statsResponse] = yield* Effect.all(
+		[
+			executeQueryEngine(
+				"queryEngine.getTracesFacets",
+				new QueryEngineExecuteRequest({
+					startTime,
+					endTime,
+					query: { kind: "facets" as const, source: "traces" as const, filters },
+				}),
+			),
+			executeQueryEngine(
+				"queryEngine.getTracesDurationStats",
+				new QueryEngineExecuteRequest({
+					startTime,
+					endTime,
+					query: { kind: "stats" as const, source: "traces" as const, filters },
+				}),
+			),
+		],
+		{ concurrency: "unbounded" },
+	)
 
 	const facetsData = extractFacets(facetsResponse)
 	const statsData = extractStats(statsResponse)
@@ -745,8 +765,12 @@ const getTracesFacetsEffect = Effect.fn("QueryEngine.getTracesFacets")(function*
 		name: row.name,
 		count: row.count,
 	})
-	const byType = (type: string) => facetsData.filter((r) => r.facetType === type).map(toItem)
-	const errorRow = facetsData.find((r) => r.facetType === "errorCount")
+	const byType = (type: string) =>
+		Arr.map(
+			Arr.filter(facetsData, (r) => r.facetType === type),
+			toItem,
+		)
+	const errorRow = Arr.findFirst(facetsData, (r) => r.facetType === "errorCount")
 
 	return {
 		data: {
@@ -756,7 +780,7 @@ const getTracesFacetsEffect = Effect.fn("QueryEngine.getTracesFacets")(function*
 			httpStatusCodes: byType("httpStatus"),
 			deploymentEnvs: byType("deploymentEnv"),
 			namespaces: byType("serviceNamespace"),
-			errorCount: errorRow ? Number(errorRow.count) : 0,
+			errorCount: Option.match(errorRow, { onNone: () => 0, onSome: (row) => Number(row.count) }),
 			durationStats: statsData,
 		} satisfies TracesFacets,
 	}
@@ -805,7 +829,7 @@ const getTraceSpanEventsEffect = Effect.fn("QueryEngine.getTraceSpanEvents")(fun
 		}),
 	)
 
-	return new Map(result.data.map((row) => [row.spanId, row.events])) satisfies SpanEventsBySpanId
+	return new Map(Arr.map(result.data, (row) => [row.spanId, row.events])) satisfies SpanEventsBySpanId
 })
 
 // Single facet list for dashboard variables: compiles only the requested UNION
@@ -832,7 +856,8 @@ const getTracesFacetValuesEffect = Effect.fn("QueryEngine.getTracesFacetValues")
 
 	yield* Effect.annotateCurrentSpan("facet", input.facet)
 
-	const fallback = defaultTimeRange(yield* Clock.currentTimeMillis)
+	const now = yield* Clock.currentTimeMillis
+	const fallback = defaultTimeRange(now)
 	const response = yield* executeQueryEngine(
 		"queryEngine.getTracesFacetValues",
 		new QueryEngineExecuteRequest({
@@ -843,9 +868,10 @@ const getTracesFacetValuesEffect = Effect.fn("QueryEngine.getTracesFacetValues")
 	)
 
 	return {
-		data: extractFacets(response)
-			.filter((row) => row.facetType === input.facet)
-			.map((row): FacetItem => ({ name: row.name, count: Number(row.count) })),
+		data: Arr.map(
+			Arr.filter(extractFacets(response), (row) => row.facetType === input.facet),
+			(row): FacetItem => ({ name: row.name, count: Number(row.count) }),
+		),
 	}
 })
 
@@ -860,7 +886,8 @@ const getTracesDurationStatsEffect = Effect.fn("QueryEngine.getTracesDurationSta
 }) {
 	const input = yield* decodeInput(GetTracesFacetsInputSchema, data ?? {}, "getTracesDurationStats")
 	const filters = buildTracesFiltersFromInput(input)
-	const fallback = defaultTimeRange(yield* Clock.currentTimeMillis)
+	const now = yield* Clock.currentTimeMillis
+	const fallback = defaultTimeRange(now)
 
 	const response = yield* executeQueryEngine(
 		"queryEngine.getTracesDurationStats",
@@ -900,7 +927,8 @@ const getSpanAttributeKeysEffect = Effect.fn("QueryEngine.getSpanAttributeKeys")
 	data: GetSpanAttributeKeysInput
 }) {
 	const input = yield* decodeInput(GetSpanAttributeKeysInputSchema, data ?? {}, "getSpanAttributeKeys")
-	const fallback = defaultTimeRange(yield* Clock.currentTimeMillis)
+	const now = yield* Clock.currentTimeMillis
+	const fallback = defaultTimeRange(now)
 	const request = new QueryEngineExecuteRequest({
 		startTime: input.startTime ?? fallback.startTime,
 		endTime: input.endTime ?? fallback.endTime,
@@ -911,7 +939,7 @@ const getSpanAttributeKeysEffect = Effect.fn("QueryEngine.getSpanAttributeKeys")
 	if (result.kind !== "attributeKeys") return { data: [] }
 
 	return {
-		data: result.data.map((row) => ({
+		data: Arr.map(result.data, (row) => ({
 			attributeKey: row.key,
 			usageCount: Number(row.count),
 		})),
@@ -943,7 +971,8 @@ const getSpanAttributeValuesEffect = Effect.fn("QueryEngine.getSpanAttributeValu
 		return { data: [] }
 	}
 
-	const fallback = defaultTimeRange(yield* Clock.currentTimeMillis)
+	const now = yield* Clock.currentTimeMillis
+	const fallback = defaultTimeRange(now)
 	const response = yield* executeQueryEngine(
 		"queryEngine.getSpanAttributeValues",
 		new QueryEngineExecuteRequest({
@@ -959,7 +988,7 @@ const getSpanAttributeValuesEffect = Effect.fn("QueryEngine.getSpanAttributeValu
 	)
 
 	return {
-		data: extractAttributeValues(response).map((row) => ({
+		data: Arr.map(extractAttributeValues(response), (row) => ({
 			attributeValue: row.value,
 			usageCount: Number(row.count),
 		})),
@@ -987,7 +1016,8 @@ const getResourceAttributeKeysEffect = Effect.fn("QueryEngine.getResourceAttribu
 		data ?? {},
 		"getResourceAttributeKeys",
 	)
-	const fallback = defaultTimeRange(yield* Clock.currentTimeMillis)
+	const now = yield* Clock.currentTimeMillis
+	const fallback = defaultTimeRange(now)
 	const request = new QueryEngineExecuteRequest({
 		startTime: input.startTime ?? fallback.startTime,
 		endTime: input.endTime ?? fallback.endTime,
@@ -998,7 +1028,7 @@ const getResourceAttributeKeysEffect = Effect.fn("QueryEngine.getResourceAttribu
 	if (result.kind !== "attributeKeys") return { data: [] }
 
 	return {
-		data: result.data.map((row) => ({
+		data: Arr.map(result.data, (row) => ({
 			attributeKey: row.key,
 			usageCount: Number(row.count),
 		})),
@@ -1034,7 +1064,8 @@ const getResourceAttributeValuesEffect = Effect.fn("QueryEngine.getResourceAttri
 		return { data: [] }
 	}
 
-	const fallback = defaultTimeRange(yield* Clock.currentTimeMillis)
+	const now = yield* Clock.currentTimeMillis
+	const fallback = defaultTimeRange(now)
 	const response = yield* executeQueryEngine(
 		"queryEngine.getResourceAttributeValues",
 		new QueryEngineExecuteRequest({
@@ -1050,7 +1081,7 @@ const getResourceAttributeValuesEffect = Effect.fn("QueryEngine.getResourceAttri
 	)
 
 	return {
-		data: extractAttributeValues(response).map((row) => ({
+		data: Arr.map(extractAttributeValues(response), (row) => ({
 			attributeValue: row.value,
 			usageCount: Number(row.count),
 		})),

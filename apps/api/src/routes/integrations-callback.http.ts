@@ -4,10 +4,12 @@ import {
 	type OAuthReturnFlow,
 	validateIntegrationReturnPath,
 } from "@maple/domain/http"
-import { Effect, Option } from "effect"
+import { Effect, Option, Schema, Array as Arr, String as Str } from "effect"
 import { Env } from "@maple/backend/platform/Env"
 import { PLANETSCALE_CALLBACK_PATH } from "@maple/backend/services/auth/PlanetScaleOAuthService"
 import { SUPABASE_CALLBACK_PATH } from "@maple/backend/services/auth/SupabaseOAuthService"
+
+const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown))
 
 export const LINEAR_CALLBACK_PATH = "/api/integrations/linear/callback"
 export const GITHUB_CALLBACK_PATH = "/api/integrations/github/callback"
@@ -20,12 +22,15 @@ const PLANETSCALE_MESSAGE_TYPE = "maple:integration:planetscale"
 const SUPABASE_MESSAGE_TYPE = "maple:integration:supabase"
 
 const escapeHtml = (value: string) =>
-	value
-		.replace(/&/g, "&amp;")
-		.replace(/</g, "&lt;")
-		.replace(/>/g, "&gt;")
-		.replace(/"/g, "&quot;")
-		.replace(/'/g, "&#39;")
+	Str.replace(
+		/'/g,
+		"&#39;",
+	)(
+		Str.replace(
+			/"/g,
+			"&quot;",
+		)(Str.replace(/>/g, "&gt;")(Str.replace(/</g, "&lt;")(Str.replace(/&/g, "&amp;")(value)))),
+	)
 
 // JSON.stringify does not escape `<` or `>`, so a payload value of
 // `</script><script>alert(1)</script>` would terminate the inline script
@@ -35,14 +40,20 @@ const escapeHtml = (value: string) =>
 const LINE_SEPARATOR = String.fromCharCode(0x2028)
 const PARAGRAPH_SEPARATOR = String.fromCharCode(0x2029)
 const escapeJsonInHtml = (json: string) =>
-	json
-		.replace(/</g, "\\u003c")
-		.replace(/>/g, "\\u003e")
-		.replace(/&/g, "\\u0026")
-		.split(LINE_SEPARATOR)
-		.join("\\u2028")
-		.split(PARAGRAPH_SEPARATOR)
-		.join("\\u2029")
+	Arr.join(
+		Str.split(PARAGRAPH_SEPARATOR)(
+			Arr.join(
+				Str.split(LINE_SEPARATOR)(
+					Str.replace(
+						/&/g,
+						"\\u0026",
+					)(Str.replace(/>/g, "\\u003e")(Str.replace(/</g, "\\u003c")(json))),
+				),
+				"\\u2028",
+			),
+		),
+		"\\u2029",
+	)
 
 // The origin we send the popup's result to. It must match the dashboard's origin
 // exactly or the browser drops the message, so we reduce MAPLE_APP_BASE_URL to just
@@ -75,14 +86,14 @@ export const renderCallbackPage = (params: {
 			: null
 	const blockedReturn = safeReturn === null && (params.returnTo ?? "").length > 0
 	const payload = escapeJsonInHtml(
-		JSON.stringify({
+		encodeJson({
 			type: params.messageType,
 			status: params.status,
 			message: params.message,
 		}),
 	)
 	// Quote + escape it so the origin can't break out of the inline <script>.
-	const targetOrigin = escapeJsonInHtml(JSON.stringify(params.targetOrigin))
+	const targetOrigin = escapeJsonInHtml(encodeJson(params.targetOrigin))
 	const isSuccess = params.status === "success"
 	const glyph = isSuccess
 		? `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 12.5l5 5 10-11" /></svg>`
@@ -232,12 +243,12 @@ const requireCodeAndState = (params: URLSearchParams): string | null =>
 
 // `setup_action=request`: the org requires admin approval, so there is no installation yet.
 const requireInstallation = (params: URLSearchParams): string | null =>
-	!params.get("installation_id")
+	!params.get("installation_id") && (!params.get("code") || params.get("setup_action") === "request")
 		? params.get("setup_action") === "request"
 			? "Installation requested. An org admin must approve it on GitHub, then reconnect."
 			: "Missing installation_id in callback"
 		: !params.get("state")
-			? "Missing state in callback. GitHub did not return it. Restart the connection from the Maple dashboard."
+			? "The GitHub app is installed, but this return has no Maple connection request. Open the GitHub source in Maple and click Connect GitHub."
 			: null
 
 const ROUTES: ReadonlyArray<CallbackRoute> = [
@@ -306,7 +317,7 @@ export const IntegrationsCallbackRouter = HttpRouter.use((router) =>
 	Effect.gen(function* () {
 		const env = yield* Env
 		const dashboardTargetOrigin = resolveDashboardTargetOrigin(env.MAPLE_APP_BASE_URL)
-		const appBaseUrl = env.MAPLE_APP_BASE_URL.replace(/\/$/, "")
+		const appBaseUrl = Str.replace(/\/$/, "")(env.MAPLE_APP_BASE_URL)
 
 		const add = (route: CallbackRoute) => {
 			const errorPage = (message: string) =>
@@ -314,7 +325,7 @@ export const IntegrationsCallbackRouter = HttpRouter.use((router) =>
 					renderCallbackPage({
 						status: "error",
 						message,
-						returnTo: null,
+						returnTo: route.provider === "github" ? "/sources/new?integration=github" : null,
 						targetOrigin: dashboardTargetOrigin,
 						messageType: route.messageType,
 						label: route.label,
@@ -350,7 +361,7 @@ export const IntegrationsCallbackRouter = HttpRouter.use((router) =>
 					const search = new URLSearchParams({ integration: route.provider }).toString()
 					const hash = encodeOAuthReturnHash({
 						flow: route.flow,
-						query: url.search.replace(/^\?/, ""),
+						query: Str.replace(/^\?/, "")(url.search),
 					})
 					return forwardToDashboard(`${appBaseUrl}${route.page}?${search}${hash}`)
 				},

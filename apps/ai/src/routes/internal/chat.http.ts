@@ -8,7 +8,7 @@ import {
 	CurrentTenant,
 	MapleAiApi,
 } from "@maple/domain/http"
-import { Effect } from "effect"
+import { Effect, Option, Array as Arr } from "effect"
 import {
 	encodeChatTurnTenant,
 	investigationIdFromChatSessionId,
@@ -82,10 +82,17 @@ export const HttpChatLive = HttpApiBuilder.group(MapleAiApi, "chat", (handlers) 
 
 			// The answer is what the session recorded, read back as the chat-platform relay reads it.
 			const messages = yield* sessionCall(toolCallId, stub.history())
-			const call = messages.flatMap((message) => message.toolCalls).find((c) => c.id === toolCallId)
-			return new ChatApplyResponse({
-				content: typeof call?.output === "string" ? call.output : "",
-				...(call?.isError === true ? { isError: true } : undefined),
+			const call = Arr.findFirst(
+				Arr.flatMap(messages, (message) => message.toolCalls),
+				(c) => c.id === toolCallId,
+			)
+			return Option.match(call, {
+				onNone: () => new ChatApplyResponse({ content: "" }),
+				onSome: (found) =>
+					new ChatApplyResponse({
+						content: typeof found.output === "string" ? found.output : "",
+						...(found.isError === true ? { isError: true } : undefined),
+					}),
 			})
 		}),
 	),

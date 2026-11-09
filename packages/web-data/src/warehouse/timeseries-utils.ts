@@ -1,9 +1,10 @@
 import { bucketTimeline, computeBucketSecondsForRange } from "@maple/query-engine"
+import { Array as Arr, Option, String as Str } from "effect"
 
 const TINYBIRD_DATETIME_RE = /^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2})(\.\d+)?$/
 
 function toEpochMs(value: string): number {
-	return new Date(value.replace(" ", "T") + "Z").getTime()
+	return new Date(Str.replace(" ", "T")(value) + "Z").getTime()
 }
 
 function ceilToBucketMs(epochMs: number, bucketSeconds: number): number {
@@ -52,9 +53,9 @@ export function trimSparseLeadingBuckets<T>(
 ): T[] {
 	if (rows.length < 2) return Array.from(rows)
 	let cutoff = 0
-	while (cutoff < rows.length - 1) {
-		const v = getValue(rows[cutoff])
-		const next = getValue(rows[cutoff + 1])
+	for (const [current, following] of Arr.zip(rows, rows.slice(1))) {
+		const v = getValue(current)
+		const next = getValue(following)
 		if (next <= 0) break
 		if (v >= next * nextRatio) break
 		cutoff++
@@ -67,11 +68,11 @@ export function toIsoBucket(value: string | Date): string {
 		return value.toISOString()
 	}
 
-	const raw = value.trim()
-	const tinybirdDateTimeMatch = raw.match(TINYBIRD_DATETIME_RE)
-	const normalized = tinybirdDateTimeMatch
-		? `${tinybirdDateTimeMatch[1]}T${tinybirdDateTimeMatch[2]}${tinybirdDateTimeMatch[3] ?? ""}Z`
-		: raw
+	const raw = Str.trim(value)
+	const normalized = Option.match(Str.match(TINYBIRD_DATETIME_RE)(raw), {
+		onNone: () => raw,
+		onSome: (match) => `${match[1]}T${match[2]}${match[3] ?? ""}Z`,
+	})
 
 	const parsed = new Date(normalized).getTime()
 	if (Number.isNaN(parsed)) {

@@ -16,7 +16,7 @@ import {
 import * as PG from "@maple-dev/effect-orm/postgres"
 import { API_KEY_PREFIX, generateApiKey, hashApiKey, parseIngestKeyLookupHmacKey } from "@maple/db"
 import { ApiKeys, type ApiKeyRow } from "@maple/db/tables"
-import { Clock, Effect, Layer, Option, Redacted, Schema, Context } from "effect"
+import { Clock, Effect, Layer, Option, Redacted, Schema, Context, String as Str, Array as Arr } from "effect"
 import { Database } from "@maple/backend/platform/DatabaseLive"
 import { makeDbExecute } from "@maple/backend/platform/db-execute"
 import { currentTxid, readTxid } from "@maple/backend/platform/electric-txid"
@@ -134,6 +134,7 @@ const readKeyRoleMetadata = (metadata: unknown): Option.Option<KeyRoleMetadata> 
 }
 
 const decodeApiKeyIdSync = Schema.decodeUnknownSync(ApiKeyId)
+const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown))
 
 const toPersistenceError = (error: unknown) =>
 	new ApiKeyPersistenceError({
@@ -233,7 +234,7 @@ export class ApiKeysService extends Context.Service<ApiKeysService>()(
 				const row = yield* selectById(orgId, keyId)
 				if (Option.isSome(row)) return row.value
 
-				return yield* Effect.fail(new ApiKeyNotFoundError({ keyId, message: "API key not found" }))
+				return yield* new ApiKeyNotFoundError({ keyId, message: "API key not found" })
 			})
 
 			const get = Effect.fn("ApiKeysService.get")(function* (orgId: OrgId, keyId: ApiKeyId) {
@@ -304,7 +305,7 @@ export class ApiKeysService extends Context.Service<ApiKeysService>()(
 				)
 
 				return new ApiKeysListResponse({
-					keys: rows.map((row) => rowToResponse(row)),
+					keys: Arr.map(rows, (row) => rowToResponse(row)),
 				})
 			})
 
@@ -326,9 +327,10 @@ export class ApiKeysService extends Context.Service<ApiKeysService>()(
 				yield* Effect.annotateCurrentSpan("maple.api_key.id", id)
 				const rawKey = generateApiKey()
 				const keyHash = hashApiKey(rawKey, hmacKey)
-				const keyPrefix = rawKey.slice(0, 12) + "..."
+				const keyPrefix = Str.slice(0, 12)(rawKey) + "..."
 				const now = yield* Clock.currentTimeMillis
-				const expiresAt = params.expiresInSeconds ? now + params.expiresInSeconds * 1000 : undefined
+				const expiresAt =
+					params.expiresInSeconds !== undefined ? now + params.expiresInSeconds * 1000 : undefined
 				const kind: ApiKeyKind = params.kind ?? "standard"
 				const scopes = params.scopes == null ? null : [...params.scopes]
 				const createdByEmail = params.createdByEmail ?? null
@@ -389,7 +391,7 @@ export class ApiKeysService extends Context.Service<ApiKeysService>()(
 					$.kind.eq("device"),
 					$.revoked.eq(false),
 					PG.sql
-						.cond`${$.metadataJson} @> ${JSON.stringify({ source: WIDGET_DEVICE_KEY_SOURCE, deviceId })}::jsonb`,
+						.cond`${$.metadataJson} @> ${encodeJson({ source: WIDGET_DEVICE_KEY_SOURCE, deviceId })}::jsonb`,
 				]
 
 			/**
@@ -426,7 +428,7 @@ export class ApiKeysService extends Context.Service<ApiKeysService>()(
 				const id = decodeApiKeyIdSync(randomUUID())
 				const rawKey = generateApiKey()
 				const keyHash = hashApiKey(rawKey, hmacKey)
-				const keyPrefix = rawKey.slice(0, 12) + "..."
+				const keyPrefix = Str.slice(0, 12)(rawKey) + "..."
 				const now = yield* Clock.currentTimeMillis
 				const expiresAt = now + params.expiresInSeconds * 1000
 				const scopes = [...params.scopes]
@@ -530,7 +532,7 @@ export class ApiKeysService extends Context.Service<ApiKeysService>()(
 				const id = decodeApiKeyIdSync(randomUUID())
 				const rawKey = generateApiKey()
 				const keyHash = hashApiKey(rawKey, hmacKey)
-				const keyPrefix = rawKey.slice(0, 12) + "..."
+				const keyPrefix = Str.slice(0, 12)(rawKey) + "..."
 				const now = yield* Clock.currentTimeMillis
 				const createdByEmail = params.createdByEmail ?? null
 
@@ -577,9 +579,7 @@ export class ApiKeysService extends Context.Service<ApiKeysService>()(
 					// Lost the claim (or never had one): distinguish a key that does not
 					// exist from one that is revoked, expired or not rollable.
 					const row = yield* requireById(orgId, keyId)
-					return yield* Effect.fail(
-						new ApiKeyNotFoundError({ keyId, message: rollRefusal(row, now) }),
-					)
+					return yield* new ApiKeyNotFoundError({ keyId, message: rollRefusal(row, now) })
 				}
 
 				const txid = readTxid([rolled])
@@ -629,13 +629,17 @@ export class ApiKeysService extends Context.Service<ApiKeysService>()(
 				// Lost the claim: either the key never existed (404) or it was already
 				// revoked, in which case the stored row — not a freshly stamped copy —
 				// is the truth to report back.
-				if (revokedRows.length === 0) return rowToResponse(yield* requireById(orgId, keyId))
+				const [revoked] = revokedRows
+				if (revoked === undefined) {
+					const stored = yield* requireById(orgId, keyId)
+					return rowToResponse(stored)
+				}
 
-				return rowToResponse(revokedRows[0], readTxid(revokedRows))
+				return rowToResponse(revoked, readTxid(revokedRows))
 			})
 
 			const resolveByKey = Effect.fn("ApiKeysService.resolveByKey")(function* (rawKey: string) {
-				if (!rawKey.startsWith(API_KEY_PREFIX)) return Option.none()
+				if (!Str.startsWith(API_KEY_PREFIX)(rawKey)) return Option.none()
 
 				const keyHash = hashApiKey(rawKey, hmacKey)
 				const rows = yield* dbExecute((db) =>
@@ -669,8 +673,7 @@ export class ApiKeysService extends Context.Service<ApiKeysService>()(
 					keyId: row.value.id,
 					name: row.value.name,
 					kind: row.value.kind,
-					metadataJson:
-						row.value.metadataJson == null ? null : JSON.stringify(row.value.metadataJson),
+					metadataJson: row.value.metadataJson == null ? null : encodeJson(row.value.metadataJson),
 					scopes: row.value.scopes ?? null,
 					roles: roleMetadata.value.roles,
 					cliManaged: roleMetadata.value.cliManaged,
@@ -725,7 +728,7 @@ export class ApiKeysService extends Context.Service<ApiKeysService>()(
 			const resolveByBearer = Effect.fn("ApiKeysService.resolveByBearer")(function* (
 				bearerToken: string | undefined,
 			) {
-				if (!bearerToken || !bearerToken.startsWith(API_KEY_PREFIX)) {
+				if (!bearerToken || !Str.startsWith(API_KEY_PREFIX)(bearerToken)) {
 					return Option.none<ResolvedApiKey>()
 				}
 

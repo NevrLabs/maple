@@ -1,9 +1,9 @@
-import { Effect, Option } from "effect"
+import { Clock, Effect, Option, Schema, Array as Arr, Record as Rec } from "effect"
 import { Mount } from "foldkit"
 import { defineMessageUnion } from "foldkit/message"
 import type { Html, HtmlBuilder } from "foldkit/html"
-import { icon } from "../../../../ui/icon"
-import { spinner } from "../../../../ui/spinner"
+import { icon } from "@maple/views/ui/icon"
+import { spinner } from "@maple/views/ui/spinner"
 import {
 	trace,
 	traceCollapsible,
@@ -11,7 +11,7 @@ import {
 	traceIcon,
 	traceLine,
 	traceTitle,
-} from "../../../../ui/trace"
+} from "@maple/views/ui/trace"
 import { dotLoader } from "./dot-loader"
 import { toolActivity, toolIcon, toolLabel } from "./tool-metadata"
 import {
@@ -23,6 +23,10 @@ import {
 } from "./tool-output"
 import { deriveToolStatus, type ToolStatus } from "./transcript-rows"
 import type { ToolPart } from "./ui-message"
+import { hstack } from "@maple/views/ui/stack"
+import { typography } from "@maple/views/ui/typography"
+
+const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown))
 
 // `Tool`, `ToolRow` and `ToolGroup`: a tool call's row and a run of them grouped.
 /** What a tool row needs from its host: whether a panel is open, and the Message that toggles it. */
@@ -45,21 +49,19 @@ export const CompletedMountClock = defineMessageUnion({ CompletedMountClock: {} 
 export const MountRunningClock = Mount.define("MountChatRunningClock", {
 	messages: [CompletedMountClock],
 	execute: ({ element }) =>
-		Effect.as(
-			Effect.acquireRelease(
+		Effect.gen(function* () {
+			const startedAt = yield* Clock.currentTimeMillis
+			const tick = Effect.flatMap(Clock.currentTimeMillis, (nowMs) =>
 				Effect.sync(() => {
-					const startedAt = Date.now()
-					const id = setInterval(() => {
-						const text = formatElapsed(Math.floor((Date.now() - startedAt) / 1000))
-						element.textContent = text
-						element.toggleAttribute("hidden", text === "")
-					}, 1000)
-					return () => clearInterval(id)
+					const text = formatElapsed(Math.floor((nowMs - startedAt) / 1000))
+					element.textContent = text
+					element.toggleAttribute("hidden", text === "")
 				}),
-				(release) => Effect.sync(release),
-			),
-			CompletedMountClock(),
-		),
+			)
+			// Forked into the Mount's scope, so it stops when the element unmounts.
+			yield* Effect.forkScoped(Effect.forever(Effect.delay(tick, "1 second")))
+			return CompletedMountClock()
+		}),
 })
 
 /** The clock's span, drawn hidden; its Mount fills and shows it. */
@@ -67,12 +69,15 @@ export const runningClock = <M>(h: HtmlBuilder<M>, mount: PanelHost<M>["clockMou
 	mount === undefined
 		? []
 		: [
-				h.span(
-					[
-						h.Class("shrink-0 tabular-nums text-2xs text-foreground-subtle"),
-						h.Attribute("hidden", ""),
-						h.OnMount(mount),
-					],
+				typography(
+					h,
+					{
+						size: "2xs",
+						tone: "subtle",
+						numeric: true,
+						className: "shrink-0",
+						attributes: [h.Attribute("hidden", ""), h.OnMount(mount)],
+					},
 					[],
 				),
 			]
@@ -87,23 +92,21 @@ const statusGlyph = <M>(h: HtmlBuilder<M>, status: ToolStatus, live: boolean, to
 }
 
 const argumentRows = <M>(h: HtmlBuilder<M>, record: Readonly<Record<string, unknown>>): ReadonlyArray<Html> =>
-	Object.entries(record)
-		.filter(([, value]) => value !== null && value !== undefined)
-		.map(([key, value]) =>
-			h.div(
-				[h.Class("flex gap-2")],
-				[
-					h.span([h.Class("shrink-0")], [key, ":"]),
-					h.span(
-						[h.Class("min-w-0 font-mono break-all whitespace-pre-wrap text-foreground")],
-						[typeof value === "string" ? value : JSON.stringify(value)],
-					),
-				],
-			),
-		)
+	Arr.map(
+		Arr.filter(Rec.toEntries(record), ([, value]) => value !== null && value !== undefined),
+		([key, value]) =>
+			hstack(h, { gap: "2", align: "stretch" }, [
+				h.span([h.Class("shrink-0")], [key, ":"]),
+				typography(
+					h,
+					{ tone: "foreground", mono: true, className: "min-w-0 break-all whitespace-pre-wrap" },
+					[typeof value === "string" ? value : encodeJson(value)],
+				),
+			]),
+	)
 
 const panelContent = <M>(h: HtmlBuilder<M>, part: ToolPart, host: PanelHost<M>): ReadonlyArray<Html> => {
-	const record = Option.filter(inputRecord(part.input), (input) => Object.keys(input).length > 0)
+	const record = Option.filter(inputRecord(part.input), (input) => Rec.keys(input).length > 0)
 	const structured = extractStructuredData(part.output)
 	const outputText = extractOutputText(part.output)
 	return [
@@ -127,11 +130,7 @@ const panelContent = <M>(h: HtmlBuilder<M>, part: ToolPart, host: PanelHost<M>):
 						[
 							h.p([h.Class("mb-1 font-medium text-severity-error")], ["Error"]),
 							h.pre(
-								[
-									h.Class(
-										"max-h-40 overflow-auto whitespace-pre-wrap text-severity-error",
-									),
-								],
+								[h.Class("max-h-40 overflow-auto whitespace-pre-wrap text-severity-error")],
 								[part.errorText],
 							),
 						],
@@ -139,8 +138,9 @@ const panelContent = <M>(h: HtmlBuilder<M>, part: ToolPart, host: PanelHost<M>):
 				]),
 		...Option.match(structured, {
 			onSome: (data) => [
-				h.div(
-					[h.Class("text-foreground")],
+				typography(
+					h,
+					{ tone: "foreground", as: "div" },
 					host.structured === undefined ? [] : [host.structured(data)],
 				),
 			],
@@ -164,7 +164,7 @@ const panelContent = <M>(h: HtmlBuilder<M>, part: ToolPart, host: PanelHost<M>):
 }
 
 const hasPanel = (part: ToolPart): boolean =>
-	Option.exists(inputRecord(part.input), (input) => Object.keys(input).length > 0) ||
+	Option.exists(inputRecord(part.input), (input) => Rec.keys(input).length > 0) ||
 	Option.isSome(extractStructuredData(part.output)) ||
 	extractOutputText(part.output) !== null ||
 	part.errorText !== undefined
@@ -218,12 +218,12 @@ export const toolStandalone = <M>(h: HtmlBuilder<M>, part: ToolPart, host: Panel
 type Tally = { readonly label: string; readonly icon: ReturnType<typeof toolIcon>; readonly count: number }
 
 const tally = (names: ReadonlyArray<string>): ReadonlyArray<Tally> =>
-	names.reduce<ReadonlyArray<Tally>>((acc, name) => {
+	Arr.reduce<(typeof names)[number], ReadonlyArray<Tally>>(names, [], (acc, name) => {
 		const label = toolLabel(name)
-		return acc.some((entry) => entry.label === label)
-			? acc.map((entry) => (entry.label === label ? { ...entry, count: entry.count + 1 } : entry))
+		return Arr.some(acc, (entry) => entry.label === label)
+			? Arr.map(acc, (entry) => (entry.label === label ? { ...entry, count: entry.count + 1 } : entry))
 			: [...acc, { label, icon: toolIcon(name), count: 1 }]
-	}, [])
+	})
 
 const NAMED_TOOLS = 3
 
@@ -234,10 +234,10 @@ export const toolGroup = <M>(
 	keyHint: string,
 	host: PanelHost<M>,
 ): Html => {
-	const running = parts.filter((part) => deriveToolStatus(part.state) === "running")
-	const errorCount = parts.filter((part) => deriveToolStatus(part.state) === "error").length
+	const running = Arr.filter(parts, (part) => deriveToolStatus(part.state) === "running")
+	const errorCount = Arr.filter(parts, (part) => deriveToolStatus(part.state) === "error").length
 	const current = running[running.length - 1]
-	const tools = tally(parts.map((part) => part.toolName))
+	const tools = tally(Arr.map(parts, (part) => part.toolName))
 	const named = tools.slice(0, NAMED_TOOLS)
 	const hidden = tools.length - named.length
 	const line =
@@ -249,26 +249,23 @@ export const toolGroup = <M>(
 					...runningClock(h, host.clockMount),
 				])
 			: traceLine(h, {}, [
-					...named.map((tool) => traceIcon(h, [icon(h, tool.icon, { className: "size-3.5" })])),
+					...Arr.map(named, (tool) =>
+						traceIcon(h, [icon(h, tool.icon, { className: "size-3.5" })]),
+					),
 					traceTitle(
 						h,
 						[
-							...named.map((tool, index) =>
+							...Arr.map(named, (tool, index) =>
 								h.span(
 									[],
 									[
-										...(index > 0
-											? [h.span([h.Class("text-foreground-faint")], [" · "])]
-											: []),
+										...(index > 0 ? [typography(h, { tone: "faint" }, [" · "])] : []),
 										tool.label,
 										...(tool.count > 1
 											? [
-													h.span(
-														[
-															h.Class(
-																"font-normal tabular-nums text-foreground-subtle",
-															),
-														],
+													typography(
+														h,
+														{ tone: "subtle", weight: "normal", numeric: true },
 														[" ", `×${tool.count}`],
 													),
 												]
@@ -277,12 +274,7 @@ export const toolGroup = <M>(
 								),
 							),
 							...(hidden > 0
-								? [
-										h.span(
-											[h.Class("font-normal text-foreground-subtle")],
-											[` +${hidden} more`],
-										),
-									]
+								? [typography(h, { tone: "subtle", weight: "normal" }, [` +${hidden} more`])]
 								: []),
 						],
 						"font-medium",
@@ -303,7 +295,7 @@ export const toolGroup = <M>(
 				content: () => [
 					trace(
 						h,
-						parts.map((part) => toolRow(h, part, host)),
+						Arr.map(parts, (part) => toolRow(h, part, host)),
 						"max-h-[55vh] overflow-y-auto",
 					),
 				],

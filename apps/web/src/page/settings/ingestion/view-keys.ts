@@ -1,17 +1,19 @@
 import { cn } from "@maple/ui/lib/utils"
 import { REPLAY_BLOCK_CLASS } from "../../../components/common/replay-privacy"
-import { Option } from "effect"
+import { Option, String as Str } from "effect"
 import { AsyncData } from "foldkit"
 import type { Html, HtmlBuilder } from "foldkit/html"
-import * as CopyButton from "../../../ui/copy-button"
-import { maskKey } from "../../../ui/copyable-field"
-import { errorState } from "../../../ui/error-state"
-import { eyebrow } from "../../../ui/eyebrow"
-import { icon } from "../../../ui/icon"
-import { iconButton } from "../../../ui/icon-button"
-import { skeleton } from "../../../ui/skeleton"
+import * as CopyButton from "@maple/views/ui/copy-button"
+import { maskKey } from "@maple/views/ui/copyable-field"
+import { errorState } from "@maple/views/ui/error-state"
+import { eyebrow } from "@maple/views/ui/eyebrow"
+import { icon } from "@maple/views/ui/icon"
+import { iconButton } from "@maple/views/ui/icon-button"
+import { pressable } from "@maple/views/ui/pressable"
+import { skeleton } from "@maple/views/ui/skeleton"
 import { Message } from "./message"
-import type { IngestKeyKind, Model } from "./model"
+import { canRollKeys, type IngestKeyKind, type Model } from "./model"
+import { hstack, vstack } from "@maple/views/ui/stack"
 
 // `CredentialRow`.
 
@@ -30,7 +32,8 @@ export type CredentialRowOptions = Readonly<{
 	onToggleVisibility?: Message
 	copy: CopyButton.Model
 	onCopy: (text: string) => Message
-	onRegenerate?: Message
+	/** Absent for a viewer who cannot roll the key. */
+	onRegenerate?: Message | undefined
 	isDisabled?: boolean
 }>
 
@@ -50,20 +53,18 @@ export const credentialRow = (h: H, options: CredentialRowOptions): Html => {
 		: [
 				value === null
 					? skeleton(h, "h-4 w-40 max-w-full")
-					: h.button(
-							[
-								h.Type("button"),
-								...copyAttributes,
-								...(isDisabled ? [h.Disabled(true)] : []),
-								h.AriaLabel(`Copy ${label}`),
+					: pressable(
+							h,
+							{
+								onClick: options.onCopy(value),
+								isDisabled,
+								label: `Copy ${label}`,
 								// A revealed key is plain text, which the dashboard's own rrweb recording would capture.
-								h.Class(
-									cn(
-										isMasked && REPLAY_BLOCK_CLASS,
-										"group/value text-muted-foreground hover:text-foreground active:text-foreground flex min-w-0 max-w-full cursor-pointer items-center gap-1.5 text-left font-mono text-xs tracking-wide",
-									),
+								className: cn(
+									isMasked && REPLAY_BLOCK_CLASS,
+									"group/value text-muted-foreground hover:text-foreground active:text-foreground flex min-w-0 max-w-full cursor-pointer items-center gap-1.5 text-left font-mono text-xs tracking-wide",
 								),
-							],
+							},
 							[
 								h.span(
 									[h.Class(isHidden ? "truncate" : "min-w-0 break-all")],
@@ -80,8 +81,9 @@ export const credentialRow = (h: H, options: CredentialRowOptions): Html => {
 							],
 						),
 			]
-	return h.div(
-		[h.Class("flex flex-wrap items-center gap-x-3 gap-y-1.5 px-4 py-3 sm:flex-nowrap")],
+	return hstack(
+		h,
+		{ align: "center", wrap: true, className: "gap-x-3 gap-y-1.5 px-4 py-3 sm:flex-nowrap" },
 		[
 			h.span([h.Class("w-full shrink-0 text-sm sm:w-32")], [label]),
 			eyebrow(
@@ -89,22 +91,20 @@ export const credentialRow = (h: H, options: CredentialRowOptions): Html => {
 				{ variant: "mono", className: cn("hidden w-14 shrink-0 sm:block", options.badgeClass) },
 				[options.badge],
 			),
-			h.div(
-				[h.Class("flex min-w-0 grow basis-0 flex-col items-start gap-0.5")],
-				[
-					...valueCell,
-					...(options.description
-						? [
-								h.span(
-									[h.Class("font-prose text-foreground-subtle text-2xs leading-3.5")],
-									[options.description],
-								),
-							]
-						: []),
-				],
-			),
-			h.div(
-				[h.Class("flex shrink-0 items-center gap-1.5")],
+			vstack(h, { gap: "0.5", align: "start", shrink: true, className: "grow basis-0" }, [
+				...valueCell,
+				...(options.description
+					? [
+							h.span(
+								[h.Class("font-prose text-foreground-subtle text-2xs leading-3.5")],
+								[options.description],
+							),
+						]
+					: []),
+			]),
+			hstack(
+				h,
+				{ gap: "1.5", className: "shrink-0" },
 				// Nothing to copy, reveal or rotate while the key is unknown.
 				isUnknown
 					? []
@@ -146,7 +146,7 @@ export const credentialRow = (h: H, options: CredentialRowOptions): Html => {
 											h,
 											{
 												variant: "outline",
-												label: `Regenerate ${label.toLowerCase()}`,
+												label: `Regenerate ${Str.toLowerCase(label)}`,
 												isDisabled: disabled,
 												attributes: [h.OnClick(options.onRegenerate)],
 											},
@@ -186,7 +186,7 @@ export const ingestKeyRows = (h: H, model: Model): ReadonlyArray<Html> => {
 			copy: model.keyCopies[kind] ?? CopyButton.init(),
 			onCopy: (text) =>
 				Message.GotKeyCopyMessage({ kind, message: CopyButton.Message.ClickedCopy({ text }) }),
-			onRegenerate: Message.ClickedRegenerateKey({ kind }),
+			onRegenerate: canRollKeys(model) ? Message.ClickedRegenerateKey({ kind }) : undefined,
 			isDisabled: isBusy,
 		})
 	const failure = keys === null && isFailed ? AsyncData.getError(model.ingest) : Option.none()
@@ -203,7 +203,13 @@ export const ingestKeyRows = (h: H, model: Model): ReadonlyArray<Html> => {
 			}),
 		]
 	return [
-		row("public", "Public key", "Client", "text-severity-debug", "For browser and client-side telemetry SDKs"),
+		row(
+			"public",
+			"Public key",
+			"Client",
+			"text-severity-debug",
+			"For browser and client-side telemetry SDKs",
+		),
 		row(
 			"private",
 			"Private key",

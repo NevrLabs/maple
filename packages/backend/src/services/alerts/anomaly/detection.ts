@@ -11,6 +11,7 @@
 // of a historically continuous traffic stream is service-health evidence.
 
 import type { AnomalyIncidentSeverity, AnomalySensitivity, AnomalySignalType } from "@maple/domain/http"
+import { Array as Arr } from "effect"
 
 export interface AnomalyEvaluation {
 	readonly detectorKey: string
@@ -53,15 +54,17 @@ const MIN_BASELINE_SAMPLES = 6
 const MAD_TO_SIGMA = 1.4826
 
 export function median(values: readonly number[]): number {
-	if (values.length === 0) return 0
 	const sorted = [...values].sort((a, b) => a - b)
 	const mid = Math.floor(sorted.length / 2)
-	return sorted.length % 2 === 0 ? (sorted[mid - 1]! + sorted[mid]!) / 2 : sorted[mid]!
+	const upper = sorted[mid]
+	if (upper === undefined) return 0
+	const lower = sorted[mid - 1]
+	return sorted.length % 2 === 0 && lower !== undefined ? (lower + upper) / 2 : upper
 }
 
 export function mad(values: readonly number[], m: number): number {
 	if (values.length === 0) return 0
-	return median(values.map((v) => Math.abs(v - m)))
+	return median(Arr.map(values, (v) => Math.abs(v - m)))
 }
 
 /**
@@ -76,6 +79,45 @@ export function robustSigma(
 ): number {
 	return Math.max(MAD_TO_SIGMA * mad(values, m), epsilonAbs, epsilonRel * m)
 }
+
+// Maintenance exclusion: baseline hours a maintenance window covered are dropped
+
+const HOUR_MS = 60 * 60 * 1000
+
+/** One maintenance window's hold on baselines, as plain data so this module stays I/O-free. */
+export interface BaselineExclusion {
+	/** Whether the window covers this (service, environment) series. */
+	readonly covers: (serviceName: string, deploymentEnv: string) => boolean
+	/** Epoch-ms [start, end) occurrences; a baseline hour overlapping one is dropped. */
+	readonly ranges: ReadonlyArray<{ readonly startsAtMs: number; readonly endsAtMs: number }>
+}
+
+export interface BaselineHourRow {
+	readonly hourMs: number
+	readonly serviceName: string
+	readonly deploymentEnv: string
+}
+
+export const isBaselineHourExcluded = (
+	exclusions: ReadonlyArray<BaselineExclusion>,
+	row: BaselineHourRow,
+): boolean =>
+	Arr.some(
+		exclusions,
+		(exclusion) =>
+			exclusion.covers(row.serviceName, row.deploymentEnv) &&
+			Arr.some(
+				exclusion.ranges,
+				(range) => row.hourMs < range.endsAtMs && range.startsAtMs < row.hourMs + HOUR_MS,
+			),
+	)
+
+/** Drops sealed baseline hours under maintenance; a series left too thin is skipped as usual. */
+export const excludeMaintenanceHours = <R extends BaselineHourRow>(
+	rows: ReadonlyArray<R>,
+	exclusions: ReadonlyArray<BaselineExclusion>,
+): ReadonlyArray<R> =>
+	exclusions.length === 0 ? rows : Arr.filter(rows, (row) => !isBaselineHourExcluded(exclusions, row))
 
 // Input shapes (rows already split into current vs baseline by the caller)
 
@@ -227,7 +269,10 @@ export function evaluateGoldenSignals(
 				),
 			)
 		} else {
-			const rates = baseline.filter((b) => b.requestCount > 0).map((b) => b.errorCount / b.requestCount)
+			const rates = Arr.map(
+				Arr.filter(baseline, (b) => b.requestCount > 0),
+				(b) => b.errorCount / b.requestCount,
+			)
 			if (rates.length < MIN_BASELINE_SAMPLES) {
 				evaluations.push(skipped(signal, serviceName, deploymentEnv, 0, currentCount))
 			} else {
@@ -250,7 +295,10 @@ export function evaluateGoldenSignals(
 		if (insufficientBaseline || currentCount < GOLDEN_MIN_VOLUME) {
 			evaluations.push(skipped(signal, serviceName, deploymentEnv, current.p95Ms, currentCount))
 		} else {
-			const p95s = baseline.filter((b) => b.requestCount > 0).map((b) => b.p95Ms)
+			const p95s = Arr.map(
+				Arr.filter(baseline, (b) => b.requestCount > 0),
+				(b) => b.p95Ms,
+			)
 			if (p95s.length < MIN_BASELINE_SAMPLES) {
 				evaluations.push(skipped(signal, serviceName, deploymentEnv, current.p95Ms, currentCount))
 			} else {
@@ -273,7 +321,7 @@ export function evaluateGoldenSignals(
 		if (config.elapsedMinutes < RATE_MIN_ELAPSED_MINUTES) {
 			evaluations.push(skipped(signal, serviceName, deploymentEnv, ratePerMin, currentCount))
 		} else {
-			const rates = baseline.map((b) => b.requestCount / 60)
+			const rates = Arr.map(baseline, (b) => b.requestCount / 60)
 			const m = median(rates)
 			const sigma = robustSigma(rates, m, 0.5, 0.1)
 			const threshold = m * THROUGHPUT_OUTAGE_FRACTION
@@ -313,7 +361,7 @@ export function evaluateLogVolume(series: LogVolumeSeries, config: DetectionConf
 		return skipped(signal, serviceName, deploymentEnv, ratePerMin, current.errorLogCount)
 	}
 
-	const rates = baseline.map((b) => b.errorLogCount / 60)
+	const rates = Arr.map(baseline, (b) => b.errorLogCount / 60)
 	const m = median(rates)
 	const sigma = robustSigma(rates, m, 0.5, 0.25)
 	const threshold = Math.max(m + k * sigma, m * ratio, m + LOG_MIN_VOLUME / 60)

@@ -1,10 +1,11 @@
 import type { FrameworkId } from "../../components/quick-start/sdk-snippets"
+import { isOwnService, TEST_TRACE_SERVICE } from "../../lib/own-services"
 import type { OnboardingRole } from "../../lib/onboarding-role"
 import { AsyncData, Command } from "foldkit"
 import type { TimeWindow } from "../../data/time-range"
 import { AppRoute, hrefOf } from "../../route"
-import * as CopyButton from "../../ui/copy-button"
-import * as Tabs from "../../ui/tabs"
+import * as CopyButton from "@maple/views/ui/copy-button"
+import * as Tabs from "@maple/views/ui/tabs"
 import { PageOutMessage, type PageReturn } from "../contract"
 import { PACKAGE_TAB_VALUES, SETUP_TAB_VALUES } from "../kit/guided-setup"
 import type { QuickStartState } from "../onboarding/quick-start-state"
@@ -16,6 +17,7 @@ import {
 	SaveSetupState,
 } from "./setup-checklist-command"
 import { type CopyField, Message, type Model, type ServiceRow, ServicesData } from "./setup-checklist"
+import { Array as Arr } from "effect"
 
 type Return = PageReturn<Model, Message>
 
@@ -39,6 +41,7 @@ export const init = (storageKey: string): Return => ({
 		services: ServicesData.Idle(),
 		window: null,
 		isOverviewInFlight: false,
+		hasTraces: null,
 		copies: { endpoint: CopyButton.init(), privateKey: CopyButton.init() },
 		isPrivateKeyVisible: false,
 		setupTabs: Tabs.init({ idBase: 40, values: SETUP_TAB_VALUES, selected: "install" }),
@@ -65,17 +68,35 @@ export const isMounted = (model: Model): boolean => model.state !== null && !mod
 
 /** `useGuidedFramework`: the picked framework, else the role's default. */
 export const frameworkOf = (state: QuickStartState): string =>
-	state.selectedFramework ?? (state.qualifyAnswers.role === null ? "nodejs" : ROLE_DEFAULT_FRAMEWORK[state.qualifyAnswers.role])
+	state.selectedFramework ??
+	(state.qualifyAnswers.role === null ? "nodejs" : ROLE_DEFAULT_FRAMEWORK[state.qualifyAnswers.role])
 
-/** `useIngestConnection`: the org's own services; the seeded `demo-` ones do not count. */
+/** `useIngestConnection`: the org's own services; seeded `demo-` ones and onboarding's test trace do not count. */
 export const realServices = (model: Model): ReadonlyArray<ServiceRow> =>
-	AsyncData.getOrElse(model.services, (): ReadonlyArray<ServiceRow> => []).filter(
-		(row) => !row.serviceName.startsWith("demo-"),
+	Arr.filter(
+		AsyncData.getOrElse(model.services, (): ReadonlyArray<ServiceRow> => []),
+		(row) => isOwnService(row.serviceName),
 	)
+
+/** Traces arrived, but only onboarding's test trace: the app itself is still to connect. */
+const hasOnlyTestTraces = (model: Model): boolean =>
+	model.hasTraces === true &&
+	realServices(model).length === 0 &&
+	Arr.some(
+		AsyncData.getOrElse(model.services, (): ReadonlyArray<ServiceRow> => []),
+		(row) => row.serviceName === TEST_TRACE_SERVICE,
+	)
+
+/** The card waits for a first trace once presence says the org has sent none of its own. */
+export const isWaitingForFirstTrace = (model: Model): boolean =>
+	(model.hasTraces === false || hasOnlyTestTraces(model)) && realServices(model).length === 0
 
 /** The card polls only while it waits for the first real service: the celebration needs no reads. */
 export const isPolling = (model: Model): boolean =>
-	isMounted(model) && model.window !== null && realServices(model).length === 0
+	isMounted(model) &&
+	model.window !== null &&
+	realServices(model).length === 0 &&
+	(model.hasTraces !== true || hasOnlyTestTraces(model))
 
 const fetchOverview = (model: Model, pinnedNamespace: string | null): Return =>
 	model.window === null
@@ -110,7 +131,9 @@ const dismissed = (model: Model): Return =>
 /** `FirstTraceCelebration`'s explore: dismiss, then the traces of the first real service. */
 const explore = (model: Model): Return => {
 	const first = realServices(model)[0]
-	const url = hrefOf(AppRoute.Traces({ search: first === undefined ? {} : { services: [first.serviceName] } }))
+	const url = hrefOf(
+		AppRoute.Traces({ search: first === undefined ? {} : { services: [first.serviceName] } }),
+	)
 	return { ...dismissed(model), outMessage: PageOutMessage.RequestedNavigation({ url, isReplace: false }) }
 }
 
@@ -118,7 +141,9 @@ const copyStep = (model: Model, field: CopyField, message: CopyButton.Message): 
 	const next = CopyButton.update(model.copies[field], message)
 	return {
 		model: { ...model, copies: { ...model.copies, [field]: next.model } },
-		commands: Command.mapMessages(next.commands ?? [], (inner) => Message.GotCopyMessage({ field, message: inner })),
+		commands: Command.mapMessages(next.commands ?? [], (inner) =>
+			Message.GotCopyMessage({ field, message: inner }),
+		),
 	}
 }
 
@@ -143,7 +168,9 @@ const tabsStep = (
 }
 
 const isWindow = (model: Model, window: TimeWindow) =>
-	model.window !== null && model.window.startTime === window.startTime && model.window.endTime === window.endTime
+	model.window !== null &&
+	model.window.startTime === window.startTime &&
+	model.window.endTime === window.endTime
 
 export const update = (model: Model, message: Message, context: SetupContext): Return => {
 	const { pinnedNamespace } = context
@@ -199,14 +226,21 @@ export const update = (model: Model, message: Message, context: SetupContext): R
 		ClickedFramework: ({ framework }) =>
 			model.state === null
 				? { model }
-				: saveState({ ...model, snippetCopies: {} }, { ...model.state, selectedFramework: framework }),
+				: saveState(
+						{ ...model, snippetCopies: {} },
+						{ ...model.state, selectedFramework: framework },
+					),
 		CompletedSaveState: () => ({ model }),
-		ClickedRevealPrivateKey: () => ({ model: { ...model, isPrivateKeyVisible: !model.isPrivateKeyVisible } }),
+		ClickedRevealPrivateKey: () => ({
+			model: { ...model, isPrivateKeyVisible: !model.isPrivateKeyVisible },
+		}),
 		GotCopyMessage: ({ field, message: inner }) => copyStep(model, field, inner),
 		GotSetupTabsMessage: ({ message: inner }) =>
 			tabsStep(model, "setupTabs", inner, (child) => Message.GotSetupTabsMessage({ message: child })),
 		GotPackageTabsMessage: ({ message: inner }) =>
-			tabsStep(model, "packageTabs", inner, (child) => Message.GotPackageTabsMessage({ message: child })),
+			tabsStep(model, "packageTabs", inner, (child) =>
+				Message.GotPackageTabsMessage({ message: child }),
+			),
 		GotSnippetCopyMessage: ({ snippet, message: inner }) => snippetCopyStep(model, snippet, inner),
 	})
 }

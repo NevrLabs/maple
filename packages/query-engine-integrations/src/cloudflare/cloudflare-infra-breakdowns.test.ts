@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { Effect } from "effect"
+import { Effect, Array as Arr, String as Str, Option } from "effect"
 import { compileUnsafe, compileUnionUnsafe, type CompiledQuery } from "@maple-dev/effect-orm/clickhouse"
 import {
 	CLOUDFLARE_BREAKDOWN_DIMENSIONS,
@@ -74,8 +74,8 @@ describe("cloudflareZoneBreakdownTotalsSQL", () => {
 		for (const dimension of CLOUDFLARE_BREAKDOWN_DIMENSIONS) {
 			const { sql } = compileUnsafe(cloudflareZoneBreakdownTotalsSQL(dimension), zoneParams)
 			expect(sql).toContain("GROUP BY key")
-			const metrics = cloudflareBreakdownMetrics(dimension).map((name) => `'${name}'`)
-			expect(sql).toContain(`MetricName IN (${metrics.join(", ")})`)
+			const metrics = Arr.map(cloudflareBreakdownMetrics(dimension), (name) => `'${name}'`)
+			expect(sql).toContain(`MetricName IN (${Arr.join(metrics, ", ")})`)
 		}
 	})
 })
@@ -131,7 +131,7 @@ describe("cloudflareZoneBreakdownCoverageSQL", () => {
 describe("cloudflareZoneFacetsQuery", () => {
 	it("unions one branch per facet, each tagged with its type", () => {
 		const { sql } = compileUnionUnsafe(cloudflareZoneFacetsQuery(), zoneParams)
-		expect(sql.match(/UNION ALL/g)?.length).toBe(7)
+		expect(Arr.fromIterable(Str.matchAll(/UNION ALL/g)(sql)).length).toBe(7)
 		for (const facetType of [
 			"host",
 			"cacheStatus",
@@ -154,17 +154,25 @@ describe("cloudflareZoneFacetsQuery", () => {
 			cloudflareZoneFacetsQuery({ paths: ["/api"], hosts: ["a.example"] }),
 			zoneParams,
 		)
-		const branches = sql.split("UNION ALL")
-		const pathBranch = branches.find((b) => b.includes("'path' AS facetType"))!
-		const countryBranch = branches.find((b) => b.includes("'country' AS facetType"))!
-		const hostBranch = branches.find((b) => b.includes("'host' AS facetType"))!
+		const branches = Str.split("UNION ALL")(sql)
+		const pathBranch = Option.getOrThrow(
+			Arr.findFirst(branches, (b) => Str.includes("'path' AS facetType")(b)),
+		)
+		const countryBranch = Option.getOrThrow(
+			Arr.findFirst(branches, (b) => Str.includes("'country' AS facetType")(b)),
+		)
+		const hostBranch = Option.getOrThrow(
+			Arr.findFirst(branches, (b) => Str.includes("'host' AS facetType")(b)),
+		)
 
 		// The path facet still lists every path…
 		expect(pathBranch).not.toContain("url.path'] IN")
 		// …and the host facet still lists every host…
 		expect(hostBranch).not.toContain("IN ('a.example')")
 		// …while the host filter narrows the other main-cube facets.
-		const cacheBranch = branches.find((b) => b.includes("'cacheStatus' AS facetType"))!
+		const cacheBranch = Option.getOrThrow(
+			Arr.findFirst(branches, (b) => Str.includes("'cacheStatus' AS facetType")(b)),
+		)
 		expect(cacheBranch).toContain("IN ('a.example')")
 		// The country facet reads a family carrying neither key, so neither filter applies.
 		expect(countryBranch).not.toContain("url.path'] IN")

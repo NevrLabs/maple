@@ -1,12 +1,12 @@
 import { Submodel } from "foldkit"
 import type { Html, HtmlBuilder } from "foldkit/html"
 import { WIDGET_CHART_TOKENS } from "../kit/chart-tokens"
-import { ResolveThemeColors } from "../../../charts/theme-colors"
-import { button } from "../../../ui/button"
-import { chartSkeleton } from "../../../ui/chart-skeleton"
+import { ResolveThemeColors } from "@maple/views/charts/theme-colors"
+import { button } from "@maple/views/ui/button"
+import { chartSkeleton } from "@maple/views/ui/chart-skeleton"
 
-import { inlineCode } from "../../../ui/inline-code"
-import { skeleton } from "../../../ui/skeleton"
+import { inlineCode } from "@maple/views/ui/inline-code"
+import { skeleton } from "@maple/views/ui/skeleton"
 import type { PageViewInputs } from "../../contract"
 import { dashboardPage } from "../../kit/dashboard-page"
 import { resourceNotFound } from "../../kit/resource-not-found"
@@ -17,11 +17,13 @@ import { widgetTile } from "../kit/tiles"
 import { MeasurePreview } from "./command"
 import { Message } from "./message"
 import type { Model } from "./model"
-import { previewWidgetOf } from "./update"
+import { canApply, previewWidgetOf } from "./update"
 import type { Widget } from "./lowering"
 import { leaveDialog } from "./view-dialog"
 import { queryEditor } from "./view-query"
 import { settingsRail } from "./view-rail"
+import { hstack, vstack } from "@maple/views/ui/stack"
+import { Array as Arr } from "effect"
 
 // `WidgetConfigurePage` and `WidgetQueryBuilderPage`: the preview over the query editor, the
 // settings rail beside them.
@@ -34,34 +36,32 @@ const editorSkeleton = (h: H): Html =>
 		[h.Role("status"), h.AriaLabel("Loading widget")],
 		[
 			h.span([h.Class("sr-only")], ["Loading widget"]),
-			h.div(
-				[h.Class("flex flex-col gap-6"), h.AriaHidden(true)],
-				[
-					h.div(
-						[
-							h.Class(
-								"h-64 w-full overflow-hidden rounded-md ring-1 ring-border bg-card p-2 animate-tile-in motion-reduce:animate-none",
-							),
-							h.Style({ "animation-delay": "0ms" }),
-						],
-						[chartSkeleton(h, "line")],
-					),
-					h.div(
-						[h.Class("flex max-w-md flex-col gap-4")],
-						[1, 2, 3, 4].map((index) =>
-							h.div(
-								[
-									h.Class(
-										"flex flex-col gap-1.5 animate-tile-in motion-reduce:animate-none",
-									),
-									h.Style({ "animation-delay": `${index * 40}ms` }),
-								],
-								[skeleton(h, "h-3 w-20"), skeleton(h, "h-9 w-full")],
-							),
+			vstack(h, { gap: "6", attributes: [h.AriaHidden(true)] }, [
+				h.div(
+					[
+						h.Class(
+							"h-64 w-full overflow-hidden rounded-md ring-1 ring-border bg-card p-2 animate-tile-in motion-reduce:animate-none",
+						),
+						h.Style({ "animation-delay": "0ms" }),
+					],
+					[chartSkeleton(h, "line")],
+				),
+				vstack(
+					h,
+					{ gap: "4", className: "max-w-md" },
+					Arr.map([1, 2, 3, 4], (index) =>
+						vstack(
+							h,
+							{
+								gap: "1.5",
+								className: "animate-tile-in motion-reduce:animate-none",
+								attributes: [h.Style({ "animation-delay": `${index * 40}ms` })],
+							},
+							[skeleton(h, "h-3 w-20"), skeleton(h, "h-9 w-full")],
 						),
 					),
-				],
-			),
+				),
+			]),
 		],
 	)
 
@@ -84,7 +84,6 @@ const timeLabel = (model: Model): string =>
 			? presetLabel(model.timeRange.value)
 			: `${model.timeRange.startTime} - ${model.timeRange.endTime}`
 
-/** The preview hero: the board's range picker over the widget as it would render. */
 /** The previewed stat's sparkline series, read like any tile's data (its own data source). */
 const sparklineState = (model: Model, widget: Widget) => {
 	const source = widget.display.sparkline?.dataSource
@@ -93,30 +92,28 @@ const sparklineState = (model: Model, widget: Widget) => {
 		: dataStateOf(model.requests, { ...widget, dataSource: source }, model.sparkGate)
 }
 
+/** The preview hero: the editor's range picker over the widget as it would render. */
 const preview = (h: H, model: Model, timeZone: string): Html => {
 	const widget = previewWidgetOf(model)
 	return h.div(
 		[h.Class("border-b bg-surface-sunken p-6")],
 		[
-			h.div(
-				[h.Class("flex justify-end mb-3")],
-				[
-					h.submodel({
-						slotId: "widget-editor-time-picker",
-						model: model.timePicker,
-						view: TimeRangePicker.view,
-						viewInputs: {
-							label: timeLabel(model),
-							selectedPreset:
-								model.timeRange?.type === "relative" ? model.timeRange.value : undefined,
-							presets: TimeRangePicker.PRESET_VALUES,
-							timeZone,
-							hasHotkey: false,
-						},
-						toParentMessage: (message) => Message.GotTimePickerMessage({ message }),
-					}),
-				],
-			),
+			hstack(h, { align: "stretch", justify: "end", className: "mb-3" }, [
+				h.submodel({
+					slotId: "widget-editor-time-picker",
+					model: model.timePicker,
+					view: TimeRangePicker.view,
+					viewInputs: {
+						label: timeLabel(model),
+						selectedPreset:
+							model.timeRange?.type === "relative" ? model.timeRange.value : undefined,
+						presets: TimeRangePicker.PRESET_VALUES,
+						timeZone,
+						hasHotkey: false,
+					},
+					toParentMessage: (message) => Message.GotTimePickerMessage({ message }),
+				}),
+			]),
 			h.div(
 				[h.Class("h-[420px]"), h.OnMount(MeasurePreview())],
 				widget === null
@@ -155,14 +152,23 @@ const preview = (h: H, model: Model, timeZone: string): Html => {
 
 const editor = (h: H, model: Model, timeZone: string): Html =>
 	h.div(
-		[h.Class("animate-in fade-in slide-in-from-bottom-2 duration-200 flex flex-1 min-h-0 -m-4")],
+		// Below `md` the rail stacks under the editor and the page scrolls; from `md` each pane scrolls.
+		[
+			h.Class(
+				"animate-in fade-in slide-in-from-bottom-2 duration-200 flex flex-col md:flex-row md:flex-1 md:min-h-0 -m-4",
+			),
+		],
 		[
 			h.div(
-				[h.Class("flex-1 min-w-0 overflow-y-auto")],
+				[h.Class("min-w-0 md:flex-1 md:overflow-y-auto")],
 				[preview(h, model, timeZone), queryEditor(h, model, timeZone)],
 			),
 			h.aside(
-				[h.Class("w-[272px] shrink-0 border-l overflow-y-auto p-5 bg-surface-faint")],
+				[
+					h.Class(
+						"w-full md:w-[272px] shrink-0 border-t md:border-t-0 md:border-l md:overflow-y-auto p-5 bg-surface-faint",
+					),
+				],
 				[settingsRail(h, model, timeZone)],
 			),
 		],
@@ -188,28 +194,26 @@ export const view = Submodel.defineView<Model, Message, PageViewInputs>((model, 
 export const topbarActions = Submodel.defineView<Model, Message, PageViewInputs>((model, _inputs, h) =>
 	model.status !== "Ready" || model.state === null
 		? null
-		: h.div(
-				[h.Class("flex items-center gap-2")],
-				[
-					button(
-						h,
-						{
-							variant: "outline",
-							size: "sm",
-							isDisabled: model.isSaving,
-							attributes: [h.OnClick(Message.ClickedCancel())],
-						},
-						["Cancel"],
-					),
-					button(
-						h,
-						{
-							size: "sm",
-							isLoading: model.isSaving,
-							attributes: [h.OnClick(Message.ClickedApply())],
-						},
-						["Apply"],
-					),
-				],
-			),
+		: hstack(h, { gap: "2" }, [
+				button(
+					h,
+					{
+						variant: "outline",
+						size: "sm",
+						isDisabled: model.isSaving,
+						attributes: [h.OnClick(Message.ClickedCancel())],
+					},
+					["Cancel"],
+				),
+				button(
+					h,
+					{
+						size: "sm",
+						isLoading: model.isSaving,
+						isDisabled: !canApply(model),
+						attributes: [h.OnClick(Message.ClickedApply())],
+					},
+					["Apply"],
+				),
+			]),
 )

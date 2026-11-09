@@ -26,12 +26,24 @@ import { envPorts } from "@maple/backend/platform/env-ports"
 import { CodeLoader } from "@maple/backend/platform/bindings"
 import { forkRequestScoped } from "@maple/backend/platform/fork-request-scoped"
 import { runtimeTelemetry } from "@maple/infra/worker-telemetry"
-import { Cause, Clock, Duration, Effect, Exit, Layer, ManagedRuntime, Match, Option, Redacted } from "effect"
+import {
+	Cause,
+	Clock,
+	Duration,
+	Effect,
+	Layer,
+	ManagedRuntime,
+	Match,
+	Option,
+	Redacted,
+	Schema,
+	Array as Arr,
+	String as Str,
+} from "effect"
 import { FetchHttpClient } from "effect/http"
 import type { WorkersAiBinding } from "../platform/WorkersAiHttpClient"
 import { ReturnedToolFailuresOkLive } from "../platform/genai-spans"
 import type { ChatSession } from "./ChatSession"
-import type { ChatTurnEvent } from "./events"
 import { withToolTranscript } from "./close-out"
 import {
 	CLOSE_OUT_PROMPT,
@@ -57,12 +69,25 @@ import {
 } from "./tools"
 
 import { interruptOnAbort, makeTurnObservability, turnSpanAttributes } from "./turn-outcome"
+import { makeAutonomousOutcome, type PhaseKind } from "./autonomous-outcome"
+import { makeUnfinishedSettler, runAutonomousTurn, settleRow } from "./autonomous-settle"
 import { type AgentDefinition, agentForSession } from "./agents"
 import { profileForTurn } from "./profiles"
-import { runChatTurn, type ChatRunOutcome } from "./run"
+import { runChatTurn } from "./run"
 import { toTenantContext, turnTenant } from "./turn-actor"
+import { creditRefusalError, creditRefusalNotice, turnCreditRefusal } from "./turn-credits"
+import type { AiCreditsExhausted } from "@maple/backend/services/billing/AiCredits"
 import { summarizeCause } from "@maple/backend/platform/describe-cause"
 import { trackAiCredits, trackTokenUsage } from "@maple/backend/services/billing/autumn-tracker"
+
+/** A best-effort turn step (loading the code executor, disposing the runtime, flushing spans) rejected. */
+class TurnRuntimeStepError extends Schema.TaggedError<TurnRuntimeStepError>()(
+	"@maple/ai/chat/TurnRuntimeStepError",
+	{
+		message: Schema.String,
+		cause: Schema.Defect(),
+	},
+) {}
 
 /**
  * The engine's per-step bookkeeping, which is named and therefore traced.
@@ -117,8 +142,8 @@ export interface RunChatSessionTurnInput {
 /**
  * Metering is housekeeping, and it runs after the answer, on the way out of the turn.
  *
- * `endTurn` sits in the `finally` of `ChatSession.runTurn`, so whatever the metering finalizer
- * waits on holds the session's turn slot, and the stale-claim reclaim is tens of minutes out
+ * A turn that did not end itself is ended in the `finally` of `ChatSession.runTurn`, so whatever
+ * the metering finalizer waits on can hold the session's turn slot, and the stale-claim reclaim is tens of minutes out
  * (`TURN_STALE_MS` in `ChatSession.ts`). Unbounded, a POST to Autumn that never answers is a way
  * for a third party's outage to wedge a conversation.
  *
@@ -127,14 +152,14 @@ export interface RunChatSessionTurnInput {
  */
 const METERING_TIMEOUT = "5 seconds"
 
-/** Stable copy for the durable/browser event; detailed causes stay server-side. */
-const CHAT_TURN_FAILED = "Maple couldn't complete this response."
 const NO_DIAGNOSIS_MESSAGE = "Maple ended this investigation without a diagnosis."
 /** What the row records when the pass and its close-out both ended in prose or on an error. */
 const NO_DIAGNOSIS_ERROR = "no_diagnosis: the agent ended its pass without submitting a diagnosis; retry"
 const NO_REVIEW_MESSAGE = "Maple ended this review without a report."
 const NO_REPLY_MESSAGE = "Maple ended this answer without posting it."
 const NO_REPLY_ERROR = "no_reply: the agent ended its pass without submitting an answer"
+/** How long filing a review's saved findings may take once the turn has started settling. */
+const SUBMIT_SAVED_TIMEOUT = "60 seconds"
 /** A review pass that answered in prose gets another pass only with at least this much of its clock left. */
 const MIN_CONTINUE_MS = 2 * 60 * 1000
 
@@ -210,7 +235,7 @@ export const meterTurn = (
 	).pipe(
 		Effect.timeout(METERING_TIMEOUT),
 		Effect.ignore,
-		// oxlint-disable-next-line effecttsgo/strict-effect-provide
+		// oxlint-disable-next-line effecttsgo/strict-effect-provide -- metering is forked off the turn and runs on its own HTTP client
 		Effect.provide(FetchHttpClient.layer),
 	)
 }
@@ -308,7 +333,6 @@ export const runChatSessionTurn = async (input: RunChatSessionTurnInput): Promis
 	// so there is no later moment to hand it a total — and the metering finalizer reads it after the
 	// turn has ended, including when it ended by failing.
 	const usage = makeRunUsage()
-	let recordedTerminal = false
 	// `empty_output` and `recovery_count` are gone with the machinery that produced them: they
 	// counted the old loop's own repair attempts, and the engine has no equivalent to report.
 	const annotateTurn = () => Effect.annotateCurrentSpan(turnSpanAttributes(observability, input.signal))
@@ -317,13 +341,14 @@ export const runChatSessionTurn = async (input: RunChatSessionTurnInput): Promis
 	const prReviewId = prReviewForSession(input.sessionId)
 	const prReplyId = prReplyForSession(input.sessionId)
 
-	const turnBody = (orgKey: Option.Option<Redacted.Redacted<string>>) =>
+	const turnBody = (orgKey: Option.Option<Redacted.Redacted>) =>
 		Effect.gen(function* () {
 			const investigations = yield* InvestigationService
 			const reviews = yield* PrReviewService
 			const conversations = yield* PrReviewConversationService
 			// Shared by the kickoff's clone, every pass of the turn and its review_files children.
-			const toolExecutor = yield* withSandboxBreaker(yield* McpToolExecutor)
+			const mcpToolExecutor = yield* McpToolExecutor
+			const toolExecutor = yield* withSandboxBreaker(mcpToolExecutor)
 			const runTenant = yield* turnTenant(tenant, origin).pipe(
 				// The asker's linked Maple user may not read this org: nothing runs, and the message
 				// is the only thing that tells them why.
@@ -331,13 +356,7 @@ export const runChatSessionTurn = async (input: RunChatSessionTurnInput): Promis
 					Effect.sync(() => {
 						observability.outcome = "error"
 						observability.failureReason = `LinkedUserNotPermitted:${refusal.reason}`
-						input.session.append({
-							type: "turn-end",
-							messageId: input.messageId,
-							reason: "error",
-							error: refusal.message,
-						})
-						recordedTerminal = true
+						input.session.endTurn(input.messageId, { reason: "error", error: refusal.message })
 						return undefined
 					}),
 				),
@@ -376,34 +395,93 @@ export const runChatSessionTurn = async (input: RunChatSessionTurnInput): Promis
 				})
 				if (settled) {
 					observability.outcome = "resume_skipped"
-					input.session.append({ type: "turn-end", messageId: input.messageId, reason: "stop" })
-					recordedTerminal = true
+					input.session.endTurn(input.messageId, { reason: "stop" })
 					yield* annotateTurn()
 					return
 				}
 			}
+			const autonomous = isAutonomousTurn(input.sessionId, origin)
+			// Every phase's ending, recorded as it settles: the PR's reason and the final turn-end
+			// are read from all of them.
+			const outcome = makeAutonomousOutcome()
+			const { failUnfinished, aborted } = makeUnfinishedSettler({
+				outcome,
+				signal: input.signal,
+				observability,
+				rows: {
+					...(investigationId === undefined
+						? undefined
+						: {
+								failInvestigation: (error: string) =>
+									investigations.failInvestigation(tenant.orgId, investigationId, error),
+							}),
+					...(prReplyId === undefined
+						? undefined
+						: { failReply: conversations.failReply(tenant.orgId, prReplyId, NO_REPLY_ERROR) }),
+					...(prReviewId === undefined
+						? undefined
+						: {
+								failReview: (reason: PrReviewFailureReason) =>
+									reviews.failReview(tenant.orgId, prReviewId, reviewFailureError(reason)),
+							}),
+				},
+			})
+			// Out of AI credits or at its cap, nothing runs: the surface's own failure path says why.
+			// A resumed turn was admitted before it was evicted: it finishes rather than lose its work.
+			const refusal =
+				input.resume === undefined
+					? yield* turnCreditRefusal(tenant.orgId, Option.isSome(orgKey))
+					: Option.none<AiCreditsExhausted>()
+			if (Option.isSome(refusal)) {
+				observability.outcome = "error"
+				if (prReplyId !== undefined)
+					yield* settleRow(
+						conversations.failReply(
+							tenant.orgId,
+							prReplyId,
+							creditRefusalError(refusal.value),
+							creditRefusalNotice(refusal.value),
+						),
+						"Could not record the refused reply",
+					)
+				if (autonomous)
+					yield* failUnfinished("ai_credits_exhausted", creditRefusalError(refusal.value))
+				observability.failureReason = `AiCreditsExhausted:${refusal.value.reason}`
+				input.session.endTurn(input.messageId, { reason: "error", error: refusal.value.message })
+				return yield* annotateTurn()
+			}
+			// Read before the run: the diff tools are pinned to it. An unreadable target reviews unpinned.
+			const target =
+				prReviewId === undefined
+					? Option.none()
+					: yield* reviews.reviewTarget(tenant.orgId, prReviewId).pipe(
+							Effect.catch((error) =>
+								Effect.logInfo("Could not read the review's target").pipe(
+									Effect.annotateLogs({
+										sessionId: input.sessionId,
+										error: error.message,
+									}),
+									Effect.as(Option.none()),
+								),
+							),
+						)
 			// Clone the commit while the model reads the diff, rather than when its first source tool
 			// asks and waits on it. A child of the turn (no request Scope here, so `forkRequestScoped`
 			// parents it on this fiber): a clone still running when the turn ends carries on in the container.
-			if (prReviewId !== undefined) {
-				yield* reviews.reviewTarget(tenant.orgId, prReviewId).pipe(
-					Effect.flatMap(
-						Option.match({
-							onNone: () => Effect.void,
-							onSome: (target) =>
-								toolExecutor.prepareRepository(runTenant, {
-									repository: target.repository,
-									ref: target.headSha,
-								}),
-						}),
-					),
-					Effect.catch((error) =>
-						Effect.logInfo("Could not prepare the review's checkout").pipe(
-							Effect.annotateLogs({ sessionId: input.sessionId, error: error.message }),
+			if (Option.isSome(target)) {
+				yield* toolExecutor
+					.prepareRepository(runTenant, {
+						repository: target.value.repository,
+						ref: target.value.headSha,
+					})
+					.pipe(
+						Effect.catch((error) =>
+							Effect.logInfo("Could not prepare the review's checkout").pipe(
+								Effect.annotateLogs({ sessionId: input.sessionId, error: error.message }),
+							),
 						),
-					),
-					forkRequestScoped,
-				)
+						forkRequestScoped,
+					)
 			}
 			// An investigation picks its commit from telemetry mid-pass, so warm the repositories it
 			// could read instead: the deployed commit then clones from a filled mirror in seconds.
@@ -437,7 +515,7 @@ export const runChatSessionTurn = async (input: RunChatSessionTurnInput): Promis
 			// The session recorded the user's message before the run started, so the transcript's tail is
 			// this run's input rather than part of its history.
 			// Read once: it is a SQL scan plus a decode, and it is a read-only snapshot.
-			const spoken = history.filter((message) => message.text.trim() !== "")
+			const spoken = Arr.filter(history, (message) => Str.trim(message.text) !== "")
 			const latest = spoken.at(-1)
 			// Unbound (a stage without Dynamic Workers), the agents run without `run_code`. Imported only
 			// when bound: the adapter needs `cloudflare:workers`, which nothing outside workerd resolves.
@@ -446,34 +524,41 @@ export const runChatSessionTurn = async (input: RunChatSessionTurnInput): Promis
 			const codeExecutor =
 				agent.codeMode !== true || Option.isNone(codeLoader)
 					? undefined
-					: yield* Effect.tryPromise(
-							() => import("@yielded/agent-platform-cloudflare/cloudflare-code-mode"),
-						).pipe(
+					: yield* Effect.tryPromise({
+							try: () => import("@yielded/agent-platform-cloudflare/cloudflare-code-mode"),
+							catch: (cause) =>
+								new TurnRuntimeStepError({
+									message: "Failed to load the code executor",
+									cause,
+								}),
+						}).pipe(
 							Effect.map(({ dynamicWorkerCodeExecutorLayer }) =>
 								dynamicWorkerCodeExecutorLayer({ loader: codeLoader.value }),
 							),
 							Effect.catch((error) =>
 								Effect.logWarning(
 									"run_code unavailable: the code executor failed to load",
-								).pipe(Effect.annotateLogs({ cause: String(error) }), Effect.as(undefined)),
+								).pipe(
+									Effect.annotateLogs({ cause: String(error.cause) }),
+									Effect.as(undefined),
+								),
 							),
 						)
 			// A restarted turn reads from its kickoff: what came after it is the attempt that died.
-			const kickoff =
-				input.resume === undefined
-					? -1
-					: spoken.findIndex(
-							(message) =>
-								message.role === "user" && message.id === input.resume?.userMessageId,
-						)
-			const text = input.resume?.text ?? (latest?.role === "user" ? latest.text : "")
+			const resume = input.resume
+			const text = resume?.text ?? (latest?.role === "user" ? latest.text : "")
 			const prior =
-				input.resume !== undefined
-					? spoken.slice(0, kickoff === -1 ? spoken.length : kickoff)
+				resume !== undefined
+					? Option.match(
+							Arr.findFirstIndex(
+								spoken,
+								(message) => message.role === "user" && message.id === resume.userMessageId,
+							),
+							{ onNone: () => spoken, onSome: (kickoff) => spoken.slice(0, kickoff) },
+						)
 					: latest?.role === "user"
 						? spoken.slice(0, -1)
 						: spoken
-			const autonomous = isAutonomousTurn(input.sessionId, origin)
 			// One per review turn: the close-out sees what the pass read and keeps what it saved.
 			const review =
 				prReviewId !== undefined && autonomous
@@ -516,15 +601,9 @@ export const runChatSessionTurn = async (input: RunChatSessionTurnInput): Promis
 				investigationFeed === undefined
 					? Effect.void
 					: investigationFeed.flush.pipe(Effect.andThen(investigationFeed.close))
-			// Why the pass, or else its close-out, stopped; the first reason is the one the PR is told.
-			let failure: PrReviewFailureReason | undefined
 			const holdsTurn = () => input.session.holdsTurn(input.messageId)
-			// An autonomous pass ends when the runner says so, not when a run does: a run that stopped
-			// in prose or died on a model error gets one close-out turn first, so its terminal is held
-			// back until the outcome is known.
-			let held: Extract<ChatTurnEvent, { readonly type: "turn-end" }> | undefined
-			// Read through a function: `held` is set by the run's callback, which narrowing cannot see.
-			const ranOutOfSteps = () => held?.reason === "max-steps"
+			// Whether a conversation turn's run wrote its own ending (non-autonomous only).
+			let recordedTerminal = false
 			const run = (turn: {
 				readonly text: string
 				readonly history: ReadonlyArray<ChatMessage>
@@ -547,9 +626,13 @@ export const runChatSessionTurn = async (input: RunChatSessionTurnInput): Promis
 							reviews.submitReview(
 								orgId,
 								reviewId,
-								request.partial === true && failure !== undefined
-									? new SubmitPrReviewRequest({ ...request, partialReason: failure })
-									: request,
+								Option.match(Option.fromUndefinedOr(outcome.failure()), {
+									onNone: () => request,
+									onSome: (partialReason) =>
+										request.partial === true
+											? new SubmitPrReviewRequest({ ...request, partialReason })
+											: request,
+								}),
 							),
 						),
 					submitReply: conversations.submitReply,
@@ -558,6 +641,10 @@ export const runChatSessionTurn = async (input: RunChatSessionTurnInput): Promis
 					...(turn.agent === undefined ? undefined : { agent: turn.agent }),
 					...(review === undefined ? undefined : { review }),
 					...(codeExecutor === undefined ? undefined : { codeExecutor }),
+					...Option.match(target, {
+						onNone: () => undefined,
+						onSome: ({ repository, number }) => ({ pullRequest: { repository, number } }),
+					}),
 					text: turn.text,
 					history: turn.history,
 					usage,
@@ -576,42 +663,46 @@ export const runChatSessionTurn = async (input: RunChatSessionTurnInput): Promis
 						}
 						if (event.type === "turn-end" && event.task === undefined) {
 							observability.outcome = event.reason
-							if (autonomous && event.reason !== "aborted") {
-								held = event
-								return
-							}
-							recordedTerminal = true
+							// An autonomous pass ends when the runner says so, not when a run does.
+							if (autonomous && event.reason !== "aborted") return outcome.hold(event.reason)
+							const { reason, error } = event
+							recordedTerminal = input.session.endTurn(
+								input.messageId,
+								error === undefined ? { reason } : { reason, error },
+							)
+							return
 						}
 						input.session.append(event)
 					},
-					// oxlint-disable-next-line effecttsgo/strict-effect-provide
+					// oxlint-disable-next-line effecttsgo/strict-effect-provide -- the turn's OpenRouter client is built per turn from its settings
 				}).pipe(Effect.provide(openRouterClient))
 
-			// A pass that failed is a pass with no diagnosis yet, not a dead turn: the close-out below
-			// still gets its say. Interrupts stay interrupts.
-			const recoverAutonomousFailure = <R>(effect: Effect.Effect<ChatRunOutcome, unknown, R>) =>
-				effect.pipe(
-					Effect.catchCause((cause) =>
-						Cause.hasInterruptsOnly(cause)
-							? Effect.failCause(cause)
-							: Effect.sync(() => {
-									failure ??= reviewFailureReason(cause, { ownKey: Option.isSome(orgKey) })
-								}).pipe(
-									Effect.andThen(
-										Effect.logWarning("Autonomous pass failed; closing it out"),
-									),
-									Effect.annotateLogs({
-										sessionId: input.sessionId,
-										messageId: input.messageId,
-										cause: summarizeCause(cause),
-									}),
-									Effect.as<ChatRunOutcome>({
-										autonomous: true,
-										submitted: false,
-										compactions: 0,
-									}),
-								),
+			/**
+			 * One phase, settled into `outcome`. A pass that failed is a pass with no report yet, not a
+			 * dead turn: the close-out still gets its say. Interrupts stay interrupts.
+			 */
+			const phase = (kind: PhaseKind, turn: Parameters<typeof run>[0]) =>
+				run(turn).pipe(
+					Effect.map((result) => ({ result, raised: undefined })),
+					Effect.catchCauseIf(
+						(cause) => !Cause.hasInterruptsOnly(cause),
+						(cause) =>
+							Effect.logWarning("Autonomous pass failed; closing it out").pipe(
+								Effect.annotateLogs({
+									sessionId: input.sessionId,
+									messageId: input.messageId,
+									cause: summarizeCause(cause),
+								}),
+								Effect.as({
+									result: { autonomous: true, submitted: false, compactions: 0 },
+									raised: reviewFailureReason(cause, { ownKey: Option.isSome(orgKey) }),
+								}),
+							),
 					),
+					Effect.map(({ result, raised }) => {
+						observability.compactions = (observability.compactions ?? 0) + result.compactions
+						return outcome.record(kind, result.submitted, raised)
+					}),
 				)
 
 			if (!autonomous) {
@@ -621,42 +712,56 @@ export const runChatSessionTurn = async (input: RunChatSessionTurnInput): Promis
 				return
 			}
 
-			const passDeadline =
-				(yield* Clock.currentTimeMillis) +
-				Duration.toMillis(Duration.fromInputUnsafe(agent.budget.maxDuration))
-			const first = yield* recoverAutonomousFailure(run({ text, history: prior }))
-			observability.compactions = first.compactions
-			let submitted = first.submitted
-			// Exhausted rather than failed: the engine's final answer ended in prose, not a report.
-			if (!submitted && held?.reason === "max-steps") failure ??= "step_limit"
-			// A review that answered in prose with no limit hit was not stopped, it stopped itself. With
-			// time left it gets one more pass that may still read, inside the same wall clock.
-			if (!submitted && failure === undefined && prReviewId !== undefined && holdsTurn()) {
-				const remaining = passDeadline - (yield* Clock.currentTimeMillis)
-				if (remaining >= MIN_CONTINUE_MS) {
-					held = undefined
-					const continued = yield* recoverAutonomousFailure(
-						run({
+			const autonomousTurn = Effect.gen(function* () {
+				const passDeadline =
+					(yield* Clock.currentTimeMillis) +
+					Duration.toMillis(Duration.fromInputUnsafe(agent.budget.maxDuration))
+				const remainingAgent = (remaining: number): AgentDefinition => ({
+					...agent,
+					budget: { ...agent.budget, maxDuration: Duration.millis(remaining) },
+				})
+				yield* phase("pass", { text, history: prior })
+				// A review stopped for failing tool calls is usually a bad start, not an impossible review:
+				// it starts over once from the kickoff, inside the same wall clock, without the failed calls.
+				if (
+					!outcome.submitted() &&
+					outcome.failure() === "stuck" &&
+					prReviewId !== undefined &&
+					holdsTurn()
+				) {
+					const remaining = passDeadline - (yield* Clock.currentTimeMillis)
+					if (remaining >= MIN_CONTINUE_MS) {
+						const restarted = yield* phase("restart", {
+							text,
+							history: prior,
+							agent: remainingAgent(remaining),
+						})
+						yield* Effect.annotateCurrentSpan("maple.pr_review.restarted", restarted.submitted)
+					}
+				}
+				// A review that answered in prose with no limit hit was not stopped, it stopped itself. With
+				// time left it gets one more pass that may still read, inside the same wall clock.
+				if (
+					!outcome.submitted() &&
+					outcome.failure() === undefined &&
+					prReviewId !== undefined &&
+					holdsTurn()
+				) {
+					const remaining = passDeadline - (yield* Clock.currentTimeMillis)
+					if (remaining >= MIN_CONTINUE_MS) {
+						const continued = yield* phase("continue", {
 							// The replayed history keeps only its newest part, which can drop the kickoff.
 							text: `${PR_REVIEW_CONTINUE_PROMPT}\n\n${text}`,
 							history: withToolTranscript(input.session.history()),
-							agent: {
-								...agent,
-								budget: { ...agent.budget, maxDuration: Duration.millis(remaining) },
-							},
-						}),
-					)
-					observability.compactions = (observability.compactions ?? 0) + continued.compactions
-					submitted = continued.submitted
-					yield* Effect.annotateCurrentSpan("maple.pr_review.continued", submitted)
-					if (!submitted && ranOutOfSteps()) failure ??= "step_limit"
+							agent: remainingAgent(remaining),
+						})
+						yield* Effect.annotateCurrentSpan("maple.pr_review.continued", continued.submitted)
+					}
+					if (!outcome.submitted() && outcome.failure() === undefined)
+						outcome.fail("answered_in_prose")
 				}
-				if (!submitted) failure ??= "answered_in_prose"
-			}
-			if (!submitted && holdsTurn()) {
-				held = undefined
-				const closeOut = yield* recoverAutonomousFailure(
-					run({
+				if (!outcome.submitted() && holdsTurn()) {
+					const closeOut = yield* phase("close-out", {
 						text:
 							prReplyId !== undefined
 								? PR_REPLY_CLOSE_OUT_PROMPT
@@ -665,51 +770,36 @@ export const runChatSessionTurn = async (input: RunChatSessionTurnInput): Promis
 									: PR_REVIEW_CLOSE_OUT_PROMPT,
 						history: withToolTranscript(input.session.history()),
 						closeOut: true,
-					}),
-				)
-				observability.compactions = (observability.compactions ?? 0) + closeOut.compactions
-				submitted = closeOut.submitted
-				yield* Effect.annotateCurrentSpan(
-					prReplyId !== undefined
-						? "maple.pr_reply.closed_out"
-						: prReviewId === undefined
-							? "maple.investigation.closed_out"
-							: "maple.pr_review.closed_out",
-					submitted,
-				)
-			}
-
-			yield* closeFeeds
-
-			if (holdsTurn()) {
-				if (!submitted && investigationId !== undefined) {
-					observability.failureReason = "NoDiagnosis"
-					yield* investigations
-						.failInvestigation(tenant.orgId, investigationId, NO_DIAGNOSIS_ERROR)
-						.pipe(
-							Effect.catchCause((cause) =>
-								Effect.logError("Could not record the failed pass", cause),
-							),
-						)
+					})
+					yield* Effect.annotateCurrentSpan(
+						prReplyId !== undefined
+							? "maple.pr_reply.closed_out"
+							: prReviewId === undefined
+								? "maple.investigation.closed_out"
+								: "maple.pr_review.closed_out",
+						closeOut.submitted,
+					)
 				}
-				if (!submitted && prReplyId !== undefined) {
-					observability.failureReason = "NoReply"
-					yield* conversations
-						.failReply(tenant.orgId, prReplyId, NO_REPLY_ERROR)
-						.pipe(
-							Effect.catchCause((cause) =>
-								Effect.logError("Could not record the failed reply", cause),
-							),
-						)
-				}
+
+				yield* closeFeeds
+			})
+
+			// A turn that still holds its slot after the phases settles here, once (`runAutonomousTurn`).
+			const settleTurn = Effect.gen(function* () {
 				// Findings the pass saved, and its children's warnings, are posted as a partial rather
 				// than lost with the report.
 				const saved = closeOutFindings(
 					review?.ledger.findings() ?? [],
 					review?.childFindings?.all() ?? [],
 				)
-				if (!submitted && prReviewId !== undefined && review !== undefined && saved.length > 0) {
-					submitted = yield* reviews
+				if (
+					!outcome.submitted() &&
+					prReviewId !== undefined &&
+					review !== undefined &&
+					saved.length > 0
+				) {
+					const failure = outcome.failure()
+					const filed = yield* reviews
 						.submitReview(
 							tenant.orgId,
 							prReviewId,
@@ -723,51 +813,31 @@ export const runChatSessionTurn = async (input: RunChatSessionTurnInput): Promis
 						)
 						.pipe(
 							Effect.as(true),
+							// Settling is uninterruptible, so a hung submit is bounded; `failReview` skips a filed review.
+							Effect.timeout(SUBMIT_SAVED_TIMEOUT),
 							Effect.catchCause((cause) =>
 								Effect.logError("Could not file the saved findings", cause).pipe(
 									Effect.as(false),
 								),
 							),
 						)
-					yield* Effect.annotateCurrentSpan("maple.pr_review.filed_saved_findings", submitted)
+					outcome.record("verdict", filed)
+					yield* Effect.annotateCurrentSpan("maple.pr_review.filed_saved_findings", filed)
 				}
-				if (!submitted && prReviewId !== undefined) {
-					observability.failureReason = "NoReview"
-					yield* Effect.annotateCurrentSpan(
-						"maple.pr_review.failure_reason",
-						failure ?? "no_report",
-					)
-					yield* reviews
-						.failReview(tenant.orgId, prReviewId, reviewFailureError(failure ?? "no_report"))
-						.pipe(
-							Effect.catchCause((cause) =>
-								Effect.logError("Could not record the failed review", cause),
-							),
-						)
-				}
-				input.session.append(
-					submitted
-						? {
-								type: "turn-end",
-								messageId: input.messageId,
-								reason: held?.reason === "max-steps" ? "max-steps" : "stop",
-							}
-						: {
-								type: "turn-end",
-								messageId: input.messageId,
-								reason: "error",
-								error:
-									prReplyId !== undefined
-										? NO_REPLY_MESSAGE
-										: prReviewId === undefined
-											? NO_DIAGNOSIS_MESSAGE
-											: NO_REVIEW_MESSAGE,
-							},
+				yield* failUnfinished(outcome.failure() ?? "no_report", NO_DIAGNOSIS_ERROR)
+				input.session.endTurn(
+					input.messageId,
+					outcome.ending(
+						prReplyId !== undefined
+							? NO_REPLY_MESSAGE
+							: prReviewId === undefined
+								? NO_DIAGNOSIS_MESSAGE
+								: NO_REVIEW_MESSAGE,
+					),
 				)
-				recordedTerminal = true
-			} else {
-				observability.outcome = "aborted"
-			}
+			})
+
+			yield* runAutonomousTurn({ phases: autonomousTurn, settle: settleTurn, aborted, holdsTurn })
 			yield* annotateTurn()
 		})
 
@@ -777,7 +847,7 @@ export const runChatSessionTurn = async (input: RunChatSessionTurnInput): Promis
 		// Resolved before the turn so the finalizer has nothing left to look up. A failed lookup
 		// meters nothing rather than a guess: the org's own customer may be the wrong card.
 		const customerId = yield* (yield* BillingCustomerResolver).customerFor(tenant.orgId).pipe(
-			Effect.map(Option.some),
+			Effect.asSome,
 			Effect.catchTag("@maple/http/errors/BillingAccountPersistenceError", (error) =>
 				Effect.logError("Billing org lookup failed; this turn's AI usage is not metered").pipe(
 					Effect.annotateLogs({
@@ -832,17 +902,9 @@ export const runChatSessionTurn = async (input: RunChatSessionTurnInput): Promis
 		}),
 	)
 
-	const exit = await runtime.runPromiseExit(program)
-	// The detailed cause belongs in server logs and the failed Effect span, never in the durable
-	// event the browser reads back.
-	if (Exit.isFailure(exit) && input.session.holdsTurn(input.messageId)) {
-		input.session.append({
-			type: "turn-end",
-			messageId: input.messageId,
-			reason: "error",
-			error: CHAT_TURN_FAILED,
-		})
-	}
+	// A turn that failed is ended by the session once this returns (`ChatSession.runTurn`), with
+	// stable copy: the detailed cause stays in server logs and the failed span.
+	await runtime.runPromiseExit(program)
 	await Effect.runPromise(releaseQuietly(runtime, () => telemetry.flush(input.env)))
 }
 
@@ -854,7 +916,16 @@ const releaseQuietly = (
 	runtime: { readonly dispose: () => Promise<void> },
 	flush: () => Promise<void>,
 ): Effect.Effect<void> =>
-	Effect.tryPromise(() => runtime.dispose()).pipe(
+	Effect.tryPromise({
+		try: () => runtime.dispose(),
+		catch: (cause) => new TurnRuntimeStepError({ message: "Failed to dispose the turn runtime", cause }),
+	}).pipe(
 		Effect.ignore,
-		Effect.andThen(Effect.tryPromise(flush).pipe(Effect.ignore)),
+		Effect.andThen(
+			Effect.tryPromise({
+				try: flush,
+				catch: (cause) =>
+					new TurnRuntimeStepError({ message: "Failed to flush the turn spans", cause }),
+			}).pipe(Effect.ignore),
+		),
 	)

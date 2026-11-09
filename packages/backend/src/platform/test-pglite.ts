@@ -1,7 +1,8 @@
 import { readFileSync } from "node:fs"
 import { deserialize } from "node:v8"
 import { PGlite } from "@electric-sql/pglite"
-import { Effect, Layer, Schema, Tracer } from "effect"
+import { Effect, Layer, Option, Schema, Tracer, Array as Arr, String as Str } from "effect"
+import * as SecureRandom from "effect/crypto/SecureRandom"
 import { inject } from "vitest"
 
 import { FixtureMemoryFS, type PgliteFixture } from "../../test/pglite-fixture"
@@ -49,10 +50,10 @@ export interface TestDb {
  * behind it — use `msToSqlTimestamp` there.
  */
 const assertNoDateParams = (sql: string, params: unknown[] | undefined): void => {
-	const index = params?.findIndex((param) => param instanceof Date) ?? -1
-	if (index === -1) return
+	const index = Arr.findFirstIndex(params ?? [], (param) => param instanceof Date)
+	if (Option.isNone(index)) return
 	throw new Error(
-		`Bound a Date as param $${index + 1}: raw \`sql\` fragments have no column type to serialize it. ` +
+		`Bound a Date as param $${index.value + 1}: raw \`sql\` fragments have no column type to serialize it. ` +
 			`Interpolate an ISO string (msToSqlTimestamp) into raw \`sql\` templates instead.\n${sql}`,
 	)
 }
@@ -72,10 +73,12 @@ const withDateParamGuard = <T extends object>(client: T): T =>
 			if (property === "query") {
 				return (sql: string, params?: unknown[], ...rest: unknown[]) => {
 					assertNoDateParams(sql, params)
-					return value.call(target, sql, params, ...rest)
+					const result: unknown = value.call(target, sql, params, ...rest)
+					return result
 				}
 			}
-			return value.bind(target)
+			const bound: unknown = value.bind(target)
+			return bound
 		},
 	})
 
@@ -128,11 +131,15 @@ export const makeStatementRecorder = () => {
 			return span
 		},
 	})
-	const verbs = () =>
-		spans
-			.filter((span) => span.attributes.get("db.system.name") === "postgresql")
-			.flatMap((span) => decodeQueryText(span.attributes.get("db.query.text")).split(";\n"))
-			.map((statement) => statement.trim().split(/\s+/)[0]?.toUpperCase() ?? "")
+	const verbs = () => {
+		const pgSpans = Arr.filter(spans, (span) => span.attributes.get("db.system.name") === "postgresql")
+		return Arr.map(
+			Arr.flatMap(pgSpans, (span) =>
+				Str.split(";\n")(decodeQueryText(span.attributes.get("db.query.text"))),
+			),
+			(statement) => Str.toUpperCase(Arr.headNonEmpty(Str.split(/\s+/)(Str.trim(statement)))),
+		)
+	}
 	return { tracer, verbs }
 }
 
@@ -153,9 +160,14 @@ export const executeSql = async (db: TestDb, sql: string, params: unknown[] = []
  */
 export const insertTestSource = async (
 	db: TestDb,
-	source: { readonly orgId: string; readonly platform: string; readonly name?: string; readonly id?: string },
+	source: {
+		readonly orgId: string
+		readonly platform: string
+		readonly name?: string
+		readonly id?: string
+	},
 ): Promise<string> => {
-	const id = source.id ?? crypto.randomUUID()
+	const id = source.id ?? SecureRandom.uuidV4Unsafe()
 	await db.pglite.query(
 		`INSERT INTO sources (id, org_id, name, platform, kind, created_at, updated_at)
 		 VALUES ($1, $2, $3, $4, 'integration', now(), now())`,

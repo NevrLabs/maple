@@ -9,6 +9,7 @@ import {
 	sessionUsageSum,
 	traceUsageColumns,
 } from "./ai-span-columns"
+import { String as Str } from "effect"
 
 const sql = (expr: { toFragment(): Parameters<typeof compile>[0] }) => compile(expr.toFragment())
 
@@ -33,11 +34,11 @@ const key = (column: string) => `if(${column} = '', 0, bitShiftRight(cityHash64(
 
 describe("session usage SQL", () => {
 	const trace = traceUsageColumns({
-		SpanId: CH.dynamicColumn<string>("SpanId", T.string),
-		ParentSpanId: CH.dynamicColumn<string>("ParentSpanId", T.string),
+		SpanId: CH.dynamicColumn("SpanId", T.string),
+		ParentSpanId: CH.dynamicColumn("ParentSpanId", T.string),
 		Tokens: CH.dynamicColumn<number>("Tokens", T.float64),
 		Cost: CH.dynamicColumn<number>("Cost", T.float64),
-		ResponseId: CH.dynamicColumn<string>("ResponseId", T.string),
+		ResponseId: CH.dynamicColumn("ResponseId", T.string),
 		IsLlmCall: CH.dynamicColumn<number>("IsLlmCall", T.uint8),
 		InputTokens: CH.dynamicColumn<number>("InputTokens", T.float64),
 		CacheReadTokens: CH.dynamicColumn<number>("CacheReadTokens", T.float64),
@@ -96,14 +97,14 @@ describe("session usage SQL", () => {
 			"(0., 0., 0., 0., 0., 0., 0., 0.)",
 		)
 		expect(
-			text.startsWith(
+			Str.startsWith(
 				"arrayMap(charged -> arrayMap((r, own, tokenAncestor, costAncestor, parent) -> tuple(r.5, ",
-			),
+			)(text),
 		).toBe(true)
 		expect(
-			text.endsWith(
+			Str.endsWith(
 				`, reporters, arraySlice(charged, 0 * length(reporters) + 1, length(reporters)), arraySlice(charged, 1 * length(reporters) + 1, length(reporters)), arraySlice(charged, 2 * length(reporters) + 1, length(reporters)), arraySlice(charged, 3 * length(reporters) + 1, length(reporters))), [${charged}])[1]`,
-			),
+			)(text),
 		).toBe(true)
 		// A reporting call counts by its netted claim; a non-reporting one by
 		// having no reporting ancestor and no model call for a parent.
@@ -111,20 +112,17 @@ describe("session usage SQL", () => {
 			"r.6 = 1 AND if((r.3 > 0 OR r.4 > 0), greatest(0., r.3 - own.1) > 0 OR greatest(0., r.4 - own.2) > 0, tokenAncestor.8 = 0 AND costAncestor.8 = 0 AND parent.8 = 0)",
 		)
 		// Tokens, cost and the five buckets, each less its children's, floored at
-		// zero — and nothing at all for a reporter that is not a model call once
-		// that measure was charged to it (tokens decide the buckets).
-		for (const [element, charged, measure] of [
-			[3, 1, 1],
-			[4, 2, 2],
-			[7, 3, 1],
-			[8, 4, 1],
-			[9, 5, 1],
-			[10, 6, 1],
-			[11, 7, 1],
+		// zero.
+		for (const [element, charged] of [
+			[3, 1],
+			[4, 2],
+			[7, 3],
+			[8, 4],
+			[9, 5],
+			[10, 6],
+			[11, 7],
 		] as const) {
-			expect(text).toContain(
-				`if(r.6 = 0 AND own.${measure} > 0, 0., greatest(0., r.${element} - own.${charged}))`,
-			)
+			expect(text).toContain(`greatest(0., r.${element} - own.${charged})`)
 		}
 	})
 

@@ -2,10 +2,10 @@ import { formatLatency, formatNumber } from "@maple/ui/lib/format"
 import { type BoxDatum, boxY, type ChartPoint, type ChartValue, defineChart } from "@tanstack/charts"
 import { scaleBand } from "@tanstack/charts-scales/band"
 import { scaleLog } from "d3-scale"
-import { Option } from "effect"
-import { ChartTooltip } from "../../charts/chart-spec"
-import type { BuiltChart } from "../../charts/definitions/built-chart"
-import { cursorTooltip } from "../../charts/definitions/plot-constants"
+import { Option, Array as Arr } from "effect"
+import { ChartTooltip } from "@maple/views/charts/chart-spec"
+import type { BuiltChart } from "@maple/views/charts/definitions/built-chart"
+import { cursorTooltip } from "@maple/views/charts/definitions/plot-constants"
 import type { SpikeSpec } from "./spike-spec"
 
 // `BoxPlotSpike`, definition half: Tukey boxes over a
@@ -16,7 +16,7 @@ interface BoxPlotRow {
 	readonly durationMs: number
 }
 
-type Datum = BoxDatum<BoxPlotRow, ChartValue>
+type Datum = BoxDatum<BoxPlotRow>
 
 const OPERATIONS: ReadonlyArray<{ name: string; medianMs: number; sigma: number }> = [
 	{ name: "GET /api/traces", medianMs: 8, sigma: 0.45 },
@@ -36,10 +36,11 @@ const nextState = (state: number): number => (Math.imul(state, 1_664_525) + 1_01
 
 /** `makeRows`: two uniforms per sample through Box-Muller, in operation order. */
 const makeRows = (): ReadonlyArray<BoxPlotRow> =>
-	OPERATIONS.flatMap((operation) => Array.from({ length: SAMPLES_PER_OPERATION }, () => operation)).reduce<{
-		state: number
-		rows: ReadonlyArray<BoxPlotRow>
-	}>(
+	Arr.reduce<(typeof OPERATIONS)[number], { state: number; rows: ReadonlyArray<BoxPlotRow> }>(
+		Arr.flatMap(OPERATIONS, (operation) =>
+			Array.from({ length: SAMPLES_PER_OPERATION }, () => operation),
+		),
+		{ state: 0xb0c5_1234 >>> 0, rows: [] },
 		(acc, operation) => {
 			const s1 = nextState(acc.state)
 			const s2 = nextState(s1)
@@ -52,7 +53,6 @@ const makeRows = (): ReadonlyArray<BoxPlotRow> =>
 			)
 			return { state: s2, rows: [...acc.rows, { operation: operation.name, durationMs }] }
 		},
-		{ state: 0xb0c5_1234 >>> 0, rows: [] },
 	).rows
 
 /** The box or outlier under the pointer: its summary rows, the median emphasised. */
@@ -81,7 +81,7 @@ const tooltipOf = (
 export const buildBoxPlotSpike = (spec: SpikeSpec): BuiltChart<Datum, ChartValue, number> => {
 	const rows = makeRows()
 	const color = spec.colors["--chart-1"] ?? ""
-	const durations = rows.map((row) => row.durationMs)
+	const durations = Arr.map(rows, (row) => row.durationMs)
 	const definition = defineChart({
 		marks: [
 			boxY(rows, {
@@ -98,7 +98,7 @@ export const buildBoxPlotSpike = (spec: SpikeSpec): BuiltChart<Datum, ChartValue
 		scales: {
 			x: {
 				scale: scaleBand<string>(
-					OPERATIONS.map((operation) => operation.name),
+					Arr.map(OPERATIONS, (operation) => operation.name),
 					[0, 1],
 				).paddingInner(0.55),
 				axis: {

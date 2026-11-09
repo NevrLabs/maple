@@ -1,17 +1,26 @@
 import type { V2Source } from "@maple/domain/http/v2"
+import * as Policy from "@maple/domain/policy"
 import type { PushSourcePlatform } from "@maple/domain/primitives"
-import { Option, Result } from "effect"
+import { Option, Result, String as Str } from "effect"
 import { AsyncData, Command } from "foldkit"
-import * as Keyed from "../../../data/keyed"
+import * as Keyed from "@maple/views/data/keyed"
 import type { Resources } from "../../../platform/resources"
 import { type AppRoute, AppRoute as Routes, hrefOf } from "../../../route"
-import * as CopyButton from "../../../ui/copy-button"
+import * as CopyButton from "@maple/views/ui/copy-button"
 import { type PageContext, PageOutMessage, type PageReturn } from "../../contract"
 import { sourceRetrieveKey, sourcesListKey } from "../kit/data"
 import { defaultSourceName } from "../kit/platforms"
 import * as Rules from "../kit/rules"
 import * as Setup from "../kit/setup"
-import { CreateSource, FetchCreatedSource, FetchSourcesList, ScrollToTop, WaitFirstDataPoll } from "./command"
+import { isClerkAuthEnabled } from "../../../lib/services/common/auth-mode"
+import {
+	CreateSource,
+	FetchCreatedSource,
+	FetchSourcesList,
+	ReadNewSourceGrants,
+	ScrollToTop,
+	WaitFirstDataPoll,
+} from "./command"
 import { type DataIntegration, initEmbedded, isDataIntegration } from "../../integrations/embed"
 import type { Message as IntegrationMessage } from "../../integrations/message"
 import type { Model as IntegrationModel } from "../../integrations/model"
@@ -67,13 +76,16 @@ const integrationOf = (route: NewRoute): DataIntegration | null => {
 
 /** The integrations module's step, lifted: its Commands answer as `GotIntegrationsMessage`. */
 const liftIntegrations = (model: Model, step: PageReturn<IntegrationModel, IntegrationMessage>): Return => {
+	const stage =
+		model.integration === "github" && step.model.githubCard.selection !== null ? "connect" : model.stage
 	const lifted: Return = {
-		model: { ...model, integrations: step.model },
+		model: { ...model, integrations: step.model, stage },
 		commands: Command.mapMessages(step.commands ?? [], (message) =>
 			Message.GotIntegrationsMessage({ message }),
 		),
 	}
-	return step.outMessage === undefined ? lifted : { ...lifted, outMessage: step.outMessage }
+	const result = step.outMessage === undefined ? lifted : { ...lifted, outMessage: step.outMessage }
+	return stage !== model.stage ? scrolledToTop(result) : result
 }
 
 /** Both steps' Commands; the second's outMessage wins, else the first's (a connect toast). */
@@ -89,6 +101,8 @@ export const init = (route: NewRoute, context: PageContext): Return => {
 	const embedded = initEmbedded(integration, context)
 	const model = withForm(
 		{
+			// Read only on the page under Clerk; self-hosted sessions hold every permission.
+			grants: isClerkAuthEnabled ? null : Policy.allPermissions,
 			platform: null,
 			name: "",
 			isAdvancedOpen: false,
@@ -111,6 +125,14 @@ export const init = (route: NewRoute, context: PageContext): Return => {
 	return platform === null && integration === null
 		? lifted
 		: merge(lifted, readList(lifted.model, context, false))
+}
+
+/** The page reads the session's grants: connecting needs `sources:manage`. */
+export const initPage = (route: NewRoute, context: PageContext): Return => {
+	const step = init(route, context)
+	return isClerkAuthEnabled
+		? { ...step, commands: [ReadNewSourceGrants(), ...(step.commands ?? [])] }
+		: step
 }
 
 const scrolledToTop = (step: Return): Return => ({
@@ -196,7 +218,7 @@ const readCreated = (
 
 const submit = (model: Model): Return => {
 	const outcome = Rules.rulesOutcome(model.rules)
-	const name = model.name.trim()
+	const name = Str.trim(model.name)
 	if (model.platform === null || model.isSaving || name.length === 0 || !outcome.valid) return { model }
 	const command: Cmd = CreateSource({
 		name,
@@ -241,6 +263,7 @@ export const update = (model: Model, message: Message, context: PageContext): Re
 
 export const updateFlow = (model: Model, message: Message, context: PageContext): FlowReturn =>
 	Message.match<FlowReturn>(message, {
+		CompletedReadGrants: ({ grants }) => ({ model: { ...model, grants } }),
 		ClickedPushPlatform: ({ platform }) => ({
 			model,
 			outMessage: navigate(hrefOf(Routes.SourcesNew({ search: { platform } }))),

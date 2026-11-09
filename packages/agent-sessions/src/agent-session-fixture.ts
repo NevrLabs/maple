@@ -10,9 +10,12 @@
 // fan-out that overlaps in time and so lands as concurrent CHAPTERS.
 
 import type { AiSessionGenAiValues, AiSessionSpan } from "@maple/domain/http"
+import { Schema, Array as Arr, Record as Rec, String as Str } from "effect"
 
 import { spanStartMs } from "./session-turns"
 import { agentSpan, llmSpan, T0, toolSpan, userMessages } from "./span-test-support"
+
+const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown))
 
 const SECOND = 1000
 const MINUTE = 60 * SECOND
@@ -133,18 +136,21 @@ const CONTEXT_ERROR = "prompt is too long: 214832 tokens > 200000 maximum"
 
 /** A turn's closing reply, in markdown — the transcript renders assistant text
  *  through the markdown pipeline, so the lab has to show it some. */
-const CLOSING_REPLY = [
-	"The backoff is fixed at 30s with **no jitter** — that window is exactly where the duplicate charges land. Two changes:",
-	"",
-	"1. Exponential backoff with full jitter",
-	"2. An idempotency key on the charge call itself",
-	"",
-	"```ts",
-	"const delay = Math.random() * Math.min(cap, base * 2 ** attempt)",
-	"```",
-	"",
-	"The `webhooks` suite passes with the regression test included.",
-].join("\n")
+const CLOSING_REPLY = Arr.join(
+	[
+		"The backoff is fixed at 30s with **no jitter** — that window is exactly where the duplicate charges land. Two changes:",
+		"",
+		"1. Exponential backoff with full jitter",
+		"2. An idempotency key on the charge call itself",
+		"",
+		"```ts",
+		"const delay = Math.random() * Math.min(cap, base * 2 ** attempt)",
+		"```",
+		"",
+		"The `webhooks` suite passes with the regression test included.",
+	],
+	"\n",
+)
 
 /**
  * One model call's attributes: usage that grows with the conversation the way a
@@ -161,13 +167,18 @@ function callAttributes(input: {
 	tool: string | undefined
 }) {
 	const history = 6_000 + input.turnIndex * 14_000 + input.callIndex * 2_500
+	const cacheRead = Math.round(history * 0.86)
+	const cacheWrite = input.callIndex === 0 ? 7_000 : 0
+	const reasoning = input.turnIndex % 3 === 0 ? 480 : 0
 	return {
-		usageInputTokens: history,
-		usageCacheReadInputTokens: Math.round(history * 0.86),
-		usageCacheCreationInputTokens: input.callIndex === 0 ? 7_000 : 0,
-		usageOutputTokens: 900 + input.callIndex * 220,
-		usageReasoningOutputTokens: input.turnIndex % 3 === 0 ? 480 : 0,
-		usageCost: 0.11 + input.turnIndex * 0.02 + input.callIndex * 0.04,
+		usageCacheReadInputTokens: cacheRead,
+		usageCacheCreationInputTokens: cacheWrite,
+		mapleInputTokens: Math.max(0, history - cacheRead - cacheWrite),
+		mapleCacheReadTokens: cacheRead,
+		mapleCacheWriteTokens: cacheWrite,
+		mapleOutputTokens: 900 + input.callIndex * 220 - reasoning,
+		mapleReasoningTokens: reasoning,
+		mapleCost: 0.11 + input.turnIndex * 0.02 + input.callIndex * 0.04,
 		errorType: input.failed ? "context_length_exceeded" : undefined,
 		inputMessages: input.prompt === undefined ? undefined : userMessages(input.prompt),
 		outputMessages: input.failed
@@ -262,10 +273,13 @@ const VENDOR_ID = "claude_agent_sdk"
 
 export function buildAgentSessionFixture(): readonly AiSessionSpan[] {
 	const base = buildBaseTurns()
-	const baseEndMs = Math.max(...base.map((span) => spanStartMs(span) + span.durationMs)) - T0
-	return [...base, ...buildTranscriptTurns(baseEndMs + 2 * MINUTE)]
-		.sort((a, b) => spanStartMs(a) - spanStartMs(b))
-		.map((span) => ({ ...span, vendorId: VENDOR_ID }))
+	const baseEndMs = Math.max(...Arr.map(base, (span) => spanStartMs(span) + span.durationMs)) - T0
+	return Arr.map(
+		[...base, ...buildTranscriptTurns(baseEndMs + 2 * MINUTE)].sort(
+			(a, b) => spanStartMs(a) - spanStartMs(b),
+		),
+		(span) => ({ ...span, vendorId: VENDOR_ID }),
+	)
 }
 
 /**
@@ -277,12 +291,15 @@ export function buildCaptureOffFixture(): readonly AiSessionSpan[] {
 	// Keys are REMOVED, not set to `undefined`: an emitter that never captured
 	// content has no such attribute, and a present-but-undefined key is a shape
 	// the wire cannot produce — the fixture has to be the real absence.
-	return buildAgentSessionFixture().map((span) => ({
-		...span,
-		genAi: Object.fromEntries(
-			Object.entries(span.genAi).filter(([key]) => !CAPTURED_CONTENT_KEYS.has(key)),
-		),
-	}))
+	return Arr.map(buildAgentSessionFixture(), (span) => {
+		const genAi: Readonly<Record<string, unknown>> = span.genAi
+		return {
+			...span,
+			genAi: Rec.fromEntries(
+				Arr.filter(Rec.toEntries(genAi), ([key]) => !CAPTURED_CONTENT_KEYS.has(key)),
+			),
+		}
+	})
 }
 
 /**
@@ -292,10 +309,10 @@ export function buildCaptureOffFixture(): readonly AiSessionSpan[] {
  * open, every row carrying a fact — which no fixture with a failure can show.
  */
 export function buildCleanFixture(): readonly AiSessionSpan[] {
-	return buildAgentSessionFixture()
-		.filter((span) => span.genAi.errorType !== "rate_limit")
-		.map((span) => {
-			const { errorType: _errorType, ...genAi } = span.genAi
+	return Arr.map(
+		Arr.filter(buildAgentSessionFixture(), (span) => span.genAi.errorType !== "rate_limit"),
+		(span) => {
+			const { errorType: _errorType, mapleError: _mapleError, ...genAi } = span.genAi
 			const failedTool = span.genAi.errorType === "tool_error"
 			return {
 				...span,
@@ -305,7 +322,8 @@ export function buildCleanFixture(): readonly AiSessionSpan[] {
 					? { ...genAi, toolCallResult: toolResult(span.genAi.toolName ?? "") }
 					: genAi,
 			}
-		})
+		},
+	)
 }
 
 const CAPTURED_CONTENT_KEYS = new Set([
@@ -320,7 +338,7 @@ function buildBaseTurns(): readonly AiSessionSpan[] {
 	const spans: AiSessionSpan[] = []
 	let cursor = 0
 
-	TURNS.forEach((plan, index) => {
+	Arr.forEach(TURNS, (plan, index) => {
 		cursor += plan.idleBeforeMs
 		const failing = index === TURNS.length - 1
 		const turnStart = cursor
@@ -382,7 +400,7 @@ function buildBaseTurns(): readonly AiSessionSpan[] {
 
 		// Tools past the calls that triggered them, so a turn can run more tools
 		// than model calls.
-		plan.tools.slice(plan.llmCalls).forEach((tool, extra) => {
+		Arr.forEach(plan.tools.slice(plan.llmCalls), (tool, extra) => {
 			spans.push(
 				toolSpan({
 					spanId: `${agentId}-tool-extra-${extra}`,
@@ -451,15 +469,18 @@ function buildBaseTurns(): readonly AiSessionSpan[] {
 
 // Markdown on purpose: system prompts are usually authored as it, and the
 // transcript's expanded System block renders them through the markdown pipeline.
-const INVESTIGATION_SYSTEM = [
-	"You are the **Maple investigation planner**. You have read-only access to this org's traces, logs and metrics.",
-	"",
-	"## Rules",
-	"",
-	"- Prefer evidence from spans over inference from code.",
-	"- Never state a cause you cannot point at a query for.",
-	"- Quote span attributes verbatim, e.g. `db.query.fingerprint`.",
-].join("\n")
+const INVESTIGATION_SYSTEM = Arr.join(
+	[
+		"You are the **Maple investigation planner**. You have read-only access to this org's traces, logs and metrics.",
+		"",
+		"## Rules",
+		"",
+		"- Prefer evidence from spans over inference from code.",
+		"- Never state a cause you cannot point at a query for.",
+		"- Quote span attributes verbatim, e.g. `db.query.fingerprint`.",
+	],
+	"\n",
+)
 
 const INVESTIGATION_PROMPT =
 	"p95 checkout latency tripled after the 14:20 deploy — find what changed. Don't guess from the deploy diff, read the traces."
@@ -468,31 +489,38 @@ const INVESTIGATION_PROMPT =
 function p95Rows(): string {
 	const header = "t                     p95_ms    calls"
 	const rows = Array.from({ length: 62 }, (_, index) => {
-		const minute = String(index % 60).padStart(2, "0")
+		const minute = Str.padStart(2, "0")(String(index % 60))
 		const p95 = index < 20 ? 410 + index * 2 : 1180 + index * 3
-		return `2026-08-25 14:${minute}:00${p95.toFixed(1).padStart(11)}${String(18_000 + index * 7).padStart(9)}`
+		return `2026-08-25 14:${minute}:00${Str.padStart(11)(p95.toFixed(1))}${Str.padStart(9)(String(18_000 + index * 7))}`
 	})
-	return [header, ...rows].join("\n")
+	return Arr.join([header, ...rows], "\n")
 }
 
 /** `{ truncated, prefix }` — the emitter cut this off at 8 KB, not Maple. */
 const TRUNCATED_STATEMENT_RESULT = {
 	truncated: true,
-	prefix: [
-		"stmt                                              calls    p95_ms",
-		"SELECT … FROM carts WHERE session_id = ?          18420     903.4",
-		"SELECT … FROM inventory_holds WHERE sku IN (?)     9330     441.1",
-		"UPDATE carts SET updated_at = ? WHERE id = ?      18402      12.7",
-	].join("\n"),
+	prefix: Arr.join(
+		[
+			"stmt                                              calls    p95_ms",
+			"SELECT … FROM carts WHERE session_id = ?          18420     903.4",
+			"SELECT … FROM inventory_holds WHERE sku IN (?)     9330     441.1",
+			"UPDATE carts SET updated_at = ? WHERE id = ?      18402      12.7",
+		],
+		"\n",
+	),
 }
 
+/** The gateway's buckets for a call that reported `input` prompt tokens, 80% of
+ *  them read from cache, and `output` completion tokens including `reasoning`. */
 function usage(input: number, output: number, cost: number, reasoning = 0) {
+	const cacheRead = Math.round(input * 0.8)
 	return {
-		usageInputTokens: input,
-		usageCacheReadInputTokens: Math.round(input * 0.8),
-		usageOutputTokens: output,
-		usageReasoningOutputTokens: reasoning,
-		usageCost: cost,
+		usageCacheReadInputTokens: cacheRead,
+		mapleInputTokens: input - cacheRead,
+		mapleCacheReadTokens: cacheRead,
+		mapleOutputTokens: output - reasoning,
+		mapleReasoningTokens: reasoning,
+		mapleCost: cost,
 	} satisfies AiSessionGenAiValues
 }
 
@@ -515,13 +543,13 @@ function buildTranscriptTurns(startMs: number): readonly AiSessionSpan[] {
  *  transcript renders these as JSON: `{"a":1}` set as markdown is one paragraph
  *  with the structure collapsed. */
 function jsonBodiesTurn(t: number): readonly AiSessionSpan[] {
-	const event = JSON.stringify({
+	const event = encodeJson({
 		event: "invoice.payment_failed",
 		attempt: 3,
 		invoice: { id: "in_1PxK2m", amount_due: 4900, currency: "usd" },
 		customer: { id: "cus_9f2K", email: "billing@acme.dev" },
 	})
-	const verdict = JSON.stringify({
+	const verdict = encodeJson({
 		action: "retry",
 		delay_seconds: 3600,
 		reason: "card_declined is retryable and the customer has no dunning hold",

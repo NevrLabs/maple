@@ -1,3 +1,4 @@
+import * as Policy from "@maple/domain/policy"
 import { V2IngestRule } from "@maple/domain/http/v2"
 import {
 	IngestRuleDetector,
@@ -9,8 +10,8 @@ import {
 } from "@maple/domain/ingest-rules"
 import { Schema } from "effect"
 import { defineMessageUnion } from "foldkit/message"
-import { LoadFailure } from "../../../data/load-failure"
-import * as Combobox from "../../../ui/combobox"
+import { LoadFailure } from "@maple/views/data/load-failure"
+import * as Combobox from "@maple/views/ui/combobox"
 import { ActionType, TextPart } from "./form"
 import { PreviewSignal, Samples } from "./preview"
 
@@ -21,7 +22,7 @@ export type KeyScope = typeof KeyScope.Type
 
 export const Message = defineMessageUnion({
 	CompletedFetchExisting: { result: outcome(V2IngestRule) },
-	CompletedFetchSession: { orgId: Schema.String, isAdmin: Schema.Boolean },
+	CompletedFetchSession: { orgId: Schema.String, grants: Schema.Array(Policy.PermissionName) },
 	CompletedFetchKeys: { scope: KeyScope, keys: Schema.Array(Schema.String) },
 	CompletedFetchServices: { services: Schema.Array(Schema.String) },
 	CompletedFetchSamples: { key: Schema.String, result: outcome(Samples) },

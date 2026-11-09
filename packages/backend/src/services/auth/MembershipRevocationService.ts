@@ -11,7 +11,7 @@ import {
 	MobileDevices,
 } from "@maple/db/tables"
 import { RoleName, type OrgId, type UserId } from "@maple/domain/http"
-import { Clock, Context, Effect, Layer, Redacted, Schema } from "effect"
+import { Clock, Context, Effect, Layer, Redacted, Schema, Array as Arr } from "effect"
 import { Database } from "@maple/backend/platform/DatabaseLive"
 import { Env } from "@maple/backend/platform/Env"
 import { makeDbExecute } from "@maple/backend/platform/db-execute"
@@ -21,7 +21,7 @@ import {
 } from "@maple/backend/services/alerts/AlertDestinationHydration"
 import { decryptAes256Gcm, encryptAes256Gcm, parseBase64Aes256GcmKey } from "@maple/backend/platform/Crypto"
 import { ORG_MEMBERSHIP_CACHE_BUCKET, forgetMembershipMemo } from "./OrgMembershipService"
-import { isAdmin } from "./auth"
+import * as Policy from "@maple/domain/policy"
 import { revokeFamiliesForAccessKeys, revokeRefreshFamiliesForMember } from "./mcp-oauth-family"
 
 /**
@@ -114,6 +114,7 @@ const decodePinnedRoles = Schema.decodeUnknownOption(PinnedRoles)
 
 const decodePublicConfig = Schema.decodeUnknownOption(DestinationPublicConfigSchema)
 const decodeSecretConfig = Schema.decodeOption(SecretConfigFromJson)
+const encodeSecretConfig = Schema.encodeEffect(SecretConfigFromJson)
 
 const make = Effect.gen(function* () {
 	const database = yield* Database
@@ -165,12 +166,21 @@ const make = Effect.gen(function* () {
 					)
 					const secret = decodeSecretConfig(secretJson)
 					if (secret._tag === "None" || secret.value.type !== "email") return false
-					const remaining = secret.value.members.filter((member) => member.userId !== userId)
+					const remaining = Arr.filter(secret.value.members, (member) => member.userId !== userId)
 					if (remaining.length === secret.value.members.length) return false
 
 					const nextSecret = { type: "email" as const, members: remaining }
+					const nextSecretJson = yield* encodeSecretConfig(nextSecret).pipe(
+						Effect.mapError(
+							() =>
+								new MembershipRevocationError({
+									message: `Could not encode alert destination ${row.id}`,
+									...(orgId === null ? undefined : { orgId }),
+								}),
+						),
+					)
 					const encrypted = yield* encryptAes256Gcm(
-						JSON.stringify(nextSecret),
+						nextSecretJson,
 						encryptionKey,
 						(message) =>
 							new MembershipRevocationError({
@@ -189,7 +199,7 @@ const make = Effect.gen(function* () {
 									? (first.name ?? first.email)
 									: `${first.name ?? first.email} +${remaining.length - 1} more`,
 						channelLabel: first?.email ?? null,
-						memberUserIds: remaining.map((member) => member.userId),
+						memberUserIds: Arr.map(remaining, (member) => member.userId),
 					}
 					const now = yield* Clock.currentTimeMillis
 					yield* dbExecute((db) =>
@@ -215,7 +225,7 @@ const make = Effect.gen(function* () {
 					return true
 				}),
 			)
-			return outcomes.filter(Boolean).length
+			return Arr.filter(outcomes, Boolean).length
 		},
 	)
 
@@ -343,8 +353,8 @@ const make = Effect.gen(function* () {
 	 * device keys pin the minting user's roles into `metadata_json` and
 	 * `resolveByKey` reads them back without ever re-checking the membership, so
 	 * an admin who ran `maple auth login` and was then demoted keeps admin on
-	 * that key until it expires. Any key still pinned to an admin role the member
-	 * no longer holds is retired here; MCP families go with their access key, or
+	 * that key until it expires. Any key pinned to a role above the one the member
+	 * now holds (admin, or engineer for a new member) is retired here; MCP families go with their access key, or
 	 * the next hourly rotation would mint the authority straight back.
 	 *
 	 * Known residue: a plain `standard` key carries no pinned roles and resolves
@@ -360,7 +370,11 @@ const make = Effect.gen(function* () {
 	) {
 		yield* Effect.annotateCurrentSpan({ orgId, "tenant.userId": userId })
 		yield* invalidateMembership(userId)
-		if (isAdmin(roles)) {
+		// Anything pinned above the role the member now holds is retired; admins keep everything.
+		const nowRole = Policy.highestRole(roles)
+		const outlivesDemotion = (pinned: ReadonlyArray<string>) =>
+			Policy.outranks(Policy.highestRole(pinned), nowRole)
+		if (Policy.isAtLeast(nowRole, "admin")) {
 			return {
 				apiKeysRevoked: 0,
 				mcpFamiliesRevoked: 0,
@@ -378,9 +392,10 @@ const make = Effect.gen(function* () {
 							.select("id", "roles")
 							.where(($) => [$.orgId.eq(orgId), $.userId.eq(userId), $.revokedAt.isNull()]),
 					)
-					const [firstDevice, ...restDevices] = liveDevices
-						.filter((row) => isAdmin(row.roles))
-						.map((row) => row.id)
+					const [firstDevice, ...restDevices] = Arr.map(
+						Arr.filter(liveDevices, (row) => outlivesDemotion(row.roles)),
+						(row) => row.id,
+					)
 					const deviceCredentialsRevoked =
 						firstDevice === undefined
 							? 0
@@ -398,12 +413,13 @@ const make = Effect.gen(function* () {
 							.select("id", "metadataJson")
 							.where(($) => [$.orgId.eq(orgId), $.createdBy.eq(userId), $.revoked.eq(false)]),
 					)
-					const stale = live
-						.filter((row) => {
+					const stale = Arr.map(
+						Arr.filter(live, (row) => {
 							const pinned = decodePinnedRoles(row.metadataJson)
-							return pinned._tag === "Some" && isAdmin(pinned.value.roles)
-						})
-						.map((row) => row.id)
+							return pinned._tag === "Some" && outlivesDemotion(pinned.value.roles)
+						}),
+						(row) => row.id,
+					)
 					const [first, ...rest] = stale
 					if (first === undefined)
 						return { apiKeysRevoked: 0, mcpFamiliesRevoked: 0, deviceCredentialsRevoked }

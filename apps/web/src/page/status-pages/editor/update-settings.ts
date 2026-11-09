@@ -4,11 +4,11 @@ import type {
 	V2StatusPageBreakGlassToken,
 	V2StatusPagePublishResult,
 } from "@maple/domain/http/v2"
-import { Option, Result, Schema } from "effect"
+import { Option, Result, Schema, String as Str } from "effect"
 import { AsyncData, Command as FoldkitCommand } from "foldkit"
-import type { LoadFailure } from "../../../data/load-failure"
-import * as CopyButton from "../../../ui/copy-button"
-import * as Dialog from "../../../ui/dialog"
+import type { LoadFailure } from "@maple/views/data/load-failure"
+import * as CopyButton from "@maple/views/ui/copy-button"
+import * as Dialog from "@maple/views/ui/dialog"
 import { type PageContext, PageOutMessage } from "../../contract"
 import { statusPageHref, statusPagesHref } from "../shared/commands"
 import { DeletePage, PublishPage, RevokeToken, RotateToken, SaveSettings } from "./command"
@@ -22,7 +22,7 @@ import {
 	settingsPayload,
 } from "../shared/form"
 import { Message } from "./message"
-import type { BreakGlassAction, Model } from "./model"
+import { canBreakGlass, canManage, type BreakGlassAction, type Model } from "./model"
 import { errorToast, liftDialog, pageOf, readPage, type Return, toast } from "./reads"
 
 // The Settings tab: the page's fields behind a save bar, Publish now, the break-glass token, delete.
@@ -57,7 +57,7 @@ export const changeSetting = (model: Model, field: SettingsTextField, value: str
 			})
 		: withSettings(model, (form) => ({
 				...form,
-				[field]: field === "slug" ? value.trim().toLowerCase() : value,
+				[field]: field === "slug" ? Str.toLowerCase(Str.trim(value)) : value,
 			}))
 
 export const changeTheme = (model: Model, change: Partial<ThemeForm>): Return =>
@@ -72,7 +72,7 @@ export const saveSettings = (model: Model): Return => {
 		edits === null ||
 		model.isSavingSettings ||
 		model.isApplyingJson ||
-		!model.isAdmin ||
+		!canManage(model) ||
 		hasSettingsIssues(edits)
 		? { model }
 		: {
@@ -104,7 +104,7 @@ export const savedSettings = (model: Model, result: Result.Result<V2StatusPage, 
 	})
 
 export const publish = (model: Model): Return =>
-	model.pageId === null || model.isPublishing || !model.isAdmin
+	model.pageId === null || model.isPublishing || !canManage(model)
 		? { model }
 		: { model: { ...model, isPublishing: true }, commands: [PublishPage({ pageId: model.pageId })] }
 
@@ -163,6 +163,7 @@ export const breakGlassDialog = (model: Model, step: ReturnType<typeof Dialog.up
 
 /** The first token is issued at once; replacing or revoking one asks first. */
 export const askBreakGlass = (model: Model, action: BreakGlassAction): Return => {
+	if (!canBreakGlass(model)) return { model }
 	const hasToken = Option.match(pageOf(model), {
 		onNone: () => false,
 		onSome: (page) => page.break_glass_token_suffix !== null,
@@ -173,7 +174,7 @@ export const askBreakGlass = (model: Model, action: BreakGlassAction): Return =>
 
 export const runBreakGlass = (model: Model): Return => {
 	const action = model.breakGlassAction
-	return model.pageId === null || action === null || model.isChangingBreakGlass || !model.isAdmin
+	return model.pageId === null || action === null || model.isChangingBreakGlass || !canBreakGlass(model)
 		? { model }
 		: {
 				model: { ...model, isChangingBreakGlass: true },
@@ -251,7 +252,7 @@ export const deletePageDialog = (model: Model, step: ReturnType<typeof Dialog.up
 	)
 
 export const confirmDeletePage = (model: Model): Return =>
-	model.pageId === null || model.isDeletingPage || !model.isAdmin
+	model.pageId === null || model.isDeletingPage || !canManage(model)
 		? { model }
 		: { model: { ...model, isDeletingPage: true }, commands: [DeletePage({ pageId: model.pageId })] }
 

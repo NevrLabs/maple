@@ -7,37 +7,36 @@
  */
 import { NotificationsEmail, parseMapleDeployment } from "@maple/infra/cloudflare"
 import * as Cloudflare from "@alchemy.run/cloudflare"
-import { RuntimeContext } from "alchemy/RuntimeContext"
+import { dischargeRuntimeContext } from "./alchemy-runtime"
 import { Stage } from "alchemy/Stage"
 import { Effect, Option } from "effect"
 import { EmailSendError, type EmailSenderClient } from "./bindings"
 
-/** Discharge alchemy's phantom color, the way alchemy's own runtime helpers do. */
-const runtime = <A, E>(effect: Effect.Effect<A, E, RuntimeContext>): Effect.Effect<A, E> =>
-	// oxlint-disable-next-line effecttsgo/strict-effect-provide
-	Effect.provide(effect, RuntimeContext.phantom)
-
 const toPort = (client: Cloudflare.Email.SendClient): EmailSenderClient => ({
 	send: ({ replyTo, headers, ...message }) =>
-		runtime(
+		dischargeRuntimeContext(
 			client.send({
 				...message,
 				...(replyTo === undefined ? undefined : { replyTo }),
 				...(headers === undefined ? undefined : { headers: { ...headers } }),
 			}),
 		).pipe(
-			Effect.map((result) => ({ messageId: result.messageId })),
-			Effect.mapError((error) => new EmailSendError({ message: error.message, cause: error.cause })),
+			Effect.mapBoth({
+				onSuccess: (result) => ({ messageId: result.messageId }),
+				onFailure: (error) => new EmailSendError({ message: error.message, cause: error.cause }),
+			}),
 		),
 })
 
 /** Yield from a Worker's init, with `Cloudflare.Email.SendBinding` provided; the value is {@link EmailSender}'s. */
 export const bindEmailSender = Effect.gen(function* () {
-	if (!globalThis.__ALCHEMY_RUNTIME__ && parseMapleDeployment(yield* Stage).stage.kind !== "prd") {
-		return Option.none<EmailSenderClient>()
+	if (!globalThis.__ALCHEMY_RUNTIME__) {
+		const stage = yield* Stage
+		if (parseMapleDeployment(stage).stage.kind !== "prd") return Option.none<EmailSenderClient>()
 	}
-	const client = yield* Cloudflare.Email.Send(yield* NotificationsEmail)
+	const notificationsEmail = yield* NotificationsEmail
+	const client = yield* Cloudflare.Email.Send(notificationsEmail)
 	if (!globalThis.__ALCHEMY_RUNTIME__) return Option.none<EmailSenderClient>()
-	const raw: unknown = yield* runtime(client.raw)
+	const raw: unknown = yield* dischargeRuntimeContext(client.raw)
 	return raw === undefined || raw === null ? Option.none<EmailSenderClient>() : Option.some(toPort(client))
 })

@@ -17,7 +17,7 @@ import { InvestigationId, IsoDateTimeString } from "@maple/domain/primitives"
 import * as PG from "@maple-dev/effect-orm/postgres"
 import type { MapleDb } from "@maple/db/client"
 import { AiTriageSettings, ErrorIssues, Investigations } from "@maple/db/tables"
-import { Clock, Effect, Option, Schema, type Semaphore } from "effect"
+import { Clock, Effect, Option, Schema, type Semaphore, Array as Arr, String as Str } from "effect"
 
 import type { ChatSessionsApi } from "@maple/backend/platform/bindings"
 import { Database } from "@maple/backend/platform/DatabaseLive"
@@ -36,10 +36,9 @@ import {
 import { applyClassifierSeverity } from "@maple/backend/services/errors/issue-severity"
 import { startInvestigationTurn } from "@maple/backend/services/errors/investigation-start"
 import {
-	STALE_MS,
 	isInvestigationStale,
-	staleTimeoutMessage,
 	storedProgressJson,
+	sweepAbandonedInvestigations,
 } from "@maple/backend/services/errors/investigation-stale"
 import { summarizeCause } from "@maple/backend/platform/describe-cause"
 
@@ -47,7 +46,7 @@ const decodeInvestigationId = Schema.decodeUnknownSync(InvestigationId)
 
 const contextString = (context: Record<string, unknown>, key: string): string | undefined => {
 	const value = context[key]
-	return typeof value === "string" && value.trim().length > 0 ? value : undefined
+	return typeof value === "string" && Str.trim(value).length > 0 ? value : undefined
 }
 
 const contextNumber = (context: Record<string, unknown>, key: string): number | null => {
@@ -82,7 +81,7 @@ const contextInstant = (
 				? value
 				: typeof value === "number" && Number.isFinite(value)
 					? new Date(value)
-					: typeof value === "string" && value.trim().length > 0
+					: typeof value === "string" && Str.trim(value).length > 0
 						? new Date(value)
 						: null
 		if (instant !== null && !Number.isNaN(instant.getTime())) {
@@ -94,7 +93,7 @@ const contextInstant = (
 
 const snapshotFor = (input: MaybeEnqueueTriageInput): InstanceType<typeof InvestigationSubjectSnapshot> => {
 	const serviceName = contextString(input.context, "serviceName")
-	const kindWord = `${input.incidentKind[0]?.toUpperCase() ?? ""}${input.incidentKind.slice(1)}`
+	const kindWord = `${Str.toUpperCase(Str.slice(0, 1)(input.incidentKind))}${Str.slice(1)(input.incidentKind)}`
 	// The last resort is what the investigations list renders as a title, so it
 	// names the service when there is one — "Alert incident" says nothing the
 	// list's kind marker doesn't already say. (`reason` is deliberately not in
@@ -147,7 +146,7 @@ const snapshotFor = (input: MaybeEnqueueTriageInput): InstanceType<typeof Invest
 		scope: serviceName ?? null,
 		status: "open",
 		severity,
-		facts: factKeys.flatMap(([label, value]) =>
+		facts: Arr.flatMap(factKeys, ([label, value]) =>
 			value ? [new InvestigationSnapshotFact({ label, value })] : [],
 		),
 		references: input.issueId
@@ -273,10 +272,10 @@ const selectPriorDiagnoses = (
 				.limit(PRIOR_DIAGNOSES_LIMIT),
 		),
 		(rows) =>
-			rows.flatMap((row) => {
+			Arr.flatMap(rows, (row) => {
 				const report = Option.getOrUndefined(decodePriorReport(row.reportJson))
 				const headline = report?.headline ?? report?.summary
-				if (headline === undefined || headline.trim().length === 0) return []
+				if (headline === undefined || Str.trim(headline).length === 0) return []
 				const snapshot = Option.getOrUndefined(decodePriorSnapshot(row.snapshotJson))
 				return [
 					new IncidentTriagePriorDiagnosis({
@@ -403,24 +402,9 @@ export const maybeEnqueueTriage: (
 			),
 		)
 		const existing = existingRows[0]
-		if (existing) {
+		if (existing !== undefined) {
 			if (isInvestigationStale(existing, nowMs)) {
-				const budget = STALE_MS
-				yield* database.execute((db) =>
-					db.run(
-						PG.update(Investigations)
-							.set({
-								status: "failed",
-								error: staleTimeoutMessage(budget),
-								updatedAt: nowMs,
-							})
-							.where(($) => [
-								$.orgId.eq(input.orgId),
-								$.id.eq(existing.id),
-								$.startedAt.lt(nowMs - budget),
-							]),
-					),
-				)
+				yield* database.execute((db) => sweepAbandonedInvestigations(db, nowMs, input.orgId))
 			}
 			return { enqueued: false, investigationId: existing.id, reason: "duplicate" as const }
 		}
@@ -460,7 +444,13 @@ export const maybeEnqueueTriage: (
 			const latestRows = yield* database.execute((db) =>
 				db.run(
 					PG.from(Investigations)
-						.select("id", "status", "createdAt", "startedAt")
+						.select(($) => ({
+							id: $.id,
+							status: $.status,
+							createdAt: $.createdAt,
+							startedAt: $.startedAt,
+							progressJson: storedProgressJson($),
+						}))
 						.where(($) => [$.orgId.eq(input.orgId), $.issueId.eq(issueId)])
 						.orderBy(["createdAt", "desc"])
 						.limit(1),
@@ -475,6 +465,7 @@ export const maybeEnqueueTriage: (
 							status: latestRow.status,
 							createdAtMs: latestRow.createdAt,
 							startedAtMs: latestRow.startedAt,
+							progressJson: latestRow.progressJson,
 						}
 			const issueGate = evaluateIssueGate({
 				workflowState: issueRows[0]?.workflowState ?? null,

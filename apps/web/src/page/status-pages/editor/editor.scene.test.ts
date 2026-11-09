@@ -1,3 +1,4 @@
+import * as Policy from "@maple/domain/policy"
 import { OrgId } from "@maple/domain"
 import {
 	StatusPageComponentPublicId,
@@ -6,7 +7,7 @@ import {
 	type V2StatusPage,
 } from "@maple/domain/http/v2"
 import { DEFAULT_STATUS_PAGE_THEME } from "@maple/domain/status-page"
-import { Option, Result, Schema } from "effect"
+import { Option, Result, Schema, Array as Arr } from "effect"
 import {
 	attr,
 	Command,
@@ -24,7 +25,7 @@ import {
 	withViewInputs,
 } from "foldkit/scene"
 import { describe, expect, test } from "vitest"
-import { toLoadFailure } from "../../../data/load-failure"
+import { toLoadFailure } from "@maple/views/data/load-failure"
 import { PageOutMessage, type PageContext } from "../../contract"
 import { statusPagesHref } from "../shared/commands"
 import { selectionOf } from "../shared/preview"
@@ -47,18 +48,21 @@ import { moved } from "./update-components"
 import { canvasDocument } from "./view-canvas"
 import { removeComponentCopy, view as pageView } from "./view"
 
+const ADMIN = Policy.grantsOf(["org:admin"])
+const MEMBER = Policy.grantsOf(["org:member"])
+
 const orgId = Schema.decodeSync(OrgId)(ORG)
 const context: PageContext = { orgId, pinnedNamespace: null, timeZone: "UTC" }
 const pageUpdate = (model: Model, message: Message) => update(model, message, context)
 const view = withViewInputs(pageView, { context })()
 const names = (commands: ReadonlyArray<{ readonly name: string }> | undefined) =>
-	(commands ?? []).map(({ name }) => name)
+	Arr.map(commands ?? [], ({ name }) => name)
 const PUBLIC_ID = Schema.encodeSync(StatusPagePublicId)(statusPage().id)
 
 type Fixture = Readonly<{
 	tab?: string
 	page?: V2StatusPage
-	isAdmin?: boolean
+	grants?: ReadonlyArray<Policy.Permission>
 	components?: ReturnType<typeof component>[]
 	incidents?: ReturnType<typeof incident>[]
 	monitorsFail?: boolean
@@ -77,47 +81,55 @@ const loaded = (fixture: Fixture = {}): Model => {
 		},
 		context,
 	).model
-	return [
-		Message.ReadClock({ nowMs: Date.UTC(2026, 9, 1, 12) }),
-		Message.CompletedFetchSession({ orgId: ORG, isAdmin: fixture.isAdmin ?? true }),
-		Message.CompletedFetchPage({
-			key: entered.page.key ?? "",
-			result: Result.succeed(fixture.page ?? statusPage()),
-		}),
-		Message.CompletedFetchComponents({
-			key: entered.components.key ?? "",
-			result: fixture.componentsFail
-				? Result.fail(toLoadFailure(new Error("components unavailable")))
-				: Result.succeed(fixture.components ?? [component(1), component(2), component(3)]),
-		}),
-		Message.CompletedFetchIncidents({
-			key: entered.incidents.key ?? "",
-			result: Result.succeed(fixture.incidents ?? []),
-		}),
-		Message.CompletedFetchMonitors({
-			key: entered.monitors.key ?? "",
-			result: fixture.monitorsFail
-				? Result.fail(toLoadFailure(new Error("monitors unavailable")))
-				: Result.succeed([httpMonitor(), downMonitor()]),
-		}),
-		// Only the JSON tab reads the config.
-		...(entered.config.key === null
-			? []
-			: [
-					Message.CompletedFetchConfig({
-						key: entered.config.key,
-						result: fixture.configFail
-							? Result.fail(toLoadFailure(new Error("config unavailable")))
-							: Result.succeed(
-									fixture.config ??
-										statusPageConfig(
-											fixture.page ?? statusPage(),
-											fixture.components ?? [component(1), component(2), component(3)],
-										),
-								),
-					}),
-				]),
-	].reduce((model, message) => pageUpdate(model, message).model, entered)
+	return Arr.reduce(
+		[
+			Message.ReadClock({ nowMs: Date.UTC(2026, 9, 1, 12) }),
+			Message.CompletedFetchSession({ orgId: ORG, grants: fixture.grants ?? ADMIN }),
+			Message.CompletedFetchPage({
+				key: entered.page.key ?? "",
+				result: Result.succeed(fixture.page ?? statusPage()),
+			}),
+			Message.CompletedFetchComponents({
+				key: entered.components.key ?? "",
+				result: fixture.componentsFail
+					? Result.fail(toLoadFailure(new Error("components unavailable")))
+					: Result.succeed(fixture.components ?? [component(1), component(2), component(3)]),
+			}),
+			Message.CompletedFetchIncidents({
+				key: entered.incidents.key ?? "",
+				result: Result.succeed(fixture.incidents ?? []),
+			}),
+			Message.CompletedFetchMonitors({
+				key: entered.monitors.key ?? "",
+				result: fixture.monitorsFail
+					? Result.fail(toLoadFailure(new Error("monitors unavailable")))
+					: Result.succeed([httpMonitor(), downMonitor()]),
+			}),
+			// Only the JSON tab reads the config.
+			...(entered.config.key === null
+				? []
+				: [
+						Message.CompletedFetchConfig({
+							key: entered.config.key,
+							result: fixture.configFail
+								? Result.fail(toLoadFailure(new Error("config unavailable")))
+								: Result.succeed(
+										fixture.config ??
+											statusPageConfig(
+												fixture.page ?? statusPage(),
+												fixture.components ?? [
+													component(1),
+													component(2),
+													component(3),
+												],
+											),
+									),
+						}),
+					]),
+		],
+		entered,
+		(model, message) => pageUpdate(model, message).model,
+	)
 }
 
 describe("status page editor", () => {
@@ -386,7 +398,7 @@ describe("the page as the editor", () => {
 			loaded({ components: [component(1, { monitor_id: httpMonitor().id })] }),
 			Message.ClickedAddComponent(),
 		).model
-		expect(opened.addPicker.rows.map((row) => row.monitorId)).toEqual([monitor.id])
+		expect(Arr.map(opened.addPicker.rows, (row) => row.monitorId)).toEqual([monitor.id])
 		const picked = pageUpdate(
 			opened,
 			Message.GotAddPickerMessage({ message: PickerMessage.ToggledRow({ key: `m:${monitor.id}` }) }),
@@ -459,27 +471,31 @@ describe("the page as the editor", () => {
 	test("members see the page and its components without any control to change them", () => {
 		scene(
 			{ update: pageUpdate, view },
-			given(selected(1, { isAdmin: false })),
+			given(selected(1, { grants: MEMBER })),
 			expectView(text("Component 1")).toExist(),
 			expectView(role("button", { name: "Add monitor" })).not.toExist(),
 			expectView(role("button", { name: "Move Component 1 down" })).not.toExist(),
 			expectView(role("button", { name: "Remove from page" })).not.toExist(),
 			expectView(role("textbox", { name: "Shown as" })).toBeDisabled(),
-			expectView(text("Only org admins can change components.")).toExist(),
+			expectView(text("Only org admins and engineers can change components.")).toExist(),
 		)
 		expect(
-			pageUpdate(selected(1, { isAdmin: false }), Message.ClickedAddComponent()).model.panel?._tag,
+			pageUpdate(selected(1, { grants: MEMBER }), Message.ClickedAddComponent()).model.panel?._tag,
 		).toBe("Component")
 	})
 })
 
 describe("incidents in the panel", () => {
 	test("switching between incident and maintenance keeps what was typed", () => {
-		const typed = [
-			Message.ClickedNewIncident({ kind: "incident" }),
-			Message.ChangedIncidentField({ field: "title", value: "Database upgrade" }),
-			Message.ChangedIncidentField({ field: "body", value: "Planned work." }),
-		].reduce((model, message) => pageUpdate(model, message).model, loaded())
+		const typed = Arr.reduce(
+			[
+				Message.ClickedNewIncident({ kind: "incident" }),
+				Message.ChangedIncidentField({ field: "title", value: "Database upgrade" }),
+				Message.ChangedIncidentField({ field: "body", value: "Planned work." }),
+			],
+			loaded(),
+			(model, message) => pageUpdate(model, message).model,
+		)
 		const switched = pageUpdate(typed, Message.ChangedIncidentKind({ kind: "maintenance" })).model
 		expect(switched.incidentForm).toMatchObject({
 			kind: "maintenance",
@@ -525,6 +541,7 @@ describe("incidents in the panel", () => {
 				name: "PostStatusPageIncidentUpdate",
 				args: {
 					incidentId: incidentId(1),
+					generation: 0,
 					payload: { status: "resolved", body: "This incident has been resolved." },
 				},
 			},
@@ -537,7 +554,9 @@ describe("incidents in the panel", () => {
 			model,
 			Message.ClickedPostUpdate({ incidentId: incidentId(1), isResolving: false }),
 		)
-		expect(opened.model.updateForm?.status).toBe("monitoring")
+		expect(opened.model.updateForm._tag === "Editing" && opened.model.updateForm.form.status).toBe(
+			"monitoring",
+		)
 		expect(pageUpdate(opened.model, Message.SubmittedUpdate()).commands ?? []).toEqual([])
 	})
 
@@ -559,13 +578,17 @@ describe("incidents in the panel", () => {
 
 	test("an incident saved as a draft names its components and is not published", () => {
 		const opened = pageUpdate(loaded(), Message.ClickedNewIncident({ kind: "incident" })).model
-		const filled = [
-			Message.ChangedIncidentField({ field: "title", value: "Slow checkout" }),
-			Message.ChangedIncidentField({ field: "impact", value: "critical" }),
-			Message.ToggledIncidentComponent({ componentId: componentId(2) }),
-			Message.ChangedIncidentField({ field: "body", value: "Checkout is slow." }),
-			Message.PickedIncidentPublished({ isPublished: false }),
-		].reduce((current, message) => pageUpdate(current, message).model, opened)
+		const filled = Arr.reduce(
+			[
+				Message.ChangedIncidentField({ field: "title", value: "Slow checkout" }),
+				Message.ChangedIncidentField({ field: "impact", value: "critical" }),
+				Message.ToggledIncidentComponent({ componentId: componentId(2) }),
+				Message.ChangedIncidentField({ field: "body", value: "Checkout is slow." }),
+				Message.PickedIncidentPublished({ isPublished: false }),
+			],
+			opened,
+			(current, message) => pageUpdate(current, message).model,
+		)
 		expect(pageUpdate(filled, Message.SubmittedIncident()).commands).toMatchObject([
 			{
 				name: "CreateStatusPageIncident",
@@ -587,12 +610,16 @@ describe("incidents in the panel", () => {
 	test("maintenance needs a window that ends after it starts, read in the viewer's zone", () => {
 		const zoned: PageContext = { ...context, timeZone: "Europe/Berlin" }
 		const opened = update(loaded(), Message.ClickedNewIncident({ kind: "maintenance" }), zoned).model
-		const filled = [
-			Message.ChangedIncidentField({ field: "title", value: "Database upgrade" }),
-			Message.ChangedIncidentField({ field: "body", value: "Brief read-only periods." }),
-			Message.ChangedIncidentField({ field: "scheduledStart", value: "2026-10-30T22:00" }),
-			Message.ChangedIncidentField({ field: "scheduledEnd", value: "2026-10-30T21:00" }),
-		].reduce((current, message) => update(current, message, zoned).model, opened)
+		const filled = Arr.reduce(
+			[
+				Message.ChangedIncidentField({ field: "title", value: "Database upgrade" }),
+				Message.ChangedIncidentField({ field: "body", value: "Brief read-only periods." }),
+				Message.ChangedIncidentField({ field: "scheduledStart", value: "2026-10-30T22:00" }),
+				Message.ChangedIncidentField({ field: "scheduledEnd", value: "2026-10-30T21:00" }),
+			],
+			opened,
+			(current, message) => update(current, message, zoned).model,
+		)
 		expect(update(filled, Message.SubmittedIncident(), zoned).commands ?? []).toEqual([])
 		const fixed = update(
 			filled,
@@ -625,6 +652,97 @@ describe("incidents in the panel", () => {
 			expectView(text("Set when the maintenance starts and ends.")).toExist(),
 			expectView(role("button", { name: "Schedule" })).toBeDisabled(),
 		)
+	})
+})
+
+describe("an update posted while the form moved on", () => {
+	const posting = () => {
+		const model = loaded({
+			incidents: [incident(1, { status: "identified" }), incident(2, { status: "identified" })],
+		})
+		const opened = pageUpdate(
+			model,
+			Message.ClickedPostUpdate({ incidentId: incidentId(1), isResolving: false }),
+		)
+		const typed = pageUpdate(opened.model, Message.ChangedUpdateField({ field: "body", value: "Fixed." }))
+		const posted = pageUpdate(typed.model, Message.SubmittedUpdate()).model
+		// The viewer opens the other incident's form before the post answers.
+		return pageUpdate(
+			posted,
+			Message.ClickedPostUpdate({ incidentId: incidentId(2), isResolving: false }),
+		).model
+	}
+
+	test("a success keeps the other incident's form open and still rereads", () => {
+		const moved = posting()
+		const done = pageUpdate(
+			moved,
+			Message.CompletedPostUpdate({ generation: 0, result: Result.succeed(incident(1)) }),
+		)
+		expect(done.model.updateForm).toMatchObject({ _tag: "Editing", form: { incidentId: incidentId(2) } })
+		expect(done.outMessage).toMatchObject({ _tag: "RequestedToast", type: "success" })
+		expect(done.commands ?? []).not.toEqual([])
+	})
+
+	test("a failure is a toast, not an error on the other incident's form", () => {
+		const moved = posting()
+		const failed = pageUpdate(
+			moved,
+			Message.CompletedPostUpdate({
+				generation: 0,
+				result: Result.fail(toLoadFailure(new Error("unreachable"))),
+			}),
+		)
+		expect(failed.model.updateForm).toMatchObject({
+			_tag: "Editing",
+			form: { incidentId: incidentId(2) },
+		})
+		expect(failed.outMessage).toMatchObject({ _tag: "RequestedToast", type: "error" })
+	})
+
+	test("a reopened form for the same incident ignores the earlier post's answer", () => {
+		const model = loaded({ incidents: [incident(1, { status: "identified" })] })
+		const open = (current: Model) =>
+			pageUpdate(
+				pageUpdate(
+					current,
+					Message.ClickedPostUpdate({ incidentId: incidentId(1), isResolving: false }),
+				).model,
+				Message.ChangedUpdateField({ field: "body", value: "Fixed." }),
+			).model
+		const first = pageUpdate(open(model), Message.SubmittedUpdate()).model
+		const closed = pageUpdate(first, Message.ClickedIncident({ incidentId: incidentId(1) })).model
+		const second = pageUpdate(open(closed), Message.SubmittedUpdate()).model
+		const failed = pageUpdate(
+			second,
+			Message.CompletedPostUpdate({
+				generation: 0,
+				result: Result.fail(toLoadFailure(new Error("no"))),
+			}),
+		)
+		expect(failed.model.updateForm).toMatchObject({ _tag: "Posting", generation: 1 })
+		expect(failed.outMessage).toMatchObject({ _tag: "RequestedToast", type: "error" })
+	})
+
+	test("edits and Cancel wait while a post is in flight, and its failure keeps the text", () => {
+		const model = loaded({ incidents: [incident(1, { status: "identified" })] })
+		const opened = pageUpdate(
+			model,
+			Message.ClickedPostUpdate({ incidentId: incidentId(1), isResolving: false }),
+		)
+		const typed = pageUpdate(opened.model, Message.ChangedUpdateField({ field: "body", value: "Fixed." }))
+		const posted = pageUpdate(typed.model, Message.SubmittedUpdate()).model
+		const edited = pageUpdate(posted, Message.ChangedUpdateField({ field: "body", value: "Other" })).model
+		const cancelled = pageUpdate(edited, Message.ClickedCancelUpdate()).model
+		expect(cancelled.updateForm).toMatchObject({ _tag: "Posting", form: { body: "Fixed." } })
+		const failed = pageUpdate(
+			cancelled,
+			Message.CompletedPostUpdate({
+				generation: 0,
+				result: Result.fail(toLoadFailure(new Error("unreachable"))),
+			}),
+		).model
+		expect(failed.updateForm).toMatchObject({ _tag: "Failed", form: { body: "Fixed." } })
 	})
 })
 
@@ -748,6 +866,19 @@ describe("live screen", () => {
 		)
 	})
 
+	test("an engineer edits the page but cannot issue a break-glass token", () => {
+		const engineer = {
+			...live("https://status-pr-7.maple.dev"),
+			grants: Policy.grantsOf(["org:engineer"]),
+		}
+		scene(
+			{ update: pageUpdate, view },
+			given(engineer),
+			expectView(role("button", { name: "Get break-glass token" })).not.toExist(),
+		)
+		expect(names(pageUpdate(engineer, Message.ClickedRotateToken()).commands)).toEqual([])
+	})
+
 	test("Get break-glass token issues one at once and shows it once", () => {
 		const issuing = pageUpdate(loaded({ tab: "live" }), Message.ClickedRotateToken())
 		expect(names(issuing.commands)).toEqual(["RotateStatusPageBreakGlassToken"])
@@ -791,13 +922,17 @@ describe("settings and appearance views", () => {
 	})
 
 	test("saving sends every field and settles once the page matches", () => {
-		const edited = [
-			Message.ChangedThemeColor({ field: "accent", value: "#1A2B3C" }),
-			Message.PickedThemePreset({ preset: "paper" }),
-			Message.ChangedSetting({ field: "autoIncidents", value: "publish" }),
-			Message.ToggledPoweredBy(),
-			Message.ChangedSetting({ field: "privacyUrl", value: " https://acme.example/privacy " }),
-		].reduce((model, message) => pageUpdate(model, message).model, loaded({ tab: "settings" }))
+		const edited = Arr.reduce(
+			[
+				Message.ChangedThemeColor({ field: "accent", value: "#1A2B3C" }),
+				Message.PickedThemePreset({ preset: "paper" }),
+				Message.ChangedSetting({ field: "autoIncidents", value: "publish" }),
+				Message.ToggledPoweredBy(),
+				Message.ChangedSetting({ field: "privacyUrl", value: " https://acme.example/privacy " }),
+			],
+			loaded({ tab: "settings" }),
+			(model, message) => pageUpdate(model, message).model,
+		)
 		const saving = pageUpdate(edited, Message.ClickedSaveSettings())
 		expect(saving.commands).toMatchObject([
 			{
@@ -951,12 +1086,13 @@ describe("json view", () => {
 	const documentOf = (components: ReadonlyArray<number>) => ({
 		name: "Acme Status",
 		slug: "acme-status",
-		components: components.map((n) => ({ id: publicComponentId(n), name: `Component ${n}` })),
+		components: Arr.map(components, (n) => ({ id: publicComponentId(n), name: `Component ${n}` })),
 	})
 	const editing = (draft: string, fixture: Fixture = {}) =>
-		[Message.ClickedEditJson(), Message.ChangedJson({ value: draft })].reduce(
-			(model, message) => pageUpdate(model, message).model,
+		Arr.reduce(
+			[Message.ClickedEditJson(), Message.ChangedJson({ value: draft })],
 			loaded({ tab: "json", ...fixture }),
+			(model, message) => pageUpdate(model, message).model,
 		)
 
 	test("shows the page as its config document, with public ids", () => {
@@ -976,13 +1112,13 @@ describe("json view", () => {
 	test("members read the document but cannot edit it", () => {
 		scene(
 			{ update: pageUpdate, view },
-			given(loaded({ tab: "json", isAdmin: false })),
+			given(loaded({ tab: "json", grants: MEMBER })),
 			expectView(selector("pre")).toContainText('"name": "Acme Status"'),
 			expectView(role("button", { name: "Edit JSON" })).not.toExist(),
 			expectView(role("textbox", { name: "Config JSON" })).not.toExist(),
 		)
-		const tried = pageUpdate(loaded({ tab: "json", isAdmin: false }), Message.ClickedEditJson())
-		expect(tried.model.jsonDraft).toBeNull()
+		const tried = pageUpdate(loaded({ tab: "json", grants: MEMBER }), Message.ClickedEditJson())
+		expect(tried.model.jsonEdit).toBeNull()
 	})
 
 	test("Edit fills the editor with the current document, and Reset brings it back", () => {
@@ -1084,7 +1220,7 @@ describe("json view", () => {
 				result: Result.succeed({ name: "Acme Status", slug: "acme-status", components: [] }),
 			}),
 		)
-		expect(applied.model.jsonDraft).toBeNull()
+		expect(applied.model.jsonEdit).toBeNull()
 		expect(names(applied.commands)).toContain("FetchStatusPage")
 		expect(names(applied.commands)).toContain("FetchStatusPageComponents")
 	})
@@ -1103,7 +1239,7 @@ describe("json view", () => {
 				}),
 			}),
 		).model
-		expect(refused.jsonDraft).toBe(model.jsonDraft)
+		expect(refused.jsonEdit?.draft).toBe(model.jsonEdit?.draft)
 		scene(
 			{ update: pageUpdate, view },
 			given(refused),
@@ -1127,9 +1263,10 @@ describe("json view", () => {
 			expectView(role("button", { name: "Apply" })).toBeDisabled(),
 		)
 		const dropped = JSON.stringify({ ...documentOf([1, 2, 3]) })
-		const editingConfig = [Message.ClickedEditJson(), Message.ChangedJson({ value: dropped })].reduce(
-			(current, message) => pageUpdate(current, message).model,
+		const editingConfig = Arr.reduce(
+			[Message.ClickedEditJson(), Message.ChangedJson({ value: dropped })],
 			model,
+			(current, message) => pageUpdate(current, message).model,
 		)
 		scene(
 			{ update: pageUpdate, view },
@@ -1214,7 +1351,7 @@ describe("json view", () => {
 			description: " Live status. ",
 			auto_incidents: "draft",
 			theme: { ...theme, accent: "#1A2B3C" },
-			components: documentOf([1, 2, 3]).components.map((c) => ({
+			components: Arr.map(documentOf([1, 2, 3]).components, (c) => ({
 				...c,
 				name: ` ${c.name}`,
 				group: " ",
@@ -1232,7 +1369,7 @@ describe("json view", () => {
 		const draft = JSON.stringify(documentOf([1]))
 		const applying = pageUpdate(editing(draft), Message.ClickedApplyJson()).model
 		expect(applying.isApplyingJson).toBe(true)
-		expect(pageUpdate(applying, Message.ChangedJson({ value: "{}" })).model.jsonDraft).toBe(draft)
+		expect(pageUpdate(applying, Message.ChangedJson({ value: "{}" })).model.jsonEdit?.draft).toBe(draft)
 		scene(
 			{ update: pageUpdate, view },
 			given(applying),
@@ -1284,7 +1421,7 @@ describe("json view", () => {
 				}),
 			}),
 		)
-		expect(refused.model.jsonDraft).toBe(applying.jsonDraft)
+		expect(refused.model.jsonEdit?.draft).toBe(applying.jsonEdit?.draft)
 		expect(names(refused.commands)).toEqual(["FetchStatusPageConfig"])
 		scene({ update: pageUpdate, view }, given(refused.model), expectView(text(reason)).toExist())
 	})
@@ -1311,7 +1448,7 @@ describe("json view", () => {
 				result: Result.succeed({ ...base, version: "v8" }),
 			}),
 		).model
-		expect(reread.jsonDraft).toBe(draftText)
+		expect(reread.jsonEdit?.draft).toBe(draftText)
 		scene({ update: pageUpdate, view }, given(reread), expectView(text("changed")).not.toExist())
 		expect(pageUpdate(reread, Message.ClickedApplyJson()).commands).toMatchObject([
 			{ name: "ApplyStatusPageConfig", args: { ifVersion: "v8" } },
@@ -1336,9 +1473,10 @@ describe("json view", () => {
 			}),
 		).model
 		// Cancel before the re-read lands, then start a fresh draft on v7.
-		const reopened = [Message.ClickedCancelJson(), Message.ClickedEditJson()].reduce(
-			(model, message) => pageUpdate(model, message).model,
+		const reopened = Arr.reduce(
+			[Message.ClickedCancelJson(), Message.ClickedEditJson()],
 			refused,
+			(model, message) => pageUpdate(model, message).model,
 		)
 		const reread = pageUpdate(
 			reopened,
@@ -1347,7 +1485,7 @@ describe("json view", () => {
 				result: Result.succeed({ ...base, version: "v8" }),
 			}),
 		).model
-		expect(reread.jsonBase?.version).toBe("v7")
+		expect(reread.jsonEdit?.base.version).toBe("v7")
 	})
 
 	test("a config read superseded by the conflict re-read does not rebase the draft", () => {
@@ -1376,8 +1514,8 @@ describe("json view", () => {
 				result: Result.succeed({ ...base, version: "v6" }),
 			}),
 		).model
-		expect(stale.isRebasingJson).toBe(true)
-		expect(stale.jsonBase?.version).toBe("v7")
+		expect(stale.jsonEdit?.isRebasing).toBe(true)
+		expect(stale.jsonEdit?.base.version).toBe("v7")
 	})
 
 	test("a failed re-read after a conflict leaves the rebase pending for the next good read", () => {
@@ -1404,8 +1542,8 @@ describe("json view", () => {
 				result: Result.fail(toLoadFailure(new Error("unreachable"))),
 			}),
 		).model
-		expect(failed.isRebasingJson).toBe(true)
-		expect(failed.jsonBase?.version).toBe("v7")
+		expect(failed.jsonEdit?.isRebasing).toBe(true)
+		expect(failed.jsonEdit?.base.version).toBe("v7")
 	})
 
 	test("unsaved Settings edits block Apply until they are saved or discarded", () => {

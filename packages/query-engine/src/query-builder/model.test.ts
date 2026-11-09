@@ -9,9 +9,11 @@ import {
 	buildBreakdownQuerySpec,
 	buildTimeseriesQuerySpec,
 	formatFiltersAsWhereClause,
+	getMetricsAggregations,
 	GROUP_BY_TOKENS,
 	resolveGroupBy,
 } from "./model"
+import { Array as Arr, String as Str } from "effect"
 
 // Minimal traces draft factory — only the fields the builder reads matter; the
 // rest satisfy the payload shape.
@@ -33,7 +35,7 @@ function tracesDraft(overrides: Partial<QueryBuilderQueryDraftPayload> = {}): Qu
 		limit: "",
 		legend: "",
 		...overrides,
-	} as QueryBuilderQueryDraftPayload
+	}
 }
 
 function attrFilters(whereClause: string) {
@@ -94,10 +96,10 @@ describe("buildTimeseriesQuerySpec where-clause → attribute filters", () => {
 	})
 
 	it("warns (blocking) when the 5 attr-filter cap is exceeded", () => {
-		const clause = ["a = 1", "b = 2", "c = 3", "d = 4", "e = 5", "f = 6"].join(" AND ")
+		const clause = Arr.join(["a = 1", "b = 2", "c = 3", "d = 4", "e = 5", "f = 6"], " AND ")
 		const { warnings, attributeFilters } = attrFilters(clause)
 		expect(attributeFilters).toHaveLength(5)
-		expect(warnings.some((w) => w.includes("Maximum of 5 attr.* filters"))).toBe(true)
+		expect(Arr.some(warnings, (w) => Str.includes("Maximum of 5 attr.* filters")(w))).toBe(true)
 	})
 })
 
@@ -251,7 +253,7 @@ describe("buildTimeseriesQuerySpec series limit", () => {
 	it("warns and disables the cap for a non-positive or non-integer value", () => {
 		const zero = seriesLimitOf({ seriesLimit: "0" })
 		expect(zero.seriesLimit).toBeUndefined()
-		expect(zero.warnings.some((w) => w.includes("series limit"))).toBe(true)
+		expect(Arr.some(zero.warnings, (w) => Str.includes("series limit")(w))).toBe(true)
 
 		expect(seriesLimitOf({ seriesLimit: "-3" }).seriesLimit).toBeUndefined()
 		expect(seriesLimitOf({ seriesLimit: "abc" }).seriesLimit).toBeUndefined()
@@ -300,7 +302,7 @@ describe("metrics resource.* support", () => {
 			isMonotonic: false,
 			signalSource: "default",
 			...overrides,
-		} as Partial<QueryBuilderQueryDraftPayload>)
+		})
 	}
 
 	function metricsFiltersOf(overrides: Partial<QueryBuilderQueryDraftPayload>) {
@@ -379,14 +381,17 @@ describe("metrics resource.* support", () => {
 			whereClause: '(attr.state = "user" OR service.name = "api")',
 		})
 		expect(filters).not.toHaveProperty("attributeFilters")
-		expect(warnings.some((w) => w.includes("Metrics OR group ignored"))).toBe(true)
+		expect(Arr.some(warnings, (w) => Str.includes("Metrics OR group ignored")(w))).toBe(true)
 	})
 
 	it("warns when the 5 resource-filter cap is exceeded", () => {
-		const clause = ["a", "b", "c", "d", "e", "f"].map((k) => `resource.${k} = "1"`).join(" AND ")
+		const clause = Arr.join(
+			Arr.map(["a", "b", "c", "d", "e", "f"], (k) => `resource.${k} = "1"`),
+			" AND ",
+		)
 		const { warnings, filters } = metricsFiltersOf({ whereClause: clause })
 		expect(filters?.resourceAttributeFilters).toHaveLength(5)
-		expect(warnings.some((w) => w.includes("Maximum of 5 resource.* filters"))).toBe(true)
+		expect(Arr.some(warnings, (w) => Str.includes("Maximum of 5 resource.* filters")(w))).toBe(true)
 	})
 
 	it("resource.<key> group-by resolves to resource_attribute + groupByResourceAttributeKey", () => {
@@ -399,27 +404,77 @@ describe("metrics resource.* support", () => {
 		expect(filters?.groupByResourceAttributeKey).toBe("k8s.pod.name")
 	})
 
-	it("keeps the first attr.* group-by and warns about later dimensions", () => {
+	it("groups by every attr.* key, in order", () => {
 		const { warnings, groupBy, filters } = metricsFiltersOf({
 			addOns: { groupBy: true, having: false, orderBy: false, limit: false, legend: false },
 			groupBy: ["attr.http.method", "attr.http.route"],
 		})
 		expect(groupBy).toEqual(["attribute"])
-		expect(filters?.groupByAttributeKey).toBe("http.method")
-		expect(warnings).toEqual([
-			"Metrics queries support a single attr.* group by; ignoring attr.http.route",
-		])
+		expect(filters?.groupByAttributeKeys).toEqual(["http.method", "http.route"])
+		expect(warnings).toEqual([])
 	})
 
-	it("keeps the first dimension and warns when attr.* and resource.* group-bys are combined", () => {
+	it("combines attr.*, resource.* and service.name group-bys", () => {
 		const { warnings, groupBy, filters } = metricsFiltersOf({
 			addOns: { groupBy: true, having: false, orderBy: false, limit: false, legend: false },
-			groupBy: ["attr.state", "resource.host.name"],
+			groupBy: ["service.name", "attr.state", "resource.host.name"],
 		})
-		expect(warnings.some((w) => w.includes("single attribute group by"))).toBe(true)
-		expect(groupBy).toEqual(["attribute"])
-		expect(filters?.groupByAttributeKey).toBe("state")
-		expect(filters).not.toHaveProperty("groupByResourceAttributeKey")
+		expect(warnings).toEqual([])
+		expect(groupBy).toEqual(["service", "attribute", "resource_attribute"])
+		expect(filters?.groupByAttributeKeys).toEqual(["state"])
+		expect(filters?.groupByResourceAttributeKeys).toEqual(["host.name"])
+	})
+
+	it("warns about and drops group-by keys past the cap", () => {
+		const { warnings, filters } = metricsFiltersOf({
+			addOns: { groupBy: true, having: false, orderBy: false, limit: false, legend: false },
+			groupBy: ["attr.a", "attr.b", "attr.c", "attr.d", "resource.e", "resource.f"],
+		})
+		expect(filters?.groupByAttributeKeys).toEqual(["a", "b", "c", "d"])
+		expect(filters?.groupByResourceAttributeKeys).toEqual(["e"])
+		expect(warnings).toEqual(["Metrics queries group by at most 5 attribute keys; ignoring resource.f"])
+	})
+
+	it("spends the key budget in the order the draft lists its fields", () => {
+		const { filters, warnings } = metricsFiltersOf({
+			addOns: { groupBy: true, having: false, orderBy: false, limit: false, legend: false },
+			groupBy: ["resource.r1", "resource.r2", "attr.a", "attr.b", "attr.c", "attr.d"],
+		})
+		expect(filters?.groupByResourceAttributeKeys).toEqual(["r1", "r2"])
+		expect(filters?.groupByAttributeKeys).toEqual(["a", "b", "c"])
+		expect(warnings).toEqual(["Metrics queries group by at most 5 attribute keys; ignoring attr.d"])
+	})
+
+	it("a chart query carries its across-series aggregation, and omits it when unset", () => {
+		const withMax = buildTimeseriesQuerySpec(metricsDraft({ spaceAggregation: "max" }))
+		expect((withMax.query as { spaceAggregation?: string } | null)?.spaceAggregation).toBe("max")
+		const unset = buildTimeseriesQuerySpec(metricsDraft())
+		expect(unset.query).not.toHaveProperty("spaceAggregation")
+	})
+
+	it("a breakdown keeps the chart's across-series aggregation", () => {
+		const result = buildBreakdownQuerySpec(
+			metricsDraft({
+				spaceAggregation: "max",
+				addOns: { groupBy: true, having: false, orderBy: false, limit: false, legend: false },
+				groupBy: ["attr.state"],
+			}),
+		)
+		expect((result.query as { spaceAggregation?: string } | null)?.spaceAggregation).toBe("max")
+	})
+
+	it("a histogram draft asking for latest is refused, not saved to fail later", () => {
+		const result = buildTimeseriesQuerySpec(
+			metricsDraft({ metricType: "histogram", aggregation: "latest" }),
+		)
+		expect(result.query).toBeNull()
+		expect(result.error).toContain("latest")
+	})
+
+	it("histograms are not offered latest", () => {
+		const values = Arr.map(getMetricsAggregations("histogram"), (option) => option.value)
+		expect(values).not.toContain("latest")
+		expect(Arr.map(getMetricsAggregations("gauge"), (option) => option.value)).toContain("latest")
 	})
 
 	it("resource.* group-by drives breakdown specs", () => {
@@ -470,16 +525,16 @@ describe("GROUP_BY_TOKENS catalog matches the resolvers", () => {
 			addOns: { groupBy: true, having: false, orderBy: false, limit: false, legend: false },
 			groupBy: [...groupBy],
 		}
-		if (dataSource === "logs") return { ...base, aggregation: "count" } as QueryBuilderQueryDraftPayload
+		if (dataSource === "logs") return { ...base, aggregation: "count" }
 		if (dataSource === "metrics") {
 			return {
 				...base,
 				aggregation: "avg",
 				metricName: "http.server.duration",
 				metricType: "gauge",
-			} as QueryBuilderQueryDraftPayload
+			}
 		}
-		return base as QueryBuilderQueryDraftPayload
+		return base
 	}
 
 	for (const source of ["traces", "logs", "metrics", "product_events"] as const) {
@@ -502,7 +557,7 @@ describe("GROUP_BY_TOKENS catalog matches the resolvers", () => {
 
 	it("logs does not support attr.* — the catalog lists no prefixes for it", () => {
 		const result = buildTimeseriesQuerySpec(draftFor("logs", ["attr.anything"]))
-		expect(result.warnings.join(" ")).toContain("logs source does not support attr.*")
+		expect(Arr.join(result.warnings, " ")).toContain("logs source does not support attr.*")
 	})
 
 	// The catalogue is the documented vocabulary (MCP schema doc renders it) and
@@ -584,7 +639,7 @@ describe("aggregation enforcement follows AGGREGATIONS_BY_SOURCE", () => {
 			aggregation: "p95",
 			metricName: "http.server.duration",
 			metricType: "gauge",
-		} as QueryBuilderQueryDraftPayload)
+		})
 		expect(result.error).toContain("Unsupported metrics aggregation")
 		expect(result.error).toContain("rate")
 	})
@@ -630,7 +685,7 @@ describe("product_events drafts", () => {
 	it("warns on an operator a row column cannot take", () => {
 		const { filters, warnings } = filtersOf('event.name contains "signup"')
 		expect(filters).toBeUndefined()
-		expect(warnings.join(" ")).toContain("supports only = and !=")
+		expect(Arr.join(warnings, " ")).toContain("supports only = and !=")
 	})
 
 	it("carries a single attr.* group-by key on the filters", () => {
@@ -708,7 +763,7 @@ describe("product_events clause edge cases", () => {
 	it("rejects != on visitor.type instead of selecting the negated value", () => {
 		const result = buildTimeseriesQuerySpec(draft({ whereClause: 'visitor.type != "new"' }))
 		expect(result.query).toMatchObject({ filters: undefined })
-		expect(result.warnings.join(" ")).toContain("supports only =")
+		expect(Arr.join(result.warnings, " ")).toContain("supports only =")
 	})
 })
 

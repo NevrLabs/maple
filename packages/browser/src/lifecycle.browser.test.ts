@@ -1,6 +1,6 @@
 // TEST-SEAM: This focused test replaces process-global modules that have no instance-level injection seam.
 import type { ReadableLogRecord } from "@opentelemetry/sdk-logs"
-import type { ReadableSpan } from "@opentelemetry/sdk-trace-base"
+import type { ReadableSpan } from "@opentelemetry/sdk-trace"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { resetUrlSanitizersForTests } from "../../browser-session/src/platform/url-privacy"
 
@@ -118,10 +118,14 @@ describe("init and shutdown", () => {
 		await vi.waitFor(() => expect(second.sessionId).not.toBe(""))
 		await second.shutdown()
 
-		const sent = vi
-			.mocked(fetch)
-			.mock.calls.filter(([url]) => String(url).endsWith("/v1/sessionEvents"))
-			.map(([, request]) => String(request?.body))
+		const sent = await Promise.all(
+			vi
+				.mocked(fetch)
+				.mock.calls.filter(([url]) =>
+					(url instanceof Request ? url.url : url.toString()).endsWith("/v1/sessionEvents"),
+				)
+				.map(([, request]) => new Response(request?.body).text()),
+		)
 		expect(sent.join("\n")).toContain("during_teardown")
 	})
 

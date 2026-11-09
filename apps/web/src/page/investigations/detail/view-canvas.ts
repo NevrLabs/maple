@@ -1,7 +1,6 @@
 import type { V2Investigation } from "@maple/domain/http/v2"
 import { TONE_TEXT } from "@maple/ui/lib/tone"
 import { cn } from "@maple/ui/lib/utils"
-import { panelStyles, panelToneStyles } from "@maple/ui/styles/ui/panel"
 import type { ActionKind } from "@maple/web-data/investigations/action-target"
 import { splitDuration } from "@maple/web-data/investigations/display"
 import {
@@ -16,10 +15,10 @@ import {
 	type SpineNodeData,
 } from "@maple/web-data/investigations/provenance-graph"
 import { getSmoothStepPath, Position } from "@xyflow/system"
-import { Option } from "effect"
+import { Option, Array as Arr, String as Str } from "effect"
 import type { Html, HtmlBuilder } from "foldkit/html"
-import { DEFAULT_GESTURES } from "../../../service-map/xyflow/attach"
-import * as Canvas from "../../../service-map/xyflow/canvas"
+import { DEFAULT_GESTURES } from "@maple/views/service-map/xyflow/attach"
+import * as Canvas from "@maple/views/service-map/xyflow/canvas"
 import {
 	edgesLayer,
 	flowCanvas,
@@ -27,18 +26,22 @@ import {
 	flowHandle,
 	flowNode,
 	nodesLayer,
-} from "../../../service-map/xyflow/view"
-import { eyebrow } from "../../../ui/eyebrow"
-import { icon, type IconName } from "../../../ui/icon"
-import { panel } from "../../../ui/panel"
-import { skeleton } from "../../../ui/skeleton"
-import { statusDot } from "../../../ui/status-dot"
+} from "@maple/views/service-map/xyflow/view"
+import { eyebrow } from "@maple/views/ui/eyebrow"
+import { icon, type IconName } from "@maple/views/ui/icon"
+import { panel } from "@maple/views/ui/panel"
+import { pressable } from "@maple/views/ui/pressable"
+import { skeleton, skeletonMeter } from "@maple/views/ui/skeleton"
+import { statusDot } from "@maple/views/ui/status-dot"
 import { relativeTime } from "../../kit/relative-time"
 import { NODE_LINK_ATTRIBUTE } from "../clicks"
 import { MountNodeLinks } from "./command"
 import { CONTROL_GUTTER, fitScale, graphOf, HEADING_GUTTER } from "./graph"
 import { Message } from "./message"
 import type { Model } from "./model"
+import { hstack, hstackClass, vstack } from "@maple/views/ui/stack"
+import { typography } from "@maple/views/ui/typography"
+import { textLink } from "@maple/views/ui/text-link"
 
 // `ProvenanceCanvas`, `FlowEdge`, the flow nodes and `ProvenanceCanvasLoading`.
 
@@ -107,48 +110,45 @@ const nodeLink = (h: H) => h.Attribute(NODE_LINK_ATTRIBUTE, "")
 const spineNode = (h: H, id: string, data: SpineNodeData, clock: Clock): ReadonlyArray<Html> => {
 	const isCurrent = data.current === true
 	const body = [
-		h.div(
-			[h.Class("flex items-center gap-1.5")],
-			[
-				h.span(
-					[
-						h.Class(
-							cn(
-								"relative flex size-5.5 shrink-0 items-center justify-center rounded-sm",
-								isCurrent ? "bg-primary text-primary-foreground" : "bg-muted",
-								data.lifted === true && !isCurrent ? "bg-background" : null,
-							),
+		hstack(h, { gap: "1.5" }, [
+			h.span(
+				[
+					h.Class(
+						cn(
+							"relative flex size-5.5 shrink-0 items-center justify-center rounded-sm",
+							isCurrent ? "bg-primary text-primary-foreground" : "bg-muted",
+							data.lifted === true && !isCurrent ? "bg-background" : null,
 						),
-					],
-					[
-						icon(h, GLYPH[data.glyph], {
-							size: 14,
-							className: cn(
-								"relative",
-								isCurrent ? null : data.glyph === "verdict" ? TONE_TEXT.info : TONE_TEXT.crit,
-							),
-						}),
-					],
-				),
-				eyebrow(
-					h,
-					{
+					),
+				],
+				[
+					icon(h, GLYPH[data.glyph], {
+						size: 14,
 						className: cn(
-							"min-w-0 flex-1 truncate tracking-wider",
-							isCurrent ? "text-primary" : "text-muted-foreground",
+							"relative",
+							isCurrent ? null : data.glyph === "verdict" ? TONE_TEXT.info : TONE_TEXT.crit,
 						),
-					},
-					[data.eyebrow],
-				),
-			],
-		),
+					}),
+				],
+			),
+			eyebrow(
+				h,
+				{
+					className: cn(
+						"min-w-0 flex-1 truncate tracking-wider",
+						isCurrent ? "text-primary" : "text-muted-foreground",
+					),
+				},
+				[data.eyebrow],
+			),
+		]),
 		h.p(
 			[
 				// One unbroken token (an error class, an id) ends in an ellipsis rather than breaking mid-word.
 				h.Class(
 					cn(
 						/\s/.test(data.title) ? "line-clamp-2 break-words" : "truncate",
-						"font-mono text-xs leading-[1.35] text-foreground",
+						"font-mono text-xs leading-snug text-foreground",
 						isCurrent ? "text-sm" : null,
 					),
 				),
@@ -200,8 +200,14 @@ const spineNode = (h: H, id: string, data: SpineNodeData, clock: Clock): Readonl
 			: []),
 		...(data.note
 			? [
-					h.p(
-						[h.Class("whitespace-pre-line text-3xs leading-[1.4] text-muted-foreground")],
+					typography(
+						h,
+						{
+							size: "3xs",
+							tone: "muted",
+							as: "p",
+							className: "whitespace-pre-line leading-snug",
+						},
 						[data.note, ...(isCurrent ? ["\nyou are here"] : [])],
 					),
 				]
@@ -213,7 +219,6 @@ const spineNode = (h: H, id: string, data: SpineNodeData, clock: Clock): Readonl
 						nowMs: clock.nowMs,
 						timeZone: clock.timeZone,
 						variant: "orDate",
-						tooltip: "title",
 						mono: true,
 						className: "mt-auto pt-0.5 text-4xs leading-3 text-foreground-subtle",
 					}),
@@ -235,7 +240,7 @@ const spineNode = (h: H, id: string, data: SpineNodeData, clock: Clock): Readonl
 			? h.a(
 					[
 						h.Href(data.href),
-						h.Class(cn(shell, "hover:border-primary/60 active:border-primary/60")),
+						h.Class(cn(shell, "hover:border-primary-a4 active:border-primary-a4")),
 						h.Title(data.titleHint ?? data.title),
 						nodeLink(h),
 					],
@@ -248,36 +253,38 @@ const spineNode = (h: H, id: string, data: SpineNodeData, clock: Clock): Readonl
 /** `FlowPendingVerdictNode`: the step after the investigation while no verdict exists. */
 const pendingVerdictNode = (h: H, id: string, data: PendingVerdictNodeData): ReadonlyArray<Html> => [
 	...ports(h, id),
-	h.div(
+	vstack(
+		h,
+		{
+			gap: "1.5",
+			justify: "center",
+			className: "relative size-full overflow-hidden rounded-md border border-dashed bg-background p-3",
+		},
 		[
-			h.Class(
-				"relative flex size-full flex-col justify-center gap-1.5 overflow-hidden rounded-md border border-dashed bg-background p-3",
-			),
-		],
-		[
-			h.div(
-				[h.Class("flex items-start gap-1.5")],
-				[
-					h.span(
-						[
-							h.Class(
-								"flex size-5.5 shrink-0 items-center justify-center rounded-sm border border-dashed",
-							),
-						],
-						[icon(h, "ClockIcon", { size: 14, className: "text-muted-foreground" })],
-					),
-					eyebrow(h, { className: "min-w-0 flex-1 leading-[1.3] text-muted-foreground" }, [
-						data.word,
-					]),
-				],
-			),
+			hstack(h, { gap: "1.5", align: "start" }, [
+				hstack(
+					h,
+					{
+						align: "center",
+						justify: "center",
+						as: "span",
+						className: "size-5.5 shrink-0 rounded-sm border border-dashed",
+					},
+					[icon(h, "ClockIcon", { size: 14, className: "text-muted-foreground" })],
+				),
+				eyebrow(h, { className: "min-w-0 flex-1 leading-tight text-muted-foreground" }, [data.word]),
+			]),
 			...(data.note
-				? [h.p([h.Class("text-3xs leading-[1.4] text-muted-foreground")], [data.note])]
+				? [
+						typography(h, { size: "3xs", tone: "muted", as: "p", className: "leading-snug" }, [
+							data.note,
+						]),
+					]
 				: []),
-			h.div(
-				[h.AriaHidden(true), h.Class("flex flex-col gap-1 pt-0.5")],
-				[skeleton(h, "h-1.5 w-full rounded-full"), skeleton(h, "h-1.5 w-1/2 rounded-full")],
-			),
+			vstack(h, { gap: "1", className: "pt-0.5", attributes: [h.AriaHidden(true)] }, [
+				skeletonMeter(h),
+				skeletonMeter(h, "half"),
+			]),
 			liveBar(h, true),
 		],
 	),
@@ -286,26 +293,25 @@ const pendingVerdictNode = (h: H, id: string, data: PendingVerdictNodeData): Rea
 /** `FlowActionGhostNode`: a proposed action that has not been proposed yet. */
 const actionGhostNode = (h: H, id: string): ReadonlyArray<Html> => [
 	...ports(h, id),
-	h.div(
+	hstack(
+		h,
+		{
+			gap: "2.5",
+			align: "center",
+			className: "pointer-events-none size-full rounded-md border border-dashed bg-surface-faint px-3",
+			attributes: [h.AriaHidden(true)],
+		},
 		[
-			h.AriaHidden(true),
-			h.Class(
-				"pointer-events-none flex size-full items-center gap-2.5 rounded-md border border-dashed bg-card/40 px-3",
-			),
-		],
-		[
-			h.span(
-				[h.Class("flex w-4 shrink-0 flex-col items-center gap-1.5 self-start pt-3")],
+			vstack(
+				h,
+				{ gap: "1.5", align: "center", as: "span", className: "w-4 shrink-0 self-start pt-3" },
 				[skeleton(h, "h-1.5 w-3 rounded-full"), skeleton(h, "size-3.5 rounded-sm")],
 			),
-			h.div(
-				[h.Class("flex min-w-0 flex-1 flex-col gap-1.5 py-2.5")],
-				[
-					skeleton(h, "h-2 w-full rounded-full"),
-					skeleton(h, "h-2 w-2/3 rounded-full"),
-					skeleton(h, "h-1.5 w-16 rounded-full"),
-				],
-			),
+			vstack(h, { gap: "1.5", shrink: true, grow: true, className: "py-2.5" }, [
+				skeleton(h, "h-2 w-full rounded-full"),
+				skeleton(h, "h-2 w-2/3 rounded-full"),
+				skeleton(h, "h-1.5 w-16 rounded-full"),
+			]),
 		],
 	),
 ]
@@ -318,67 +324,77 @@ const actionNode = (h: H, id: string, data: ActionNodeData): ReadonlyArray<Html>
 	const glyph = ACTION_GLYPH[data.kind]
 	return [
 		...ports(h, id),
-		h.div(
+		hstack(
+			h,
+			{
+				gap: "2.5",
+				align: "center",
+				className:
+					"size-full cursor-pointer rounded-md border bg-card px-3 hover:border-primary-a4 active:border-primary-a4 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring",
+				attributes: [
+					h.Role("button"),
+					h.Tabindex(0),
+					h.AriaLabel(`Proposed action ${data.ordinal}: ${data.text}`),
+					h.OnClick(Message.ClickedAction({ index: data.index })),
+					h.OnKeyDownPreventDefault(openKey(data.index)),
+				],
+			},
 			[
-				h.Role("button"),
-				h.Tabindex(0),
-				h.AriaLabel(`Proposed action ${data.ordinal}: ${data.text}`),
-				h.OnClick(Message.ClickedAction({ index: data.index })),
-				h.OnKeyDownPreventDefault(openKey(data.index)),
-				h.Class(
-					"flex size-full cursor-pointer items-center gap-2.5 rounded-md border bg-card px-3 hover:border-primary/60 active:border-primary/60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring",
-				),
-			],
-			[
-				h.span(
-					[h.Class("flex w-4 shrink-0 flex-col items-center gap-1.5 self-start pt-3")],
+				vstack(
+					h,
+					{ gap: "1.5", align: "center", as: "span", className: "w-4 shrink-0 self-start pt-3" },
 					[
-						h.span(
-							[h.Class("font-mono text-3xs leading-3 text-muted-foreground tabular-nums")],
+						typography(
+							h,
+							{ size: "3xs", tone: "muted", mono: true, numeric: true, className: "leading-3" },
 							[data.ordinal],
 						),
-						h.span(
-							[
-								h.Title(glyph.label),
-								h.Class("flex size-3.5 items-center justify-center text-muted-foreground"),
-							],
+						hstack(
+							h,
+							{
+								align: "center",
+								justify: "center",
+								as: "span",
+								className: "size-3.5 text-muted-foreground",
+								attributes: [h.Title(glyph.label)],
+							},
 							[icon(h, glyph.icon, { size: 12, attributes: [h.AriaLabel(glyph.label)] })],
 						),
 					],
 				),
-				h.div(
-					[h.Class("flex min-w-0 flex-1 flex-col gap-1.5 py-2.5")],
-					[
-						h.p([h.Class("line-clamp-2 text-xs leading-[1.4] text-foreground")], [data.text]),
-						h.p(
-							[h.Class("flex items-center gap-1.5")],
-							[
-								...(data.target === null
-									? []
-									: [
-											h.a(
-												[
-													h.Href(data.target.href),
-													h.Class(
-														"shrink-0 text-4xs font-medium tracking-wider text-primary hover:underline active:underline",
-													),
-													nodeLink(h),
-												],
-												[data.target.label, " →"],
-											),
-										]),
-								h.span(
-									[
-										h.Class(
-											"min-w-0 flex-1 truncate text-right text-4xs tracking-wider text-foreground-subtle",
+				vstack(h, { gap: "1.5", shrink: true, grow: true, className: "py-2.5" }, [
+					typography(
+						h,
+						{ size: "xs", tone: "foreground", as: "p", className: "line-clamp-2 leading-snug" },
+						[data.text],
+					),
+					h.p(
+						[h.Class(hstackClass({ gap: "1.5" }))],
+						[
+							...(data.target === null
+								? []
+								: [
+										textLink(
+											h,
+											{
+												href: data.target.href,
+												className: "shrink-0 text-4xs tracking-wider",
+												attributes: [nodeLink(h)],
+											},
+											[data.target.label, " →"],
 										),
-									],
-									[data.promise],
-								),
-							],
-						),
-					],
-				),
+									]),
+							h.span(
+								[
+									h.Class(
+										"min-w-0 flex-1 truncate text-right text-4xs tracking-wider text-foreground-subtle",
+									),
+								],
+								[data.promise],
+							),
+						],
+					),
+				]),
 			],
 		),
 	]
@@ -507,46 +523,48 @@ export const edgeLabel = (h: H, edge: ProvenanceEdge, anchors: Anchors): Html | 
 				}),
 			],
 		},
-		[edge.label.replace(" ", "\n")],
+		[Str.replace(" ", "\n")(edge.label)],
 	)
 }
 
-const CONTROL = "flex size-6.5 items-center justify-center text-muted-foreground hover:text-foreground active:text-foreground"
+const CONTROL =
+	"flex size-6.5 items-center justify-center text-muted-foreground hover:text-foreground active:text-foreground"
 
 /** The four zoom buttons: the wheel scrolls the page here. */
 const controls = (h: H): Html =>
-	h.div(
-		[h.Class("absolute bottom-0 left-0 flex divide-x rounded-sm border bg-background")],
+	hstack(
+		h,
+		{ align: "stretch", className: "absolute bottom-0 left-0 divide-x rounded-sm border bg-background" },
 		[
 			h.span(
 				[h.AriaHidden(true), h.Class(cn(CONTROL, "cursor-default"))],
 				[icon(h, "CursorIcon", { size: 12 })],
 			),
-			h.button(
-				[
-					h.Type("button"),
-					h.Class(CONTROL),
-					h.AriaLabel("Zoom in"),
-					h.OnClick(Message.GotCanvasMessage({ message: Canvas.Message.ClickedZoomIn() })),
-				],
+			pressable(
+				h,
+				{
+					onClick: Message.GotCanvasMessage({ message: Canvas.Message.ClickedZoomIn() }),
+					label: "Zoom in",
+					className: CONTROL,
+				},
 				[icon(h, "PlusIcon", { size: 12 })],
 			),
-			h.button(
-				[
-					h.Type("button"),
-					h.Class(CONTROL),
-					h.AriaLabel("Zoom out"),
-					h.OnClick(Message.GotCanvasMessage({ message: Canvas.Message.ClickedZoomOut() })),
-				],
+			pressable(
+				h,
+				{
+					onClick: Message.GotCanvasMessage({ message: Canvas.Message.ClickedZoomOut() }),
+					label: "Zoom out",
+					className: CONTROL,
+				},
 				[icon(h, "MinusIcon", { size: 12 })],
 			),
-			h.button(
-				[
-					h.Type("button"),
-					h.Class(CONTROL),
-					h.AriaLabel("Fit the graph to the view"),
-					h.OnClick(Message.ClickedPlaceGraph()),
-				],
+			pressable(
+				h,
+				{
+					onClick: Message.ClickedPlaceGraph(),
+					label: "Fit the graph to the view",
+					className: CONTROL,
+				},
 				[icon(h, "MaximizeIcon", { size: 12 })],
 			),
 		],
@@ -569,25 +587,21 @@ const outlineText = (node: ProvenanceNode): string | null => {
 const outline = (h: H, graph: ProvenanceGraph): Html =>
 	h.ol(
 		[h.Class("sr-only")],
-		graph.nodes
-			.filter((node) => node.type !== "heading")
-			.map((node) =>
+		Arr.map(
+			Arr.filter(graph.nodes, (node) => node.type !== "heading"),
+			(node) =>
 				h.keyed("li")(
 					node.id,
 					[],
 					node.type === "action"
 						? [
-								h.button(
-									[
-										h.Type("button"),
-										h.OnClick(Message.ClickedAction({ index: node.data.index })),
-									],
-									[`Proposed action ${node.data.ordinal}: ${node.data.text}`],
-								),
+								pressable(h, { onClick: Message.ClickedAction({ index: node.data.index }) }, [
+									`Proposed action ${node.data.ordinal}: ${node.data.text}`,
+								]),
 							]
 						: Option.toArray(Option.fromNullishOr(outlineText(node))),
 				),
-			),
+		),
 	)
 
 const PROVENANCE_HINT = "what produced this investigation, and what it produced"
@@ -596,39 +610,39 @@ const PROVENANCE_HINT = "what produced this investigation, and what it produced"
 const caption = (h: H, graph: ProvenanceGraph, nowMs: number): Html => {
 	const running =
 		graph.runningSince === null ? null : splitDuration(Math.max(0, nowMs - graph.runningSince))
-	return h.div(
-		[h.Class("flex items-center gap-2.5")],
-		[
-			eyebrow(h, {}, ["Provenance"]),
-			h.span([h.Class("min-w-0 flex-1 truncate text-xs text-muted-foreground")], [PROVENANCE_HINT]),
-			...(graph.caption
-				? [
-						h.span(
-							[
-								h.Class(
-									"flex shrink-0 items-center gap-1.5 font-mono text-xs text-muted-foreground tabular-nums",
-								),
-							],
-							[
-								...(running === null ? [] : [statusDot(h, { tone: "live" })]),
-								graph.caption,
-								...(running === null
-									? []
-									: [
-											h.span(
-												[h.Class("text-foreground")],
-												[` · ${running.value}${running.unit}`],
-											),
+	return hstack(h, { gap: "2.5" }, [
+		eyebrow(h, {}, ["Provenance"]),
+		typography(h, { size: "xs", tone: "muted", truncate: true, className: "min-w-0 flex-1" }, [
+			PROVENANCE_HINT,
+		]),
+		...(graph.caption
+			? [
+					hstack(
+						h,
+						{
+							gap: "1.5",
+							align: "center",
+							as: "span",
+							className: "shrink-0 font-mono text-xs text-muted-foreground tabular-nums",
+						},
+						[
+							...(running === null ? [] : [statusDot(h, { tone: "live" })]),
+							graph.caption,
+							...(running === null
+								? []
+								: [
+										typography(h, { tone: "foreground" }, [
+											` · ${running.value}${running.unit}`,
 										]),
-							],
-						),
-					]
-				: []),
-		],
-	)
+									]),
+						],
+					),
+				]
+			: []),
+	])
 }
 
-const PANEL = "shrink-0 gap-3.5 bg-card/40 px-6 pb-5.5 pt-4.5"
+const PANEL = "shrink-0 gap-3.5 bg-surface-faint px-6 pb-5.5 pt-4.5"
 
 /** `ProvenanceCanvas`; a chain of fewer than two cards draws nothing (or the ghost, mid-run). */
 export const provenanceCanvas = (
@@ -638,9 +652,9 @@ export const provenanceCanvas = (
 	timeZone: string,
 ): Html | null => {
 	const graph = graphOf(investigation, timeZone)
-	if (graph.nodes.filter((node) => node.type !== "heading").length < 2)
+	if (Arr.filter(graph.nodes, (node) => node.type !== "heading").length < 2)
 		return investigation.status === "investigating" ? provenanceLoading(h) : null
-	const anchors: Anchors = new Map(graph.nodes.map((node) => [node.id, node]))
+	const anchors: Anchors = new Map(Arr.map(graph.nodes, (node) => [node.id, node]))
 	const clock = { nowMs: model.nowMs, timeZone }
 	const scale = fitScale(model.canvas.pane.width, graph)
 	return panel(h, { className: PANEL }, [
@@ -664,16 +678,16 @@ export const provenanceCanvas = (
 					},
 					edges: edgesLayer(
 						h,
-						graph.edges.flatMap((edge) =>
+						Arr.flatMap(graph.edges, (edge) =>
 							Option.toArray(Option.fromNullishOr(edgeView(h, edge, anchors))),
 						),
 					),
-					edgeLabels: graph.edges.flatMap((edge) =>
+					edgeLabels: Arr.flatMap(graph.edges, (edge) =>
 						Option.toArray(Option.fromNullishOr(edgeLabel(h, edge, anchors))),
 					),
 					nodes: nodesLayer(
 						h,
-						graph.nodes.map((node) =>
+						Arr.map(graph.nodes, (node) =>
 							flowNode(h, {
 								id: node.id,
 								type: node.type,
@@ -700,7 +714,7 @@ const SPINE_H_LIVE = 148
 const ACTION_H = 76
 const ACTION_GAP = 8
 const HEADING_OFFSET = 20
-const COLUMN_X = [0, 1, 2, 3, 4].map((index) => index * (SPINE_WIDTH + GUTTER))
+const COLUMN_X = Arr.map([0, 1, 2, 3, 4], (index) => index * (SPINE_WIDTH + GUTTER))
 const GRAPH_W = 4 * (SPINE_WIDTH + GUTTER) + ACTION_WIDTH
 const GRAPH_H = Math.max(SPINE_H_LIVE, ACTION_H * 2 + ACTION_GAP)
 
@@ -718,7 +732,7 @@ const SPINE_B = spineCard(1, SPINE_H)
 const SPINE_C = spineCard(2, SPINE_H_LIVE)
 const GHOST_SPINE = [SPINE_A, SPINE_B, SPINE_C]
 const GHOST_VERDICT = spineCard(3, SPINE_H)
-const GHOST_ACTIONS: ReadonlyArray<Card> = [0, 1].map((index) => ({
+const GHOST_ACTIONS: ReadonlyArray<Card> = Arr.map([0, 1], (index) => ({
 	x: COLUMN_X[4] ?? 0,
 	y: topOf(ACTION_H * 2 + ACTION_GAP) + index * (ACTION_H + ACTION_GAP),
 	w: ACTION_WIDTH,
@@ -731,21 +745,27 @@ const stepPath = (a: { x: number; y: number }, b: { x: number; y: number }): str
 	if (Math.abs(a.y - b.y) < 0.5) return `M${a.x},${a.y} H${b.x}`
 	const mid = (a.x + b.x) / 2
 	const down = b.y > a.y ? 1 : -1
-	return [
-		`M${a.x},${a.y}`,
-		`H${mid - 8}`,
-		`Q${mid},${a.y} ${mid},${a.y + down * 8}`,
-		`V${b.y - down * 8}`,
-		`Q${mid},${b.y} ${mid + 8},${b.y}`,
-		`H${b.x}`,
-	].join(" ")
+	return Arr.join(
+		[
+			`M${a.x},${a.y}`,
+			`H${mid - 8}`,
+			`Q${mid},${a.y} ${mid},${a.y + down * 8}`,
+			`V${b.y - down * 8}`,
+			`Q${mid},${b.y} ${mid + 8},${b.y}`,
+			`H${b.x}`,
+		],
+		" ",
+	)
 }
 
 const STRANDS = [
 	{ d: stepPath(rightOf(SPINE_A), leftOf(SPINE_B)), dash: "3 3" },
 	{ d: stepPath(rightOf(SPINE_B), leftOf(SPINE_C)), dash: "3 3" },
 	{ d: stepPath(rightOf(SPINE_C), leftOf(GHOST_VERDICT)), dash: "3 3" },
-	...GHOST_ACTIONS.map((action) => ({ d: stepPath(rightOf(GHOST_VERDICT), leftOf(action)), dash: "4 4" })),
+	...Arr.map(GHOST_ACTIONS, (action) => ({
+		d: stepPath(rightOf(GHOST_VERDICT), leftOf(action)),
+		dash: "4 4",
+	})),
 ]
 const PORTS = [
 	rightOf(SPINE_A),
@@ -755,7 +775,7 @@ const PORTS = [
 	rightOf(SPINE_C),
 	leftOf(GHOST_VERDICT),
 	rightOf(GHOST_VERDICT),
-	...GHOST_ACTIONS.map(leftOf),
+	...Arr.map(GHOST_ACTIONS, leftOf),
 ]
 
 const BAR = "var(--muted-foreground)"
@@ -834,71 +854,61 @@ const actionGhost = (h: H, card: Card, delay: number): Html =>
 
 /** `ProvenanceCanvasLoading`: the chain it is about to be replaced by, drawn as a ghost. */
 export const provenanceLoading = (h: H): Html =>
-	h.section(
-		[
-			h.Class(cn(panelStyles, panelToneStyles.default, PANEL)),
-			h.DataAttribute("slot", "panel"),
-			h.AriaBusy(true),
-		],
-		[
-			h.div(
-				[h.Class("flex items-center gap-2.5")],
-				[
-					eyebrow(h, {}, ["Provenance"]),
-					h.span(
-						[h.Class("min-w-0 flex-1 truncate text-xs text-muted-foreground")],
-						[PROVENANCE_HINT],
+	panel(h, { className: PANEL, attributes: [h.AriaBusy(true)] }, [
+		hstack(h, { gap: "2.5" }, [
+			eyebrow(h, {}, ["Provenance"]),
+			typography(h, { size: "xs", tone: "muted", truncate: true, className: "min-w-0 flex-1" }, [
+				PROVENANCE_HINT,
+			]),
+			eyebrow(h, { variant: "mono", className: hstackClass({ gap: "1.5", className: "shrink-0" }) }, [
+				h.span([], ["Mapping the chain"]),
+				hstack(
+					h,
+					{ align: "stretch", inline: true, as: "span", attributes: [h.AriaHidden(true)] },
+					Arr.map([0, 1, 2], (index) =>
+						h.span([h.Key(String(index)), h.Class("pulse-dot")], ["."]),
 					),
-					eyebrow(h, { variant: "mono", className: "flex shrink-0 items-center gap-1.5" }, [
-						h.span([], ["Mapping the chain"]),
-						h.span(
-							[h.Class("inline-flex"), h.AriaHidden(true)],
-							[0, 1, 2].map((index) =>
-								h.span([h.Key(String(index)), h.Class("pulse-dot")], ["."]),
-							),
-						),
+				),
+			]),
+		]),
+		h.svg(
+			[
+				h.Attribute(
+					"viewBox",
+					`0 ${-HEADING_OFFSET - 12} ${GRAPH_W} ${GRAPH_H + HEADING_OFFSET + 24}`,
+				),
+				h.Class("h-auto w-full"),
+				h.Role("img"),
+				h.AriaLabel("Loading the provenance graph"),
+				h.Attribute("fill", "none"),
+			],
+			[
+				bar(h, { x: COLUMN_X[4] ?? 0, y: -HEADING_OFFSET - 5, w: 128, opacity: 0.16 }),
+				...Arr.map(STRANDS, (strand, index) =>
+					h.path([
+						h.Class("provenance-load-strand"),
+						h.Style({ "animation-delay": `${0.12 + index * 0.05}s` }),
+						h.Attribute("d", strand.d),
+						h.Attribute("stroke", "var(--muted-foreground)"),
+						h.Attribute("stroke-opacity", "0.45"),
+						h.Attribute("stroke-width", "1"),
+						h.Attribute("stroke-dasharray", strand.dash),
 					]),
-				],
-			),
-			h.svg(
-				[
-					h.Attribute(
-						"viewBox",
-						`0 ${-HEADING_OFFSET - 12} ${GRAPH_W} ${GRAPH_H + HEADING_OFFSET + 24}`,
-					),
-					h.Class("h-auto w-full"),
-					h.Role("img"),
-					h.AriaLabel("Loading the provenance graph"),
-					h.Attribute("fill", "none"),
-				],
-				[
-					bar(h, { x: COLUMN_X[4] ?? 0, y: -HEADING_OFFSET - 5, w: 128, opacity: 0.16 }),
-					...STRANDS.map((strand, index) =>
-						h.path([
-							h.Class("provenance-load-strand"),
-							h.Style({ "animation-delay": `${0.12 + index * 0.05}s` }),
-							h.Attribute("d", strand.d),
-							h.Attribute("stroke", "var(--muted-foreground)"),
-							h.Attribute("stroke-opacity", "0.45"),
-							h.Attribute("stroke-width", "1"),
-							h.Attribute("stroke-dasharray", strand.dash),
-						]),
-					),
-					...PORTS.map((port, index) =>
-						h.circle([
-							h.Class("provenance-load-strand"),
-							h.Style({ "animation-delay": `${0.12 + index * 0.03}s` }),
-							h.Attribute("cx", String(port.x)),
-							h.Attribute("cy", String(port.y)),
-							h.Attribute("r", "2.5"),
-							h.Attribute("fill", BAR),
-							h.Attribute("opacity", "0.5"),
-						]),
-					),
-					...GHOST_SPINE.map((card, index) => spineGhost(h, card, index * 0.08)),
-					spineGhost(h, GHOST_VERDICT, 0.3),
-					...GHOST_ACTIONS.map((card, index) => actionGhost(h, card, 0.4 + index * 0.07)),
-				],
-			),
-		],
-	)
+				),
+				...Arr.map(PORTS, (port, index) =>
+					h.circle([
+						h.Class("provenance-load-strand"),
+						h.Style({ "animation-delay": `${0.12 + index * 0.03}s` }),
+						h.Attribute("cx", String(port.x)),
+						h.Attribute("cy", String(port.y)),
+						h.Attribute("r", "2.5"),
+						h.Attribute("fill", BAR),
+						h.Attribute("opacity", "0.5"),
+					]),
+				),
+				...Arr.map(GHOST_SPINE, (card, index) => spineGhost(h, card, index * 0.08)),
+				spineGhost(h, GHOST_VERDICT, 0.3),
+				...Arr.map(GHOST_ACTIONS, (card, index) => actionGhost(h, card, 0.4 + index * 0.07)),
+			],
+		),
+	])

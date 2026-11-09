@@ -1,6 +1,7 @@
 import { HttpApi, OpenApi } from "effect/http-api"
 import { AiModelsInternalApiGroup } from "./ai-models"
 import { AiSessionsInternalApiGroup } from "./ai-sessions"
+import { McpInternalApiGroup } from "./mcp"
 import { AiTriageApiGroup } from "./ai-triage"
 import { BillingApiGroup } from "./billing"
 import { CodeReviewApiGroup } from "./code-review"
@@ -17,7 +18,9 @@ import {
 	OrganizationsApiGroup,
 } from "./organizations"
 import { QueryEngineApiGroup } from "./query-engine"
+import { ServiceMapWorldApiGroup } from "./service-map-world"
 import { SessionReplaysInternalApiGroup } from "./session-replay"
+import { UsersInternalApiGroup } from "./users"
 import { ApiSchemaErrors, ApiUnexpectedErrors } from "./api-boundary"
 
 /**
@@ -54,13 +57,16 @@ export class MapleInternalApi extends HttpApi.make("MapleInternalApi")
 	.add(DigestApiGroup)
 	.add(ErrorsApiGroup)
 	.add(IntegrationsApiGroup)
+	.add(McpInternalApiGroup)
 	.add(OpenRouterKeyApiGroup)
 	.add(OrgClickHouseSettingsApiGroup)
 	.add(OrganizationsApiGroup)
 	.add(OrganizationCreationApiGroup)
 	.add(OrganizationRegionApiGroup)
 	.add(QueryEngineApiGroup)
+	.add(ServiceMapWorldApiGroup)
 	.add(SessionReplaysInternalApiGroup)
+	.add(UsersInternalApiGroup)
 	.middleware(ApiSchemaErrors)
 	.middleware(ApiUnexpectedErrors)
 	.annotateMerge(

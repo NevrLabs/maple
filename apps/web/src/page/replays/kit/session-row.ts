@@ -2,7 +2,7 @@ import { countLabel } from "@maple/ui/lib/format"
 import { SessionTag } from "@maple/domain/query-engine"
 import { isSessionLive } from "@maple/ui/lib/replay-format"
 import { noiseTierOf, SESSION_TAG_LABELS } from "../../../components/replays/session-tags"
-import { Schema } from "effect"
+import { Schema, Array as Arr, String as Str } from "effect"
 
 /** A session list row, the list's view of `replayListItemFromV2`. */
 export const SessionRow = Schema.Struct({
@@ -48,15 +48,21 @@ export const isLowSignal = (session: SessionRow, nowMs: number): boolean =>
 
 const tiersOf = (sessions: ReadonlyArray<SessionRow>) => {
 	const counts = new Map<SessionTag, number>()
-	sessions.forEach((session) => {
+	Arr.forEach(sessions, (session) => {
 		const tier = noiseTierOf(session.tags)
 		if (tier !== undefined) counts.set(tier, (counts.get(tier) ?? 0) + 1)
 	})
-	return [...counts].sort((a, b) => b[1] - a[1]).map(([tag, count]) => ({ tag, count }))
+	return Arr.map(
+		[...counts].sort((a, b) => b[1] - a[1]),
+		([tag, count]) => ({ tag, count }),
+	)
 }
 
 const summarize = (tiers: ReadonlyArray<{ readonly tag: SessionTag; readonly count: number }>) =>
-	tiers.map(({ tag, count }) => countLabel(count, SESSION_TAG_LABELS[tag].toLowerCase())).join(" · ")
+	Arr.join(
+		Arr.map(tiers, ({ tag, count }) => countLabel(count, Str.toLowerCase(SESSION_TAG_LABELS[tag]))),
+		" · ",
+	)
 
 const runItems = (
 	run: ReadonlyArray<SessionRow>,
@@ -77,7 +83,7 @@ const runItems = (
 			expanded: isExpanded,
 		},
 		...(isExpanded
-			? run.map((session): SessionListItem => ({ kind: "session", session, lowSignal: true }))
+			? Arr.map(run, (session): SessionListItem => ({ kind: "session", session, lowSignal: true }))
 			: []),
 	]
 }
@@ -87,20 +93,20 @@ export const sessionListItems = (
 	sessions: ReadonlyArray<SessionRow>,
 	options: { readonly collapse: boolean; readonly expanded: ReadonlyArray<string>; readonly nowMs: number },
 ): ReadonlyArray<SessionListItem> => {
-	const folded = sessions.reduce<{ items: ReadonlyArray<SessionListItem>; run: ReadonlyArray<SessionRow> }>(
-		(state, session) => {
-			const lowSignal = isLowSignal(session, options.nowMs)
-			if (options.collapse && lowSignal) return { items: state.items, run: [...state.run, session] }
-			return {
-				items: [
-					...state.items,
-					...runItems(state.run, options.expanded),
-					{ kind: "session", session, lowSignal },
-				],
-				run: [],
-			}
-		},
-		{ items: [], run: [] },
-	)
+	const folded = Arr.reduce<
+		SessionRow,
+		{ items: ReadonlyArray<SessionListItem>; run: ReadonlyArray<SessionRow> }
+	>(sessions, { items: [], run: [] }, (state, session) => {
+		const lowSignal = isLowSignal(session, options.nowMs)
+		if (options.collapse && lowSignal) return { items: state.items, run: [...state.run, session] }
+		return {
+			items: [
+				...state.items,
+				...runItems(state.run, options.expanded),
+				{ kind: "session", session, lowSignal },
+			],
+			run: [],
+		}
+	})
 	return [...folded.items, ...runItems(folded.run, options.expanded)]
 }

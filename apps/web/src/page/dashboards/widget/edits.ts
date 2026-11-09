@@ -4,12 +4,13 @@ import {
 	createQueryDraft,
 	formulaLabel,
 	queryLabel,
-	resetQueryForDataSource,
 	type QueryBuilderDataSource,
 } from "@maple/query-engine/query-builder"
 import { fromPanelType } from "../kit/chart-registry"
+import { switchDataSource } from "../../kit/query-builder/change"
 import { inferDefaultUnitForQueries } from "./drafts"
 import type { EditorState, QueryDraft } from "./editor-state"
+import { Array as Arr, Option } from "effect"
 
 // `useWidgetBuilder`'s actions and the page's query handlers, as pure state steps.
 
@@ -19,7 +20,7 @@ export const updateQuery = (
 	update: (query: QueryDraft) => QueryDraft,
 ): EditorState => ({
 	...state,
-	queries: state.queries.map((query) => (query.id === queryId ? update(query) : query)),
+	queries: Arr.map(state.queries, (query) => (query.id === queryId ? update(query) : query)),
 })
 
 /** A change that can move the inferred unit: the unit follows the queries when they agree. */
@@ -37,7 +38,7 @@ export const setDataSource = (
 	dataSource: QueryBuilderDataSource,
 ): EditorState =>
 	reconcileFunnelSource(
-		withInferredUnit(updateQuery(state, queryId, (query) => resetQueryForDataSource(query, dataSource))),
+		withInferredUnit(updateQuery(state, queryId, (query) => switchDataSource(query, dataSource))),
 	)
 
 /** `addQuery`: a default draft under the next letter. */
@@ -48,11 +49,12 @@ export const addQuery = (state: EditorState, id: string): EditorState => ({
 
 /** `cloneQuery`: a copy appended, then every query relettered in order. */
 export const cloneQuery = (state: EditorState, sourceId: string, id: string): EditorState => {
-	const source = state.queries.find((query) => query.id === sourceId)
-	if (source === undefined) return state
+	const found = Arr.findFirst(state.queries, (query) => query.id === sourceId)
+	if (Option.isNone(found)) return state
+	const source = found.value
 	return {
 		...state,
-		queries: [...state.queries, { ...source, id }].map((query, index) => ({
+		queries: Arr.map([...state.queries, { ...source, id }], (query, index) => ({
 			...query,
 			name: queryLabel(index),
 		})),
@@ -65,9 +67,10 @@ export const removeQuery = (state: EditorState, queryId: string): EditorState =>
 		? state
 		: {
 				...state,
-				queries: state.queries
-					.filter((query) => query.id !== queryId)
-					.map((query, index) => ({ ...query, name: queryLabel(index) })),
+				queries: Arr.map(
+					Arr.filter(state.queries, (query) => query.id !== queryId),
+					(query, index) => ({ ...query, name: queryLabel(index) }),
+				),
 			}
 
 export const addFormula = (state: EditorState, id: string): EditorState => ({
@@ -77,7 +80,7 @@ export const addFormula = (state: EditorState, id: string): EditorState => ({
 		{
 			...createFormulaDraft(
 				state.formulas.length,
-				state.queries.map((query) => query.name),
+				Arr.map(state.queries, (query) => query.name),
 			),
 			id,
 		},
@@ -86,12 +89,11 @@ export const addFormula = (state: EditorState, id: string): EditorState => ({
 
 export const removeFormula = (state: EditorState, formulaId: string): EditorState => ({
 	...state,
-	formulas: state.formulas
-		.filter((formula) => formula.id !== formulaId)
-		.map((formula, index) => ({ ...formula, name: formulaLabel(index) })),
+	formulas: Arr.map(
+		Arr.filter(state.formulas, (formula) => formula.id !== formulaId),
+		(formula, index) => ({ ...formula, name: formulaLabel(index) }),
+	),
 })
-
-export { withRootOnly } from "../../kit/query-builder/change"
 
 /**
  * `reconcileFunnelSource` (funnel-source.ts): on a funnel, a product-event query A means the step
@@ -110,7 +112,8 @@ export const reconcileFunnelSource = (state: EditorState): EditorState => {
 			funnel: {
 				...state.funnel,
 				source: "product_events",
-				steps: state.funnel.steps.length > 0 ? state.funnel.steps : [{ kind: "event", eventName: "" }],
+				steps:
+					state.funnel.steps.length > 0 ? state.funnel.steps : [{ kind: "event", eventName: "" }],
 			},
 		}
 	}
@@ -118,9 +121,9 @@ export const reconcileFunnelSource = (state: EditorState): EditorState => {
 	return {
 		...state,
 		funnel: { ...state.funnel, source: "query_set" },
-		queries: state.queries.map((query, index) =>
+		queries: Arr.map(state.queries, (query, index) =>
 			index === 0 && query.dataSource !== "product_events"
-				? resetQueryForDataSource(query, "product_events")
+				? switchDataSource(query, "product_events")
 				: query,
 		),
 	}

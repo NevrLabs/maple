@@ -1,7 +1,7 @@
 import { DashboardWidgetSchema } from "@maple/domain/http"
 import type { OrgId } from "@maple/domain"
 import type { InfraSurfaceLiteral } from "@maple/domain/http"
-import { Array, Option, Schema, Stream } from "effect"
+import { Array, Option, Schema, Stream, Record as Rec } from "effect"
 import { Command, Submodel, Subscription, type Update } from "foldkit"
 import { defineMessageUnion } from "foldkit/message"
 import type { IntegrationFlags } from "../data/infra-surfaces"
@@ -10,7 +10,7 @@ import type { AppRoute, RouteTag } from "../route"
 import type { BreadcrumbEntry } from "../shell"
 import type { NavSurface } from "../shell/nav"
 import type { PageSourceRef } from "../shell/source-link"
-import { ToastType } from "../ui/toast"
+import { ToastType } from "@maple/views/ui/toast"
 
 /** The page contract: every routed page is a Submodel registered once in `registry.ts`. See s8-pages.md. */
 
@@ -68,6 +68,15 @@ export const RootToastAction = Schema.Union([
 ])
 export type RootToastAction = typeof RootToastAction.Type
 
+/** A toast raised with a navigation or refresh; no timeout means the toast's default, no `rootAction` no button. */
+const NavigationToast = Schema.Struct({
+	type: ToastType,
+	title: Schema.String,
+	description: Schema.String,
+	timeoutMs: Schema.optionalKey(Schema.NullOr(Schema.Number)),
+	rootAction: Schema.optionalKey(Schema.Struct({ label: Schema.String, action: RootToastAction })),
+})
+
 /** Facts a page reports to the root; the root owns the URL. */
 export const PageOutMessage = defineMessageUnion({
 	/** `navigate({ search })` / `<Link>`: the root pushes (or replaces) the URL, which re-enters the route. */
@@ -75,13 +84,9 @@ export const PageOutMessage = defineMessageUnion({
 		url: Schema.String,
 		isReplace: Schema.Boolean,
 		/** A toast raised with the navigation (`navigate(...)` then `toastManager.add(...)`). */
-		toast: Schema.optionalKey(
-			Schema.Struct({ type: ToastType, title: Schema.String, description: Schema.String }),
-		),
+		toast: Schema.optionalKey(NavigationToast),
 		/** A second toast after the first (a Perses import's "Imported with N warnings"). */
-		followUpToast: Schema.optionalKey(
-			Schema.Struct({ type: ToastType, title: Schema.String, description: Schema.String }),
-		),
+		followUpToast: Schema.optionalKey(NavigationToast),
 		/** A confirmed checkout's URL cleanup: the root re-reads the app's customer too. */
 		refreshesCustomer: Schema.optionalKey(Schema.Boolean),
 	},
@@ -95,11 +100,7 @@ export const PageOutMessage = defineMessageUnion({
 	/** `retryOrgCollections` / `handleCollectionStuck`: recreate the org's synced collections. */
 	RequestedReconnectOrgCollections: {},
 	/** A billing change in a page: the root re-reads the app's customer (plan gate, quota banners). */
-	RequestedCustomerRefresh: {
-		toast: Schema.optionalKey(
-			Schema.Struct({ type: ToastType, title: Schema.String, description: Schema.String }),
-		),
-	},
+	RequestedCustomerRefresh: { toast: Schema.optionalKey(NavigationToast) },
 	/**
 	 * `toastManager.add`: the root shows it. `action` is the page's own Message for the action
 	 * button (`actionProps`); the root sends it back to the page that is open when it is clicked.
@@ -130,7 +131,7 @@ export const pickCommands = <Model, Message>(
 	result: PageReturn<Model, Message>,
 	names: ReadonlyArray<string>,
 ): ReadonlyArray<Command.Command<Message, never, Resources>> =>
-	(result.commands ?? []).filter((command) => names.includes(command.name))
+	Array.filter(result.commands ?? [], (command) => names.includes(command.name))
 
 type RouteOf<Tags extends RouteTag> = Extract<AppRoute, { readonly _tag: Tags }>
 
@@ -294,10 +295,20 @@ export const definePage = <
 		instance: number,
 		context: PageContext,
 		result: PageReturn<Model, Message>,
+		/** The slot stepped; kept as is when the step changed nothing, so the root skips the render. */
+		previous?: SlotType,
 	): PageStep<SlotType, WrappedType> => {
 		const wrap = wrapFor(key, context.orgId, instance)
+		const isUnchanged =
+			previous !== undefined &&
+			previous.model === result.model &&
+			previous.key === key &&
+			previous.orgId === context.orgId &&
+			previous.instance === instance
 		return {
-			slot: { _tag: id, key, orgId: context.orgId, instance, model: result.model },
+			slot: isUnchanged
+				? previous
+				: { _tag: id, key, orgId: context.orgId, instance, model: result.model },
 			commands: Command.mapMessages(result.commands ?? [], wrap),
 			outMessage: Option.map(Option.fromNullishOr(result.outMessage), wrapOut(wrap)),
 		}
@@ -307,48 +318,58 @@ export const definePage = <
 	 * Each Subscription restarts per instance and stamps its Messages with that instance's key and
 	 * org, so a Message queued by an older instance's stream is dropped like a late Command result.
 	 */
+	type PageSubscriptionEntry = Subscription.Subscription<
+		PageSubscriptionInput<ModelSchema["Type"]>,
+		MessageSchema["Type"],
+		unknown,
+		Resources
+	>
 	const stamped = Subscription.make<PageHost, WrappedType, Resources>()((entry) =>
-		Object.fromEntries(
-			Object.entries(spec.subscriptions ?? {}).map(([name, inner]) => [
-				name,
-				entry(
-					{
-						maybeInstance: Schema.Option(
-							Schema.Struct({
-								key: Schema.String,
-								orgId: Schema.String,
-								instance: Schema.Number,
-								inner: inner.dependenciesSchema,
+		Rec.fromEntries(
+			// foldkit erases each entry's dependencies to `any`; `unknown` keeps them opaque here.
+			Array.map(
+				Rec.toEntries(spec.subscriptions ?? {}),
+				([name, inner]: readonly [string, PageSubscriptionEntry]) => [
+					name,
+					entry(
+						{
+							maybeInstance: Schema.Option(
+								Schema.Struct({
+									key: Schema.String,
+									orgId: Schema.String,
+									instance: Schema.Number,
+									inner: inner.dependenciesSchema,
+								}),
+							),
+						},
+						{
+							modelToDependencies: (host) => ({
+								maybeInstance:
+									host.page !== null && host.context !== null && isOwnSlot(host.page)
+										? Option.some({
+												key: host.page.key,
+												orgId: host.page.orgId,
+												instance: host.page.instance,
+												inner: inner.modelToDependencies({
+													model: host.page.model,
+													context: host.context,
+												}),
+											})
+										: Option.none(),
 							}),
-						),
-					},
-					{
-						modelToDependencies: (host) => ({
-							maybeInstance:
-								host.page !== null && host.context !== null && isOwnSlot(host.page)
-									? Option.some({
-											key: host.page.key,
-											orgId: host.page.orgId,
-											instance: host.page.instance,
-											inner: inner.modelToDependencies({
-												model: host.page.model,
-												context: host.context,
-											}),
-										})
-									: Option.none(),
-						}),
-						dependenciesToStream: ({ maybeInstance }) =>
-							Option.match(maybeInstance, {
-								onNone: () => Stream.empty,
-								onSome: ({ key, orgId, instance, inner: dependencies }) =>
-									Stream.map(
-										inner.dependenciesToStream(dependencies, () => dependencies),
-										wrapFor(key, orgId, instance),
-									),
-							}),
-					},
-				),
-			]),
+							dependenciesToStream: ({ maybeInstance }) =>
+								Option.match(maybeInstance, {
+									onNone: () => Stream.empty,
+									onSome: ({ key, orgId, instance, inner: dependencies }) =>
+										Stream.map(
+											inner.dependenciesToStream(dependencies, () => dependencies),
+											wrapFor(key, orgId, instance),
+										),
+								}),
+						},
+					),
+				],
+			),
 		),
 	)
 
@@ -380,13 +401,20 @@ export const definePage = <
 							slot.instance,
 							context,
 							spec.update(slot.model, message.message, context),
+							slot,
 						),
 					)
 				: Option.none<PageStep<SlotType, WrappedType>>(),
 		routeChanged: (slot: PageSlotBase, route: AppRoute, context: PageContext) =>
 			isOwnSlot(slot) && ownsRoute(route) && spec.routeChanged
 				? Option.some(
-						step(slot.key, slot.instance, context, spec.routeChanged(slot.model, route, context)),
+						step(
+							slot.key,
+							slot.instance,
+							context,
+							spec.routeChanged(slot.model, route, context),
+							slot,
+						),
 					)
 				: Option.none<PageStep<SlotType, WrappedType>>(),
 		isRevivable: spec.revive !== undefined,
@@ -399,6 +427,11 @@ export const definePage = <
 				return Option.none<PageStep<SlotType, WrappedType>>()
 			return Option.some(step(slot.key, instance, context, revive(slot.model, route, context)))
 		},
+		/** The instance holds unsaved state: leaving it, by link or by closing the tab, asks first. */
+		isBlockingNavigation: (slot: PageSlotBase): boolean =>
+			isOwnSlot(slot) &&
+			spec.isBlockingNavigation !== undefined &&
+			spec.isBlockingNavigation(slot.model),
 		/** A navigation away from this instance, held: the page's confirm step, or `None` if it allows it. */
 		blockedNavigation: (slot: PageSlotBase, url: string, context: PageContext) =>
 			isOwnSlot(slot) &&
@@ -411,13 +444,20 @@ export const definePage = <
 							slot.instance,
 							context,
 							spec.blockedNavigation(slot.model, url, context),
+							slot,
 						),
 					)
 				: Option.none<PageStep<SlotType, WrappedType>>(),
 		contextChanged: (slot: PageSlotBase, context: PageContext) =>
 			isOwnSlot(slot) && spec.contextChanged
 				? Option.some(
-						step(slot.key, slot.instance, context, spec.contextChanged(slot.model, context)),
+						step(
+							slot.key,
+							slot.instance,
+							context,
+							spec.contextChanged(slot.model, context),
+							slot,
+						),
 					)
 				: Option.none<PageStep<SlotType, WrappedType>>(),
 		infraSurfacesSettled: (slot: PageSlotBase, context: PageContext) =>
@@ -428,6 +468,7 @@ export const definePage = <
 							slot.instance,
 							context,
 							spec.infraSurfacesSettled(slot.model, context),
+							slot,
 						),
 					)
 				: Option.none<PageStep<SlotType, WrappedType>>(),
@@ -475,8 +516,8 @@ export const definePage = <
 			},
 		),
 		/** Keys are prefixed with the page id: Subscription keys share one namespace. */
-		subscriptions: Object.fromEntries(
-			Object.entries(stamped).map(([key, entry]) => [`${id}.${key}`, entry]),
+		subscriptions: Rec.fromEntries(
+			Array.map(Rec.toEntries(stamped), ([key, entry]) => [`${id}.${key}`, entry]),
 		),
 	}
 }

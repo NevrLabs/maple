@@ -1,14 +1,13 @@
 import { EMPTY_VALUE, formatNumber } from "@maple/ui/lib/format"
 import { cn } from "@maple/ui/lib/utils"
 import type { ErrorSignal } from "../../../lib/models/error-signal"
-import { skeletonStyles } from "@maple/ui/styles/ui/skeleton"
 import type { Html, HtmlBuilder } from "foldkit/html"
-import * as Checkbox from "../../../ui/checkbox"
-import { eyebrow } from "../../../ui/eyebrow"
-import { skeleton } from "../../../ui/skeleton"
+import * as Checkbox from "@maple/views/ui/checkbox"
+import { eyebrow } from "@maple/views/ui/eyebrow"
+import { skeleton } from "@maple/views/ui/skeleton"
 import { AppRoute, hrefOf } from "../../../route"
-import { truncatedText } from "../../../ui/truncated-text"
-import { serviceDot } from "../../../ui/values"
+import { truncatedText } from "@maple/views/ui/truncated-text"
+import { serviceDot } from "@maple/views/ui/values"
 import { actorAvatar } from "../kit/actor"
 import {
 	PICKER_HOTKEY,
@@ -19,21 +18,23 @@ import {
 	statePickerTrigger,
 } from "../kit/pickers"
 import * as QuickPick from "../kit/quick-pick"
-import type * as ContextMenu from "../../../ui/context-menu"
-import * as ContextMenuView from "../../../ui/context-menu-view"
-import { contextMenuTriggerStyles } from "@maple/ui/styles/ui/context-menu"
-import { Option } from "effect"
+import type * as ContextMenu from "@maple/views/ui/context-menu"
+import * as ContextMenuView from "@maple/views/ui/context-menu-view"
+import { Option, Array as Arr, String as Str } from "effect"
+import { formatExactCount } from "@maple/views/lib/locale"
 import { rowMenuEntries } from "./row-menu"
 import { Message } from "./message"
 import {
 	formatLastSeen,
-	formatTimestamp,
 	GENERIC_TYPES,
 	signalActivity,
 	signalSpark,
 	type SparkWindow,
 	sparkOf,
 } from "./view-signal"
+import { typography, typographyClass } from "@maple/views/ui/typography"
+import { hstackClass } from "@maple/views/ui/stack"
+import { timestamp } from "@maple/views/ui/timestamp"
 
 // The error signal header and row skeleton.
 
@@ -60,36 +61,40 @@ type H = HtmlBuilder<Message>
 
 /** The column labels; the select lane carries the page-wide checkbox once rows exist. */
 export const signalHeader = (h: H, selection: HeaderSelection | null): Html =>
-	eyebrow(h, { as: "div", className: cn(ROW_SHELL, "h-7 border-b border-border-subtle bg-surface-sunken") }, [
-		h.span(
-			[h.Class(cn(LANE.select, "flex items-center justify-center"))],
-			selection === null
-				? []
-				: Checkbox.view(h, {
-						model: { isChecked: selection === "all" },
-						toParentMessage: () => Message.ToggledAllRows(),
-						id: "errors-select-all",
-						inputId: "errors-select-all-input",
-						isIndeterminate: selection === "some",
-						ariaLabel: selection === "all" ? "Deselect all errors" : "Select all errors",
-					}),
-		),
-		h.span([h.Class(LANE.severity)], []),
-		h.span([h.Class(LANE.identity)], ["Issue"]),
-		h.span(
-			[h.Class(LANE.volume)],
-			[h.span([h.Class(LANE.spark)], ["Trend · 24h"]), h.span([h.Class(LANE.count)], ["Events"])],
-		),
-		h.span([h.Class(LANE.service)], ["Service"]),
-		h.span([h.Class(LANE.state)], ["Status"]),
-		// The avatar lane is narrower than its label: the label runs left into Status's spare width,
-		// so it only shows where that lane does.
-		h.span(
-			[h.Class(cn(LANE.actor, "flex justify-end whitespace-nowrap"))],
-			[h.span([h.Class("hidden @3xl/page:inline")], ["Assignee"])],
-		),
-		h.span([h.Class(cn(LANE.lastSeen, "text-right"))], ["Last seen"]),
-	])
+	eyebrow(
+		h,
+		{ as: "div", className: cn(ROW_SHELL, "h-7 border-b border-border-subtle bg-surface-sunken") },
+		[
+			h.span(
+				[h.Class(cn(LANE.select, "flex items-center justify-center"))],
+				selection === null
+					? []
+					: Checkbox.view(h, {
+							model: { isChecked: selection === "all" },
+							toParentMessage: () => Message.ToggledAllRows(),
+							id: "errors-select-all",
+							inputId: "errors-select-all-input",
+							isIndeterminate: selection === "some",
+							ariaLabel: selection === "all" ? "Deselect all errors" : "Select all errors",
+						}),
+			),
+			h.span([h.Class(LANE.severity)], []),
+			h.span([h.Class(LANE.identity)], ["Issue"]),
+			h.span(
+				[h.Class(LANE.volume)],
+				[h.span([h.Class(LANE.spark)], ["Trend · 24h"]), h.span([h.Class(LANE.count)], ["Events"])],
+			),
+			h.span([h.Class(LANE.service)], ["Service"]),
+			h.span([h.Class(LANE.state)], ["Status"]),
+			// The avatar lane is narrower than its label: the label runs left into Status's spare width,
+			// so it only shows where that lane does.
+			h.span(
+				[h.Class(cn(LANE.actor, "flex justify-end whitespace-nowrap"))],
+				[h.span([h.Class("hidden @3xl/page:inline")], ["Assignee"])],
+			),
+			h.span([h.Class(cn(LANE.lastSeen, "text-right"))], ["Last seen"]),
+		],
+	)
 
 const SKELETON_WIDTHS = ["72%", "48%", "61%", "39%", "55%", "44%"]
 
@@ -105,13 +110,7 @@ export const signalRowSkeleton = (h: H, index: number): Html =>
 			),
 			h.span(
 				[h.Class(LANE.identity)],
-				[
-					h.div([
-						h.Class(cn(skeletonStyles, "h-3.5")),
-						h.DataAttribute("slot", "skeleton"),
-						h.Style({ width: SKELETON_WIDTHS[index % 6] ?? "72%" }),
-					]),
-				],
+				[skeleton(h, "h-3.5", { width: SKELETON_WIDTHS[index % 6] ?? "72%" })],
 			),
 			h.span(
 				[h.Class(LANE.volume)],
@@ -145,7 +144,7 @@ export type RowState = Readonly<{
 export const signalRow = (h: H, signal: ErrorSignal, state: RowState): Html => {
 	const href = hrefOf(AppRoute.ErrorIssue({ issueId: signal.id, search: {} }))
 	const { dense, isSurging, label } = sparkOf(signal, state.sparkWindow)
-	const messageLine = signal.detail.split("\n", 1)[0]?.trim() ?? ""
+	const messageLine = Str.trim(Arr.headNonEmpty(Str.split("\n")(signal.detail)))
 	const swap = GENERIC_TYPES.has(signal.title) && messageLine !== ""
 	const rowTitle = swap ? messageLine : signal.title
 	const rowDetail = swap ? signal.title : signal.detail
@@ -195,7 +194,7 @@ export const signalRow = (h: H, signal: ErrorSignal, state: RowState): Html => {
 					[severityPicker(h, signal, state)],
 				),
 				h.span(
-					[h.Class(cn(LANE.identity, "flex items-baseline gap-2"))],
+					[h.Class(cn(LANE.identity, hstackClass({ gap: "2", align: "baseline" })))],
 					[
 						truncatedText(
 							h,
@@ -234,17 +233,22 @@ export const signalRow = (h: H, signal: ErrorSignal, state: RowState): Html => {
 /** `IssueContextMenu`'s trigger around the row; the row last pressed carries the menu itself. */
 const rowMenuTrigger = (h: H, signal: ErrorSignal, state: RowState, children: ReadonlyArray<Html>): Html =>
 	state.rowMenu === null
-		? h.div(
-				[
-					h.Class(cn(contextMenuTriggerStyles, "select-none")),
-					h.DataAttribute("slot", "context-menu-trigger"),
-					h.OnPointerDown((_type, _button, _sx, _sy, _t, clientX, clientY) =>
-						Option.some(
-							Message.PressedRowPointer({ id: signal.id, point: { x: clientX, y: clientY } }),
+		? ContextMenuView.idleTrigger(
+				h,
+				{
+					className: "select-none",
+					attributes: [
+						h.OnPointerDown((_type, _button, _sx, _sy, _t, clientX, clientY) =>
+							Option.some(
+								Message.PressedRowPointer({
+									id: signal.id,
+									point: { x: clientX, y: clientY },
+								}),
+							),
 						),
-					),
-					h.OnContextMenu(Message.OpenedRowMenu({ id: signal.id })),
-				],
+						h.OnContextMenu(Message.OpenedRowMenu({ id: signal.id })),
+					],
+				},
 				children,
 			)
 		: h.submodel({
@@ -274,16 +278,16 @@ const volumeLane = (
 			h.span([h.Class(LANE.spark)], [signalSpark(h, dense, signal, isSurging, label)]),
 			h.span(
 				[
-					h.Class(cn(LANE.count, "text-xs tabular-nums")),
+					h.Class(cn(LANE.count, typographyClass({ size: "xs", numeric: true }))),
 					h.Title(
 						signal.windowCount === null
-							? `None in the last 24 hours · ${signal.totalCount.toLocaleString("en-US")} all time`
-							: `${signal.windowCount.toLocaleString("en-US")} in the last 24 hours${isSurging ? ", surging" : ""} · ${signal.totalCount.toLocaleString("en-US")} all time`,
+							? `None in the last 24 hours · ${formatExactCount(signal.totalCount)} all time`
+							: `${formatExactCount(signal.windowCount)} in the last 24 hours${isSurging ? ", surging" : ""} · ${formatExactCount(signal.totalCount)} all time`,
 					),
 				],
 				[
 					signal.windowCount === null
-						? h.span([h.Class("text-foreground-faint")], [EMPTY_VALUE])
+						? typography(h, { tone: "faint" }, [EMPTY_VALUE])
 						: h.span(
 								[
 									h.Class(
@@ -307,18 +311,18 @@ const trailingLanes = (h: H, signal: ErrorSignal, state: RowState): ReadonlyArra
 		],
 		[
 			serviceDot(h, { serviceName: signal.serviceName, size: "sm" }),
-			h.span([h.Class("truncate")], [signal.serviceName]),
+			typography(h, { truncate: true }, [signal.serviceName]),
 		],
 	),
 	h.span([h.Class(LANE.state)], [statePicker(h, signal, state)]),
 	h.span([h.Class(LANE.actor)], signal.assignee === null ? [] : [actorAvatar(h, signal.assignee)]),
-	h.span(
-		[
-			h.Class(cn(LANE.lastSeen, "text-right text-xs tabular-nums text-muted-foreground")),
-			h.Title(`Last seen ${formatTimestamp(signal.lastSeenAt, state.timeZone, true)}`),
-		],
-		[formatLastSeen(signal.lastSeenAt, state.timeZone, state.nowMs)],
-	),
+	timestamp(h, {
+		value: signal.lastSeenAt,
+		timeZone: state.timeZone,
+		nowMs: state.nowMs,
+		label: formatLastSeen(signal.lastSeenAt, state.timeZone, state.nowMs),
+		className: cn(LANE.lastSeen, "text-right text-xs tabular-nums text-muted-foreground"),
+	}),
 ]
 
 const pickerMessage = (message: QuickPick.Message) => Message.GotPickerMessage({ message })

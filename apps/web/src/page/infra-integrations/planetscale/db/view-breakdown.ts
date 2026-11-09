@@ -2,9 +2,10 @@ import type { BranchCandidate } from "../../../../components/infra/planetscale/b
 import { countLabel, EMPTY_VALUE, formatNumber } from "@maple/ui/lib/format"
 import { cn } from "@maple/ui/lib/utils"
 import type { Html, HtmlBuilder } from "foldkit/html"
-import { panel, panelHeader } from "../../../../ui/panel"
-import { segmentedSelect } from "../../../../ui/segmented-select"
-import { skeleton, skeletonList } from "../../../../ui/skeleton"
+import { pressable } from "@maple/views/ui/pressable"
+import { panel, panelHeader } from "@maple/views/ui/panel"
+import { segmentedSelect } from "@maple/views/ui/segmented-select"
+import { skeleton, skeletonList } from "@maple/views/ui/skeleton"
 import { columnHead, dataTable, dataTableEmpty } from "../../../infra/kit/data-table"
 import { type Sort, sortRowsByField } from "../../../kit/table-sort"
 import { BRANCH_STATE_LABEL, branchStateOf, type BranchState } from "../filters"
@@ -17,6 +18,10 @@ import {
 } from "../../../../components/infra/planetscale/metrics"
 import { formatWholePercent } from "../../../../components/infra/format"
 import { type BreakdownSortKey, type Measure, Message } from "./model"
+import { typography, typographyClass } from "@maple/views/ui/typography"
+import { columnClass } from "@maple/views/ui/column"
+import { Array as Arr, String as Str } from "effect"
+import { hstack } from "@maple/views/ui/stack"
 
 // `PlanetScaleBranchBreakdownPanel`.
 
@@ -95,27 +100,26 @@ export const shareBarStyle = (share: number): Readonly<Record<string, string>> |
 }
 
 const rowsOf = (candidates: ReadonlyArray<BranchCandidate>, spec: MeasureSpec) => {
-	const scored = candidates.map((candidate) => ({
+	const scored = Arr.map(candidates, (candidate) => ({
 		candidate,
 		value: spec.of(candidate),
 		hasValue: spec.of(candidate) !== MISSING,
 	}))
-	const ordered = [...scored].sort((a, b) =>
-		a.hasValue !== b.hasValue
-			? a.hasValue
-				? -1
-				: 1
-			: b.value - a.value || a.candidate.name.localeCompare(b.candidate.name),
-	)
-	const withValues = ordered.filter((entry) => entry.hasValue)
-	const total = withValues.reduce((acc, entry) => acc + entry.value, 0)
-	const max = withValues.reduce((acc, entry) => Math.max(acc, entry.value), 0)
+	type Scored = (typeof scored)[number]
+	const ordered = Arr.sort(scored, (a: Scored, b: Scored) => {
+		if (a.hasValue !== b.hasValue) return a.hasValue ? -1 : 1
+		const diff = b.value - a.value
+		return diff > 0 ? 1 : diff < 0 ? -1 : Str.localeCompare(b.candidate.name)(a.candidate.name)
+	})
+	const withValues = Arr.filter(ordered, (entry) => entry.hasValue)
+	const total = Arr.reduce(withValues, 0, (acc, entry) => acc + entry.value)
+	const max = Arr.reduce(withValues, 0, (acc, entry) => Math.max(acc, entry.value))
 	const basis = spec.additive ? total : max
 	const tail = ordered.slice(TOP_N)
-	const tailValues = tail.filter((entry) => entry.hasValue)
-	const otherValue = spec.additive ? tailValues.reduce((acc, entry) => acc + entry.value, 0) : MISSING
+	const tailValues = Arr.filter(tail, (entry) => entry.hasValue)
+	const otherValue = spec.additive ? Arr.reduce(tailValues, 0, (acc, entry) => acc + entry.value) : MISSING
 	const rows: ReadonlyArray<Row> = [
-		...ordered.slice(0, TOP_N).map((entry) => ({
+		...Arr.map(ordered.slice(0, TOP_N), (entry) => ({
 			branch: entry.candidate.name,
 			production: entry.candidate.production,
 			state: branchStateOf(entry.candidate),
@@ -142,30 +146,27 @@ const rowsOf = (candidates: ReadonlyArray<BranchCandidate>, spec: MeasureSpec) =
 }
 
 const metaChip = (h: H, text: string): Html =>
-	h.span([h.Class("font-mono text-3xs text-foreground-subtle")], [text])
+	typography(h, { size: "3xs", tone: "subtle", mono: true }, [text])
 
 const cells = (h: H, row: Row, spec: MeasureSpec, isSelected: boolean): ReadonlyArray<Html> => [
-	h.div(
-		[h.Class("flex w-0 min-w-52 flex-1 items-center gap-2 overflow-hidden")],
-		[
-			h.span(
-				[
-					h.Class(
-						cn(
-							"truncate text-sm",
-							row.isOther ? "text-muted-foreground" : "font-mono text-foreground-soft",
-							isSelected && "text-primary",
-						),
+	hstack(h, { gap: "2", align: "center", grow: true, className: "w-0 min-w-52 overflow-hidden" }, [
+		h.span(
+			[
+				h.Class(
+					cn(
+						typographyClass({ size: "sm", truncate: true }),
+						row.isOther ? "text-muted-foreground" : "font-mono text-foreground-soft",
+						isSelected && "text-primary",
 					),
-				],
-				[row.branch],
-			),
-			...(row.production ? [metaChip(h, "production")] : []),
-			...(!row.isOther && row.state !== "ready"
-				? [metaChip(h, BRANCH_STATE_LABEL[row.state].toLowerCase())]
-				: []),
-		],
-	),
+				),
+			],
+			[row.branch],
+		),
+		...(row.production ? [metaChip(h, "production")] : []),
+		...(!row.isOther && row.state !== "ready"
+			? [metaChip(h, Str.toLowerCase(BRANCH_STATE_LABEL[row.state]))]
+			: []),
+	]),
 	h.div(
 		[
 			h.Class(
@@ -193,7 +194,8 @@ const toSortRow = (row: Row) => ({ ...row, branch: row.branch, value: row.value 
 export const breakdownPanel = (h: H, inputs: BreakdownInputs): Html => {
 	const spec: MeasureSpec = MEASURES[inputs.measure]
 	const { rows, total, max } = rowsOf(inputs.candidates, spec)
-	const sorted = sortRowsByField(rows.map(toSortRow), inputs.sort, (row) => !row.isOther && row.production)
+	const sortRows = Arr.map(rows, toSortRow)
+	const sorted = sortRowsByField(sortRows, inputs.sort, (row) => !row.isOther && row.production)
 	return panel(h, { className: "border-border-subtle" }, [
 		panelHeader(h, {
 			title: "Branches",
@@ -201,7 +203,7 @@ export const breakdownPanel = (h: H, inputs: BreakdownInputs): Html => {
 			action: segmentedSelect(h, {
 				size: "xs",
 				ariaLabel: "Measure",
-				options: MEASURE_ORDER.map((key) => ({ value: key, label: MEASURES[key].label })),
+				options: Arr.map(MEASURE_ORDER, (key) => ({ value: key, label: MEASURES[key].label })),
 				value: inputs.measure,
 				onChange: (measure) => Message.ClickedMeasure({ measure }),
 			}),
@@ -212,7 +214,7 @@ export const breakdownPanel = (h: H, inputs: BreakdownInputs): Html => {
 			[
 				columnHead(h, {
 					label: "Branch",
-					width: "w-0 flex-1 min-w-52",
+					width: columnClass({ min: "52" }),
 					sort: {
 						onSort: Message.ClickedBreakdownSort({ key: "branch" }),
 						isActive: inputs.sort.key === "branch",
@@ -232,30 +234,33 @@ export const breakdownPanel = (h: H, inputs: BreakdownInputs): Html => {
 			],
 			sorted.length === 0
 				? [dataTableEmpty(h, [inputs.emptyMessage])]
-				: sorted.map((row) => {
+				: Arr.map(sorted, (row) => {
 						const style = shareBarStyle(row.ratio)
 						const styleAttrs = style === undefined ? [] : [h.Style(style)]
 						if (row.isOther) {
-							return h.div(
-								[h.Class("flex items-center gap-3 px-3 py-1.5"), ...styleAttrs],
+							return hstack(
+								h,
+								{
+									gap: "3",
+									align: "center",
+									className: "px-3 py-1.5",
+									attributes: [...styleAttrs],
+								},
 								cells(h, row, spec, false),
 							)
 						}
 						const isSelected = inputs.selectedBranches.includes(row.branch)
-						return h.button(
-							[
-								h.AriaPressed(String(isSelected)),
-								h.Class(
-									cn(
-										"flex w-full items-center gap-3 px-3 py-1.5 text-left hover:bg-surface-sunken active:bg-surface-sunken",
-										isSelected && "bg-surface-strong",
-									),
+						return pressable(
+							h,
+							{
+								onClick: Message.ToggledBranch({ branch: row.branch }),
+								isSelected,
+								className: cn(
+									"flex w-full items-center gap-3 px-3 py-1.5 text-left hover:bg-surface-sunken active:bg-surface-sunken",
+									isSelected && "bg-surface-strong",
 								),
-								...styleAttrs,
-								h.Title(`Filter to ${row.branch}`),
-								h.Type("button"),
-								h.OnClick(Message.ToggledBranch({ branch: row.branch })),
-							],
+								attributes: [...styleAttrs, h.Title(`Filter to ${row.branch}`)],
+							},
 							cells(h, row, spec, isSelected),
 						)
 					}),

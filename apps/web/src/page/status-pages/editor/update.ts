@@ -1,12 +1,12 @@
 import type { StatusPagePreviewParams } from "@maple/domain/http/v2"
 import { STATUS_PAGE_PRESET_DEFAULTS } from "@maple/domain/status-page"
-import { Option, Result } from "effect"
+import { Option, Result, Array as Arr } from "effect"
 import { AsyncData, Command as FoldkitCommand } from "foldkit"
-import * as Keyed from "../../../data/keyed"
+import * as Keyed from "@maple/views/data/keyed"
 import type { AppRoute } from "../../../route"
-import * as CopyButton from "../../../ui/copy-button"
-import * as Dialog from "../../../ui/dialog"
-import * as Menu from "../../../ui/menu"
+import * as CopyButton from "@maple/views/ui/copy-button"
+import * as Dialog from "@maple/views/ui/dialog"
+import * as Menu from "@maple/views/ui/menu"
 import { type PageContext, PageOutMessage } from "../../contract"
 import {
 	type EditorView,
@@ -58,6 +58,7 @@ import {
 } from "./update-components"
 import {
 	changeIncident,
+	cancelUpdate,
 	changeUpdate,
 	createdIncident,
 	changeIncidentKind,
@@ -118,7 +119,7 @@ export const init = (route: EditorRoute, context: PageContext): Return => {
 		incidents: Keyed.idle(),
 		config: Keyed.idle(),
 		monitors: Keyed.idle(),
-		isAdmin: false,
+		grants: [],
 		isSessionLoaded: false,
 		pageMenu: Menu.init(PAGE_MENU_ID),
 		panel: null,
@@ -139,9 +140,8 @@ export const init = (route: EditorRoute, context: PageContext): Return => {
 		incidentForm: emptyIncidentForm("incident"),
 		isCreatingIncident: false,
 		incidentFailure: null,
-		updateForm: null,
-		isPostingUpdate: false,
-		updateFailure: null,
+		updateForm: { _tag: "Closed" },
+		nextUpdatePost: 0,
 		publishingIncidentIds: [],
 		publicBaseUrl: STATUS_PAGE_BASE_URL,
 		urlCopy: CopyButton.init(),
@@ -156,9 +156,7 @@ export const init = (route: EditorRoute, context: PageContext): Return => {
 		tokenCopy: CopyButton.init(),
 		deletePageDialog: Dialog.init("status-page-delete", "alert-dialog"),
 		isDeletingPage: false,
-		jsonDraft: null,
-		jsonBase: null,
-		isRebasingJson: false,
+		jsonEdit: null,
 		isApplyingJson: false,
 		jsonFailure: null,
 		jsonCopy: CopyButton.init(),
@@ -201,7 +199,7 @@ export const previewDraftOf = (model: Model): Option.Option<StatusPagePreviewPar
 	Option.map(pageOf(model), (page) => ({
 		name: page.name,
 		slug: page.slug,
-		components: componentsOf(model).map((component) => ({
+		components: Arr.map(componentsOf(model), (component) => ({
 			name: component.name,
 			group: component.group,
 			monitor_id: component.monitor_id,
@@ -232,7 +230,7 @@ const closePanel = (model: Model): Return => {
 	return panel === null
 		? { model }
 		: {
-				model: { ...model, panel: null, updateForm: null },
+				model: { ...model, panel: null, updateForm: { _tag: "Closed" } },
 				commands: [FocusEditorElement({ id: target })],
 			}
 }
@@ -300,8 +298,8 @@ export const update = (model: Model, message: Message, context: PageContext): Re
 		CompletedFetchMonitors: ({ key, result }) => ({
 			model: { ...model, monitors: Keyed.accept(model.monitors, key, result) },
 		}),
-		CompletedFetchSession: ({ orgId, isAdmin }) =>
-			orgId === context.orgId ? { model: { ...model, isAdmin, isSessionLoaded: true } } : { model },
+		CompletedFetchSession: ({ orgId, grants }) =>
+			orgId === context.orgId ? { model: { ...model, grants, isSessionLoaded: true } } : { model },
 		ClickedRetry: () =>
 			chain(
 				model,
@@ -337,14 +335,18 @@ export const update = (model: Model, message: Message, context: PageContext): Re
 						}),
 					}),
 		ReceivedPreviewSelection: ({ kind, id }) => {
-			const component = componentsOf(model).find((row) => row.id === id)
 			return kind === "component"
-				? component === undefined
-					? { model }
-					: selectComponent(model, component.id)
+				? Option.match(
+						Arr.findFirst(componentsOf(model), (row) => row.id === id),
+						{
+							onNone: () => ({ model }),
+							onSome: (component) => selectComponent(model, component.id),
+						},
+					)
 				: Option.match(
-						Option.fromNullishOr(
-							AsyncData.getOrElse(model.incidents.data, () => []).find((row) => row.id === id),
+						Arr.findFirst(
+							AsyncData.getOrElse(model.incidents.data, () => []),
+							(row) => row.id === id,
 						),
 						{
 							onNone: () => ({ model }),
@@ -396,8 +398,8 @@ export const update = (model: Model, message: Message, context: PageContext): Re
 		ClickedPostUpdate: ({ incidentId, isResolving }) => openUpdate(model, incidentId, isResolving),
 		ChangedUpdateField: ({ field, value }) => changeUpdate(model, field, value),
 		SubmittedUpdate: () => submitUpdate(model),
-		ClickedCancelUpdate: () => ({ model: { ...model, updateForm: null, updateFailure: null } }),
-		CompletedPostUpdate: ({ result }) => postedUpdate(model, result, context),
+		ClickedCancelUpdate: () => cancelUpdate(model),
+		CompletedPostUpdate: ({ generation, result }) => postedUpdate(model, generation, result, context),
 		ClickedPublishIncident: ({ incidentId }) => publishIncident(model, incidentId),
 		CompletedPublishIncident: ({ incidentId, result }) =>
 			publishedIncident(model, incidentId, result, context),

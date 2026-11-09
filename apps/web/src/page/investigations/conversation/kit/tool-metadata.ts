@@ -1,10 +1,11 @@
 import { humanize } from "../../../../lib/humanize"
-import type { IconName } from "../../../../ui/icon"
+import type { IconName } from "@maple/views/ui/icon"
+import { Array as Arr, String as Str } from "effect"
 
 // A tool's label, icon and live activity.
 
 /** Strips the `mcp__<server>__` prefix MCP tools arrive with. */
-export const normalizeToolName = (toolName: string): string => toolName.replace(/^mcp__.+?__/, "")
+export const normalizeToolName = (toolName: string): string => Str.replace(/^mcp__.+?__/, "")(toolName)
 
 const TOOL_LABELS = new Map<string, string>([
 	// observability / diagnostics
@@ -59,10 +60,24 @@ const TOOL_LABELS = new Map<string, string>([
 	["create_alert_rule", "Create Alert Rule"],
 	["update_alert_rule", "Update Alert Rule"],
 	["delete_alert_rule", "Delete Alert Rule"],
+	["list_alert_silences", "List Alert Silences"],
+	["create_alert_silence", "Create Alert Silence"],
+	["end_alert_silence", "End Alert Silence"],
 	["list_alert_incidents", "List Alert Incidents"],
 	["list_alert_checks", "List Alert Checks"],
 	["preview_alert_rule", "Preview Alert Rule"],
 	["get_incident_timeline", "Incident Timeline"],
+	["list_escalation_chains", "List Escalation Chains"],
+	["create_escalation_chain", "Create Escalation Chain"],
+	["update_escalation_chain", "Update Escalation Chain"],
+	["delete_escalation_chain", "Delete Escalation Chain"],
+	["list_oncall_schedules", "List On-Call Schedules"],
+	["who_is_on_call", "Who Is On Call"],
+	["create_oncall_schedule", "Create On-Call Schedule"],
+	["update_oncall_schedule", "Update On-Call Schedule"],
+	["delete_oncall_schedule", "Delete On-Call Schedule"],
+	["create_oncall_override", "Create On-Call Override"],
+	["delete_oncall_override", "Delete On-Call Override"],
 	["get_error_notification_policy", "Notification Policy"],
 	["update_error_notification_policy", "Notification Policy"],
 	// sessions
@@ -128,10 +143,24 @@ const TOOL_ICONS = new Map<string, IconName>([
 	["create_alert_rule", "BellIcon"],
 	["update_alert_rule", "BellIcon"],
 	["delete_alert_rule", "TrashIcon"],
+	["list_alert_silences", "BellIcon"],
+	["create_alert_silence", "BellIcon"],
+	["end_alert_silence", "BellIcon"],
 	["list_alert_incidents", "AlertWarningIcon"],
 	["list_alert_checks", "CircleCheckIcon"],
 	["preview_alert_rule", "HistoryIcon"],
 	["get_incident_timeline", "HistoryIcon"],
+	["list_escalation_chains", "BellIcon"],
+	["create_escalation_chain", "BellIcon"],
+	["update_escalation_chain", "BellIcon"],
+	["delete_escalation_chain", "TrashIcon"],
+	["list_oncall_schedules", "BellIcon"],
+	["who_is_on_call", "BellIcon"],
+	["create_oncall_schedule", "BellIcon"],
+	["update_oncall_schedule", "BellIcon"],
+	["delete_oncall_schedule", "TrashIcon"],
+	["create_oncall_override", "BellIcon"],
+	["delete_oncall_override", "TrashIcon"],
 	["get_error_notification_policy", "BellIcon"],
 	["update_error_notification_policy", "BellIcon"],
 	["run_sql", "DatabaseIcon"],
@@ -193,16 +222,18 @@ const IRREGULAR_PARTICIPLE = new Map([
 ])
 
 const participle = (verb: string): string =>
-	IRREGULAR_PARTICIPLE.get(verb) ?? (verb.endsWith("e") ? `${verb.slice(0, -1)}ing` : `${verb}ing`)
+	IRREGULAR_PARTICIPLE.get(verb) ??
+	(Str.endsWith("e")(verb) ? `${Str.slice(0, -1)(verb)}ing` : `${verb}ing`)
 
 /** A title-cased word lowered for sentence case; acronyms (`SQL`, `CI`) keep their capitals. */
 const lowerWord = (word: string): string =>
-	word.length > 1 && word === word.toUpperCase() ? word : word.toLowerCase()
+	word.length > 1 && word === Str.toUpperCase(word) ? word : Str.toLowerCase(word)
 
 /** What a running call is doing, in sentence case: `Searching traces`, `Checking system health`. */
 export const toolActivity = (toolName: string): string => {
 	const label = toolLabel(toolName)
-	const [first = "", ...rest] = label.split(" ")
-	if (!LABEL_VERBS.has(first)) return ["Checking", ...label.split(" ").map(lowerWord)].join(" ")
-	return [participle(first), ...rest.map(lowerWord)].join(" ")
+	const [first, ...rest] = Str.split(" ")(label)
+	if (!LABEL_VERBS.has(first))
+		return Arr.join(["Checking", ...Arr.map(Str.split(" ")(label), lowerWord)], " ")
+	return Arr.join([participle(first), ...Arr.map(rest, lowerWord)], " ")
 }

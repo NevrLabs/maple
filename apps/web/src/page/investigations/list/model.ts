@@ -1,11 +1,12 @@
+import * as Policy from "@maple/domain/policy"
 import { V2Investigation } from "@maple/domain/http/v2"
 import { Schema } from "effect"
-import { KeyedSchema } from "../../../data/keyed"
-import { LoadFailure } from "../../../data/load-failure"
+import { KeyedSchema } from "@maple/views/data/keyed"
+import { LoadFailure } from "@maple/views/data/load-failure"
 import { InvestigationsSearch } from "../../../route/search"
-import * as Select from "../../../ui/select"
-import * as Tabs from "../../../ui/tabs"
-import { SignalPresenceData } from "../../kit/signal-presence"
+import * as Select from "@maple/views/ui/select"
+import * as Tabs from "@maple/views/ui/tabs"
+import { SignalPresenceData } from "@maple/views/data/signal-presence"
 
 // `/investigations`.
 
@@ -28,7 +29,10 @@ export const TriageBudget = Schema.Struct({
 export type TriageBudget = typeof TriageBudget.Type
 
 /** A page past the first, by the cursor that fetched it. */
-export const MorePage = Schema.Struct({ cursor: Schema.String, page: KeyedSchema(InvestigationPage, LoadFailure) })
+export const MorePage = Schema.Struct({
+	cursor: Schema.String,
+	page: KeyedSchema(InvestigationPage, LoadFailure),
+})
 
 export const Model = Schema.Struct({
 	search: InvestigationsSearch,
@@ -40,8 +44,8 @@ export const Model = Schema.Struct({
 	/** The investigate bar's text and whether its create is in flight. */
 	subject: Schema.String,
 	isCreating: Schema.Boolean,
-	/** `useIsOrgAdmin`: false until the session says otherwise; self-hosted is root. */
-	isOrgAdmin: Schema.Boolean,
+	/** The session's permissions: none until it answers; self-hosted holds every one. */
+	grants: Schema.Array(Policy.PermissionName),
 	searchDraft: Schema.String,
 	searchGeneration: Schema.Number,
 	tabs: Tabs.Model,

@@ -118,7 +118,7 @@
 // level of `aiSessionDetailsQuery` reads a derived table rather than a table,
 // and inherits `org` scope from it.
 
-import { type DateTime, Schema } from "effect"
+import { type DateTime, Schema, Array as Arr, Record as Rec, String as Str } from "effect"
 import * as CH from "@maple-dev/effect-orm/expr"
 import * as T from "@maple-dev/effect-orm/clickhouse"
 import { compile } from "@maple-dev/effect-orm/sql"
@@ -151,17 +151,11 @@ import {
 	type AiSessionSpanScope,
 } from "@maple/domain/http"
 import {
-	AI_AGENT_OPERATIONS,
-	AI_INFERENCE_OPERATIONS,
-	AI_MEMORY_OPERATIONS,
-	AI_RETRIEVAL_OPERATIONS,
-	AI_TOOL_OPERATIONS,
 	MAPLE_AI_SESSION_ID_ATTR,
 	MAPLE_AI_STAMP_ATTRS,
 	MAPLE_AI_TRACE_SESSION_PREFIX,
 	MAPLE_AI_VENDOR_ID_ATTR,
 	MAPLE_NATIVE_TURN_ID_ATTR,
-	type AiGenAiField,
 } from "@maple/domain/gen-ai"
 import { aiFieldSourceKeys, aiSpanAttributeKeys, aiSpanAttributePrefixes } from "./ai-integrations"
 import {
@@ -175,13 +169,14 @@ import {
 
 const SESSION_ID_ATTR = MAPLE_AI_SESSION_ID_ATTR
 const VENDOR_ID_ATTR = MAPLE_AI_VENDOR_ID_ATTR
-const ERROR_TYPE_ATTR = "error.type"
-const RESPONSE_STATUS_ATTR = "gen_ai.response.status"
-/** `gen_ai.response.status` values that mean the generation failed — semconv's
- *  `failed` plus the pre-enum `error` dialect. Mirrors `spanFailed` in
- *  `@maple/agent-sessions`' `session-turns.ts`; the list badge and the
- *  detail's Failures panel must count the same spans. */
-const FAILED_RESPONSE_STATUSES = ["failed", "error"]
+/** Whether a span failed, as `spanFailed` in `@maple/agent-sessions`'
+ *  `session-turns.ts` reads it: the gateway's verdict on a span it stamped,
+ *  else the span status. The list badge and the detail's Failures panel must
+ *  count the same spans. */
+const spanFailedCond = ($: SpanColumns): CH.Condition =>
+	$.SpanAttributes.get(MAPLE_AI_STAMP_ATTRS.error)
+		.eq("1")
+		.or($.SpanAttributes.get(MAPLE_AI_STAMP_ATTRS.llmCall).eq("").and($.StatusCode.eq("Error")))
 
 /**
  * Sorts every span that does NOT carry a fact behind every one that does, so a
@@ -276,12 +271,7 @@ export const isSessionTraceCond = ($: {
  * only the deepest span carrying the failure counts — `failureEvents` in
  * `@maple/agent-sessions`' `session-summary.ts`, one level deep.
  */
-const failedSpansExpr = ($: {
-	readonly SpanId: CH.Expr<string>
-	readonly ParentSpanId: CH.Expr<string>
-	readonly IsToolCall: CH.Expr<number>
-	readonly IsError: CH.Expr<number>
-}): CH.Expr<unknown> =>
+const failedSpansExpr = (): CH.Expr<unknown> =>
 	CH.untypedExpr(
 		`groupArrayIf(${MAX_USAGE_REPORTERS_PER_TRACE})(tuple(SpanId, ParentSpanId, IsToolCall), IsError = 1)`,
 	)
@@ -420,7 +410,7 @@ export interface AiSessionPageOutput {
 	/** Tokens across every bucket, deepest reporter counted, one claim per response id — see `sessionUsageSum`. */
 	readonly totalTokens: number
 	// The five disjoint buckets `totalTokens` is the sum of, counted the same
-	// way — zeros on a session whose rows predate migration 0031.
+	// way.
 	readonly inputTokens: number
 	readonly cacheReadTokens: number
 	readonly cacheWriteTokens: number
@@ -478,12 +468,12 @@ export interface AiSessionDetailsOutput {
  * three characters `LIKE` reads as syntax; the builder quotes the literal.
  */
 export function idSearchPattern(search: string): string {
-	let needle = search.trim()
-	if (needle.startsWith(MAPLE_AI_TRACE_SESSION_PREFIX)) {
-		needle = needle.slice(MAPLE_AI_TRACE_SESSION_PREFIX.length)
+	let needle = Str.trim(search)
+	if (Str.startsWith(MAPLE_AI_TRACE_SESSION_PREFIX)(needle)) {
+		needle = Str.slice(MAPLE_AI_TRACE_SESSION_PREFIX.length)(needle)
 	}
-	while (needle.endsWith("…")) needle = needle.slice(0, -1)
-	return `${needle.replace(/[\\%_]/g, (char) => `\\${char}`)}%`
+	while (Str.endsWith("…")(needle)) needle = Str.slice(0, -1)(needle)
+	return `${Str.replace(/[\\%_]/g, "\\$&")(needle)}%`
 }
 
 /** Distinct models/agents collected per trace for the list row. */
@@ -524,8 +514,8 @@ const MAX_NAMES_PER_TRACE = 20
  *
  * The measures are collected here per trace and summed per session one level
  * up. Usage travels as the trace's reporters rather than a sum, because a
- * wrapper's roll-up of its children cannot be undone one row at a time — see
- * `traceUsageColumns`.
+ * model call that restates the calls beneath it cannot be undone one row at a
+ * time — see `traceUsageColumns`.
  */
 type IndexColumns = ColumnAccessor<typeof AiTraceIndex.columns>
 
@@ -556,8 +546,9 @@ const indexTracesOf = <Bounds extends IndexBounds, Row extends { readonly traceI
 	sessionIds: readonly string[] | undefined,
 	select: ($: IndexColumns) => Row,
 ) => {
-	const values = (list: readonly string[] | undefined) => (list?.length ? list : undefined)
-	const search = opts.search?.trim() || undefined
+	const values = (list: readonly string[] | undefined) =>
+		list !== undefined && list.length > 0 ? list : undefined
+	const search = opts.search === undefined ? undefined : Str.trim(opts.search) || undefined
 	const carries = (cond: CH.Condition) => CH.countIf(cond).gt(0)
 	return from(AiTraceIndex)
 		.select(select)
@@ -637,7 +628,7 @@ const indexTraces = <Bounds extends IndexBounds>(
 			// another on its own page.
 			firstAgentName: CH.argMin($.AgentName, agentOrder),
 			firstAgentAt: CH.min_(agentOrder),
-			failedSpans: failedSpansExpr($),
+			failedSpans: failedSpansExpr(),
 			// Usage AND model calls travel as reporters: both are counted one level
 			// up, where every trace of the session is in hand — see `ai-span-columns`.
 			...traceUsageColumns($),
@@ -668,7 +659,7 @@ const SESSION_COLUMNS = [
 type SessionColumn = (typeof SESSION_COLUMNS)[number]
 
 const carry = <Row extends Record<SessionColumn, unknown>>(row: Row): Pick<Row, SessionColumn> =>
-	Object.fromEntries(SESSION_COLUMNS.map((column) => [column, row[column]])) as Pick<Row, SessionColumn>
+	Rec.fromEntries(Arr.map(SESSION_COLUMNS, (column) => [column, row[column]])) as Pick<Row, SessionColumn>
 
 /** What ranks a session, off `traceRankColumns`: its key, its extent and
  *  the measures the session filters and sorts read — the session level of
@@ -791,7 +782,7 @@ const pagePlan = (opts: AiSessionPageOpts) => {
 
 	// The `HAVING` and `WHERE` levels see the aliases by name only.
 	const column = {
-		sessionId: CH.dynamicColumn<string>("sessionId", T.string),
+		sessionId: CH.dynamicColumn("sessionId", T.string),
 		errorAgentSpans: CH.dynamicColumn<number>("errorAgentSpans", T.float64),
 		agentDurationMs: CH.dynamicColumn<number>("agentDurationMs", T.float64),
 		cost: CH.dynamicColumn<number>("cost", T.float64),
@@ -823,14 +814,10 @@ const pagePlan = (opts: AiSessionPageOpts) => {
 					["agentStart", "desc"],
 				]
 	order.push(["sessionId", "asc"])
-	const filtersOnUsage = [
-		opts.costMin,
-		opts.costMax,
-		opts.tokensMin,
-		opts.tokensMax,
-		opts.llmCallsMin,
-		opts.llmCallsMax,
-	].some((bound) => bound !== undefined)
+	const filtersOnUsage = Arr.some(
+		[opts.costMin, opts.costMax, opts.tokensMin, opts.tokensMax, opts.llmCallsMin, opts.llmCallsMax],
+		(bound) => bound !== undefined,
+	)
 	// Usage exists only once the reporters are netted, two levels up; the
 	// session level orders and cuts the page on everything else.
 	const ranksOnSession = (_specs: typeof order): _specs is Array<[SessionSort, AiSessionSortDir]> =>
@@ -998,25 +985,7 @@ export function aiSessionDetailsQuery(opts: AiSessionDetailsOpts) {
 			return {
 				traceId: $.TraceId,
 				spanCount: CH.count(),
-				// Span status, or an attribute-declared failure on a vendor-stamped
-				// span: frameworks record failed model/tool calls as values on `Ok`
-				// spans, and the badge must agree with the detail page's counting.
-				errorSpanCount: CH.countIf(
-					$.StatusCode.eq("Error").or(
-						$.SpanAttributes.get(VENDOR_ID_ATTR)
-							.neq("")
-							.and(
-								$.SpanAttributes.get(ERROR_TYPE_ATTR)
-									.neq("")
-									.or(
-										CH.inList(
-											$.SpanAttributes.get(RESPONSE_STATUS_ATTR),
-											FAILED_RESPONSE_STATUSES,
-										),
-									),
-							),
-					),
-				),
+				errorSpanCount: CH.countIf(spanFailedCond($)),
 				serviceNames: CH.groupUniqArray($.ServiceName),
 				// Named apart from the outer `startTime`/`endTime` on purpose: an
 				// outer alias shadows the derived table's column of the same name,
@@ -1078,9 +1047,10 @@ const NANOS_PER_MS = 1_000_000n
 
 /** `YYYY-MM-DD hh:mm:ss[.fffffffff]`, read as UTC, to nanoseconds since the epoch. */
 const warehouseNanos = (literal: string): bigint => {
-	const [datetime = "", fraction = ""] = literal.split(".")
+	const [datetime, fraction = ""] = Str.split(".")(literal)
 	return (
-		BigInt(Date.parse(`${datetime.replace(" ", "T")}Z`)) * NANOS_PER_MS + BigInt(fraction.padEnd(9, "0"))
+		BigInt(Date.parse(`${Str.replace(" ", "T")(datetime)}Z`)) * NANOS_PER_MS +
+		BigInt(Str.padEnd(9, "0")(fraction))
 	)
 }
 
@@ -1088,7 +1058,7 @@ const warehouseNanos = (literal: string): bigint => {
  *  fractional digits, so a bound round-trips exactly. */
 const warehouseDateTime = (nanos: bigint): string => {
 	const seconds = new Date(Number(nanos / NANOS_PER_SECOND) * 1000).toISOString()
-	return `${seconds.slice(0, 19).replace("T", " ")}.${(nanos % NANOS_PER_SECOND).toString().padStart(9, "0")}`
+	return `${Str.replace("T", " ")(Str.slice(0, 19)(seconds))}.${Str.padStart(9, "0")((nanos % NANOS_PER_SECOND).toString())}`
 }
 
 const nextUtcMidnight = (nanos: bigint): bigint => {
@@ -1330,9 +1300,13 @@ export function aiSessionDistributionsQuery() {
 	// `Float64` have no supertype.
 	const unnested = fromQuery(measured, "session_measures").select(() => ({
 		measured: CH.untypedExpr(
-			`arrayJoin([${Object.entries(DISTRIBUTION_BUCKET_FLOORS)
-				.map(([measure, floor]) => `tuple('${measure}', ${measure}, ${floor})`)
-				.join(", ")}])`,
+			`arrayJoin([${Arr.join(
+				Arr.map(
+					Rec.toEntries(DISTRIBUTION_BUCKET_FLOORS),
+					([measure, floor]) => `tuple('${measure}', ${measure}, ${floor})`,
+				),
+				", ",
+			)}])`,
 		),
 	}))
 	const value = CH.rawExpr("tupleElement(measured, 2)", T.float64)
@@ -1486,9 +1460,8 @@ export const aiSpanAttributes = (
 	attributes: CH.Expr<Record<string, string>>,
 ): CH.Expr<Record<string, string>> =>
 	mapFilterKeys(attributes, (key) =>
-		aiSpanAttributePrefixes.reduce(
-			(matched, prefix) => matched.or(key.like(`${prefix}%`)),
-			key.in_(...aiSpanAttributeKeys),
+		Arr.reduce(aiSpanAttributePrefixes, key.in_(...aiSpanAttributeKeys), (matched, prefix) =>
+			matched.or(key.like(`${prefix}%`)),
 		),
 	)
 
@@ -1656,12 +1629,8 @@ export interface AiSessionTotalsOutput {
 	readonly inputTokens: number
 	readonly outputTokens: number
 	readonly cacheReadTokens: number
-	readonly llmInputTokens: number
-	readonly llmOutputTokens: number
-	readonly llmCacheReadTokens: number
 	readonly costReporters: number
 	readonly cost: number
-	readonly llmCost: number
 	readonly models: readonly string[]
 	readonly agentNames: readonly string[]
 }
@@ -1681,12 +1650,8 @@ export interface AiSessionSummaryOutput {
 	readonly inputTokens: number
 	readonly outputTokens: number
 	readonly cacheReadTokens: number
-	readonly llmInputTokens: number
-	readonly llmOutputTokens: number
-	readonly llmCacheReadTokens: number
 	readonly costReporters: number
 	readonly cost: number
-	readonly llmCost: number
 	readonly models: readonly string[]
 	readonly agentNames: readonly string[]
 }
@@ -1703,12 +1668,8 @@ const summaryMeasures = {
 	inputTokens: CHNumber,
 	outputTokens: CHNumber,
 	cacheReadTokens: CHNumber,
-	llmInputTokens: CHNumber,
-	llmOutputTokens: CHNumber,
-	llmCacheReadTokens: CHNumber,
 	costReporters: CHNumber,
 	cost: CHNumber,
-	llmCost: CHNumber,
 	models: Schema.Array(Schema.String),
 	agentNames: Schema.Array(Schema.String),
 }
@@ -1739,25 +1700,12 @@ const SUMMARY_ARRAY_CAP = 50
  * span: it groups under its trace, so the rows partition the session exactly
  * while a turn row may hold fewer spans than the page's turn of the same id.
  *
- * Every attribute is read the way `mapAiSpan` reads it: the first non-empty
- * value across that field's source keys. An "llm call" and a "tool call" are
- * the page's `classifyAiSpan` reduced to what an aggregation can see —
- * operation name, model, tool name — without the span-name heuristics.
- *
- * Usage is summed twice: over every span, and over the model-call spans alone.
- * A framework that reports usage per call AND rolls it up onto the agent span
- * would double under a plain sum; the handler picks the model-call figures
- * when there are any (`per-call`) and the plain sum otherwise (`roll-up`),
- * which is the deepest-reporter rule the page applies, at turn granularity.
- *
- * A span the ingest gateway stamped (`MAPLE_AI_STAMP_ATTRS.llmCall` present) is
- * read by the gateway's verdicts, names and buckets instead, the facts the
- * list and the detail page read too. Only its model call carries usage, so a
- * session of such spans is always per-call; its `input` is the prompt not read
- * from cache (uncached plus cache write) and its `output` the completion
- * (visible plus reasoning), so the three add up to its total. The rules above
- * serve the spans ingested before the gateway stamped them, until they age out
- * of the 30-day TTL.
+ * Every count, name and bucket is the ingest gateway's stamp
+ * (`MAPLE_AI_STAMP_ATTRS`), the facts the list and the detail page read too; a
+ * span it did not stamp counts only as a span, and as a failure by its status.
+ * Only a model call carries usage: `input` is the prompt not read from cache
+ * (uncached plus cache write) and `output` the completion (visible plus
+ * reasoning), so the three add up to its total.
  *
  * Every Float64 aggregate is guarded with `ifNotFinite`: `toFloat64OrZero`
  * parses `nan` and `inf` successfully, one such attribute would poison the
@@ -1766,69 +1714,13 @@ const SUMMARY_ARRAY_CAP = 50
 const summaryMeasures_ = ($: SpanColumns) => {
 	// `coalesce(nullIf(a, ''), nullIf(b, ''), …, '')`: the first key with a value.
 	const attr = (keys: readonly string[]) =>
-		CH.coalesce(...keys.map((key) => CH.nullIf($.SpanAttributes.get(key), "")), CH.lit(""))
-	const field = (name: AiGenAiField) => attr(aiFieldSourceKeys(name))
-	const number = (name: AiGenAiField) => CH.toFloat64OrZero(field(name))
-
-	const vendorId = $.SpanAttributes.get(VENDOR_ID_ATTR)
-	const isAi = vendorId.neq("")
-	const operation = field("operationName")
+		CH.coalesce(...Arr.map(keys, (key) => CH.nullIf($.SpanAttributes.get(key), "")), CH.lit(""))
 	const stamp = (key: string) => $.SpanAttributes.get(key)
-	const stamped = stamp(MAPLE_AI_STAMP_ATTRS.llmCall).neq("")
-	const unstamped = CH.not(stamped)
-	const byGateway = <T>(gateway: CH.Expr<T>, reported: CH.Expr<T>) => CH.if_(stamped, gateway, reported)
-	// Response model first, request model second — `spanModel` on the page.
-	const reportedModel = attr([...aiFieldSourceKeys("responseModel"), ...aiFieldSourceKeys("requestModel")])
-	const reportedToolName = field("toolName")
-	const model = byGateway(stamp(MAPLE_AI_STAMP_ATTRS.model), reportedModel)
-	const agentName = byGateway(stamp(MAPLE_AI_STAMP_ATTRS.agentName), field("agentName"))
-	const isLlmCall = stamp(MAPLE_AI_STAMP_ATTRS.llmCall)
-		.eq("1")
-		.or(
-			unstamped.and(
-				operation.in_(...AI_INFERENCE_OPERATIONS).or(
-					operation
-						.notIn(
-							...AI_RETRIEVAL_OPERATIONS,
-							...AI_TOOL_OPERATIONS,
-							...AI_AGENT_OPERATIONS,
-							...AI_MEMORY_OPERATIONS,
-						)
-						.and(reportedModel.neq(""))
-						.and(reportedToolName.eq("")),
-				),
-			),
-		)
-	const isToolCall = stamp(MAPLE_AI_STAMP_ATTRS.toolCall)
-		.eq("1")
-		.or(
-			unstamped.and(
-				operation
-					.in_(...AI_TOOL_OPERATIONS)
-					.or(operation.eq("").and(isAi).and(reportedToolName.neq(""))),
-			),
-		)
-	// The list's error rule, so the summary and the list badge agree.
-	// On a stamped span the gateway's verdict alone, as `spanFailed`: it leaves
-	// out a paused tool call's copy that its framework ended in error.
-	const failed = stamp(MAPLE_AI_STAMP_ATTRS.error)
-		.eq("1")
-		.or(
-			unstamped.and(
-				$.StatusCode.eq("Error").or(
-					isAi.and(
-						field("errorType")
-							.neq("")
-							.or(
-								CH.inList(
-									$.SpanAttributes.get(RESPONSE_STATUS_ATTR),
-									FAILED_RESPONSE_STATUSES,
-								),
-							),
-					),
-				),
-			),
-		)
+	const count = (key: string) => CH.toFloat64OrZero(stamp(key))
+
+	const isLlmCall = stamp(MAPLE_AI_STAMP_ATTRS.llmCall).eq("1")
+	const model = stamp(MAPLE_AI_STAMP_ATTRS.model)
+	const agentName = stamp(MAPLE_AI_STAMP_ATTRS.agentName)
 	const conversationId = attr([
 		// First, as `mapleIntegration` reads it: Maple's turn id wins over the
 		// conversation id its engine's tool spans carry, which names the session.
@@ -1837,17 +1729,14 @@ const summaryMeasures_ = ($: SpanColumns) => {
 		// What `eveIntegration` lifts into the field.
 		"eve.turn.id",
 	])
-	const inputTokens = byGateway(
-		number("mapleInputTokens").add(number("mapleCacheWriteTokens")),
-		number("usageInputTokens"),
+	const inputTokens = count(MAPLE_AI_STAMP_ATTRS.inputTokens).add(
+		count(MAPLE_AI_STAMP_ATTRS.cacheWriteTokens),
 	)
-	const outputTokens = byGateway(
-		number("mapleOutputTokens").add(number("mapleReasoningTokens")),
-		number("usageOutputTokens"),
+	const outputTokens = count(MAPLE_AI_STAMP_ATTRS.outputTokens).add(
+		count(MAPLE_AI_STAMP_ATTRS.reasoningTokens),
 	)
-	const cacheReadTokens = byGateway(number("mapleCacheReadTokens"), number("usageCacheReadInputTokens"))
-	const costField = byGateway(field("mapleCost"), field("usageCost"))
-	const cost = CH.toFloat64OrZero(costField)
+	const cacheReadTokens = count(MAPLE_AI_STAMP_ATTRS.cacheReadTokens)
+	const costField = stamp(MAPLE_AI_STAMP_ATTRS.cost)
 
 	const finite = (expr: CH.Expr<number>) => CH.ifNotFinite(expr, 0)
 
@@ -1864,21 +1753,17 @@ const summaryMeasures_ = ($: SpanColumns) => {
 			1_000_000,
 		),
 		spanCount: CH.count(),
-		aiSpanCount: CH.countIf(isAi),
+		aiSpanCount: CH.countIf(stamp(VENDOR_ID_ATTR).neq("")),
 		llmCalls: CH.countIf(isLlmCall),
-		toolCalls: CH.countIf(isToolCall),
-		errorSpanCount: CH.countIf(failed),
+		toolCalls: CH.countIf(stamp(MAPLE_AI_STAMP_ATTRS.toolCall).eq("1")),
+		errorSpanCount: CH.countIf(spanFailedCond($)),
 		inputTokens: finite(CH.sum(inputTokens)),
 		outputTokens: finite(CH.sum(outputTokens)),
 		cacheReadTokens: finite(CH.sum(cacheReadTokens)),
-		llmInputTokens: finite(CH.sumIf(inputTokens, isLlmCall)),
-		llmOutputTokens: finite(CH.sumIf(outputTokens, isLlmCall)),
-		llmCacheReadTokens: finite(CH.sumIf(cacheReadTokens, isLlmCall)),
 		// Spans that reported a cost at all: zero means "not measured", which the
 		// page distinguishes from "free".
 		costReporters: CH.countIf(costField.neq("")),
-		cost: finite(CH.sum(cost)),
-		llmCost: finite(CH.sumIf(cost, isLlmCall)),
+		cost: finite(CH.sum(CH.toFloat64OrZero(costField))),
 		models: CH.groupUniqArrayIf(SUMMARY_ARRAY_CAP)(model, isLlmCall.and(model.neq(""))),
 		agentNames: CH.groupUniqArrayIf(SUMMARY_ARRAY_CAP)(agentName, agentName.neq("")),
 	}
@@ -1964,5 +1849,25 @@ export function aiTraceTotalsQuery() {
 			$.Timestamp.lte(param.dateTime("endTime")),
 			inTraces((id) => id.eq(param.string("traceId")), paramTraceWindow()),
 		])
+		.format("JSON")
+}
+
+/**
+ * The Agent Session each of the listed traces is filed under, for the MCP session page's link back
+ * to the agents that called it. Keyed and filtered like the Agent Sessions list, so a trace that
+ * page would not show as a session links nowhere.
+ */
+export function aiSessionsOfTracesQuery(traceIds: readonly string[]) {
+	return from(AiTraceIndex)
+		.select(($) => ({ traceId: $.TraceId, sessionId: sessionKey(CH.max_($.SessionId), $.TraceId) }))
+		.where(($) => [
+			$.OrgId.eq(orgIdParam),
+			$.Timestamp.gte(param.dateTime("startTime")),
+			$.Timestamp.lte(param.dateTime("endTime")),
+			CH.inList($.TraceId, traceIds),
+		])
+		.groupBy("traceId")
+		.having(($) => [isSessionTraceCond($)])
+		.limit(traceIds.length)
 		.format("JSON")
 }

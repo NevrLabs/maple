@@ -1,16 +1,17 @@
+import * as Policy from "@maple/domain/policy"
 import { organizationHomeRegion } from "@maple/domain/organization-regions"
-import { Effect, Option, Result, Schema } from "effect"
+import { Effect, Option, Result, Schema, String as Str } from "effect"
 import { AsyncData, Command, File } from "foldkit"
-import { toLoadFailure } from "../../../data/load-failure"
+import { toLoadFailure } from "@maple/views/data/load-failure"
 import { MapleInternalApiClient } from "../../../platform/api-clients"
 import { clerkTry, currentClerkOrganization, currentClerkUser, switchAwayFrom } from "../../../platform/clerk"
-import * as Dialog from "../../../ui/dialog"
+import * as Dialog from "@maple/views/ui/dialog"
 import { PageOutMessage, type PageReturn } from "../../contract"
 import { revisitData } from "../kit/revisit"
 import * as Draft from "../kit/draft"
 import { checkImage, clickFileInput } from "../kit/image-dropzone"
 import { otherAdminName } from "../kit/members"
-import { AdminsInfo, Message, type Model, OrgInfo } from "./model"
+import { canManage, AdminsInfo, Message, type Model, OrgInfo } from "./model"
 
 type Return = PageReturn<Model, Message>
 
@@ -54,11 +55,13 @@ export const FetchAdmins = Command.define("FetchClerkOrganizationAdmins", {
 				organization.getMemberships({ role: ["org:admin"], pageSize: 2 }),
 			),
 		),
-		Effect.map((page): AdminsInfo => ({
-			count: page.total_count,
-			firstAdminName: otherAdminName(page.data, window.Clerk?.user?.id),
-		})),
-		Effect.mapError(toLoadFailure),
+		Effect.mapBoth({
+			onSuccess: (page): AdminsInfo => ({
+				count: page.total_count,
+				firstAdminName: otherAdminName(page.data, window.Clerk?.user?.id),
+			}),
+			onFailure: toLoadFailure,
+		}),
 		Effect.result,
 		Effect.map((result) => Message.CompletedFetchAdmins({ result })),
 	),
@@ -127,9 +130,9 @@ const SwitchAway = Command.define("SwitchAwayFromOrganization", {
 	execute: ({ orgId }) => switchAwayFrom(orgId).pipe(Effect.as(Message.CompletedSwitchAway())),
 })
 
-export const init = (isAdmin: boolean): Return => ({
+export const init = (grants: ReadonlyArray<Policy.Permission>): Return => ({
 	model: {
-		isAdmin,
+		grants,
 		org: AsyncData.Loading(),
 		admins: AsyncData.Loading(),
 		name: Draft.emptyDraft(),
@@ -165,7 +168,7 @@ export type LeaveEligibility = "allowed" | "checking" | "last-admin"
 
 /** `leaveEligibility`: the last admin cannot leave; the count is unknown while it loads. */
 export const leaveEligibilityOf = (model: Model): LeaveEligibility => {
-	if (!model.isAdmin) return "allowed"
+	if (!canManage(model)) return "allowed"
 	return Option.match(AsyncData.getData(model.admins), {
 		onNone: () => "checking",
 		onSome: (admins) => (admins.count > 1 ? "allowed" : "last-admin"),
@@ -188,7 +191,7 @@ const liftDelete = (model: Model, step: ReturnType<typeof Dialog.update>): Retur
 	),
 })
 
-const isConfirmMatching = (model: Model): boolean => model.confirmText.trim() === savedName(model)
+const isConfirmMatching = (model: Model): boolean => Str.trim(model.confirmText) === savedName(model)
 
 /** `handleDeleteDialogChange`: closing the dialog clears the typed name. */
 const deleteDialogStep = (model: Model, step: ReturnType<typeof Dialog.update>): Return => {
@@ -199,7 +202,7 @@ const deleteDialogStep = (model: Model, step: ReturnType<typeof Dialog.update>):
 }
 
 const startLogo = (model: Model, file: File.File | null): Return =>
-	!model.isAdmin || model.isSavingLogo
+	!canManage(model) || model.isSavingLogo
 		? { model }
 		: { model: { ...model, isSavingLogo: true, isDragging: false }, commands: [SetLogo({ file })] }
 
@@ -230,7 +233,7 @@ export const update = (model: Model, message: Message): Return =>
 		ClickedDiscardName: () => ({ model: { ...model, name: Draft.discard() } }),
 		ClickedSaveName: () => {
 			const submitted = nameDraftOf(model)
-			const sent = submitted.trim()
+			const sent = Str.trim(submitted)
 			if (model.isSavingName || sent.length === 0) return { model }
 			return {
 				model: { ...model, isSavingName: true, name: Draft.submit(model.name, savedName(model)) },
@@ -254,7 +257,7 @@ export const update = (model: Model, message: Message): Return =>
 				}),
 			}),
 		ClickedPickLogo: () =>
-			!model.isAdmin || model.isSavingLogo ? { model } : { model, commands: [PickLogo()] },
+			!canManage(model) || model.isSavingLogo ? { model } : { model, commands: [PickLogo()] },
 		CompletedPickLogo: () => ({ model }),
 		DraggedOverLogo: () => ({ model: { ...model, isDragging: true } }),
 		LeftLogo: () => ({ model: { ...model, isDragging: false } }),

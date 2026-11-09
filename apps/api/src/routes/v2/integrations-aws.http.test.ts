@@ -3,9 +3,9 @@ import { ConfigProvider, Context, Effect, Layer, ManagedRuntime, Schema } from "
 import { HttpRouter } from "effect/http"
 import { HttpApiBuilder } from "effect/http-api"
 import { OrgId, UserId } from "@maple/domain/http"
-import { MapleApiV2, encodePublicId } from "@maple/domain/http/v2"
+import { MapleApiV2 } from "@maple/domain/http/v2"
 import { Env } from "@maple/backend/platform/Env"
-import { cleanupTestDbs, createTestDb, executeSql, type TestDb } from "@maple/backend/platform/test-pglite"
+import { cleanupTestDbs, createTestDb, type TestDb } from "@maple/backend/platform/test-pglite"
 import { ApiAuthorizationV2Live } from "@maple/backend/services/auth/ApiAuthorizationV2Live"
 import { AuthService } from "@maple/backend/services/auth/AuthService"
 import { AuditLogService } from "@maple/backend/services/audit/AuditLogService"
@@ -35,9 +35,9 @@ import {
 const createdDbs: TestDb[] = []
 afterEach(() => cleanupTestDbs(createdDbs))
 
-const ORG = Schema.decodeUnknownSync(OrgId)("org_aws_e2e")
-const USER = Schema.decodeUnknownSync(UserId)("user_aws_e2e")
-const OTHER_ORG = Schema.decodeUnknownSync(OrgId)("org_aws_e2e_other")
+const ORG = Schema.decodeSync(OrgId)("org_aws_e2e")
+const USER = Schema.decodeSync(UserId)("user_aws_e2e")
+const OTHER_ORG = Schema.decodeSync(OrgId)("org_aws_e2e_other")
 const BASE = "/v2/integrations/aws"
 
 const testConfig = (awsAvailable: boolean) =>

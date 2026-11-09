@@ -4,7 +4,7 @@ import { AiTriageResult } from "@maple/domain/http"
 import { ErrorIssueId, OrgId } from "@maple/domain/primitives"
 import * as PG from "@maple-dev/effect-orm/postgres"
 import { Actors, ErrorIssueEvents, ErrorIssues, IssueEscalations } from "@maple/db/tables"
-import { Effect, Schema } from "effect"
+import { Effect, Schema, Array as Arr, Clock } from "effect"
 import { Database } from "@maple/backend/platform/DatabaseLive"
 import { cleanupTestDbs, createTestDb, type TestDb } from "@maple/backend/platform/test-pglite"
 import {
@@ -33,7 +33,7 @@ const ORG = asOrgId("org_severity_test")
 const setup = Effect.gen(function* () {
 	const database = yield* Database
 	const issueId = asIssueId(randomUUID())
-	const now = Date.now()
+	const now = yield* Clock.currentTimeMillis
 	yield* database.execute((db) =>
 		db.run(
 			PG.insertInto(ErrorIssues).values({
@@ -267,7 +267,7 @@ describe("applyTriageSeverity", () => {
 					expect(issue?.severitySource).toBe("ai")
 
 					const events = yield* t.loadEvents
-					expect(events.some((e) => e.type === "severity_change")).toBe(false)
+					expect(Arr.some(events, (e) => e.type === "severity_change")).toBe(false)
 
 					// Same-level confirmation: no escalation either (upward-only rule).
 					expect(yield* t.loadEscalations).toHaveLength(0)

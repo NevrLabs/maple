@@ -1,19 +1,26 @@
 import { auditActionLabel, auditResourceLabel } from "@maple/domain/audit-actions"
-import { encodePublicId, PublicIdPrefixes, type V2AuditChanges, type V2AuditLogEntry } from "@maple/domain/http/v2"
+import {
+	encodePublicId,
+	PublicIdPrefixes,
+	type V2AuditChanges,
+	type V2AuditLogEntry,
+} from "@maple/domain/http/v2"
 import { EMPTY_VALUE } from "@maple/ui/lib/format"
 import type { AuditResourceLink } from "../../../components/settings/audit-log-resource"
-import { formatTimestampInTimezone } from "@maple/web-data/lib/timezone-format"
-import { Option, Schema } from "effect"
+import { Option, Schema, Array as Arr, Record as Rec, String as Str } from "effect"
 import type { Html, HtmlBuilder } from "foldkit/html"
 import { AppRoute, hrefOf } from "../../../route"
-import * as CopyButton from "../../../ui/copy-button"
-import { badge } from "../../../ui/display"
-import { eyebrow } from "../../../ui/eyebrow"
-import { inlineCode } from "../../../ui/inline-code"
-import { keyValue, keyValueList } from "../../../ui/key-value"
-import { table, tableBody, tableCell, tableHead, tableHeader, tableRow } from "../../../ui/table"
+import * as CopyButton from "@maple/views/ui/copy-button"
+import { badge } from "@maple/views/ui/display"
+import { eyebrow } from "@maple/views/ui/eyebrow"
+import { inlineCode } from "@maple/views/ui/inline-code"
+import { keyValue, keyValueList } from "@maple/views/ui/key-value"
+import { table, tableBody, tableCell, tableHead, tableHeader, tableRow } from "@maple/views/ui/table"
 import { Message, type Model } from "./model"
 import { ACTOR_BADGES, SOURCE_LABELS } from "./view"
+import { typography } from "@maple/views/ui/typography"
+import { hstack } from "@maple/views/ui/stack"
+import { timestamp } from "@maple/views/ui/timestamp"
 
 // `AuditLogDetail` and its parts.
 
@@ -41,46 +48,52 @@ export const resourceHref = (link: AuditResourceLink): string => {
 	}
 }
 
-const isPlaceholder = (value: unknown): value is string => typeof value === "string" && /^<[a-z]+>$/.test(value)
-const formatScalar = (value: unknown): string => (typeof value === "string" ? value : (JSON.stringify(value) ?? "undefined"))
+const encodeJsonOption = Schema.encodeOption(Schema.fromJsonString(Schema.Unknown))
+
+const isPlaceholder = (value: unknown): value is string =>
+	typeof value === "string" && /^<[a-z]+>$/.test(value)
+const formatScalar = (value: unknown): string =>
+	typeof value === "string" ? value : Option.getOrElse(encodeJsonOption(value), () => "undefined")
 
 const parseJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown))
+const encodePrettyJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown, { space: 2 }))
 
 /** Structured or long metadata renders as a block (`metadataBlock`). */
 const metadataBlock = (value: unknown): string | null => {
 	if (typeof value === "string") {
-		const trimmed = value.trim()
+		const trimmed = Str.trim(value)
 		const parsed =
-			trimmed.startsWith("{") || trimmed.startsWith("[") ? Option.getOrNull(parseJson(trimmed)) : null
-		if (parsed !== null && typeof parsed === "object") return JSON.stringify(parsed, null, 2)
-		return value.length > 72 || value.includes("\n") ? value : null
+			Str.startsWith("{")(trimmed) || Str.startsWith("[")(trimmed)
+				? Option.getOrNull(parseJson(trimmed))
+				: null
+		if (parsed !== null && typeof parsed === "object") return encodePrettyJson(parsed)
+		return value.length > 72 || Str.includes("\n")(value) ? value : null
 	}
-	if (value !== null && typeof value === "object") return JSON.stringify(value, null, 2)
+	if (value !== null && typeof value === "object") return encodePrettyJson(value)
 	return null
 }
 
 const changeValue = (h: H, value: unknown): Html => {
-	if (isPlaceholder(value)) return h.span([h.Class("text-foreground-subtle italic")], [value.slice(1, -1)])
-	if (value === undefined || value === null || value === "") return h.span([h.Class("text-foreground-subtle")], [EMPTY_VALUE])
+	if (isPlaceholder(value))
+		return typography(h, { tone: "subtle", className: "italic" }, [Str.slice(1, -1)(value)])
+	if (value === undefined || value === null || value === "")
+		return typography(h, { tone: "subtle" }, [EMPTY_VALUE])
 	return h.span([h.Class("break-all")], [formatScalar(value)])
 }
 
 const identifier = (h: H, model: Model, value: string, label: string): Html => {
 	const key = `${label}:${value}`
-	return h.span(
-		[h.Class("inline-flex max-w-full items-center gap-0.5")],
-		[
-			inlineCode(h, { variant: "plain", className: "truncate text-2xs text-foreground" }, [value]),
-			CopyButton.view(h, {
-				model: model.copies[key] ?? CopyButton.init(),
-				toParentMessage: (message) => Message.GotCopyMessage({ key, message }),
-				value,
-				label,
-				iconSize: 12,
-				className: "size-5",
-			}),
-		],
-	)
+	return hstack(h, { gap: "0.5", align: "center", inline: true, as: "span", className: "max-w-full" }, [
+		inlineCode(h, { variant: "plain", className: "truncate text-2xs text-foreground" }, [value]),
+		CopyButton.view(h, {
+			model: model.copies[key] ?? CopyButton.init(),
+			toParentMessage: (message) => Message.GotCopyMessage({ key, message }),
+			value,
+			label,
+			iconSize: 12,
+			className: "size-5",
+		}),
+	])
 }
 
 const changesTable = (h: H, changes: V2AuditChanges): Html =>
@@ -94,7 +107,7 @@ const changesTable = (h: H, changes: V2AuditChanges): Html =>
 		]),
 		tableBody(
 			h,
-			changes.fields.map((field) =>
+			Arr.map(changes.fields, (field) =>
 				tableRow(
 					h,
 					[
@@ -110,13 +123,13 @@ const changesTable = (h: H, changes: V2AuditChanges): Html =>
 	])
 
 const metadataList = (h: H, metadata: Readonly<Record<string, unknown>>): ReadonlyArray<Html> => {
-	const keys = Object.keys(metadata)
+	const keys = Rec.keys(metadata)
 	if (keys.length === 0) return []
 	return [
 		keyValueList(
 			h,
 			{ layout: "grid" },
-			keys.map((key) => {
+			Arr.map(keys, (key) => {
 				const block = metadataBlock(metadata[key])
 				return keyValue(h, { wrap: true, label: key }, [
 					block !== null
@@ -128,21 +141,30 @@ const metadataList = (h: H, metadata: Readonly<Record<string, unknown>>): Readon
 								],
 								[block],
 							)
-						: h.span([h.Class("font-mono text-2xs break-all")], [changeValue(h, metadata[key])]),
+						: typography(h, { size: "2xs", mono: true, className: "break-all" }, [
+								changeValue(h, metadata[key]),
+							]),
 				])
 			}),
 		),
 	]
 }
 
-export const auditDetail = (h: H, model: Model, entry: V2AuditLogEntry, timeZone: string): Html => {
+export const auditDetail = (
+	h: H,
+	model: Model,
+	entry: V2AuditLogEntry,
+	timeZone: string,
+	nowMs: number,
+): Html => {
 	const actor = ACTOR_BADGES[entry.actor_type]
-	const formatFull = (value: string) => formatTimestampInTimezone(value, { timeZone, withYear: true })
+	const full = (value: string) =>
+		timestamp(h, { value, timeZone, nowMs, withYear: true, className: "tabular-nums" })
 	const actionText = auditActionLabel(entry.action)
 	const changes = entry.changes
 	const metadata = entry.metadata
 	return h.div(
-		[h.Class("border-border-subtle space-y-4 border-t px-4 py-3 @md:pl-[44px]")],
+		[h.Class("border-border-subtle space-y-4 border-t px-4 py-3 @md:pl-11")],
 		[
 			keyValueList(
 				h,
@@ -152,75 +174,114 @@ export const auditDetail = (h: H, model: Model, entry: V2AuditLogEntry, timeZone
 						"@2xl:grid-cols-[minmax(6rem,max-content)_minmax(0,1fr)_minmax(6rem,max-content)_minmax(0,1fr)] @2xl:gap-x-6",
 				},
 				[
-					keyValue(h, { wrap: true, label: "Occurred" }, [h.span([h.Class("tabular-nums")], [formatFull(entry.occurred_at)])]),
-					keyValue(h, { wrap: true, label: "Recorded" }, [h.span([h.Class("tabular-nums")], [formatFull(entry.recorded_at)])]),
+					keyValue(h, { wrap: true, label: "Occurred" }, [full(entry.occurred_at)]),
+					keyValue(h, { wrap: true, label: "Recorded" }, [full(entry.recorded_at)]),
 					keyValue(h, { wrap: true, label: "Actor" }, [
-						h.span(
-							[h.Class("flex min-w-0 flex-wrap items-center gap-1.5")],
-							[
-								badge(h, { variant: actor.variant, size: "sm" }, [actor.label]),
-								...(entry.actor_name === null ? [] : [h.span([], [entry.actor_name])]),
-								...(entry.actor_id === null ? [] : [identifier(h, model, entry.actor_id, "Actor id")]),
-							],
-						),
+						hstack(h, { gap: "1.5", align: "center", wrap: true, shrink: true, as: "span" }, [
+							badge(h, { variant: actor.variant, size: "sm" }, [actor.label]),
+							...(entry.actor_name === null ? [] : [h.span([], [entry.actor_name])]),
+							...(entry.actor_id === null
+								? []
+								: [identifier(h, model, entry.actor_id, "Actor id")]),
+						]),
 					]),
 					keyValue(h, { wrap: true, label: "Source" }, [
 						h.span([], [SOURCE_LABELS[entry.source]]),
 						...(entry.origin_ip === null && entry.origin_country === null
 							? []
 							: [
-									h.span(
-										[h.Class("text-muted-foreground")],
-										[
-											" · ",
-											entry.origin_ip ?? "unknown IP",
-											...(entry.origin_country === null ? [] : [` (${entry.origin_country})`]),
-										],
-									),
+									typography(h, { tone: "muted" }, [
+										" · ",
+										entry.origin_ip ?? "unknown IP",
+										...(entry.origin_country === null
+											? []
+											: [` (${entry.origin_country})`]),
+									]),
 								]),
 					]),
 					keyValue(h, { wrap: true, label: "Action" }, [
-						h.span(
-							[h.Class("flex flex-wrap items-center gap-1.5")],
-							[
-								...(actionText === null ? [] : [h.span([], [actionText])]),
-								inlineCode(h, { variant: "plain", className: "text-2xs text-foreground" }, [entry.action]),
-								entry.outcome === "denied"
-									? badge(h, { variant: "crit", size: "sm" }, ["Denied"])
-									: badge(h, { variant: "ok", size: "sm" }, ["Allowed"]),
-							],
-						),
-						...(entry.denial_reason === null ? [] : [h.p([h.Class("text-muted-foreground mt-0.5")], [entry.denial_reason])]),
+						hstack(h, { gap: "1.5", wrap: true, as: "span" }, [
+							...(actionText === null ? [] : [h.span([], [actionText])]),
+							inlineCode(h, { variant: "plain", className: "text-2xs text-foreground" }, [
+								entry.action,
+							]),
+							entry.outcome === "denied"
+								? badge(h, { variant: "crit", size: "sm" }, ["Denied"])
+								: badge(h, { variant: "ok", size: "sm" }, ["Allowed"]),
+						]),
+						...(entry.denial_reason === null
+							? []
+							: [h.p([h.Class("text-muted-foreground mt-0.5")], [entry.denial_reason])]),
 					]),
 					keyValue(h, { wrap: true, label: "Resource" }, [
 						entry.resource_type === null && entry.resource_id === null
-							? h.span([h.Class("text-foreground-subtle")], [EMPTY_VALUE])
-							: h.span(
-									[h.Class("flex min-w-0 flex-wrap items-center gap-1.5")],
+							? typography(h, { tone: "subtle" }, [EMPTY_VALUE])
+							: hstack(
+									h,
+									{ gap: "1.5", align: "center", wrap: true, shrink: true, as: "span" },
 									[
 										...(entry.resource_type === null
 											? []
-											: [h.span([], [auditResourceLabel(entry.resource_type) ?? entry.resource_type])]),
-										...(entry.resource_id === null ? [] : [identifier(h, model, entry.resource_id, "Resource id")]),
+											: [
+													h.span(
+														[],
+														[
+															auditResourceLabel(entry.resource_type) ??
+																entry.resource_type,
+														],
+													),
+												]),
+										...(entry.resource_id === null
+											? []
+											: [identifier(h, model, entry.resource_id, "Resource id")]),
 									],
 								),
 					]),
 					...(entry.affected_user === null
 						? []
-						: [keyValue(h, { wrap: true, label: "Affected user" }, [identifier(h, model, entry.affected_user, "Affected user id")])]),
+						: [
+								keyValue(h, { wrap: true, label: "Affected user" }, [
+									identifier(h, model, entry.affected_user, "Affected user id"),
+								]),
+							]),
 					...(entry.request_id === null
 						? []
-						: [keyValue(h, { wrap: true, label: "Request" }, [identifier(h, model, entry.request_id, "Request id")])]),
+						: [
+								keyValue(h, { wrap: true, label: "Request" }, [
+									identifier(h, model, entry.request_id, "Request id"),
+								]),
+							]),
 					keyValue(h, { wrap: true, label: "Entry" }, [
-						identifier(h, model, encodePublicId(PublicIdPrefixes.auditLogEntry, entry.id), "Entry id"),
+						identifier(
+							h,
+							model,
+							encodePublicId(PublicIdPrefixes.auditLogEntry, entry.id),
+							"Entry id",
+						),
 					]),
 				],
 			),
 			...(changes !== null && changes.fields.length > 0
-				? [h.section([h.Class("space-y-1.5")], [eyebrow(h, { variant: "mono", as: "h4" }, ["Changes"]), changesTable(h, changes)])]
+				? [
+						h.section(
+							[h.Class("space-y-1.5")],
+							[
+								eyebrow(h, { variant: "mono", as: "h4" }, ["Changes"]),
+								changesTable(h, changes),
+							],
+						),
+					]
 				: []),
-			...(metadata !== null && Object.keys(metadata).length > 0
-				? [h.section([h.Class("space-y-1.5")], [eyebrow(h, { variant: "mono", as: "h4" }, ["Details"]), ...metadataList(h, metadata)])]
+			...(metadata !== null && Rec.keys(metadata).length > 0
+				? [
+						h.section(
+							[h.Class("space-y-1.5")],
+							[
+								eyebrow(h, { variant: "mono", as: "h4" }, ["Details"]),
+								...metadataList(h, metadata),
+							],
+						),
+					]
 				: []),
 		],
 	)

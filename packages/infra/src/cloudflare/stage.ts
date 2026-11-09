@@ -8,6 +8,7 @@ import {
 	type MapleRegion,
 	regionSuffix,
 } from "../region.ts"
+import { Option, Array as Arr, Record as Rec, String as Str } from "effect"
 
 /** An alchemy stage string that names no deployable Maple stage or instance. */
 export class MapleStageError extends Schema.TaggedError<MapleStageError>()("@maple/infra/MapleStageError", {
@@ -97,7 +98,7 @@ const PRD_DOMAINS_EU: MapleDomains = {
 }
 
 const mapleStageResult = (stage: string): Result.Result<MapleStage, MapleStageError> => {
-	const normalized = stage.trim().toLowerCase()
+	const normalized = Str.toLowerCase(Str.trim(stage))
 
 	if (normalized === "prd") {
 		return Result.succeed({ kind: "prd" })
@@ -113,9 +114,9 @@ const mapleStageResult = (stage: string): Result.Result<MapleStage, MapleStageEr
 		)
 	}
 
-	const prMatch = normalized.match(PR_STAGE_RE)
-	if (prMatch) {
-		const prNumber = Number(prMatch[1])
+	const prMatch = Str.match(PR_STAGE_RE)(normalized)
+	if (Option.isSome(prMatch)) {
+		const prNumber = Number(prMatch.value[1])
 		if (Number.isSafeInteger(prNumber) && prNumber > 0) {
 			return Result.succeed({ kind: "pr", prNumber })
 		}
@@ -123,7 +124,7 @@ const mapleStageResult = (stage: string): Result.Result<MapleStage, MapleStageEr
 
 	if (DEV_STAGE_RE.test(normalized)) {
 		// Cloudflare names allow only [a-z0-9-].
-		return Result.succeed({ kind: "dev", name: normalized.replaceAll("_", "-") })
+		return Result.succeed({ kind: "dev", name: Str.replaceAll("_", "-")(normalized) })
 	}
 
 	return Result.fail(
@@ -144,12 +145,20 @@ export function parseMapleStage(stage: string): MapleStage {
  * stage, so instances never share a plan. A `-eu` suffix always means the region. PR previews are US-only.
  */
 const mapleDeploymentResult = (raw: string): Result.Result<MapleDeployment, MapleStageError> => {
-	const normalized = raw.trim().toLowerCase()
-	const match = normalized.match(REGION_STAGE_SUFFIX_RE)
-	const suffix = match?.[1]
-	const region: MapleRegion = suffix !== undefined && isMapleRegion(suffix) ? suffix : DEFAULT_MAPLE_REGION
+	const normalized = Str.toLowerCase(Str.trim(raw))
+	const match = Str.match(REGION_STAGE_SUFFIX_RE)(normalized)
+	const region: MapleRegion = match.pipe(
+		Option.flatMapNullishOr((found) => found[1]),
+		Option.filter(isMapleRegion),
+		Option.getOrElse(() => DEFAULT_MAPLE_REGION),
+	)
 	return Result.flatMap(
-		mapleStageResult(match ? normalized.slice(0, -match[0].length) : normalized),
+		mapleStageResult(
+			Option.match(match, {
+				onNone: () => normalized,
+				onSome: (found) => Str.slice(0, -found[0].length)(normalized),
+			}),
+		),
 		(stage): Result.Result<MapleDeployment, MapleStageError> =>
 			stage.kind === "pr" && region !== DEFAULT_MAPLE_REGION
 				? Result.fail(
@@ -226,8 +235,8 @@ export function resolveMapleDomains({ stage, region }: MapleDeployment): MapleDo
 /** Every regional instance's dashboard URL (prd only), for cross-region org redirects. */
 export function resolveRegionAppUrls(stage: MapleStage): Partial<Record<MapleRegion, string>> {
 	if (stage.kind !== "prd") return {}
-	return Object.fromEntries(
-		MAPLE_REGIONS.map((region) => [region, `https://${resolveMapleDomains({ stage, region }).web}`]),
+	return Rec.fromEntries(
+		Arr.map(MAPLE_REGIONS, (region) => [region, `https://${resolveMapleDomains({ stage, region }).web}`]),
 	)
 }
 

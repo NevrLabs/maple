@@ -5,7 +5,7 @@ import type {
 	PlanetScaleQueryInsightsResponse,
 	SelfDescribingHttpError,
 } from "@maple/domain/http"
-import { CurrentTenant } from "@maple/domain/http"
+import { CurrentTenant, PlanetScaleMetricsTokenRequest } from "@maple/domain/http"
 import type { PlanetScaleDatabaseRow } from "@maple/db/tables"
 import type {
 	V2PlanetScaleConnectResponse,
@@ -26,9 +26,9 @@ import {
 	V2InsufficientPermissions,
 	V2TimeRangeInvalid,
 } from "@maple/domain/http/v2"
-import { Array as Arr, Effect, Option } from "effect"
+import { Array as Arr, Effect, Option, String as Str } from "effect"
 import { recordHttpAudit } from "@maple/backend/services/audit/AuditLogService"
-import { requireAdmin } from "@maple/backend/services/auth/auth"
+import * as Policy from "@maple/domain/policy"
 import { Env } from "@maple/backend/platform/Env"
 import { EdgeCacheService } from "@maple/cache"
 import {
@@ -50,7 +50,8 @@ export const resolveRequestOrigin = (req: HttpServerRequest.HttpServerRequest): 
 	const host = forwardedHost ?? headers.host
 	if (host) {
 		const proto =
-			forwardedProto ?? (host.startsWith("localhost") || host.startsWith("127.") ? "http" : "https")
+			forwardedProto ??
+			(Str.startsWith("localhost")(host) || Str.startsWith("127.")(host) ? "http" : "https")
 		return `${proto}://${host}`
 	}
 	return Option.match(Option.liftThrowable(() => new URL(req.url))(), {
@@ -63,8 +64,8 @@ const parseUrl = (url: string): Option.Option<URL> => Option.liftThrowable(() =>
 
 const isLocalHostname = (hostname: string) =>
 	hostname === "localhost" ||
-	hostname.endsWith(".localhost") ||
-	hostname.startsWith("127.") ||
+	Str.endsWith(".localhost")(hostname) ||
+	Str.startsWith("127.")(hostname) ||
 	hostname === "[::1]"
 
 /** The deploy's own origins, from Env; never from request headers. */
@@ -89,21 +90,21 @@ export const isTrustedCallbackOrigin = (origin: string, config: CallbackOriginCo
 	if (Option.isNone(parsed)) return false
 	const candidate = parsed.value
 	if (candidate.protocol !== "https:" && candidate.protocol !== "http:") return false
-	const configured = [config.MAPLE_APP_BASE_URL, config.MAPLE_API_BASE_URL].flatMap((url) =>
+	const configured = Arr.flatMap([config.MAPLE_APP_BASE_URL, config.MAPLE_API_BASE_URL], (url) =>
 		Option.toArray(parseUrl(url)),
 	)
-	if (configured.some((url) => url.origin === candidate.origin)) return true
+	if (Arr.some(configured, (url) => url.origin === candidate.origin)) return true
 	const pr = /^pr-(\d+)$/.exec(config.MAPLE_ENVIRONMENT)
 	if (pr !== null) {
 		return [`https://app-pr-${pr[1]}.maple.dev`, `https://api-pr-${pr[1]}.maple.dev`].includes(
 			candidate.origin,
 		)
 	}
-	const appIsLocal = configured.some((url) => isLocalHostname(url.hostname))
+	const appIsLocal = Arr.some(configured, (url) => isLocalHostname(url.hostname))
 	return (
 		config.MAPLE_ENVIRONMENT === "development" &&
 		appIsLocal &&
-		isLocalHostname(candidate.hostname.toLowerCase())
+		isLocalHostname(Str.toLowerCase(candidate.hostname))
 	)
 }
 
@@ -240,8 +241,8 @@ export const HttpV2PlanetScaleIntegrationsLive = HttpApiBuilder.group(
 					.handle("connect", ({ payload }) =>
 						Effect.gen(function* () {
 							const tenant = yield* CurrentTenant.Context
-							yield* requireAdmin(tenant.roles, () =>
-								V2InsufficientPermissions.make("Only org admins can connect PlanetScale"),
+							yield* Policy.check(tenant.roles, "integrations:manage", (denial) =>
+								V2InsufficientPermissions.make(denial.message),
 							)
 							const req = yield* HttpServerRequest.HttpServerRequest
 							const origin = resolveRequestOrigin(req)
@@ -257,10 +258,8 @@ export const HttpV2PlanetScaleIntegrationsLive = HttpApiBuilder.group(
 										origin,
 									},
 								)
-								return yield* Effect.fail(
-									V2CallbackHostUnavailable.make(
-										"PlanetScale connections are not available from this host",
-									),
+								return yield* V2CallbackHostUnavailable.make(
+									"PlanetScale connections are not available from this host",
 								)
 							}
 							const result = yield* planetscaleOAuth
@@ -280,12 +279,10 @@ export const HttpV2PlanetScaleIntegrationsLive = HttpApiBuilder.group(
 					.handle("organizations", () =>
 						Effect.gen(function* () {
 							const tenant = yield* CurrentTenant.Context
-							// Admin-gated like `select_organization`: this drives the org picker
-							// while the connection is pending, and both are admin-only flows.
-							yield* requireAdmin(tenant.roles, () =>
-								V2InsufficientPermissions.make(
-									"Only org admins can manage the PlanetScale integration",
-								),
+							// Gated like `select_organization`: this drives the org picker
+							// while the connection is pending, and both need integrations:manage.
+							yield* Policy.check(tenant.roles, "integrations:manage", (denial) =>
+								V2InsufficientPermissions.make(denial.message),
 							)
 							const organizations = yield* planetscaleOAuth
 								.listOrganizations(tenant.orgId)
@@ -302,10 +299,8 @@ export const HttpV2PlanetScaleIntegrationsLive = HttpApiBuilder.group(
 					.handle("selectOrganization", ({ payload }) =>
 						Effect.gen(function* () {
 							const tenant = yield* CurrentTenant.Context
-							yield* requireAdmin(tenant.roles, () =>
-								V2InsufficientPermissions.make(
-									"Only org admins can manage the PlanetScale integration",
-								),
+							yield* Policy.check(tenant.roles, "integrations:manage", (denial) =>
+								V2InsufficientPermissions.make(denial.message),
 							)
 							const status = yield* planetscale
 								.finalizeOrgSelection(tenant.orgId, {
@@ -327,16 +322,17 @@ export const HttpV2PlanetScaleIntegrationsLive = HttpApiBuilder.group(
 					.handle("setMetricsToken", ({ payload }) =>
 						Effect.gen(function* () {
 							const tenant = yield* CurrentTenant.Context
-							yield* requireAdmin(tenant.roles, () =>
-								V2InsufficientPermissions.make(
-									"Only org admins can manage the PlanetScale integration",
-								),
+							yield* Policy.check(tenant.roles, "integrations:manage", (denial) =>
+								V2InsufficientPermissions.make(denial.message),
 							)
 							const status = yield* planetscale
-								.setMetricsToken(tenant.orgId, {
-									tokenId: payload.token_id,
-									tokenSecret: payload.token_secret,
-								})
+								.setMetricsToken(
+									tenant.orgId,
+									new PlanetScaleMetricsTokenRequest({
+										tokenId: payload.token_id,
+										tokenSecret: payload.token_secret,
+									}),
+								)
 								.pipe(tapHttpErrors("PlanetScale metrics token update failed"))
 							// The token id names which credential was installed; its secret
 							// is write-only and never reaches an audit row.
@@ -349,8 +345,8 @@ export const HttpV2PlanetScaleIntegrationsLive = HttpApiBuilder.group(
 					.handle("disconnect", () =>
 						Effect.gen(function* () {
 							const tenant = yield* CurrentTenant.Context
-							yield* requireAdmin(tenant.roles, () =>
-								V2InsufficientPermissions.make("Only org admins can disconnect PlanetScale"),
+							yield* Policy.check(tenant.roles, "integrations:manage", (denial) =>
+								V2InsufficientPermissions.make(denial.message),
 							)
 							yield* planetscale
 								.disconnect(tenant.orgId)
@@ -381,11 +377,9 @@ export const HttpV2PlanetScaleIntegrationsLive = HttpApiBuilder.group(
 					.handle("webhookConfig", () =>
 						Effect.gen(function* () {
 							const tenant = yield* CurrentTenant.Context
-							// Admin-only: the response carries the webhook HMAC secret.
-							yield* requireAdmin(tenant.roles, () =>
-								V2InsufficientPermissions.make(
-									"Only org admins can read the PlanetScale webhook configuration",
-								),
+							// Needs integrations:manage: the response carries the webhook HMAC secret.
+							yield* Policy.check(tenant.roles, "integrations:manage", (denial) =>
+								V2InsufficientPermissions.make(denial.message),
 							)
 							const config = yield* planetscale
 								.webhookConfig(tenant.orgId)
@@ -399,7 +393,7 @@ export const HttpV2PlanetScaleIntegrationsLive = HttpApiBuilder.group(
 								url:
 									config.path === null
 										? null
-										: `${env.MAPLE_API_BASE_URL.replace(/\/+$/, "")}${config.path}`,
+										: `${Str.replace(/\/+$/, "")(env.MAPLE_API_BASE_URL)}${config.path}`,
 								secret: config.secret,
 							} satisfies V2PlanetScaleWebhookConfig
 						}),
@@ -451,7 +445,7 @@ export const HttpV2PlanetScaleIntegrationsLive = HttpApiBuilder.group(
 							const cached = yield* edgeCache.getOrCompute(
 								{
 									bucket: "ps-events-v2",
-									key: `${tenant.orgId}:${payload.database ?? ""}:${payload.branch ?? ""}:${startMs}:${endMs}:${categories.join(",")}:${limit}:${payload.cursor ?? ""}`,
+									key: `${tenant.orgId}:${payload.database ?? ""}:${payload.branch ?? ""}:${startMs}:${endMs}:${Arr.join(categories, ",")}:${limit}:${payload.cursor ?? ""}`,
 									// Shorter than query-insights' 60s: a deploy marker landing a
 									// minute after the deploy is the visible failure mode here.
 									ttlSeconds: 30,

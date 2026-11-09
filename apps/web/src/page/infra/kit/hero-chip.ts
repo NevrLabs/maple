@@ -1,8 +1,9 @@
 import { cn } from "@maple/ui/lib/utils"
-import { badgeVariants } from "@maple/ui/styles/ui/badge"
 import type { Html, HtmlBuilder } from "foldkit/html"
-import { badge } from "../../../ui/display"
-import { icon } from "../../../ui/icon"
+import { badge, badgeClass } from "@maple/views/ui/display"
+import { icon } from "@maple/views/ui/icon"
+import { Array as Arr } from "effect"
+import { typography } from "@maple/views/ui/typography"
 
 // `HeroChip`.
 
@@ -13,8 +14,8 @@ export const heroChip = <M>(
 	title?: string,
 ): Html => {
 	const children = typeof content === "string" ? [content] : content
-	const texts = children.filter((child): child is string => typeof child === "string")
-	const derived = texts.length === children.length ? texts.join("") : undefined
+	const texts = Arr.filter(children, (child): child is string => typeof child === "string")
+	const derived = texts.length === children.length ? Arr.join(texts, "") : undefined
 	const resolvedTitle = title ?? derived
 	return badge(
 		h,
@@ -25,7 +26,7 @@ export const heroChip = <M>(
 			className: "min-w-0",
 			attributes: resolvedTitle === undefined ? [] : [h.Title(resolvedTitle)],
 		},
-		[h.span([h.Class("min-w-0 truncate")], children)],
+		[typography(h, { truncate: true, className: "min-w-0" }, children)],
 	)
 }
 
@@ -37,7 +38,7 @@ const FIELD_CLASS = "min-w-0 gap-1 font-normal text-muted-foreground"
  */
 export const heroFieldChipClass = (isPicker: boolean): string =>
 	cn(
-		badgeVariants({ variant: isPicker ? "meta" : "muted", size: "xs", mono: true }),
+		badgeClass({ variant: isPicker ? "meta" : "muted", size: "xs", mono: true }),
 		FIELD_CLASS,
 		isPicker && "cursor-pointer hover:text-foreground active:text-foreground",
 	)
@@ -55,14 +56,12 @@ export const heroFieldChipParts = <M>(
 	h: HtmlBuilder<M>,
 	options: HeroFieldChipOptions,
 ): ReadonlyArray<Html> => {
-	const value = h.span([h.Class("min-w-0 truncate text-foreground")], [options.value])
+	const value = typography(h, { tone: "foreground", truncate: true, className: "min-w-0" }, [options.value])
 	// An empty label leaves the value alone, with no stray gap before it.
 	const label = options.label === "" ? [] : [h.span([h.Class("shrink-0")], [options.label])]
 	return [
 		...(options.isValueFirst === true ? [value, ...label] : [...label, value]),
-		...(options.isPicker === true
-			? [icon(h, "ChevronDownIcon", { className: "size-3 shrink-0" })]
-			: []),
+		...(options.isPicker === true ? [icon(h, "ChevronDownIcon", { className: "size-3 shrink-0" })] : []),
 	]
 }
 

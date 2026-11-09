@@ -1,6 +1,6 @@
 import { KUBERNETES_ROOT, KUBERNETES_VIEWS } from "../components/infra/kubernetes/views"
-import { Schema } from "effect"
-import type { IconName } from "../ui/icon"
+import { Schema, Array as Arr, String as Str } from "effect"
+import type { IconName } from "@maple/views/ui/icon"
 
 // The sidebar's nav tree and helpers, with generated icon names.
 
@@ -113,7 +113,7 @@ const servicesItem: NavItem = {
 	icon: "ServerIcon",
 	subItems: [
 		{ title: "All services", href: "/services", icon: "UnorderedListIcon", paletteTitle: "Services" },
-		{ title: "Map", href: "/service-map", icon: "NetworkNodesIcon", paletteTitle: "Service Map" },
+		{ title: "Map", href: "/service-map", icon: "NetworkNodesIcon", paletteTitle: "Service map" },
 	],
 }
 
@@ -126,12 +126,17 @@ const exploreItem: NavItem = {
 		{ title: "Logs", href: "/logs", icon: "FileIcon" },
 		{ title: "Metrics", href: "/metrics", icon: "ChartLineIcon" },
 		{ title: "Replays", href: "/replays", icon: "PlayRotateClockwiseIcon" },
-		{ title: "Agent Sessions", href: "/agent-sessions", icon: "SquareSparkleIcon" },
+		{ title: "Agent sessions", href: "/agent-sessions", icon: "SquareSparkleIcon" },
+		{ title: "MCP servers", href: "/mcp-servers", icon: "PlugIcon" },
 	],
 }
 
 /** The org rollout flags that gate a nav row each. */
-export type NavFlags = Readonly<{ releases: boolean; securityAudit: boolean; statusPages: boolean }>
+export type NavFlags = Readonly<{
+	releases: boolean
+	securityAudit: boolean
+	statusPages: boolean
+}>
 
 /** `navGroups(flags)`; `releases`, `securityAudit` and `statusPages` gate a row each. */
 export const navGroups = (flags: NavFlags): ReadonlyArray<NavGroup> => [
@@ -161,7 +166,8 @@ export const navGroups = (flags: NavFlags): ReadonlyArray<NavGroup> => [
 		label: "Analyze",
 		items: [
 			exploreItem,
-			{ title: "Web Analytics", href: "/analytics", icon: "ChartBarHorizontalIcon" },
+			{ title: "Web analytics", href: "/analytics", icon: "ChartBarHorizontalIcon" },
+			{ title: "Users", href: "/users", icon: "UsersIcon" },
 			{ title: "Dashboards", href: "/dashboards", icon: "GridSquareCirclePlusIcon" },
 		],
 	},
@@ -172,7 +178,7 @@ export const navGroups = (flags: NavFlags): ReadonlyArray<NavGroup> => [
 			{ title: "Errors", href: "/errors", icon: "CircleWarningIcon" },
 			{ title: "Alerts", href: "/alerts", icon: "BellIcon", alsoActive: ["/anomalies"] },
 			{
-				title: "Code Review",
+				title: "Code review",
 				href: "/code-review",
 				icon: "CodeIcon",
 				badge: "Beta",
@@ -189,20 +195,21 @@ export const navGroups = (flags: NavFlags): ReadonlyArray<NavGroup> => [
 export const isPathActive = (currentPath: string, href: string): boolean =>
 	href === "/"
 		? currentPath === "/" || currentPath === ""
-		: currentPath === href || currentPath.startsWith(`${href}/`)
+		: currentPath === href || Str.startsWith(`${href}/`)(currentPath)
 
 export const matchSubItem = (currentPath: string, sub: NavSubItem): string | undefined =>
-	[sub.href, ...(sub.views ?? []).map((view) => view.href)]
-		.filter((href) => isPathActive(currentPath, href))
-		.reduce<string | undefined>(
-			(best, href) => (best === undefined || href.length > best.length ? href : best),
-			undefined,
-		)
+	Arr.reduce<string, string | undefined>(
+		Arr.filter([sub.href, ...Arr.map(sub.views ?? [], (view) => view.href)], (href) =>
+			isPathActive(currentPath, href),
+		),
+		undefined,
+		(best, href) => (best === undefined || href.length > best.length ? href : best),
+	)
 
 export const isNavItemActive = (currentPath: string, item: NavItem): boolean =>
 	isPathActive(currentPath, item.href) ||
-	(item.alsoActive?.some((href) => isPathActive(currentPath, href)) ?? false) ||
-	(item.subItems?.some((sub) => matchSubItem(currentPath, sub) !== undefined) ?? false)
+	Arr.some(item.alsoActive ?? [], (href) => isPathActive(currentPath, href)) ||
+	Arr.some(item.subItems ?? [], (sub) => matchSubItem(currentPath, sub) !== undefined)
 
 export interface NavPreview {
 	readonly glyphs: ReadonlyArray<NavSubItem>
@@ -216,14 +223,12 @@ export interface NavPreview {
  */
 export const navPreview = (item: NavItem, shown: ReadonlyArray<NavSubItem>): NavPreview | undefined => {
 	const subItems = item.subItems
-	if (subItems === undefined || !subItems.some((sub) => sub.iconColor !== undefined)) return undefined
+	if (subItems === undefined || !Arr.some(subItems, (sub) => sub.iconColor !== undefined)) return undefined
 	const marked = (list: ReadonlyArray<NavSubItem>) =>
-		list.filter((sub) => sub.href !== item.href && sub.icon !== undefined)
+		Arr.filter(list, (sub) => sub.href !== item.href && sub.icon !== undefined)
 	const reporting = marked(shown)
 	const candidates = reporting.length > 0 ? reporting : marked(subItems)
-	const unique = candidates.filter(
-		(sub, index) => candidates.findIndex((other) => other.icon === sub.icon) === index,
-	)
+	const unique = Arr.dedupeWith(candidates, (a, b) => a.icon === b.icon)
 	if (unique.length <= NAV_PREVIEW_MAX_GLYPHS) return { glyphs: unique, overflow: 0 }
 	const glyphs = unique.slice(0, NAV_PREVIEW_MAX_GLYPHS - 1)
 	return { glyphs, overflow: unique.length - glyphs.length }
@@ -238,7 +243,7 @@ export const partitionSubItems = (
 	if (present === null) return { shown: subItems, hidden: [] }
 	const keep = (sub: NavSubItem) =>
 		sub.surfaces === undefined ||
-		sub.surfaces.some((surface) => present.has(surface)) ||
+		Arr.some(sub.surfaces, (surface) => present.has(surface)) ||
 		matchSubItem(currentPath, sub) !== undefined
-	return { shown: subItems.filter(keep), hidden: subItems.filter((sub) => !keep(sub)) }
+	return { shown: Arr.filter(subItems, keep), hidden: Arr.filter(subItems, (sub) => !keep(sub)) }
 }

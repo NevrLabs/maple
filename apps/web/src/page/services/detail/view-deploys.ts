@@ -2,21 +2,20 @@ import { errorRateLevel } from "@maple/ui/lib/error-rate"
 import { countLabel, formatErrorRate, formatNumber, pluralize } from "@maple/ui/lib/format"
 import { shortId } from "@maple/ui/lib/ids"
 import { TONE_SOFT } from "@maple/ui/lib/tone"
-import { skeletonListGapStyles, skeletonListStyles } from "@maple/ui/styles/ui/skeleton"
 import { cn } from "@maple/ui/lib/utils"
 import { IssueSeverity } from "@maple/domain/http"
 import { AsyncData } from "foldkit"
-import { Schema } from "effect"
+import { Schema, Array as Arr, String as Str, Option } from "effect"
 import type { Html, HtmlBuilder } from "foldkit/html"
-import { button } from "../../../ui/button"
-import { badge } from "../../../ui/display"
-import { inlineCode } from "../../../ui/inline-code"
+import { button } from "@maple/views/ui/button"
+import { badge } from "@maple/views/ui/display"
+import { inlineCode } from "@maple/views/ui/inline-code"
 import { docsLink } from "../../kit/signal-empty-state"
-import { emptyMessage } from "../../../ui/empty"
-import { listRow } from "../../../ui/list-row"
-import { skeleton, skeletonList } from "../../../ui/skeleton"
-import { textLink } from "../../../ui/text-link"
-import { truncatedText } from "../../../ui/truncated-text"
+import { emptyMessage } from "@maple/views/ui/empty"
+import { listRow } from "@maple/views/ui/list-row"
+import { skeleton, skeletonList } from "@maple/views/ui/skeleton"
+import { textLink } from "@maple/views/ui/text-link"
+import { truncatedText } from "@maple/views/ui/truncated-text"
 import { type DeployEntry, deriveDeploys, firstLine, isResolvableSha } from "./derive-panels"
 import { Message } from "./message"
 import type { Issue, Model } from "./model"
@@ -24,6 +23,8 @@ import { DEPLOYS_EXPANDED, DEPLOYS_RAIL } from "./update"
 import { sectionCard } from "./view-panels"
 import { relativeTime } from "../../kit/relative-time"
 import { severityBadge } from "../../errors/kit/severity"
+import { typography } from "@maple/views/ui/typography"
+import { hstack, vstack } from "@maple/views/ui/stack"
 
 // `ServiceErrorsPanel` + `IssueLine`, and `ServiceRecentDeploys` (components/services/).
 
@@ -50,16 +51,15 @@ const issueLine = (h: H, issue: Issue, clock: Clock): Html =>
 		trailing: h.span(
 			[h.Class("contents")],
 			[
-				h.span(
-					[h.Class("font-mono text-xs tabular-nums text-muted-foreground")],
-					[formatNumber(issue.occurrenceCount), "×"],
-				),
+				typography(h, { size: "xs", tone: "muted", mono: true, numeric: true }, [
+					formatNumber(issue.occurrenceCount),
+					"×",
+				]),
 				relativeTime(h, {
 					value: issue.lastSeenAt,
 					...clock,
 					variant: "orDate",
 					mono: true,
-					tooltip: "title",
 					className: "w-14 text-right text-xs text-foreground-subtle",
 				}),
 			],
@@ -71,15 +71,10 @@ const issuesFrame = (h: H, isLimited: boolean, children: ReadonlyArray<Html>): H
 		h,
 		{
 			title: "Open issues",
-			action: h.div(
-				[h.Class("flex items-center gap-3")],
-				[
-					...(isLimited
-						? [h.span([h.Class("text-2xs text-muted-foreground")], ["Latest 90 days"])]
-						: []),
-					textLink(h, { href: "/errors", className: "text-xs" }, ["View all →"]),
-				],
-			),
+			action: hstack(h, { gap: "3" }, [
+				...(isLimited ? [typography(h, { size: "2xs", tone: "muted" }, ["Latest 90 days"])] : []),
+				textLink(h, { href: "/errors", className: "text-xs" }, ["View all →"]),
+			]),
 		},
 		children,
 	)
@@ -98,10 +93,10 @@ export const issuesPanel = (h: H, model: Model, clock: Clock, isLimited: boolean
 const issuesReady = (h: H, issues: ReadonlyArray<Issue>, clock: Clock, isLimited: boolean): Html =>
 	issuesFrame(h, isLimited, [
 		issues.length === 0
-			? emptyMessage(h, {}, ["No open issues for this service."])
+			? emptyMessage(h, {}, ["No open issues for this service"])
 			: h.div(
 					[h.Class("space-y-px p-2")],
-					issues.map((issue) => issueLine(h, issue, clock)),
+					Arr.map(issues, (issue) => issueLine(h, issue, clock)),
 				),
 	])
 
@@ -131,22 +126,13 @@ const errorRateChip = (h: H, deploy: DeployEntry): Html => {
 
 /** `RowFrame`: avatar · [line1 + chip / line2]. */
 const rowFrame = (h: H, avatar: Html, line1: Html, chip: Html, line2: ReadonlyArray<Html>): Html =>
-	h.div(
-		[h.Class("flex items-start gap-2.5 rounded-sm px-2 py-1.5")],
-		[
-			h.div([h.Class("mt-0.5 shrink-0")], [avatar]),
-			h.div(
-				[h.Class("flex min-w-0 flex-1 flex-col gap-0.5 leading-tight")],
-				[
-					h.div(
-						[h.Class("flex items-center gap-2")],
-						[h.div([h.Class("min-w-0 flex-1 truncate text-ui")], [line1]), chip],
-					),
-					h.div([h.Class("flex items-baseline gap-1.5 text-2xs text-muted-foreground")], line2),
-				],
-			),
-		],
-	)
+	hstack(h, { gap: "2.5", align: "start", className: "rounded-sm px-2 py-1.5" }, [
+		h.div([h.Class("mt-0.5 shrink-0")], [avatar]),
+		vstack(h, { gap: "0.5", shrink: true, grow: true, className: "leading-tight" }, [
+			hstack(h, { gap: "2" }, [h.div([h.Class("min-w-0 flex-1 truncate text-ui")], [line1]), chip]),
+			hstack(h, { gap: "1.5", align: "baseline", className: "text-2xs text-muted-foreground" }, line2),
+		]),
+	])
 
 const rowMeta = (
 	h: H,
@@ -155,13 +141,12 @@ const rowMeta = (
 	prefix: ReadonlyArray<Html>,
 ): ReadonlyArray<Html> => [
 	...prefix,
-	h.span([h.Class("shrink-0 tabular-nums")], [formatNumber(deploy.spanCount), " spans"]),
+	typography(h, { numeric: true, className: "shrink-0" }, [formatNumber(deploy.spanCount), " spans"]),
 	relativeTime(h, {
 		value: deploy.firstSeen,
 		...clock,
 		variant: "orDate",
 		mono: true,
-		tooltip: "title",
 		className: "ml-auto shrink-0 cursor-default text-foreground-subtle",
 	}),
 ]
@@ -171,26 +156,25 @@ const blankAvatar = (h: H): Html => h.span([h.Class("block size-5 rounded-full b
 const deploysEmpty = (h: H): Html =>
 	emptyMessage(h, { className: "flex flex-col items-center gap-1" }, [
 		h.span([], ["No deploys detected in this window."]),
-		h.span(
-			[h.Class("text-foreground-subtle")],
-			[
-				"Deploy tracking needs spans to carry the",
-				" ",
-				inlineCode(h, {}, ["vcs.ref.head.revision"]),
-				" resource attribute.",
-			],
-		),
+		typography(h, { tone: "subtle" }, [
+			"Deploy tracking needs spans to carry the",
+			" ",
+			inlineCode(h, {}, ["vcs.ref.head.revision"]),
+			" resource attribute.",
+		]),
 		h.span([h.Class("mt-1")], [docsLink(h, "github")]),
 	])
 
 /** `ConnectRepoFooter`: one CTA when the first resolvable sha failed as "not connected". */
 const connectRepoFooter = (h: H, model: Model, deploys: ReadonlyArray<DeployEntry>): ReadonlyArray<Html> => {
-	const first = deploys.find((deploy) => isResolvableSha(deploy.sha))
-	const commit = first === undefined ? undefined : model.commits[first.sha]
+	const commit = Option.match(
+		Arr.findFirst(deploys, (deploy) => isResolvableSha(deploy.sha)),
+		{ onNone: () => undefined, onSome: (first) => model.commits[first.sha] },
+	)
 	const isNotConnected =
 		commit !== undefined &&
 		AsyncData.isFailure(commit) &&
-		commit.error.tag.endsWith("IntegrationsNotConnectedError")
+		Str.endsWith("IntegrationsNotConnectedError")(commit.error.tag)
 	return isNotConnected
 		? [
 				h.div(
@@ -210,14 +194,7 @@ const connectRepoFooter = (h: H, model: Model, deploys: ReadonlyArray<DeployEntr
 export const deploysPanel = (h: H, model: Model, clock: Clock, isLoading: boolean): Html => {
 	if (isLoading) {
 		return sectionCard(h, { title: "Recent deploys" }, [
-			h.div(
-				[
-					h.AriaBusy(true),
-					h.Class(cn(skeletonListStyles, skeletonListGapStyles.px, "p-2")),
-					h.DataAttribute("slot", "skeleton-list"),
-				],
-				Array.from({ length: 4 }, () => deploySkeleton(h)),
-			),
+			skeletonList(h, { rows: 4, className: "p-2", renderRow: () => deploySkeleton(h) }),
 		])
 	}
 	const releases = AsyncData.getOrElse(
@@ -235,10 +212,10 @@ export const deploysPanel = (h: H, model: Model, clock: Clock, isLoading: boolea
 			action:
 				deploys.length === 0
 					? undefined
-					: h.span(
-							[h.Class("text-xs text-foreground-subtle")],
-							[countLabel(deploys.length, "version"), " in window"],
-						),
+					: typography(h, { size: "xs", tone: "subtle" }, [
+							countLabel(deploys.length, "version"),
+							" in window",
+						]),
 		},
 		deploys.length === 0
 			? [deploysEmpty(h)]
@@ -246,7 +223,7 @@ export const deploysPanel = (h: H, model: Model, clock: Clock, isLoading: boolea
 					h.div(
 						[h.Class(cn("space-y-px p-2", isExpanded && "max-h-96 overflow-y-auto"))],
 						[
-							...visible.map((deploy) => deployRow(h, model, deploy, clock)),
+							...Arr.map(visible, (deploy) => deployRow(h, model, deploy, clock)),
 							...(isExpanded && hiddenCount > 0
 								? [
 										h.div(
@@ -300,13 +277,15 @@ const shortReleaseLabel = (sha: string): string => (isResolvableSha(sha) ? short
 /** `CommitAvatar compact`. TODO(avatar-error): a broken avatar URL does not fall back to initials. */
 const commitAvatar = (h: H, url: string | null, name: string): Html =>
 	url === null
-		? h.div(
-				[
-					h.Class(
-						"size-5 flex shrink-0 items-center justify-center rounded-full bg-muted text-2xs font-medium uppercase text-muted-foreground",
-					),
-				],
-				[name.slice(0, 2)],
+		? hstack(
+				h,
+				{
+					align: "center",
+					justify: "center",
+					className:
+						"size-5 shrink-0 rounded-full bg-muted text-2xs font-medium uppercase text-muted-foreground",
+				},
+				[Str.slice(0, 2)(name)],
 			)
 		: h.img([
 				h.Src(url),
@@ -321,16 +300,13 @@ const commitTrigger = (h: H, className: string, label: string): Html =>
 	h.span([h.Class(cn("cursor-default", className)), h.DataAttribute("slot", "hover-card-trigger")], [label])
 
 const deploySkeleton = (h: H): Html =>
-	h.div(
-		[h.Class("flex items-start gap-2.5 px-2 py-1.5")],
-		[
-			skeleton(h, "mt-0.5 size-5 shrink-0 rounded-full"),
-			h.div(
-				[h.Class("flex min-w-0 flex-1 flex-col gap-1")],
-				[skeleton(h, "h-3.5 w-3/4"), skeleton(h, "h-3 w-1/2")],
-			),
-		],
-	)
+	hstack(h, { gap: "2.5", align: "start", className: "px-2 py-1.5" }, [
+		skeleton(h, "mt-0.5 size-5 shrink-0 rounded-full"),
+		vstack(h, { gap: "1", shrink: true, grow: true }, [
+			skeleton(h, "h-3.5 w-3/4"),
+			skeleton(h, "h-3 w-1/2"),
+		]),
+	])
 
 const deployRow = (h: H, model: Model, deploy: DeployEntry, clock: Clock): Html => {
 	const chip = errorRateChip(h, deploy)
@@ -339,7 +315,7 @@ const deployRow = (h: H, model: Model, deploy: DeployEntry, clock: Clock): Html 
 		return rowFrame(
 			h,
 			blankAvatar(h),
-			h.span([h.Class("font-mono text-xs text-foreground")], [label]),
+			typography(h, { size: "xs", tone: "foreground", mono: true }, [label]),
 			chip,
 			rowMeta(h, deploy, clock, [h.span([h.Class("shrink-0")], ["deployment reference"])]),
 		)
@@ -382,9 +358,10 @@ const resolvedRow = (
 		commitTrigger(h, "text-foreground", subject === "" ? shortReleaseLabel(deploy.sha) : subject),
 		chip,
 		rowMeta(h, deploy, clock, [
-			h.span([h.Class("min-w-0 truncate")], [author]),
-			h.span(
-				[h.Class("font-mono tabular-nums shrink-0"), h.Title(deploy.sha)],
+			typography(h, { truncate: true, className: "min-w-0" }, [author]),
+			typography(
+				h,
+				{ mono: true, numeric: true, className: "shrink-0", attributes: [h.Title(deploy.sha)] },
 				[shortId(deploy.sha, "sha")],
 			),
 		]),

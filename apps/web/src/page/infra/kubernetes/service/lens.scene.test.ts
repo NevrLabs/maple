@@ -1,5 +1,5 @@
 import { OrgId } from "@maple/domain"
-import { Result, Schema } from "effect"
+import { Result, Schema, Array as Arr, Option } from "effect"
 import { describe, expect, test } from "vitest"
 import type { PageContext } from "../../../contract"
 import * as Frame from "../../kit/frame"
@@ -14,7 +14,8 @@ const window = { startTime: "2026-10-01 00:00:00", endTime: "2026-10-01 12:00:00
 const NOW = Date.parse("2026-10-01T12:00:00Z")
 
 const pageUpdate = (model: Model, message: Message) => update(model, message, context)
-const names = (commands: ReadonlyArray<{ readonly name: string }> | undefined) => (commands ?? []).map(({ name }) => name)
+const names = (commands: ReadonlyArray<{ readonly name: string }> | undefined) =>
+	Arr.map(commands ?? [], ({ name }) => name)
 const resolved = Message.GotFrameMessage({
 	message: Frame.Message.CompletedResolveWindow({ window, nowMs: NOW, locale: "en-US", mode: "Load" }),
 })
@@ -44,7 +45,10 @@ describe("service lens", () => {
 		expect(names(entered.commands)).toContain("FetchLensPods")
 		const linked = pageUpdate(
 			entered.model,
-			Message.CompletedFetchLinked({ key: entered.model.linked.key ?? "", result: Result.succeed([workload]) }),
+			Message.CompletedFetchLinked({
+				key: entered.model.linked.key ?? "",
+				result: Result.succeed([workload]),
+			}),
 		)
 		expect(names(linked.commands)).toEqual(expect.arrayContaining(["FetchLensPods", "FetchLensCpu"]))
 	})
@@ -54,7 +58,10 @@ describe("service lens", () => {
 		const withNames = pageUpdate(
 			index,
 			Message.GotRailMessage({
-				message: Rail.Message.CompletedFetchNames({ key: index.rail.names.key ?? "", result: Result.succeed(["payment-svc"]) }),
+				message: Rail.Message.CompletedFetchNames({
+					key: index.rail.names.key ?? "",
+					result: Result.succeed(["payment-svc"]),
+				}),
 			}),
 		).model
 		const picked = routeChanged(withNames, { search: {}, serviceName: "payment-svc" }, context)
@@ -67,7 +74,9 @@ describe("service lens", () => {
 		const enter = (ctx: PageContext) => update(init({ search: {} }, ctx).model, resolved, ctx)
 		const unpinned = enter(context)
 		const entered = enter(pinned)
-		const fetch = entered.commands?.find(({ name }) => name === "FetchLensServiceNames")
+		const fetch = Option.getOrUndefined(
+			Arr.findFirst(entered.commands ?? [], ({ name }) => name === "FetchLensServiceNames"),
+		)
 		const args = fetch?.args !== undefined && "input" in fetch.args ? fetch.args.input : null
 		expect(args).toEqual({ ...window, namespaces: ["payments"] })
 		expect(entered.model.rail.names.key).not.toEqual(unpinned.model.rail.names.key)

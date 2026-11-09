@@ -16,7 +16,20 @@ import { IntegrationsPersistenceError, UserId } from "@maple/domain/http"
 import type { OrgId } from "@maple/domain/primitives"
 import * as PG from "@maple-dev/effect-orm/postgres"
 import { GcpConnectors, GcpResources, type GcpConnectorRow } from "@maple/db/tables"
-import { Cause, Clock, Context, Duration, Effect, Layer, Option, Redacted, Ref, Schema, Stream } from "effect"
+import {
+	Cause,
+	Clock,
+	Context,
+	Duration,
+	Effect,
+	Layer,
+	Option,
+	Redacted,
+	Ref,
+	Schema,
+	Stream,
+	Array as Arr,
+} from "effect"
 import { FetchHttpClient, HttpClient } from "effect/http"
 import { Database } from "@maple/backend/platform/DatabaseLive"
 import { makeDbExecute, makePersistenceErrorMapper } from "@maple/backend/platform/db-execute"
@@ -84,7 +97,7 @@ const FLUSH_ROWS = 5_000
 const BILLING_HOLD_MS = 60 * MINUTE_MS
 const RESOURCE_SYNC_INTERVAL_MS = 60 * MINUTE_MS
 
-const METRIC_COUNT = GCP_METRIC_GROUPS.reduce((sum, group) => sum + group.metrics.length, 0)
+const METRIC_COUNT = Arr.reduce(GCP_METRIC_GROUPS, 0, (sum, group) => sum + group.metrics.length)
 
 /**
  * What a poll reads in turn: a metric on its own, or a top group as one, its ranking metric
@@ -93,17 +106,18 @@ const METRIC_COUNT = GCP_METRIC_GROUPS.reduce((sum, group) => sum + group.metric
 type MetricRead =
 	| { readonly group: GcpMetricGroup; readonly metric: GcpMetric }
 	| { readonly group: GcpTopGroup; readonly ranking: GcpMetric; readonly rest: ReadonlyArray<GcpMetric> }
-const READS = GCP_METRIC_GROUPS.flatMap((group): ReadonlyArray<MetricRead> => {
+const READS = Arr.flatMap(GCP_METRIC_GROUPS, (group): ReadonlyArray<MetricRead> => {
 	const top = group.top
 	return top === undefined
-		? group.metrics.map((metric) => ({ group, metric }))
-		: group.metrics
-				.filter((metric) => metric.name === top.by)
-				.map((ranking) => ({
+		? Arr.map(group.metrics, (metric) => ({ group, metric }))
+		: Arr.map(
+				Arr.filter(group.metrics, (metric) => metric.name === top.by),
+				(ranking) => ({
 					group: { ...group, top },
 					ranking,
-					rest: group.metrics.filter((metric) => metric !== ranking),
-				}))
+					rest: Arr.filter(group.metrics, (metric) => metric !== ranking),
+				}),
+			)
 })
 
 /** How one metric query went: answered in full or cut short, failed, or not run for a budget. */
@@ -112,7 +126,14 @@ type Read = readonly [GcpMetric, ReadOutcome]
 
 /** Queries answered in full, cut short at a budget, not started because of one, and the first failure. */
 const tallyReads = (reads: ReadonlyArray<Read>) =>
-	reads.reduce(
+	Arr.reduce(
+		reads,
+		{
+			complete: 0,
+			partial: 0,
+			skipped: 0,
+			firstFailure: undefined as { readonly type: string; readonly error: GcpApiError } | undefined,
+		},
 		(tally, [metric, outcome]) =>
 			outcome === "skipped"
 				? { ...tally, skipped: tally.skipped + 1 }
@@ -125,12 +146,6 @@ const tallyReads = (reads: ReadonlyArray<Read>) =>
 								...tally,
 								firstFailure: tally.firstFailure ?? { type: metric.type, error: outcome },
 							},
-		{
-			complete: 0,
-			partial: 0,
-			skipped: 0,
-			firstFailure: undefined as { readonly type: string; readonly error: GcpApiError } | undefined,
-		},
 	)
 
 /** No access, or out of quota: every remaining query would fail the same way. */
@@ -164,7 +179,7 @@ const pages = <B extends { readonly nextPageToken?: string | undefined }, E, R>(
 const readToEnd = <B extends { readonly nextPageToken?: string | undefined }>(last: Option.Option<B>) =>
 	Option.isSome(last) && last.value.nextPageToken === undefined
 
-const SYSTEM_USER_ID = Schema.decodeUnknownSync(UserId)("system-gcp-metrics")
+const SYSTEM_USER_ID = Schema.decodeSync(UserId)("system-gcp-metrics")
 
 const RETRIES = "Maple retries in 5 minutes."
 const NOT_STORED = `${RETRIES} Nothing to do.`
@@ -257,7 +272,7 @@ const IDLE: GcpMetricsPollSummary = {
 interface Tick {
 	readonly now: number
 	readonly httpClient: HttpClient.HttpClient
-	readonly mapleToken: Redacted.Redacted<string>
+	readonly mapleToken: Redacted.Redacted
 	/** Every outbound request of the tick, counted by `httpClient`. */
 	readonly budget: { calls: number }
 }
@@ -273,7 +288,7 @@ const FAILED: ConnectorOutcome = { ...NOTHING, failed: true }
 
 export interface GcpMetricsServiceApi {
 	/** No-op unless `MAPLE_GCP_SERVICE_ACCOUNT_KEY` is set. */
-	readonly pollAll: () => Effect.Effect<GcpMetricsPollSummary, IntegrationsPersistenceError | GcpApiError>
+	readonly pollAll: Effect.Effect<GcpMetricsPollSummary, IntegrationsPersistenceError | GcpApiError>
 }
 
 export class GcpMetricsService extends Context.Service<GcpMetricsService, GcpMetricsServiceApi>()(
@@ -388,8 +403,8 @@ export class GcpMetricsService extends Context.Service<GcpMetricsService, GcpMet
 				const bodies = yield* pages(MAX_RESOURCE_PAGES, (pageToken) =>
 					listSqlInstancesPage(tick.httpClient, reader, scope, pageToken),
 				).pipe(Stream.runCollect)
-				const instances = bodies.flatMap((body) =>
-					(body.assets ?? []).flatMap((asset) => {
+				const instances = Arr.flatMap(bodies, (body) =>
+					Arr.flatMap(body.assets ?? [], (asset) => {
 						const data = asset.resource?.data
 						return data === undefined ? [] : [{ name: asset.name, data }]
 					}),
@@ -423,7 +438,7 @@ export class GcpMetricsService extends Context.Service<GcpMetricsService, GcpMet
 				/** One page's resources onto the inventory. Keyed by name: one statement cannot upsert the same row twice. */
 				const upsertPage = (body: Effect.Success<ReturnType<typeof searchResourcesPage>>) => {
 					const rows = new Map(
-						(body.results ?? []).flatMap((result) => {
+						Arr.flatMap(body.results ?? [], (result) => {
 							const resource = mapGcpResource(result)
 							return resource === undefined ? [] : [[resource.name, resource] as const]
 						}),
@@ -433,7 +448,7 @@ export class GcpMetricsService extends Context.Service<GcpMetricsService, GcpMet
 						db.run(
 							PG.insertInto(GcpResources)
 								.values(
-									[...rows.values()].map((resource) => ({
+									Arr.map([...rows.values()], (resource) => ({
 										...resource,
 										connectorId: connector.id,
 										orgId: connector.orgId,
@@ -457,11 +472,10 @@ export class GcpMetricsService extends Context.Service<GcpMetricsService, GcpMet
 						),
 					)
 				}
-				const complete = readToEnd(
-					yield* pages(MAX_RESOURCE_PAGES, (pageToken) =>
-						searchResourcesPage(tick.httpClient, reader, scope, pageToken),
-					).pipe(Stream.tap(upsertPage), Stream.runLast),
-				)
+				const lastPage = yield* pages(MAX_RESOURCE_PAGES, (pageToken) =>
+					searchResourcesPage(tick.httpClient, reader, scope, pageToken),
+				).pipe(Stream.tap(upsertPage), Stream.runLast)
+				const complete = readToEnd(lastPage)
 				if (complete) {
 					yield* dbExecute((db) =>
 						db.run(
@@ -535,10 +549,8 @@ export class GcpMetricsService extends Context.Service<GcpMetricsService, GcpMet
 						connector.resourcesSyncedAt === null ||
 						tick.now - connector.resourcesSyncedAt >= RESOURCE_SYNC_INTERVAL_MS
 					) {
-						yield* updateConnector(
-							connector.id,
-							yield* resourceSyncOutcome(connector, tick, scope, reader),
-						)
+						const syncOutcome = yield* resourceSyncOutcome(connector, tick, scope, reader)
+						yield* updateConnector(connector.id, syncOutcome)
 					}
 					const ingestKey = (yield* ingestKeys.getOrCreate(connector.orgId, SYSTEM_USER_ID))
 						.publicKey
@@ -567,7 +579,7 @@ export class GcpMetricsService extends Context.Service<GcpMetricsService, GcpMet
 					) {
 						const rows = mapGcpTimeSeries(
 							query,
-							keep === undefined ? series : series.filter(keep),
+							keep === undefined ? series : Arr.filter(series, keep),
 						)
 						const full = yield* Ref.modify(buffer, (held) => {
 							const next = {
@@ -623,7 +635,7 @@ export class GcpMetricsService extends Context.Service<GcpMetricsService, GcpMet
 						rest: ReadonlyArray<GcpMetric>,
 					) {
 						if (yield* outOfBudget) {
-							return [ranking, ...rest].map((metric): Read => [metric, "skipped"])
+							return Arr.map([ranking, ...rest], (metric): Read => [metric, "skipped"])
 						}
 						const query = { scope, group, metric: ranking, ...window }
 						const rankingSeries = yield* Ref.make<ReadonlyArray<GcpTimeSeries>>([])
@@ -633,7 +645,9 @@ export class GcpMetricsService extends Context.Service<GcpMetricsService, GcpMet
 						if (typeof ranked !== "boolean") {
 							// A type that never had data in the scope has nothing to rank.
 							const nothing =
-								ranked.kind === "not_found" ? rest.map((metric): Read => [metric, true]) : []
+								ranked.kind === "not_found"
+									? Arr.map(rest, (metric): Read => [metric, true])
+									: []
 							return [[ranking, ranked] satisfies Read, ...nothing]
 						}
 						const series = yield* Ref.get(rankingSeries)
@@ -643,7 +657,7 @@ export class GcpMetricsService extends Context.Service<GcpMetricsService, GcpMet
 						if (kept.size === 0) {
 							return [
 								[ranking, ranked] satisfies Read,
-								...rest.map((metric): Read => [metric, true]),
+								...Arr.map(rest, (metric): Read => [metric, true]),
 							]
 						}
 						const others = yield* Stream.fromIterable(rest).pipe(
@@ -678,7 +692,7 @@ export class GcpMetricsService extends Context.Service<GcpMetricsService, GcpMet
 								return yield* readTop(read.group, read.ranking, read.rest)
 							}),
 						),
-						Stream.takeUntil((reads) => reads.some(([, outcome]) => halts(outcome))),
+						Stream.takeUntil((reads) => Arr.some(reads, ([, outcome]) => halts(outcome))),
 						Stream.runCollect,
 					)
 					const { complete, partial, skipped, firstFailure } = tallyReads(reads.flat())
@@ -686,7 +700,8 @@ export class GcpMetricsService extends Context.Service<GcpMetricsService, GcpMet
 					if ((yield* Ref.get(rowsIngested)) === 0 && complete + partial === 0) {
 						return firstFailure === undefined ? NOTHING : yield* firstFailure.error
 					}
-					yield* ship(yield* Ref.getAndSet(buffer, emptyRows))
+					const remaining = yield* Ref.getAndSet(buffer, emptyRows)
+					yield* ship(remaining)
 					const rowsIngestedTotal = yield* Ref.get(rowsIngested)
 
 					const incomplete = partial + skipped
@@ -709,7 +724,7 @@ export class GcpMetricsService extends Context.Service<GcpMetricsService, GcpMet
 					yield* updateConnector(connector.id, {
 						metricsWatermarkAt: window.endMs,
 						lastMetricsReceivedAt: tick.now,
-						lastMetricsError: notes.length === 0 ? null : notes.join(" "),
+						lastMetricsError: notes.length === 0 ? null : Arr.join(notes, " "),
 					})
 					// Incomplete or partly failed reads still count as a good read.
 					yield* reportOutcome(connector, { _tag: "Ok" }, tick.now)
@@ -767,7 +782,7 @@ export class GcpMetricsService extends Context.Service<GcpMetricsService, GcpMet
 					),
 			)
 
-			const pollAll = Effect.fn("GcpMetricsService.pollAll")(function* () {
+			const pollAll = Effect.gen(function* () {
 				const encodedKey = env.MAPLE_GCP_SERVICE_ACCOUNT_KEY
 				if (Option.isNone(encodedKey)) return IDLE
 				const now = yield* Clock.currentTimeMillis
@@ -789,7 +804,7 @@ export class GcpMetricsService extends Context.Service<GcpMetricsService, GcpMet
 					),
 				)
 				const takenPerOrg = new Map<OrgId, number>()
-				const candidates = due.filter((row) => {
+				const candidates = Arr.filter(due, (row) => {
 					const taken = takenPerOrg.get(row.orgId) ?? 0
 					takenPerOrg.set(row.orgId, taken + 1)
 					return taken < MAX_CONNECTORS_PER_ORG_TICK
@@ -845,16 +860,20 @@ export class GcpMetricsService extends Context.Service<GcpMetricsService, GcpMet
 						),
 					{ concurrency: CONNECTOR_CONCURRENCY },
 				)
-				const polled = outcomes.filter((outcome) => outcome !== null)
+				const polled = Arr.filter(outcomes, (outcome) => outcome !== null)
 				return {
 					polled: polled.length,
 					deferred: due.length - polled.length,
-					rowsIngested: polled.reduce((sum, outcome) => sum + outcome.rowsIngested, 0),
-					failures: polled.filter((outcome) => outcome.failed).length,
-					incompleteMetrics: polled.reduce((sum, outcome) => sum + outcome.incompleteMetrics, 0),
+					rowsIngested: Arr.reduce(polled, 0, (sum, outcome) => sum + outcome.rowsIngested),
+					failures: Arr.filter(polled, (outcome) => outcome.failed).length,
+					incompleteMetrics: Arr.reduce(
+						polled,
+						0,
+						(sum, outcome) => sum + outcome.incompleteMetrics,
+					),
 					calls: budget.calls,
 				} satisfies GcpMetricsPollSummary
-			})
+			}).pipe(Effect.withSpan("GcpMetricsService.pollAll"))
 
 			return { pollAll } satisfies GcpMetricsServiceApi
 		}),

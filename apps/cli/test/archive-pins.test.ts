@@ -25,9 +25,9 @@ import {
 	readCheckpointState,
 	withMaintenanceLock,
 	type CheckpointId,
-} from "../src/server/checkpoints"
-import { SCHEMA_FINGERPRINT } from "../src/server/schema-identity"
-import { CHDB_VERSION, MAPLE_VERSION } from "../src/version"
+} from "@maple/local-server/checkpoints"
+import { SCHEMA_FINGERPRINT } from "@maple/local-server/schema-identity"
+import { CHDB_VERSION, MAPLE_VERSION } from "@maple/local-server/version"
 
 // Pin and maintenance-lock API for the dependent archive branch. These tests
 // mirror the checkpoint suite's conventions: a throwaway parent/data dir,
@@ -259,7 +259,7 @@ describe("maintenance lock", () => {
 		await withDataDir(async (dataDir) => {
 			// Acquire the lock directly and hold it across the second attempt.
 			const firstOperation = newCheckpointId()
-			const held = await withMaintenanceLock(dataDir, firstOperation, async () => {
+			await withMaintenanceLock(dataDir, firstOperation, async () => {
 				// While this call holds the lock, a second acquirer must be refused.
 				// The first owner's PID is this process (alive), so the refusal is
 				// "another Maple maintenance operation is active".
@@ -268,7 +268,6 @@ describe("maintenance lock", () => {
 					/active/,
 				)
 			})
-			await held
 			ok(!existsSync(`${dataDir}.maple-maintenance-lock`), "lock released after nested refusal")
 		})
 	})

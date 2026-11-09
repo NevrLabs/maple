@@ -1,6 +1,6 @@
 import { assert, describe, it } from "@effect/vitest"
 import { createHmac } from "node:crypto"
-import { Effect, Exit, Option, Redacted, Schema } from "effect"
+import { Effect, Exit, Option, Redacted, Schema, Array as Arr, Record as Rec, String as Str } from "effect"
 import { TestClock } from "effect/testing"
 import { AuthorizationUnavailableError, OrgId, RoleName, UserId } from "@maple/domain/http"
 import {
@@ -65,7 +65,7 @@ const validClaims = {
 }
 // The baseline minus one claim, so a negative test isolates the claim it names.
 const withoutClaim = (key: keyof typeof validClaims) =>
-	Object.fromEntries(Object.entries(validClaims).filter(([name]) => name !== key))
+	Rec.fromEntries(Arr.filter(Rec.toEntries(validClaims), ([name]) => name !== key))
 const atFixedTime = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
 	Effect.gen(function* () {
 		yield* TestClock.adjust(`${clockSeconds} seconds`)
@@ -204,7 +204,7 @@ describe("makeResolveTenant", () => {
 	it.effect("rejects self-hosted requests with invalid token signature", () =>
 		Effect.gen(function* () {
 			const token = signClaims(validClaims)
-			const data = token.slice(0, token.lastIndexOf("."))
+			const data = Str.slice(0, Option.getOrThrow(Str.lastIndexOf(".")(token)))(token)
 			const forged = `${data}.${createHmac("sha256", "not-the-root-password").update(data).digest("base64url")}`
 
 			assert.isTrue(Exit.isSuccess(yield* resolveSignedToken(token)))
@@ -285,7 +285,7 @@ describe("pending Clerk sessions (no organization chosen yet)", () => {
 				clerkEnv,
 				pendingSession,
 				"session_token",
-				(_userId, orgId) => Effect.succeed(Option.some({ orgId, role: asRoleName("org:admin") })),
+				(_userId, orgId) => Effect.succeedSome({ orgId, role: asRoleName("org:admin") }),
 			)
 			const exit = yield* Effect.exit(
 				resolveTenant({ authorization: "Bearer test-token", [ORG_SELECTION_HEADER]: "org_123" }),
@@ -335,7 +335,7 @@ describe("makeResolveMcpTenant", () => {
 	)
 
 	// The pin is a development-only setting; elsewhere an unprovable membership is refused.
-	it.effect("resolves tenant from a user API key with MAPLE_ORG_ID_OVERRIDE in development", () =>
+	it.effect("resolves tenant from a user API key with an opted-in development MAPLE_ORG_ID_OVERRIDE", () =>
 		Effect.gen(function* () {
 			const resolveMcpTenant = makeResolveMcpTenant(
 				{
@@ -344,6 +344,7 @@ describe("makeResolveMcpTenant", () => {
 					CLERK_SECRET_KEY: Option.some(Redacted.make("sk_test_123")),
 					CLERK_JWT_KEY: Option.some(Redacted.make("jwt_test_123")),
 					MAPLE_ORG_ID_OVERRIDE: Option.some("org_override"),
+					MAPLE_ORG_ID_OVERRIDE_ADMITS_NONMEMBERS: true,
 					MAPLE_ENVIRONMENT: "development",
 				},
 				async () => ({
@@ -369,6 +370,35 @@ describe("makeResolveMcpTenant", () => {
 				roles: [],
 				authMode: "clerk",
 			})
+		}),
+	)
+
+	it.effect("refuses a user API key on a development MAPLE_ORG_ID_OVERRIDE without the opt-in", () =>
+		Effect.gen(function* () {
+			const resolveMcpTenant = makeResolveMcpTenant(
+				{
+					...baseEnv,
+					MAPLE_AUTH_MODE: "clerk",
+					CLERK_SECRET_KEY: Option.some(Redacted.make("sk_test_123")),
+					CLERK_JWT_KEY: Option.some(Redacted.make("jwt_test_123")),
+					MAPLE_ORG_ID_OVERRIDE: Option.some("org_override"),
+					MAPLE_ENVIRONMENT: "development",
+				},
+				async () => ({
+					isAuthenticated: true,
+					message: null,
+					toAuth: () => ({
+						isAuthenticated: true,
+						tokenType: "api_key",
+						userId: "user_abc",
+						orgId: null,
+						orgRole: null,
+					}),
+				}),
+			)
+
+			const exit = yield* Effect.exit(resolveMcpTenant({ authorization: "Bearer maple_key_xxx" }))
+			assert.strictEqual(getFailure(exit)?._tag, "@maple/http/errors/OrganizationAccessDeniedError")
 		}),
 	)
 
@@ -846,7 +876,7 @@ describe("self-hosted session temporal boundaries", () => {
 
 describe("self-hosted session lifetime", () => {
 	const decodeTokenClaims = (token: string): Record<string, unknown> => {
-		const payload = token.split(".")[1] ?? ""
+		const payload = Str.split(".")(token)[1] ?? ""
 		return JSON.parse(Buffer.from(payload, "base64url").toString("utf8"))
 	}
 
@@ -1081,11 +1111,14 @@ describe(`${ORG_SELECTION_HEADER} (organization selection)`, () => {
 		let calls = 0
 		const verify = (_userId: UserId, orgId: OrgId) => {
 			calls += 1
-			const found = memberships.find((membership) => membership.orgId === orgId)
 			return Effect.succeed(
-				found
-					? Option.some({ orgId: asOrgId(found.orgId), role: asRoleName(found.role) })
-					: Option.none<{ orgId: OrgId; role: RoleName }>(),
+				Option.map(
+					Arr.findFirst(memberships, (membership) => membership.orgId === orgId),
+					(found): { orgId: OrgId; role: RoleName } => ({
+						orgId: asOrgId(found.orgId),
+						role: asRoleName(found.role),
+					}),
+				),
 			)
 		}
 		return { verify, calls: () => calls }
@@ -1290,13 +1323,50 @@ describe(`${ORG_SELECTION_HEADER} (organization selection)`, () => {
 		}),
 	)
 
-	it.effect("MAPLE_ORG_ID_OVERRIDE keeps a non-member's session role in development", () =>
+	it.effect("MAPLE_ORG_ID_OVERRIDE refuses a non-member in development without the opt-in", () =>
 		Effect.gen(function* () {
 			const membership = verifier([])
 			const resolveTenant = makeResolveTenant(
 				{
 					...clerkEnv,
 					MAPLE_ORG_ID_OVERRIDE: Option.some("org_pinned"),
+					MAPLE_ENVIRONMENT: "development",
+				},
+				clerkAuth(),
+				undefined,
+				membership.verify,
+			)
+
+			assertDenied(yield* Effect.exit(resolveTenant({ authorization: "Bearer test-token" })))
+		}),
+	)
+
+	it.effect("MAPLE_ORG_ID_OVERRIDE ignores the non-member opt-in outside development", () =>
+		Effect.gen(function* () {
+			const resolveTenant = makeResolveTenant(
+				{
+					...clerkEnv,
+					MAPLE_ORG_ID_OVERRIDE: Option.some("org_pinned"),
+					MAPLE_ORG_ID_OVERRIDE_ADMITS_NONMEMBERS: true,
+					MAPLE_ENVIRONMENT: "production",
+				},
+				clerkAuth(),
+				undefined,
+				verifier([]).verify,
+			)
+
+			assertDenied(yield* Effect.exit(resolveTenant({ authorization: "Bearer test-token" })))
+		}),
+	)
+
+	it.effect("MAPLE_ORG_ID_OVERRIDE keeps a non-member's session role on an opted-in development pin", () =>
+		Effect.gen(function* () {
+			const membership = verifier([])
+			const resolveTenant = makeResolveTenant(
+				{
+					...clerkEnv,
+					MAPLE_ORG_ID_OVERRIDE: Option.some("org_pinned"),
+					MAPLE_ORG_ID_OVERRIDE_ADMITS_NONMEMBERS: true,
 					MAPLE_ENVIRONMENT: "development",
 				},
 				clerkAuth(),
@@ -1327,12 +1397,13 @@ describe(`${ORG_SELECTION_HEADER} (organization selection)`, () => {
 		}),
 	)
 
-	it.effect("MAPLE_ORG_ID_OVERRIDE without a verifier still admits a development session", () =>
+	it.effect("MAPLE_ORG_ID_OVERRIDE without a verifier still admits an opted-in development session", () =>
 		Effect.gen(function* () {
 			const resolveTenant = makeResolveTenant(
 				{
 					...clerkEnv,
 					MAPLE_ORG_ID_OVERRIDE: Option.some("org_pinned"),
+					MAPLE_ORG_ID_OVERRIDE_ADMITS_NONMEMBERS: true,
 					MAPLE_ENVIRONMENT: "development",
 				},
 				clerkAuth(),

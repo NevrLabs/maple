@@ -1,4 +1,4 @@
-import { Effect, Result, Schema } from "effect"
+import { Effect, Result, Schema, Array as Arr } from "effect"
 import {
 	appendTick,
 	classifyTier,
@@ -18,11 +18,12 @@ import type {
 	AlertComparator,
 	AlertEventType,
 	AlertEvaluationResult,
-	AlertEvaluationStatus,
 	AlertSeverity,
 } from "@maple/domain/http"
 export type { AlertComparator, AlertEventType, AlertEvaluationStatus } from "@maple/domain/http"
 export * from "./tiers"
+export * from "./escalation"
+export * from "./oncall"
 
 export interface AlertObservation {
 	readonly value: number | null
@@ -100,7 +101,7 @@ export const evaluateAlertObservation = (
 			comparator: policy.comparator,
 			reason: "No data in the selected window",
 			derivedFromNoData: true,
-			levels: policy.tiers.map((tier) => ({ severity: tier.severity, status: "breach" as const })),
+			levels: Arr.map(policy.tiers, (tier) => ({ severity: tier.severity, status: "breach" as const })),
 		}
 	}
 
@@ -134,12 +135,12 @@ export const evaluateAlertObservation = (
 		}
 	}
 
-	const levels = policy.tiers.map((tier) => ({
+	const levels = Arr.map(policy.tiers, (tier) => ({
 		severity: tier.severity,
 		status: classifyTier(value, policy.comparator, tier),
 	}))
 	return {
-		status: levels.some((level) => level.status === "breach") ? "breached" : "healthy",
+		status: Arr.some(levels, (level) => level.status === "breach") ? "breached" : "healthy",
 		levels,
 		value,
 		sampleCount,
@@ -174,6 +175,8 @@ export interface AlertLifecycleIncident {
 	readonly firstTriggeredAtMs: number
 	readonly lastNotifiedAtMs: number | null
 	readonly lastDeliveredEventType: AlertEventType | null
+	/** Someone is on it: reminders and de-escalation notices stay quiet. */
+	readonly acknowledged?: boolean
 }
 
 export type AlertIncidentTransition =
@@ -210,7 +213,7 @@ export const projectAlertLifecycleEvent = (
 	input: AlertLifecycleEventInput,
 ): Result.Result<MapleCloudEvent, CloudEventInvalid> =>
 	Result.gen(function* () {
-		const occurredAtMs = yield* Schema.decodeUnknownResult(
+		const occurredAtMs = yield* Schema.decodeResult(
 			Schema.Int.check(
 				Schema.isGreaterThanOrEqualTo(0),
 				Schema.isLessThanOrEqualTo(8_640_000_000_000_000),
@@ -327,7 +330,7 @@ export const makeAlertDeliveryKey = (
 	destinationId: string,
 	eventType: AlertEventType,
 	scheduledAtMs: number,
-): string => [incidentId, destinationId, eventType, scheduledAtMs].join(":")
+): string => Arr.join([incidentId, destinationId, eventType, String(scheduledAtMs)], ":")
 
 export const canRetryAlertDelivery = (
 	attemptNumber: number,
@@ -399,7 +402,11 @@ export const planAlertLifecycle = (input: AlertLifecycleInput): Effect.Effect<Al
 		const counters = input.state ?? { consecutiveBreaches: 0, consecutiveHealthy: 0, history: [] }
 		const seedSeverity =
 			current ??
-			policy.severities.reduce<AlertSeverity>((highest, s) => maxSeverity(highest, s) ?? s, "warning")
+			Arr.reduce<AlertSeverity, AlertSeverity>(
+				policy.severities,
+				"warning",
+				(highest, s) => maxSeverity(highest, s) ?? s,
+			)
 		const previous: AlertLifecycleState = {
 			consecutiveBreaches: counters.consecutiveBreaches,
 			consecutiveHealthy: counters.consecutiveHealthy,
@@ -449,17 +456,21 @@ export const planAlertLifecycle = (input: AlertLifecycleInput): Effect.Effect<Al
 		// A severity change is news: escalation pages like a trigger, de-escalation
 		// reads as a reminder at the lower severity. Both restart the reminder clock.
 		// A tier moved by a rule edit (next === current) is announced on its first breaching tick.
+		// An acknowledged incident still pages on escalation, and the host clears the ack:
+		// a worse incident is news to whoever is on it, and to on-call escalation.
+		const acknowledged = openIncident.acknowledged === true
 		if (next !== openIncident.severity && (next !== current || evaluation.status === "breached")) {
 			const escalated = maxSeverity(next, openIncident.severity) === next
+			const quiet = acknowledged && !escalated
 			return {
 				state,
 				transition: escalated ? "escalated" : "deescalated",
 				severity: next,
-				eventType: escalated ? "trigger" : "renotify",
+				eventType: escalated ? "trigger" : quiet ? null : "renotify",
 				notificationSuppression: null,
 				hold: null,
 				inheritedNotificationAtMs: null,
-				advanceNotificationAnchor: true,
+				advanceNotificationAnchor: !quiet,
 			}
 		}
 
@@ -467,7 +478,7 @@ export const planAlertLifecycle = (input: AlertLifecycleInput): Effect.Effect<Al
 			const renotifyDueAt =
 				(openIncident.lastNotifiedAtMs ?? openIncident.firstTriggeredAtMs) +
 				policy.renotifyIntervalMinutes * 60_000
-			const renotifyDue = renotifyDueAt <= nowMs
+			const renotifyDue = !acknowledged && renotifyDueAt <= nowMs
 			return {
 				state,
 				transition: "continued",

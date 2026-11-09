@@ -1,7 +1,7 @@
 import { Schema } from "effect"
 import { AsyncData } from "foldkit"
 import { defineMessageUnion } from "foldkit/message"
-import { LoadFailure } from "../../../data/load-failure"
+import { LoadFailure } from "@maple/views/data/load-failure"
 
 // NevrLabs selfhost (PATCHES #5): Settings > Members on a self-hosted deployment — the people who signed in
 // through the OIDC provider (`selfhost_users`), read and revoked through /api/selfhost/users. No invites: the

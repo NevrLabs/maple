@@ -1,4 +1,4 @@
-import { Schema } from "effect"
+import { Schema, Array as Arr } from "effect"
 import {
 	ErrorIssueId,
 	ErrorIssueVerificationId,
@@ -35,6 +35,40 @@ export const InvestigationStatus = Schema.Literals([
 	title: "Investigation Status",
 })
 export type InvestigationStatus = Schema.Schema.Type<typeof InvestigationStatus>
+
+/**
+ * The status moves a person may make by hand: resolve a finished run, or reopen a resolved one.
+ * The autonomous pass owns everything else (`investigating` and the verdict it lands on); starting
+ * a new pass is a restart, not a status change.
+ */
+export const MANUAL_INVESTIGATION_TRANSITIONS = {
+	investigating: [],
+	diagnosed: ["resolved"],
+	inconclusive: ["resolved"],
+	failed: ["resolved"],
+	resolved: ["diagnosed", "inconclusive", "failed"],
+} as const satisfies Record<InvestigationStatus, ReadonlyArray<InvestigationStatus>>
+
+/**
+ * Where reopening a resolved investigation lands: back on the verdict its run reached, so a
+ * reopen cannot claim a diagnosis that never happened. `failed` is the latest run's own outcome
+ * (a failure records an error, a restart or a report clears it), so a rerun that failed after an
+ * earlier diagnosis reopens as `failed`, not on the stale report.
+ */
+export const reopenedInvestigationStatus = (run: {
+	readonly failed: boolean
+	readonly diagnosed: boolean
+	readonly hasReport: boolean
+}): InvestigationStatus =>
+	run.failed ? "failed" : run.diagnosed ? "diagnosed" : run.hasReport ? "inconclusive" : "failed"
+
+/** A run in flight cannot be restarted underneath itself; every settled one can. */
+export const RESTARTABLE_INVESTIGATION_STATUSES = [
+	"diagnosed",
+	"inconclusive",
+	"failed",
+	"resolved",
+] as const satisfies Arr.NonEmptyReadonlyArray<InvestigationStatus>
 
 /** Who opened the investigation: a person (attended) or an incident-open trigger. */
 export const InvestigationSeededBy = Schema.Literals(["user", "system"]).annotate({
@@ -150,7 +184,7 @@ export type InvestigationSubject = Schema.Schema.Type<typeof InvestigationSubjec
  * plainly a verification, which is the dangerous direction.
  */
 export const InvestigationSubjectType = Schema.Literals(
-	InvestigationSubject.members.map((member) => member.fields.type.literal),
+	Arr.map(InvestigationSubject.members, (member) => member.fields.type.literal),
 ).annotate({ identifier: "@maple/InvestigationSubjectType", title: "Investigation Subject Type" })
 export type InvestigationSubjectType = Schema.Schema.Type<typeof InvestigationSubjectType>
 
@@ -424,6 +458,25 @@ export class InvestigationRejectedError extends HttpTaggedError<InvestigationRej
 		retry: "never",
 		recovery: "reconnect",
 		exposure: "redacted",
+	},
+) {}
+
+/** The status change is not one the investigation's state allows, or another writer moved it first. */
+export class InvestigationTransitionError extends HttpTaggedError<InvestigationTransitionError>()(
+	"@maple/http/investigations/InvestigationTransitionError",
+	{
+		message: Schema.String,
+		investigationId: InvestigationId,
+		fromStatus: InvestigationStatus,
+		toStatus: InvestigationStatus,
+	},
+	{
+		status: 409,
+		code: "investigation_status_conflict",
+		title: "Investigation status cannot change",
+		retry: "never",
+		recovery: "refresh",
+		exposure: "public_message",
 	},
 ) {}
 

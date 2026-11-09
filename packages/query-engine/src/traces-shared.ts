@@ -39,6 +39,7 @@ export const TRACE_LIST_MV_RESOURCE_MAP: Record<string, string> = {
 import * as CH from "@maple-dev/effect-orm/expr"
 import { normalizedSpanNameExpr } from "@maple/domain/tinybird/span-display-name"
 import * as T from "@maple-dev/effect-orm/clickhouse"
+import { Array as Arr } from "effect"
 
 // Semconv rename coalescing
 //
@@ -56,7 +57,7 @@ import * as T from "@maple-dev/effect-orm/clickhouse"
 // legacy-first under both spellings because that is how `trace_list_mv`
 // pre-extracts them, and the facet counts must agree with the filter.
 
-const SPAN_SEMCONV_ALIASES: Record<string, readonly string[]> = {
+const SPAN_SEMCONV_ALIASES: Record<string, Arr.NonEmptyReadonlyArray<string>> = {
 	"http.method": ["http.method", "http.request.method"],
 	"http.request.method": ["http.method", "http.request.method"],
 	"http.status_code": ["http.status_code", "http.response.status_code"],
@@ -69,7 +70,7 @@ const SPAN_SEMCONV_ALIASES: Record<string, readonly string[]> = {
 	"rpc.system.name": ["rpc.system.name", "rpc.system"],
 	"server.address": ["server.address", "http.host", "url.authority"],
 	"http.host": ["http.host", "server.address", "url.authority"],
-} satisfies Record<string, readonly string[]>
+} satisfies Record<string, Arr.NonEmptyReadonlyArray<string>>
 
 /**
  * The same treatment for the one renamed *resource* attribute: the registry
@@ -79,28 +80,34 @@ const SPAN_SEMCONV_ALIASES: Record<string, readonly string[]> = {
  * key — so either filter spelling has to match either stored key. Canonical
  * first, matching `DEPLOYMENT_ENV_SQL`'s coalesce order.
  */
-const RESOURCE_SEMCONV_ALIASES: Record<string, readonly string[]> = {
+const RESOURCE_SEMCONV_ALIASES: Record<string, Arr.NonEmptyReadonlyArray<string>> = {
 	"deployment.environment": ["deployment.environment.name", "deployment.environment"],
 	"deployment.environment.name": ["deployment.environment.name", "deployment.environment"],
-} satisfies Record<string, readonly string[]>
+} satisfies Record<string, Arr.NonEmptyReadonlyArray<string>>
 
 /** `if(map[k0] != '', map[k0], if(map[k1] != '', …))` — first non-empty alias. */
-function coalescedMapGet(mapExpr: CH.Expr<Record<string, string>>, keys: readonly string[]): CH.Expr<string> {
-	let expr = CH.mapGet(mapExpr, keys[keys.length - 1])
-	for (let i = keys.length - 2; i >= 0; i--) {
-		const candidate = CH.mapGet(mapExpr, keys[i])
-		expr = CH.if_(candidate.neq(""), candidate, expr)
-	}
-	return expr
+function coalescedMapGet(
+	mapExpr: CH.Expr<Record<string, string>>,
+	keys: Arr.NonEmptyReadonlyArray<string>,
+): CH.Expr<string> {
+	return Arr.reduceRight(
+		Arr.initNonEmpty(keys),
+		CH.mapGet(mapExpr, Arr.lastNonEmpty(keys)),
+		(expr, key) => {
+			const candidate = CH.mapGet(mapExpr, key)
+			return CH.if_(candidate.neq(""), candidate, expr)
+		},
+	)
 }
 
 /** `mapContains(map, k0) OR mapContains(map, k1) OR …` */
-function anyMapContains(mapExpr: CH.Expr<Record<string, string>>, keys: readonly string[]): CH.Condition {
-	let cond = CH.mapContains(mapExpr, keys[0])
-	for (let i = 1; i < keys.length; i++) {
-		cond = cond.or(CH.mapContains(mapExpr, keys[i]))
-	}
-	return cond
+function anyMapContains(
+	mapExpr: CH.Expr<Record<string, string>>,
+	keys: Arr.NonEmptyReadonlyArray<string>,
+): CH.Condition {
+	return Arr.reduce(Arr.tailNonEmpty(keys), CH.mapContains(mapExpr, Arr.headNonEmpty(keys)), (cond, key) =>
+		cond.or(CH.mapContains(mapExpr, key)),
+	)
 }
 
 /**
@@ -125,10 +132,12 @@ export function buildAttrFilterCondition(
 	// An `(a OR b)` group. Each member keeps its own exact predicate; the index
 	// prefilters are skipped, since an OR of per-member candidates is no narrower
 	// than the exact OR and only adds granule reads.
-	if (af.or?.length) {
+	if (af.or !== undefined && af.or.length > 0) {
 		const { or, ...first } = af
 		// One flat OR: a chained `.or()` per member nests past ClickHouse's max_parser_depth.
-		return CH.or(...[first, ...or].map((member) => buildAttrFilterCondition(member, mapName, "none")))
+		return CH.or(
+			...Arr.map([first, ...or], (member) => buildAttrFilterCondition(member, mapName, "none")),
+		)
 	}
 	// `Attributes` (product events, metric datapoints) carries no skip index, so the exact predicate stands alone.
 	const indexMode: AttributeIndexMode = mapName === "Attributes" ? "none" : requestedIndexMode
@@ -142,7 +151,7 @@ export function buildAttrFilterCondition(
 			: mapName === "ResourceAttributes"
 				? RESOURCE_SEMCONV_ALIASES
 				: undefined
-	const keys = aliasTable?.[af.key] ?? [af.key]
+	const keys: Arr.NonEmptyReadonlyArray<string> = aliasTable?.[af.key] ?? [af.key]
 	const colExpr: CH.Expr<string> = coalescedMapGet(mapExpr, keys)
 	const value = af.value ?? ""
 
@@ -153,9 +162,8 @@ export function buildAttrFilterCondition(
 	 * `has(…, NULL)` rather than a wider read.
 	 */
 	const orOverKeys = (make: (key: string) => CH.Condition): CH.Condition | undefined =>
-		keys.reduce<CH.Condition | undefined>(
-			(acc, key) => (acc === undefined ? make(key) : acc.or(make(key))),
-			undefined,
+		Arr.reduce<string, CH.Condition | undefined>(keys, undefined, (acc, key) =>
+			acc === undefined ? make(key) : acc.or(make(key)),
 		)
 
 	const positive = ((): CH.Condition => {

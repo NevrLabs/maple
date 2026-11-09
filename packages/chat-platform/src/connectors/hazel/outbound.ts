@@ -22,7 +22,7 @@
  * live socket.
  */
 import { ChatConversationKey } from "@maple/primitives"
-import { Array as Arr, Clock, Duration, Effect, Option, Redacted, Schema } from "effect"
+import { Array as Arr, Clock, Duration, Effect, Option, Redacted, Schema, String as Str } from "effect"
 import { HttpClient, HttpClientRequest, type HttpClientResponse } from "effect/http"
 import type { ConnectorConfig, InboundAction, InboundMessage } from "../../ingress"
 import {
@@ -50,8 +50,9 @@ import {
 	type HazelLiveBody,
 	type HazelMessageBody,
 } from "./render"
+import { replaceWith } from "@maple/strings"
 
-const botToken = (config: ConnectorConfig): Redacted.Redacted<string> =>
+const botToken = (config: ConnectorConfig): Redacted.Redacted =>
 	Redacted.make(config.get(BOT_TOKEN_CONFIG) ?? "")
 
 /** Under the renderer's own clamp, so a connector's decoration has somewhere to go. */
@@ -102,13 +103,15 @@ interface Streamed {
 /** The cheapest action that takes the live text from `previous` to `next`, or none at all. */
 const textUpdate = (previous: string | undefined, next: string): LiveAction | null => {
 	if (previous === next) return null
-	if (previous !== undefined && next.startsWith(previous))
-		return { _tag: "AppendText", text: next.slice(previous.length) }
+	if (previous !== undefined && Str.startsWith(previous)(next))
+		return { _tag: "AppendText", text: Str.slice(previous.length)(next) }
 	return { _tag: "SetText", text: next }
 }
 
 /** Only ever compared with the previous write's; nothing decodes it. */
-const fingerprint = (embeds: ReadonlyArray<HazelEmbed>): string => JSON.stringify(embeds)
+const fingerprint = (embeds: ReadonlyArray<HazelEmbed>): string => encodeJson(embeds)
+
+const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown))
 
 /** A live message's embeds while it streams: the live state first, then its cards. */
 const streamingEmbeds = (body: HazelLiveBody): ReadonlyArray<HazelEmbed> => [
@@ -168,14 +171,16 @@ interface Person {
 const MENTION = /@\[userId:([0-9a-f-]{36})\]/gu
 
 const mentionedIds = (text: string): ReadonlyArray<string> =>
-	Array.from(text.matchAll(MENTION)).flatMap((match) => (match[1] === undefined ? [] : [match[1]]))
+	Arr.flatMap(Array.from(Str.matchAll(MENTION)(text)), (match) =>
+		match[1] === undefined ? [] : [match[1]],
+	)
 
 /**
  * A conversation's key: the channel (or thread) id without its dashes, which the key's charset
  * refuses. Hazel ids are UUIDs, so nothing is lost.
  */
 const decodeConversationKey = (channelId: string) =>
-	Schema.decodeUnknownOption(ChatConversationKey)(channelId.replaceAll("-", ""))
+	Schema.decodeOption(ChatConversationKey)(Str.replaceAll("-", "")(channelId))
 
 /** The thread when the turn is in one, the channel otherwise — on Hazel both are channel ids. */
 const channelOf = (target: ChatTarget): string => target.threadId ?? target.channelId
@@ -201,10 +206,11 @@ export const hazelOutbound: ChatOutbound<HttpClient.HttpClient | ConnectorCreden
 	transport: Effect.gen(function* () {
 		const client = yield* HttpClient.HttpClient
 		// Per call, not here: acquiring the transport must not cost the host its credential read.
-		const token = Effect.map(yield* ConnectorCredentials, botToken)
+		const credentials = yield* ConnectorCredentials
+		const token = Effect.map(credentials, botToken)
 
 		const attempt = Effect.fn("Hazel.request", { kind: "client" })(function* (
-			bearer: Redacted.Redacted<string>,
+			bearer: Redacted.Redacted,
 			operation: ChatOutboundOperation,
 			route: string,
 			request: HttpClientRequest.HttpClientRequest,
@@ -272,7 +278,7 @@ export const hazelOutbound: ChatOutbound<HttpClient.HttpClient | ConnectorCreden
 			response.json.pipe(
 				Effect.mapError((cause) => failed(operation, "Hazel's reply could not be read", { cause })),
 				Effect.flatMap((json) =>
-					Schema.decodeUnknownEffect(schema)(json).pipe(
+					Schema.decodeEffect(schema)(json).pipe(
 						Effect.mapError(() => failed(operation, `Hazel answered with ${what}`)),
 					),
 				),
@@ -423,11 +429,11 @@ export const hazelOutbound: ChatOutbound<HttpClient.HttpClient | ConnectorCreden
 						"history",
 						"/organizations/{organization_id}/users",
 						HttpClientRequest.get(
-							`${API_BASE}/organizations/${encodeURIComponent(workspaceId)}/users?ids=${encodeURIComponent(ids.join(","))}`,
+							`${API_BASE}/organizations/${encodeURIComponent(workspaceId)}/users?ids=${encodeURIComponent(Arr.join(ids, ","))}`,
 						),
 					).pipe(
 						Effect.flatMap((response) => read("history", response, Users, "no list of people")),
-						Effect.map((users) => new Map(users.data.map((user) => [user.id, user]))),
+						Effect.map((users) => new Map(Arr.map(users.data, (user) => [user.id, user]))),
 					)
 
 		return {
@@ -472,6 +478,14 @@ export const hazelOutbound: ChatOutbound<HttpClient.HttpClient | ConnectorCreden
 			 */
 			typing: () => Effect.void,
 
+			/** Hazel has no direct message a bot can open, so paging a person here always fails. */
+			directMessage: () =>
+				Effect.fail(
+					failed("direct_message", "Hazel does not support direct messages from Maple", {
+						reason: "rejected",
+					}),
+				),
+
 			openThread,
 
 			/**
@@ -491,10 +505,13 @@ export const hazelOutbound: ChatOutbound<HttpClient.HttpClient | ConnectorCreden
 					),
 				)
 				const page = yield* read("history", response, HistoryPage, "no list of messages")
-				const messages = Arr.getSomes(page.data.map((raw) => decodeHistoryMessage(raw)))
+				const messages = Arr.getSomes(Arr.map(page.data, (raw) => decodeHistoryMessage(raw)))
 				const ids = [
 					...new Set(
-						messages.flatMap((message) => [message.authorId, ...mentionedIds(message.content)]),
+						Arr.flatMap(messages, (message) => [
+							message.authorId,
+							...mentionedIds(message.content),
+						]),
 					),
 				]
 				// Names are best effort: a page with "Someone" in it beats no context at all.
@@ -502,16 +519,17 @@ export const hazelOutbound: ChatOutbound<HttpClient.HttpClient | ConnectorCreden
 					Effect.orElseSucceed((): ReadonlyMap<string, Person> => new Map()),
 				)
 				return Arr.getSomes(
-					messages.map((message): Option.Option<ChatHistoryMessage> => {
+					Arr.map(messages, (message): Option.Option<ChatHistoryMessage> => {
 						const at = Date.parse(message.createdAt)
 						if (Number.isNaN(at)) return Option.none()
 						const author = names.get(message.authorId)
 						return Option.some({
 							displayName: author?.displayName ?? "Someone",
 							isBot: author?.isBot ?? false,
-							text: message.content.replace(
+							text: replaceWith(
+								message.content,
 								MENTION,
-								(_, id: string) => `@${names.get(id)?.displayName ?? "someone"}`,
+								(_, id = "") => `@${names.get(id)?.displayName ?? "someone"}`,
 							),
 							at,
 						})
@@ -624,7 +642,7 @@ const retryAfter = (response: HttpClientResponse.HttpClientResponse) =>
  * is the default rather than zero, which would retry at once into the same limit.
  */
 export const headerRetryAfter = (value: string | undefined, now: number): Duration.Duration => {
-	const trimmed = value?.trim() ?? ""
+	const trimmed = value === undefined ? "" : Str.trim(value)
 	if (trimmed === "") return DEFAULT_RETRY_AFTER
 	if (/^\d+$/u.test(trimmed)) return Duration.seconds(Number(trimmed))
 	const at = Date.parse(trimmed)

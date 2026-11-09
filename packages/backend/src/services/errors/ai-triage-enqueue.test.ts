@@ -1,5 +1,5 @@
 import { afterEach, assert, describe, it } from "@effect/vitest"
-import { Clock, ConfigProvider, Effect, Layer, Schema, Semaphore } from "effect"
+import { Clock, ConfigProvider, Effect, Layer, Schema, Semaphore, Array as Arr } from "effect"
 import {
 	AiTriageResult,
 	ErrorIssueId,
@@ -221,8 +221,8 @@ describe("maybeEnqueueTriage", () => {
 			const result = yield* maybeEnqueueTriage(criticalInput(chat.chatSessions, "incident-critical"))
 			assert.isTrue(result.enqueued)
 			assert.lengthOf(chat.turns, 1)
-			assert.strictEqual(chat.turns[0]!.sessionId, `${ORG}:inv-${result.investigationId}`)
-			assert.include(chat.turns[0]!.text, "checkout-api")
+			assert.strictEqual(chat.turns[0].sessionId, `${ORG}:inv-${result.investigationId}`)
+			assert.include(chat.turns[0].text, "checkout-api")
 
 			const database = yield* Database
 			const rows = yield* database.execute((db) =>
@@ -337,8 +337,8 @@ describe("maybeEnqueueTriage", () => {
 				{ concurrency: "unbounded" },
 			)
 
-			assert.strictEqual(results.filter((result) => result.enqueued).length, 2)
-			assert.strictEqual(results.filter((result) => result.reason === "daily_cap").length, 3)
+			assert.strictEqual(Arr.filter(results, (result) => result.enqueued).length, 2)
+			assert.strictEqual(Arr.filter(results, (result) => result.reason === "daily_cap").length, 3)
 			assert.lengthOf(chat.turns, 2)
 		}).pipe(Effect.provide(makeLayer())),
 	)

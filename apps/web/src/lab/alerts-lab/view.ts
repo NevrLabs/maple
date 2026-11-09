@@ -7,12 +7,14 @@ import { alertsEmptyState } from "../../page/alerts/hub/view-empty"
 import { inboxTab } from "../../page/alerts/hub/view-inbox"
 import { DESTINATION_ROW_GRID, destinationRow, HEALTH_WINDOW } from "../../page/alerts/hub/view-routing"
 import { rulesTab } from "../../page/alerts/hub/view-rules"
-import type { Message as HubMessage } from "../../page/alerts/hub/message"
+import { Message as HubMessageUnion, type Message as HubMessage } from "../../page/alerts/hub/message"
+import type { AlertIncidentId } from "@maple/domain/http"
 import type { Model as HubModel } from "../../page/alerts/hub/model"
 import { underlineTabClass, underlineTabStrip } from "../../page/kit/underline-tabs"
-import { button } from "../../ui/button"
-import { icon } from "../../ui/icon"
+import { button } from "@maple/views/ui/button"
+import { icon } from "@maple/views/ui/icon"
 import type { Model } from "./model"
+import { Array as Arr } from "effect"
 
 type AlertsTab = "inbox" | "rules" | "routing"
 
@@ -68,7 +70,7 @@ const alertsFrame = <M>(h: HtmlBuilder<M>, tab: AlertsTab, data: AlertsOverviewR
 					underlineTabStrip(
 						h,
 						{ label: "Alerts sections", bleed: false, divided: false },
-						ALERTS_TABS.map((entry) => {
+						Arr.map(ALERTS_TABS, (entry) => {
 							const count = counts.get(entry.value) ?? 0
 							return h.span(
 								[h.Class(underlineTabClass(entry.value === tab))],
@@ -109,6 +111,12 @@ type HubInputs = Readonly<{
 	nowMs: number
 }>
 
+const inboxAcknowledge = (hub: HubModel) => ({
+	onAcknowledge: (incidentId: AlertIncidentId, acknowledged: boolean) =>
+		HubMessageUnion.ClickedAcknowledgeIncident({ incidentId, acknowledged }),
+	pendingIds: hub.acknowledgingIncidentIds,
+})
+
 /** The sections the hub's views draw, run against the lab's hub Model. */
 export const hubSections = Submodel.defineView<HubModel, HubMessage, HubInputs>((hub, inputs, h) => {
 	const { fixture } = inputs
@@ -116,11 +124,16 @@ export const hubSections = Submodel.defineView<HubModel, HubMessage, HubInputs>(
 	return h.div(
 		[h.Class("space-y-12")],
 		[
-			section(h, "inbox", "Inbox: two firing, one held", [
-				alertsFrame(h, "inbox", fixture.overview, inboxTab(h, fixture.overview)),
+			section(h, "inbox", "Inbox: one firing, one acknowledged, one held", [
+				alertsFrame(
+					h,
+					"inbox",
+					fixture.overview,
+					inboxTab(h, fixture.overview, inboxAcknowledge(hub)),
+				),
 			]),
 			section(h, "inbox-quiet", "Inbox: nothing firing, two blind spots", [
-				alertsFrame(h, "inbox", fixture.quiet, inboxTab(h, fixture.quiet)),
+				alertsFrame(h, "inbox", fixture.quiet, inboxTab(h, fixture.quiet, inboxAcknowledge(hub))),
 			]),
 			section(h, "rules", "Rules", [
 				alertsFrame(
@@ -132,7 +145,7 @@ export const hubSections = Submodel.defineView<HubModel, HubMessage, HubInputs>(
 						destinations: fixture.destinations,
 						status: inputs.status ?? undefined,
 						emptyState: alertsEmptyState(h, {
-							isAdmin: true,
+							canEdit: true,
 							hasDestinations: true,
 							serviceName: undefined,
 							onAddDestination: undefined,
@@ -170,12 +183,13 @@ export const hubSections = Submodel.defineView<HubModel, HubMessage, HubInputs>(
 									),
 									h.ul(
 										[h.Class("divide-y")],
-										fixture.destinations.map((destination) =>
+										Arr.map(fixture.destinations, (destination) =>
 											destinationRow(h, hub, routing, {
 												destination,
-												recent: fixture.deliveries
-													.filter((event) => event.destinationId === destination.id)
-													.slice(0, HEALTH_WINDOW),
+												recent: Arr.filter(
+													fixture.deliveries,
+													(event) => event.destinationId === destination.id,
+												).slice(0, HEALTH_WINDOW),
 											}),
 										),
 									),

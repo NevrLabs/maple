@@ -18,7 +18,7 @@ import {
 	heartbeatDeadline,
 	type UptimeMonitorConfig,
 } from "@maple/domain/uptime"
-import { Clock, Context, Effect, Layer, Option, Ref } from "effect"
+import { Clock, Context, Effect, Layer, Option, Ref, Array as Arr } from "effect"
 import { Database } from "@maple/backend/platform/DatabaseLive"
 import { makeDbExecute } from "@maple/backend/platform/db-execute"
 import { uptimeRuleFields } from "@maple/backend/services/alerts/AlertRuleModel"
@@ -208,7 +208,8 @@ export class UptimeAlertSource extends Context.Service<UptimeAlertSource, Uptime
 				})
 				if (marked.length > 0) return Option.some({ groupKey, down: true, detail: error })
 				// A ping or failure landed between the read and the write: report what it left.
-				return Option.map(yield* readMonitor(orgId, ruleId), asStored)
+				const monitor = yield* readMonitor(orgId, ruleId)
+				return Option.map(monitor, asStored)
 			})
 
 			// Monitors only lose the race to a rule at creation before this shipped: once none are
@@ -292,7 +293,7 @@ export class UptimeAlertSource extends Context.Service<UptimeAlertSource, Uptime
 						),
 					),
 				)
-				const count = created.filter((made) => made).length
+				const count = Arr.filter(created, (made) => made).length
 				yield* Effect.annotateCurrentSpan("maple.uptime.rules_backfilled", count)
 				return count
 			}).pipe(Effect.withSpan("UptimeAlertSource.backfillRules"))

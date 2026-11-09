@@ -1,4 +1,5 @@
 import {
+	ErrorIssueAffectedUsersResponse,
 	ErrorIssueEventsResponse,
 	ErrorIssuePullRequestsResponse,
 	ErrorIssueVerificationsResponse,
@@ -11,15 +12,15 @@ import {
 import { V2AnomalyIncident, V2ErrorIssueDetail, V2Investigation } from "@maple/domain/http/v2"
 import { Schema } from "effect"
 import { defineMessageUnion } from "foldkit/message"
-import * as Chart from "../../../charts/chart"
-import { ThemeColors } from "../../../charts/theme-colors"
-import { LoadFailure } from "../../../data/load-failure"
+import * as Chart from "@maple/views/charts/chart"
+import { ThemeColors } from "@maple/views/charts/theme-colors"
+import { LoadFailure } from "@maple/views/data/load-failure"
 import { TimeWindow } from "../../../data/time-range"
-import * as Combobox from "../../../ui/combobox"
-import * as CopyButton from "../../../ui/copy-button"
-import * as Dialog from "../../../ui/dialog"
-import * as Menu from "../../../ui/menu"
-import * as Select from "../../../ui/select"
+import * as Combobox from "@maple/views/ui/combobox"
+import * as CopyButton from "@maple/views/ui/copy-button"
+import * as Dialog from "@maple/views/ui/dialog"
+import * as Menu from "@maple/views/ui/menu"
+import * as Select from "@maple/views/ui/select"
 import * as TimeRangePicker from "../../kit/time-range-picker"
 import { DestinationName } from "./model"
 
@@ -34,11 +35,14 @@ const result = <A extends Schema.Top>(schema: A) => ({
 
 /** The issue workflow writes the rail sends (`useMutationAction` in the route). */
 export const IssueWrite = Schema.Union([
-	Schema.TaggedStruct("Transition", { toState: WorkflowState }),
+	/** `fromState` is the state the rail showed; the server refuses the move (409) once it moved on. */
+	Schema.TaggedStruct("Transition", { fromState: WorkflowState, toState: WorkflowState }),
 	Schema.TaggedStruct("Claim", {}),
 	Schema.TaggedStruct("Heartbeat", {}),
 	Schema.TaggedStruct("Release", {}),
 	Schema.TaggedStruct("SetSeverity", { severity: Schema.NullOr(IssueSeverity) }),
+	/** Splits a merged issue back out of the one it was folded into. */
+	Schema.TaggedStruct("Unmerge", {}),
 ])
 export type IssueWrite = typeof IssueWrite.Type
 
@@ -55,6 +59,7 @@ export const Message = defineMessageUnion({
 	CompletedResolveWindow: { window: TimeWindow, nowMs: Schema.Number, mode: RequestMode },
 	CompletedFetchDetail: result(V2ErrorIssueDetail),
 	CompletedFetchEvents: result(ErrorIssueEventsResponse),
+	CompletedFetchAffectedUsers: result(ErrorIssueAffectedUsersResponse),
 	MountedRightRail: {},
 	CompletedFetchInvestigations: result(Schema.Array(V2Investigation)),
 	CompletedFetchPullRequests: result(ErrorIssuePullRequestsResponse),
@@ -78,8 +83,10 @@ export const Message = defineMessageUnion({
 	GotSeveritySelectMessage: { message: Select.Message },
 	GotFingerprintCopyMessage: { message: CopyButton.Message },
 	GotIssueIdCopyMessage: { message: CopyButton.Message },
+	GotPromptCopyMessage: { message: CopyButton.Message },
 	GotChartMessage: { message: Chart.Message },
 	ClickedClaim: {},
+	ClickedUnmerge: {},
 	ClickedExtendLease: {},
 	ClickedReleaseLease: {},
 	CompletedIssueWrite: { write: IssueWrite, result: Schema.Result(WriteOutcome, LoadFailure) },

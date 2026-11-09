@@ -9,7 +9,18 @@
  */
 import * as PlanetScale from "@distilled.cloud/planetscale"
 import { IntegrationsUpstreamError } from "@maple/domain/http"
-import { Duration, Effect, Layer, Redacted, Schedule, Schema, Stream } from "effect"
+import {
+	Duration,
+	Effect,
+	Layer,
+	Redacted,
+	Schedule,
+	Schema,
+	Stream,
+	Array as Arr,
+	Record as Rec,
+	String as Str,
+} from "effect"
 import { HttpClient, HttpClientError, HttpClientResponse } from "effect/http"
 
 /** Per HTTP request, body included, so a paginated listing gets the budget once per page. */
@@ -44,6 +55,7 @@ const withRequestTimeout = (httpClient: HttpClient.HttpClient, timeoutRetries: n
 						request,
 						new Response(body.byteLength === 0 ? null : body, {
 							status: res.status,
+							// @effect-diagnostics-next-line preferEffectRecord:off -- not a record type; Rec.toEntries would need a cast
 							headers: new Headers(Object.entries(res.headers)),
 						}),
 					),
@@ -75,8 +87,14 @@ export class PlanetScaleForbiddenError extends Schema.TaggedError<PlanetScaleFor
 	{ message: Schema.String },
 ) {}
 
+/** A 403 on the org-wide database listing: the grant has lost access to the whole organization. */
+export class PlanetScaleOrgForbiddenError extends Schema.TaggedError<PlanetScaleOrgForbiddenError>()(
+	"@maple/backend/integrations/PlanetScaleOrgForbiddenError",
+	{ message: Schema.String },
+) {}
+
 export const isPlanetScaleTokenRejected = (error: unknown): error is PlanetScaleTokenRejectedError =>
-	error instanceof PlanetScaleTokenRejectedError
+	Schema.is(PlanetScaleTokenRejectedError)(error)
 
 /**
  * Any failure an SDK operation declares. Each operation's error union holds its own generated
@@ -89,8 +107,8 @@ export type PlanetScaleApiError =
 	| PlanetScaleForbiddenError
 	| IntegrationsUpstreamError
 
-const STATUS_BY_TAG: Record<string, number> = Object.fromEntries(
-	Object.entries(PlanetScale.HTTP_STATUS_MAP).map(([status, error]) => [error.name, Number(status)]),
+const STATUS_BY_TAG: Record<string, number> = Rec.fromEntries(
+	Arr.map(Rec.toEntries(PlanetScale.HTTP_STATUS_MAP), ([status, error]) => [error.name, Number(status)]),
 )
 
 const toApiError =
@@ -115,7 +133,7 @@ const toApiError =
 		const status = STATUS_BY_TAG[error._tag]
 		const detail = error.message === "" ? "" : `: ${error.message}`
 		return new IntegrationsUpstreamError({
-			message: `PlanetScale API ${operation} failed (${error._tag})${detail}`.slice(0, 500),
+			message: Str.slice(0, 500)(`PlanetScale API ${operation} failed (${error._tag})${detail}`),
 			...(status === undefined ? undefined : { status }),
 			cause: error,
 		})
@@ -142,24 +160,18 @@ export const runPlanetScale = <A, E extends SdkError>(
 	effect.pipe(
 		Effect.mapError(toApiError(operation)),
 		// The token is per org, so this cannot be hoisted into the static service graph.
-		// oxlint-disable-next-line effecttsgo/strict-effect-provide
-		Effect.provide(
-			Layer.mergeAll(
-				PlanetScale.fromOAuth({
-					accessToken: Redacted.make(target.accessToken),
-					// Operations take the organization in their input; this field is unused.
-					organization: "",
-					apiBaseUrl: `${target.apiBaseUrl.replace(/\/$/, "")}/v1`,
-				}),
-				Layer.succeed(
-					HttpClient.HttpClient,
-					withRequestTimeout(httpClient, options.timeoutRetries ?? 0),
-				),
-				// The SDK's default policy retries 5xx and 429 until our timeout fires; callers own
-				// retries (pollers re-run every tick), so an HTTP error surfaces at once.
-				Layer.succeed(PlanetScale.Retry.Retry, { while: () => false }),
-			),
-		),
+		Effect.provide([
+			PlanetScale.fromOAuth({
+				accessToken: Redacted.make(target.accessToken),
+				// Operations take the organization in their input; this field is unused.
+				organization: "",
+				apiBaseUrl: `${Str.replace(/\/$/, "")(target.apiBaseUrl)}/v1`,
+			}),
+			Layer.succeed(HttpClient.HttpClient, withRequestTimeout(httpClient, options.timeoutRetries ?? 0)),
+			// The SDK's default policy retries 5xx and 429 until our timeout fires; callers own
+			// retries (pollers re-run every tick), so an HTTP error surfaces at once.
+			Layer.succeed(PlanetScale.Retry.Retry, { while: () => false }),
+		]),
 		Effect.annotateSpans("peer.service", "planetscale"),
 	)
 
@@ -189,7 +201,7 @@ export const collectPages = <I, Item, E>(
 		Effect.map((pages) => {
 			const last = pages.at(-1)
 			return {
-				items: pages.flatMap((page) => page.data),
+				items: Arr.flatMap(pages, (page) => page.data),
 				// Lenient bodies may omit `next_page`; the SDK stops paging on it either way.
 				complete: last === undefined || last.next_page == null,
 			}

@@ -58,7 +58,18 @@ import {
 	MAX_UNFILTERED_BREAKDOWN_RANGE_SECONDS,
 	timeWindowViolation,
 } from "@maple/query-engine/runtime"
-import { DateTime, Effect, Option, Result, Schema } from "effect"
+import {
+	Array as Arr,
+	DateTime,
+	Effect,
+	Option,
+	Order,
+	Predicate,
+	Record as Rec,
+	Result,
+	Schema,
+	String as Str,
+} from "effect"
 import { Base64Url } from "effect/encoding"
 import { decodeKeysetCursor, encodeKeysetCursor } from "@/routes/v2/keyset-cursor"
 import { WarehouseQueryService } from "@maple/backend/services/warehouse/WarehouseQueryService"
@@ -128,19 +139,15 @@ const parseWindow = (
 		const maxSeconds = options.maxSeconds ?? MAX_QUERY_RANGE_SECONDS
 		const violation = timeWindowViolation(startMs, endMs, maxSeconds)
 		if (violation === "empty") {
-			return yield* Effect.fail(
-				V2TimeRangeInvalid.make(
-					`${options.params?.end ?? "end_time"} must be later than ${options.params?.start ?? "start_time"}.`,
-					{ param: options.params?.end ?? "end_time" },
-				),
+			return yield* V2TimeRangeInvalid.make(
+				`${options.params?.end ?? "end_time"} must be later than ${options.params?.start ?? "start_time"}.`,
+				{ param: options.params?.end ?? "end_time" },
 			)
 		}
 		if (violation === "too_wide") {
-			return yield* Effect.fail(
-				V2TelemetryRangeTooLarge.make(
-					`${options.rangeLabel ?? "Telemetry queries"} support a maximum time range of ${formatRangeSeconds(maxSeconds)}.`,
-					{ param: options.params?.start ?? "start_time" },
-				),
+			return yield* V2TelemetryRangeTooLarge.make(
+				`${options.rangeLabel ?? "Telemetry queries"} support a maximum time range of ${formatRangeSeconds(maxSeconds)}.`,
+				{ param: options.params?.start ?? "start_time" },
 			)
 		}
 		const rangeSeconds = (endMs - startMs) / 1000
@@ -153,7 +160,7 @@ const parseWindow = (
 	})
 
 const chToIso = (value: string): Timestamp => {
-	const normalized = value.includes("T") ? value : value.replace(" ", "T")
+	const normalized = Str.includes("T")(value) ? value : Str.replace(" ", "T")(value)
 	const zoned = /[zZ]|[+-]\d\d:?\d\d$/.test(normalized) ? normalized : `${normalized}Z`
 	const ms = parseWarehouseDateTime(zoned)
 	return timestamp(Number.isNaN(ms) ? value : new Date(ms).toISOString())
@@ -163,9 +170,9 @@ const decodeJsonUnknown = Schema.decodeUnknownOption(Schema.fromJsonString(Schem
 
 const parseStringRecord = (value: unknown): Record<string, string> => {
 	const parsed = Option.getOrUndefined(decodeJsonUnknown(value))
-	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return {}
-	return Object.fromEntries(
-		Object.entries(parsed).map(([key, entry]) => [
+	if (!Predicate.isObject(parsed)) return {}
+	return Rec.fromEntries(
+		Arr.map(Rec.toEntries(parsed), ([key, entry]): [string, string] => [
 			key,
 			typeof entry === "string" ? entry : String(entry),
 		]),
@@ -182,7 +189,7 @@ const compactTimestamp = (value: string) => {
 const expandTimestamp = (value: string) => {
 	const match = /^~([0-9a-z]+)(\.\d+)?$/.exec(value)
 	if (match === null) return value
-	const epochSeconds = Number.parseInt(match[1]!, 36)
+	const epochSeconds = Number.parseInt(match[1] ?? "", 36)
 	if (!Number.isSafeInteger(epochSeconds)) return value
 	const seconds = formatWarehouseDateTime(epochSeconds * 1000)
 	return `${seconds}${match[2] ?? ""}`
@@ -190,37 +197,43 @@ const expandTimestamp = (value: string) => {
 const compactHexId = (value: string) => {
 	if (!/^(?:[0-9a-f]{16}|[0-9a-f]{32})$/i.test(value)) return value
 	const bytes = Uint8Array.from({ length: value.length / 2 }, (_, index) =>
-		Number.parseInt(value.slice(index * 2, index * 2 + 2), 16),
+		Number.parseInt(Str.slice(index * 2, index * 2 + 2)(value), 16),
 	)
 	return `~${Base64Url.encode(bytes)}`
 }
 const expandHexId = (value: string): Option.Option<string> => {
-	if (!value.startsWith("~")) return Option.some(value)
-	const decoded = Base64Url.decode(value.slice(1))
+	if (!Str.startsWith("~")(value)) return Option.some(value)
+	const decoded = Base64Url.decode(Str.slice(1)(value))
 	if (Result.isFailure(decoded)) return Option.none()
-	return Option.some([...decoded.success].map((byte) => byte.toString(16).padStart(2, "0")).join(""))
+	return Option.some(
+		Arr.join(
+			Arr.map([...decoded.success], (byte) => Str.padStart(2, "0")(byte.toString(16))),
+			"",
+		),
+	)
 }
-const logKey = (row: { exactTimestamp: string; recordIdentity: string }) =>
-	JSON.stringify([compactTimestamp(row.exactTimestamp), compactHexId(row.recordIdentity)] satisfies LogKey)
+const StringPairJson = Schema.fromJsonString(Schema.Tuple([Schema.String, Schema.String]))
+const encodeStringPair = Schema.encodeSync(StringPairJson)
 
-const decodeLogKeyParts = Schema.decodeUnknownOption(
-	Schema.fromJsonString(Schema.Tuple([Schema.String, Schema.String])),
-)
+const logKey = (row: { exactTimestamp: string; recordIdentity: string }) =>
+	encodeStringPair([
+		compactTimestamp(row.exactTimestamp),
+		compactHexId(row.recordIdentity),
+	] satisfies LogKey)
+
+const decodeLogKeyParts = Schema.decodeUnknownOption(StringPairJson)
 
 const parseLogKey = (value: string) =>
-	Option.match(
+	Effect.fromOption(
 		Option.flatMap(decodeLogKeyParts(value), ([rawTimestamp, rawIdentity]) => {
 			const logTimestamp = expandTimestamp(rawTimestamp)
 			if (Number.isNaN(parseWarehouseDateTime(logTimestamp))) return Option.none()
 			return expandHexId(rawIdentity).pipe(
 				Option.filter((hex) => /^[0-9A-F]{32}$/i.test(hex)),
-				Option.map((hex) => [logTimestamp, hex.toUpperCase()] as const),
+				Option.map((hex) => [logTimestamp, Str.toUpperCase(hex)] as const),
 			)
 		}),
-		{
-			onNone: () => Effect.fail(V2LogIdInvalid.make(undefined, { param: "id" })),
-			onSome: (key) => Effect.succeed(key),
-		},
+		() => V2LogIdInvalid.make(undefined, { param: "id" }),
 	)
 
 const toLog = (row: {
@@ -319,12 +332,14 @@ const attributeFilters = (
 		  }>
 		| undefined,
 ) =>
-	filters?.map((filter) => ({
-		key: filter.key,
-		...(filter.value !== undefined ? { value: String(filter.value) } : undefined),
-		mode: filter.operator,
-		...(filter.negated !== undefined ? { negated: filter.negated } : undefined),
-	}))
+	filters === undefined
+		? undefined
+		: Arr.map(filters, (filter) => ({
+				key: filter.key,
+				...(filter.value !== undefined ? { value: String(filter.value) } : undefined),
+				mode: filter.operator,
+				...(filter.negated !== undefined ? { negated: filter.negated } : undefined),
+			}))
 
 const traceFilters = (filters: V2TraceFilters | undefined, groupByAttributeKey?: string) => {
 	if (!filters && !groupByAttributeKey) return undefined
@@ -415,10 +430,9 @@ const validateTimeseriesBucket = (
 const validateBreakdownRange = (rangeSeconds: number, filters: unknown) => {
 	if (rangeSeconds <= MAX_UNFILTERED_BREAKDOWN_RANGE_SECONDS) return Effect.void
 	if (
-		filters &&
-		typeof filters === "object" &&
-		Object.values(filters).some((value) =>
-			Array.isArray(value) ? value.length > 0 : value !== undefined && value !== null,
+		Predicate.isObject(filters) &&
+		Arr.some(Rec.values(filters), (value) =>
+			Arr.isArray(value) ? value.length > 0 : value !== undefined && value !== null,
 		)
 	) {
 		return Effect.void
@@ -435,12 +449,13 @@ const pivotTimeseries = (
 	data: ReadonlyArray<{ readonly bucket: string; readonly series: Readonly<Record<string, number>> }>,
 	grouped: boolean,
 ) => {
-	const names = [...new Set(data.flatMap((point) => Object.keys(point.series)))].sort()
-	return names.map((name) => ({
+	const names = Arr.sort(new Set(Arr.flatMap(data, (point) => Rec.keys(point.series))), Order.String)
+	return Arr.map(names, (name) => ({
 		group: grouped ? name : null,
-		points: data
-			.filter((point) => name in point.series)
-			.map((point) => ({ timestamp: chToIso(point.bucket), value: Number(point.series[name]) })),
+		points: Arr.map(
+			Arr.filter(data, (point) => name in point.series),
+			(point) => ({ timestamp: chToIso(point.bucket), value: Number(point.series[name]) }),
+		),
 	}))
 }
 
@@ -482,9 +497,9 @@ export const HttpV2TracesLive = HttpApiBuilder.group(MapleApiV2, "traces", (hand
 							limit: limit + 1,
 							cursor: cursorParts
 								? Option.getOrUndefined(
-										Option.map(parseUtc(cursorParts[0]!), (at) => ({
+										Option.map(parseUtc(cursorParts[0]), (at) => ({
 											timestamp: at,
-											traceId: cursorParts[1]!,
+											traceId: cursorParts[1],
 										})),
 									)
 								: undefined,
@@ -497,7 +512,7 @@ export const HttpV2TracesLive = HttpApiBuilder.group(MapleApiV2, "traces", (hand
 					const hasMore = rows.length > limit
 					return {
 						object: "list" as const,
-						data: dataRows.map(toTraceSummary),
+						data: Arr.map(dataRows, toTraceSummary),
 						has_more: hasMore,
 						next_cursor:
 							hasMore && last
@@ -546,7 +561,7 @@ export const HttpV2TracesLive = HttpApiBuilder.group(MapleApiV2, "traces", (hand
 					const response = yield* queryEngine.execute(tenant, request)
 
 					if (response.result.kind !== "timeseries") {
-						return yield* Effect.fail(queryResultMismatch("timeseries", response.result.kind))
+						return yield* queryResultMismatch("timeseries", response.result.kind)
 					}
 					return {
 						object: "trace_timeseries" as const,
@@ -590,7 +605,7 @@ export const HttpV2TracesLive = HttpApiBuilder.group(MapleApiV2, "traces", (hand
 					const response = yield* queryEngine.execute(tenant, request)
 
 					if (response.result.kind !== "breakdown") {
-						return yield* Effect.fail(queryResultMismatch("breakdown", response.result.kind))
+						return yield* queryResultMismatch("breakdown", response.result.kind)
 					}
 					return {
 						object: "trace_breakdown" as const,
@@ -598,7 +613,7 @@ export const HttpV2TracesLive = HttpApiBuilder.group(MapleApiV2, "traces", (hand
 						start_time: timestamp(payload.start_time),
 						end_time: timestamp(payload.end_time),
 						group_by: payload.group_by,
-						data: response.result.data.map((item) => ({
+						data: Arr.map(response.result.data, (item) => ({
 							name: item.name,
 							value: Number(item.value),
 						})),
@@ -609,20 +624,25 @@ export const HttpV2TracesLive = HttpApiBuilder.group(MapleApiV2, "traces", (hand
 				Effect.gen(function* () {
 					const tenant = yield* CurrentTenant.Context
 					const { rows, truncated } = yield* telemetry.traceSpans(tenant, params.trace_id)
-					if (rows.length === 0) return yield* Effect.fail(V2TraceNotFound.make())
-					const spans = rows.map(toSpan)
-					const startMs = Math.min(...spans.map((span) => parseWarehouseDateTime(span.start_time)))
+					if (rows.length === 0) return yield* V2TraceNotFound.make()
+					const spans = Arr.map(rows, toSpan)
+					const startMs = Math.min(
+						...Arr.map(spans, (span) => parseWarehouseDateTime(span.start_time)),
+					)
 					const endMs = Math.max(
-						...spans.map((span) => parseWarehouseDateTime(span.start_time) + span.duration_ms),
+						...Arr.map(
+							spans,
+							(span) => parseWarehouseDateTime(span.start_time) + span.duration_ms,
+						),
 					)
 					return {
 						id: params.trace_id,
 						object: "trace" as const,
-						start_time: timestamp(new Date(startMs).toISOString()),
-						end_time: timestamp(new Date(endMs).toISOString()),
+						start_time: timestamp(DateTime.formatIso(DateTime.makeUnsafe(startMs))),
+						end_time: timestamp(DateTime.formatIso(DateTime.makeUnsafe(endMs))),
 						duration_ms: endMs - startMs,
 						span_count: spans.length,
-						service_count: new Set(spans.map((span) => span.service_name)).size,
+						service_count: new Set(Arr.map(spans, (span) => span.service_name)).size,
 						truncated,
 						spans,
 					}
@@ -634,7 +654,7 @@ export const HttpV2TracesLive = HttpApiBuilder.group(MapleApiV2, "traces", (hand
 					const detail = yield* telemetry
 						.span(tenant, params.trace_id, params.span_id)
 						.pipe(Effect.map(Option.getOrNull))
-					if (!detail) return yield* Effect.fail(V2SpanNotFound.make())
+					if (!detail) return yield* V2SpanNotFound.make()
 					return toSpan(detail)
 				}),
 			)
@@ -663,11 +683,11 @@ export const HttpV2LogsLive = HttpApiBuilder.group(MapleApiV2, "logs", (handlers
 							limit: limit + 1,
 							cursorIdentity: cursorParts
 								? {
-										timestamp: cursorParts[0]!,
-										serviceName: cursorParts[1]!,
-										traceId: cursorParts[2]!,
-										spanId: cursorParts[3]!,
-										recordIdentity: cursorParts[4]!,
+										timestamp: cursorParts[0],
+										serviceName: cursorParts[1],
+										traceId: cursorParts[2],
+										spanId: cursorParts[3],
+										recordIdentity: cursorParts[4],
 									}
 								: undefined,
 						},
@@ -679,7 +699,7 @@ export const HttpV2LogsLive = HttpApiBuilder.group(MapleApiV2, "logs", (handlers
 					const hasMore = rows.length > limit
 					return {
 						object: "list" as const,
-						data: dataRows.map(toLog),
+						data: Arr.map(dataRows, toLog),
 						has_more: hasMore,
 						next_cursor:
 							hasMore && last
@@ -727,7 +747,7 @@ export const HttpV2LogsLive = HttpApiBuilder.group(MapleApiV2, "logs", (handlers
 					const response = yield* queryEngine.execute(tenant, request)
 
 					if (response.result.kind !== "timeseries") {
-						return yield* Effect.fail(queryResultMismatch("timeseries", response.result.kind))
+						return yield* queryResultMismatch("timeseries", response.result.kind)
 					}
 					return {
 						object: "log_timeseries" as const,
@@ -767,7 +787,7 @@ export const HttpV2LogsLive = HttpApiBuilder.group(MapleApiV2, "logs", (handlers
 					const response = yield* queryEngine.execute(tenant, request)
 
 					if (response.result.kind !== "breakdown") {
-						return yield* Effect.fail(queryResultMismatch("breakdown", response.result.kind))
+						return yield* queryResultMismatch("breakdown", response.result.kind)
 					}
 					return {
 						object: "log_breakdown" as const,
@@ -775,7 +795,7 @@ export const HttpV2LogsLive = HttpApiBuilder.group(MapleApiV2, "logs", (handlers
 						start_time: timestamp(payload.start_time),
 						end_time: timestamp(payload.end_time),
 						group_by: payload.group_by,
-						data: response.result.data.map((item) => ({
+						data: Arr.map(response.result.data, (item) => ({
 							name: item.name,
 							value: Number(item.value),
 						})),
@@ -789,7 +809,7 @@ export const HttpV2LogsLive = HttpApiBuilder.group(MapleApiV2, "logs", (handlers
 					const row = yield* telemetry
 						.log(tenant, { timestamp: logTimestamp, recordIdentity })
 						.pipe(Effect.map(Option.getOrNull))
-					if (!row) return yield* Effect.fail(V2LogNotFound.make())
+					if (!row) return yield* V2LogNotFound.make()
 					return toLog(row)
 				}),
 			)
@@ -824,7 +844,7 @@ export const HttpV2MetricsLive = HttpApiBuilder.group(MapleApiV2, "metrics", (ha
 							)
 							.pipe(
 								Effect.map((rows): ReadonlyArray<V2Metric> =>
-									rows.map((row) => ({
+									Arr.map(rows, (row) => ({
 										object: "metric",
 										name: decodeMetricName(row.metricName),
 										type: row.metricType,
@@ -879,7 +899,7 @@ export const HttpV2MetricsLive = HttpApiBuilder.group(MapleApiV2, "metrics", (ha
 					const response = yield* queryEngine.execute(tenant, request)
 
 					if (response.result.kind !== "timeseries") {
-						return yield* Effect.fail(queryResultMismatch("timeseries", response.result.kind))
+						return yield* queryResultMismatch("timeseries", response.result.kind)
 					}
 					return {
 						object: "metric_timeseries" as const,
@@ -923,7 +943,7 @@ export const HttpV2MetricsLive = HttpApiBuilder.group(MapleApiV2, "metrics", (ha
 					const response = yield* queryEngine.execute(tenant, request)
 
 					if (response.result.kind !== "breakdown") {
-						return yield* Effect.fail(queryResultMismatch("breakdown", response.result.kind))
+						return yield* queryResultMismatch("breakdown", response.result.kind)
 					}
 					return {
 						object: "metric_breakdown" as const,
@@ -931,7 +951,7 @@ export const HttpV2MetricsLive = HttpApiBuilder.group(MapleApiV2, "metrics", (ha
 						start_time: timestamp(payload.start_time),
 						end_time: timestamp(payload.end_time),
 						group_by: payload.group_by,
-						data: response.result.data.map((item) => ({
+						data: Arr.map(response.result.data, (item) => ({
 							name: item.name,
 							value: Number(item.value),
 						})),
@@ -995,7 +1015,7 @@ export const toService = (
 const toOverviewPoints = (
 	data: ReadonlyArray<{ readonly bucket: string; readonly series: Readonly<Record<string, number>> }>,
 ): ReadonlyArray<V2ServiceOverviewPoint> =>
-	data.map((point) => ({
+	Arr.map(data, (point) => ({
 		timestamp: chToIso(point.bucket),
 		span_count: Number(point.series.count ?? 0),
 		estimated_span_count: Number(point.series.estimated_span_count ?? point.series.count ?? 0),
@@ -1005,14 +1025,18 @@ const toOverviewPoints = (
 		p99_latency_ms: Number(point.series.p99_duration ?? 0),
 	}))
 
-const baselineKey = (serviceName: string, environment: string) => JSON.stringify([serviceName, environment])
+const baselineKey = (serviceName: string, environment: string) => encodeStringPair([serviceName, environment])
 
 /** Baseline per (service, environment); of several namespaces, the busiest one's. */
 const baselineByServiceEnvironment = (rows: ReadonlyArray<CH.ServiceHealthBaselineOutput>) =>
 	new Map(
-		[...rows]
-			.sort((left, right) => left.baselineSpanCount - right.baselineSpanCount)
-			.map((row) => [baselineKey(row.serviceName, row.environment), row] as const),
+		Arr.map(
+			Arr.sort(
+				rows,
+				Order.mapInput(Order.Number, (row: CH.ServiceHealthBaselineOutput) => row.baselineSpanCount),
+			),
+			(row) => [baselineKey(row.serviceName, row.environment), row] as const,
+		),
 	)
 
 const isoAt = (epochMs: number): Timestamp => timestamp(new Date(epochMs).toISOString())
@@ -1056,7 +1080,11 @@ export const HttpV2ServicesLive = HttpApiBuilder.group(MapleApiV2, "services", (
 		) =>
 			telemetry
 				.serviceCatalog(tenant, opts, window)
-				.pipe(Effect.map((rows) => rows.map((row) => toService(row, window.rangeSeconds, baselines))))
+				.pipe(
+					Effect.map((rows) =>
+						Arr.map(rows, (row) => toService(row, window.rangeSeconds, baselines)),
+					),
+				)
 		return (
 			handlers
 				.handle("list", ({ query }) =>
@@ -1117,10 +1145,11 @@ export const HttpV2ServicesLive = HttpApiBuilder.group(MapleApiV2, "services", (
 							previousBounds !== undefined &&
 							timestampMs(previousEnd) > timestampMs(payload.start_time)
 						) {
-							return yield* Effect.fail(
-								V2TimeRangeInvalid.make("previous_end_time must not be after start_time.", {
+							return yield* V2TimeRangeInvalid.make(
+								"previous_end_time must not be after start_time.",
+								{
 									param: "previous_end_time",
-								}),
+								},
 							)
 						}
 						const environments = payload.deployment_environment
@@ -1136,7 +1165,7 @@ export const HttpV2ServicesLive = HttpApiBuilder.group(MapleApiV2, "services", (
 										.serviceHealthSnapshot(tenant, { environments }, bounds)
 										.pipe(
 											Effect.map((rows) =>
-												rows.map((row) => toServiceHealthEntry(row, seconds)),
+												Arr.map(rows, (row) => toServiceHealthEntry(row, seconds)),
 											),
 										)
 						// The comparison stops where the current window's first hour starts, so the two
@@ -1205,7 +1234,7 @@ export const HttpV2ServicesLive = HttpApiBuilder.group(MapleApiV2, "services", (
 							],
 							{ concurrency: 3 },
 						)
-						const services = current.map((entry) => {
+						const services = Arr.map(current, (entry) => {
 							const baseline = baselineMap.get(
 								baselineKey(entry.service_name, entry.deployment_environment ?? ""),
 							)
@@ -1243,7 +1272,7 @@ export const HttpV2ServicesLive = HttpApiBuilder.group(MapleApiV2, "services", (
 							serviceName: params.name,
 							limit: 1,
 						})
-						if (!rows[0]) return yield* Effect.fail(V2ServiceNotFound.make())
+						if (rows[0] === undefined) return yield* V2ServiceNotFound.make()
 						return rows[0]
 					}),
 				)
@@ -1349,7 +1378,7 @@ export const HttpV2ServicesLive = HttpApiBuilder.group(MapleApiV2, "services", (
 								window,
 							)
 							.pipe(
-								Effect.map((rows) => rows.map(toOperation)),
+								Effect.map((rows) => Arr.map(rows, toOperation)),
 								Effect.catchCause((cause) =>
 									Effect.as(
 										Effect.logWarning(
@@ -1365,7 +1394,7 @@ export const HttpV2ServicesLive = HttpApiBuilder.group(MapleApiV2, "services", (
 							[summary, points, operations],
 							{ concurrency: 3 },
 						)
-						if (!service) return yield* Effect.fail(V2ServiceNotFound.make())
+						if (service === undefined) return yield* V2ServiceNotFound.make()
 						return {
 							object: "service_overview" as const,
 							service,
@@ -1432,7 +1461,7 @@ export const HttpV2EnvironmentsLive = HttpApiBuilder.group(MapleApiV2, "environm
 
 				return {
 					object: "list" as const,
-					data: rows.map((row) => ({ object: "environment" as const, name: row.environment })),
+					data: Arr.map(rows, (row) => ({ object: "environment" as const, name: row.environment })),
 					// The query's own limit sits well above any real organization's
 					// environment count, so a page is always the whole list. Paginating
 					// would hand clients a cursor that is never non-null.
@@ -1466,7 +1495,7 @@ export const HttpV2ServiceMapLive = HttpApiBuilder.group(MapleApiV2, "serviceMap
 					object: "service_map" as const,
 					start_time: timestamp(query.start_time),
 					end_time: timestamp(query.end_time),
-					edges: rows.map(toMapEdge),
+					edges: Arr.map(rows, toMapEdge),
 				}
 			}),
 		)

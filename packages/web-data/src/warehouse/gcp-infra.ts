@@ -1,4 +1,4 @@
-import { Effect, Schema } from "effect"
+import { Effect, Schema, Array as Arr } from "effect"
 import { GCP_INFRA_SERVICE_IDS, GCP_INFRA_SOURCE_IDS } from "@maple/domain/gcp-infra"
 import {
 	GcpCloudSqlInstanceRequest,
@@ -256,9 +256,9 @@ export const getGcpCloudSqlTraceSide = Effect.fn("QueryEngine.getGcpCloudSqlTrac
 			})
 		}),
 	)
-	const databases = result.databases.filter((database) => !SYSTEM_DATABASES.has(database))
+	const databases = Arr.filter(result.databases, (database) => !SYSTEM_DATABASES.has(database))
 	// A database whose read fails is left out; the others still show.
-	const summaries = (yield* Effect.forEach(
+	const fetched = yield* Effect.forEach(
 		databases,
 		(database) =>
 			getServiceDbQuerySummary({
@@ -271,10 +271,11 @@ export const getGcpCloudSqlTraceSide = Effect.fn("QueryEngine.getGcpCloudSqlTrac
 				},
 			}).pipe(Effect.orElseSucceed(() => null)),
 		{ concurrency: 4 },
-	)).filter((summary) => summary !== null)
+	)
+	const summaries = Arr.filter(fetched, (summary) => summary !== null)
 	return {
 		databases,
-		tracedQueries: summaries.flatMap((summary) => summary.topQueries),
-		services: Math.max(0, ...summaries.map((summary) => summary.summary?.activeServiceCount ?? 0)),
+		tracedQueries: Arr.flatMap(summaries, (summary) => summary.topQueries),
+		services: Math.max(0, ...Arr.map(summaries, (summary) => summary.summary?.activeServiceCount ?? 0)),
 	}
 })

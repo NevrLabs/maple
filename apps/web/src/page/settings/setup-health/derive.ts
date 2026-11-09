@@ -1,6 +1,7 @@
 import { decodePublicId, PublicIdPrefixes, type V2SetupAuditCheck } from "@maple/domain/http/v2"
 import { docsUrl } from "../../../lib/docs"
 import { AppRoute, hrefOf } from "../../../route"
+import { Array as Arr, Option, Order } from "effect"
 
 // Setup health checks; in-app links are built as hrefs.
 
@@ -54,10 +55,12 @@ const integrations = (integration?: string) =>
 	hrefOf(AppRoute.Integrations({ search: integration === undefined ? {} : { integration } }))
 
 const firstAffectedRuleId = (check: Check): string | null => {
-	const ruleIds = check.affected.flatMap((entity) =>
-		entity.kind === "alert_rule" && entity.id !== null ? [decodePublicId(PublicIdPrefixes.alertRule, entity.id)] : [],
+	const ruleIds = Arr.flatMap(check.affected, (entity) =>
+		entity.kind === "alert_rule" && entity.id !== null
+			? [decodePublicId(PublicIdPrefixes.alertRule, entity.id)]
+			: [],
 	)
-	return ruleIds.find((ruleId) => ruleId !== null) ?? null
+	return Option.getOrNull(Arr.findFirst(ruleIds, (ruleId) => Option.fromNullOr(ruleId)))
 }
 
 const ruleAction = (check: Check, label: string): SetupHealthAction => {
@@ -96,7 +99,17 @@ export const setupHealthAction = (check: Check): SetupHealthAction | null => {
 		case "CFG-BYOC-02":
 			return link("Open data platform", settingsTab("data-platform"))
 		case "CFG-INTEG-01":
-			return link("Reconnect", integrations(check.affected.find((entity) => entity.kind === "integration")?.name))
+			return link(
+				"Reconnect",
+				integrations(
+					Option.getOrUndefined(
+						Option.map(
+							Arr.findFirst(check.affected, (entity) => entity.kind === "integration"),
+							(entity) => entity.name,
+						),
+					),
+				),
+			)
 		default: {
 			const integration = INTEGRATION_FOR_CHECK.get(check.id)
 			return integration === undefined ? null : link("Open integration", integrations(integration))
@@ -110,23 +123,30 @@ const SEVERITY_RANK = { critical: 0, warn: 1, info: 2 } as const
 export const orderFindings = <C extends Pick<V2SetupAuditCheck, "status" | "severity">>(
 	checks: ReadonlyArray<C>,
 ): ReadonlyArray<C> =>
-	checks.filter((check) => check.status === "fail").toSorted((a, b) => SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity])
+	Arr.sort(
+		Arr.filter(checks, (check) => check.status === "fail"),
+		Order.mapInput(Order.Number, (check: C) => SEVERITY_RANK[check.severity]),
+	)
 
 export type HealthSegment = "critical" | "warn" | "info" | "pass" | "skip"
 const SEGMENT_ORDER: ReadonlyArray<HealthSegment> = ["critical", "warn", "info", "pass", "skip"]
 
 /** The summary bar's segments in display order, empty ones dropped. */
-export const healthSegments = (
-	summary: { readonly [Segment in HealthSegment]: number },
-): ReadonlyArray<{ readonly segment: HealthSegment; readonly count: number }> =>
-	SEGMENT_ORDER.map((segment) => ({ segment, count: summary[segment] })).filter(({ count }) => count > 0)
+export const healthSegments = (summary: { readonly [Segment in HealthSegment]: number }): ReadonlyArray<{
+	readonly segment: HealthSegment
+	readonly count: number
+}> =>
+	Arr.filter(
+		Arr.map(SEGMENT_ORDER, (segment) => ({ segment, count: summary[segment] })),
+		({ count }) => count > 0,
+	)
 
 /** Checks that did not fail, with a header that counts passed and skipped apart like the summary. */
 export const resolvedChecks = <C extends Pick<V2SetupAuditCheck, "status">>(
 	checks: ReadonlyArray<C>,
 ): { readonly checks: ReadonlyArray<C>; readonly label: string } => {
-	const resolved = checks.filter((check) => check.status !== "fail")
-	const skipped = resolved.filter((check) => check.status === "skip").length
+	const resolved = Arr.filter(checks, (check) => check.status !== "fail")
+	const skipped = Arr.filter(resolved, (check) => check.status === "skip").length
 	const passed = resolved.length - skipped
 	if (skipped === 0) return { checks: resolved, label: `Passing (${passed})` }
 	if (passed === 0) return { checks: resolved, label: `Skipped (${skipped})` }

@@ -6,8 +6,10 @@ import {
 	type StatusPageThemeAppearance,
 	type StatusPageThemePreset,
 } from "@maple/domain/status-page"
-import { cn } from "@maple/ui/lib/utils"
 import type { Html, HtmlBuilder } from "foldkit/html"
+import { cardButton } from "@maple/views/ui/card-button"
+import { hstack, vstack } from "@maple/views/ui/stack"
+import { Array as Arr } from "effect"
 
 // The theme presets as small cards, shared by the builder's Look and the Settings appearance.
 
@@ -31,35 +33,41 @@ type Scheme = ResolvedStatusPageTheme["light"]
 /** One mode of the preset as a tiny page: its brand mark and type, a card, and uptime bars. */
 const miniPage = <M>(h: HtmlBuilder<M>, scheme: Scheme, tokens: ResolvedStatusPageTheme): Html => {
 	const radius = `${Math.round(tokens.radiusPx / 3)}px`
-	return h.span(
+	return vstack(
+		h,
+		{
+			gap: "1.5",
+			justify: "center",
+			grow: true,
+			as: "span",
+			className: "px-2",
+			attributes: [
+				h.Style({ backgroundColor: scheme.bg, color: scheme.fg, fontFamily: tokens.fontStack }),
+			],
+		},
 		[
-			h.Class("flex flex-1 flex-col justify-center gap-1.5 px-2"),
-			h.Style({ backgroundColor: scheme.bg, color: scheme.fg, fontFamily: tokens.fontStack }),
-		],
-		[
-			h.span(
-				[h.Class("flex items-center gap-1")],
-				[
-					h.span(
-						[
-							h.Class("size-2.5"),
-							h.Style({ backgroundColor: scheme.primary, borderRadius: radius }),
-						],
-						[],
-					),
-					h.span([h.Class("text-xs/none font-semibold")], ["Aa"]),
-				],
-			),
-			h.span(
-				[
-					h.Class("flex gap-px p-1"),
-					h.Style({
-						backgroundColor: scheme.card,
-						border: `1px solid ${scheme.line}`,
-						borderRadius: radius,
-					}),
-				],
-				[scheme.ok, scheme.ok, scheme.ok, scheme.degraded, scheme.ok, scheme.ok].map((color) =>
+			hstack(h, { gap: "1", as: "span" }, [
+				h.span(
+					[h.Class("size-2.5"), h.Style({ backgroundColor: scheme.primary, borderRadius: radius })],
+					[],
+				),
+				h.span([h.Class("text-xs/none font-semibold")], ["Aa"]),
+			]),
+			hstack(
+				h,
+				{
+					align: "stretch",
+					as: "span",
+					className: "gap-px p-1",
+					attributes: [
+						h.Style({
+							backgroundColor: scheme.card,
+							border: `1px solid ${scheme.line}`,
+							borderRadius: radius,
+						}),
+					],
+				},
+				Arr.map([scheme.ok, scheme.ok, scheme.ok, scheme.degraded, scheme.ok, scheme.ok], (color) =>
 					h.span([h.Class("h-2 flex-1 rounded-2xs"), h.Style({ backgroundColor: color })], []),
 				),
 			),
@@ -83,23 +91,24 @@ const presetCard = <M>(
 		preset: preset.value,
 	})
 	const isSelected = options.selected === preset.value
-	return h.button(
+	return cardButton(
+		h,
+		{
+			onClick: options.onPick(preset.value),
+			isSelected,
+			isDisabled: options.isDisabled,
+			className: "flex flex-col gap-1.5 rounded-lg p-1.5 text-xs disabled:opacity-60",
+			attributes: [h.Key(preset.value)],
+		},
 		[
-			h.Type("button"),
-			h.Key(preset.value),
-			h.AriaPressed(isSelected ? "true" : "false"),
-			h.Disabled(options.isDisabled),
-			h.OnClick(options.onPick(preset.value)),
-			h.Class(
-				cn(
-					"flex flex-col gap-1.5 rounded-lg border p-1.5 text-left text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-60",
-					isSelected ? "border-primary/70 bg-primary-a1" : "hover:bg-muted/50 active:bg-muted/50",
-				),
-			),
-		],
-		[
-			h.span(
-				[h.AriaHidden(true), h.Class("flex h-16 overflow-hidden rounded-md border")],
+			hstack(
+				h,
+				{
+					align: "stretch",
+					as: "span",
+					className: "h-16 overflow-hidden rounded-md border",
+					attributes: [h.AriaHidden(true)],
+				},
 				[miniPage(h, tokens.light, tokens), miniPage(h, tokens.dark, tokens)],
 			),
 			h.span([h.Class("truncate px-0.5 font-medium text-foreground")], [preset.label]),
@@ -117,5 +126,5 @@ export const presetCards = <M>(
 ): Html =>
 	h.div(
 		[h.Role("group"), h.AriaLabel("Preset"), h.Class("grid grid-cols-2 gap-2 sm:grid-cols-3")],
-		PRESETS.map((preset) => presetCard(h, preset, options)),
+		Arr.map(PRESETS, (preset) => presetCard(h, preset, options)),
 	)

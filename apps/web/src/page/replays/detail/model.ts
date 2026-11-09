@@ -1,9 +1,9 @@
 import { Schema } from "effect"
 import { AsyncData } from "foldkit"
-import { KeyedSchema } from "../../../data/keyed"
-import { LoadFailure } from "../../../data/load-failure"
+import { KeyedSchema } from "@maple/views/data/keyed"
+import { LoadFailure } from "@maple/views/data/load-failure"
 import { ReplaySearch } from "../../../route/search"
-import * as CopyButton from "../../../ui/copy-button"
+import * as CopyButton from "@maple/views/ui/copy-button"
 import { RangeMeta, ReplayMeta } from "../kit/replay-meta"
 
 // The replay detail page.
@@ -133,8 +133,8 @@ export const Loader = Schema.Struct({
 	/** The seed's events, cut once per `seedVersion` so ticks and views do not re-flatten them. */
 	seed: Schema.Array(Schema.Unknown),
 	queue: Schema.Array(Range),
-	seekTargetMs: Schema.NullOr(Schema.Number),
-	isSeeking: Schema.Boolean,
+	/** Where the current seed starts after a seek or slide; `isLoading` until its window is cut. */
+	seek: Schema.NullOr(Schema.Struct({ targetMs: Schema.Number, isLoading: Schema.Boolean })),
 	playheadMs: Schema.Number,
 	/** The range the events subscription reads (`subscribedRange`). */
 	range: KeyedSchema(RangeRows, LoadFailure),
@@ -146,6 +146,14 @@ export const Loader = Schema.Struct({
 	originMs: Schema.NullOr(Schema.Number),
 	/** Markers and idle gaps of every range loaded so far, kept across seeks. */
 	rangeMetas: Schema.Array(RangeMeta),
+	/** Planned ranges fetched so far (by first chunk), for their markers and gaps even when not playable. */
+	fetchedRanges: Schema.Array(Schema.Number),
+	/** Background ranges whose fetch failed (by first chunk), skipped until a retry. */
+	failedRanges: Schema.Array(Schema.Number),
+	/** The last background failure, shown once the playhead needs a failed range. */
+	backgroundFailure: Schema.NullOr(LoadFailure),
+	/** The engine ran out of loaded events, until the window grows or is rebuilt. */
+	isStarved: Schema.Boolean,
 })
 export type Loader = typeof Loader.Type
 
@@ -155,9 +163,20 @@ export type RailTab = typeof RailTab.Type
 export const EventFilter = Schema.Literals(["all", "custom", "console", "network", "error"])
 export type EventFilter = typeof EventFilter.Type
 
+/**
+ * The transport: `Buffering` while a seek or slide rebuilds the engine, `resumeAfter` when it
+ * interrupted playback and plays again once the new engine is ready.
+ */
+export const Playback = Schema.Union([
+	Schema.TaggedStruct("Paused", {}),
+	Schema.TaggedStruct("Playing", {}),
+	Schema.TaggedStruct("Buffering", { resumeAfter: Schema.Boolean }),
+	Schema.TaggedStruct("Finished", {}),
+])
+export type Playback = typeof Playback.Type
+
 export const Player = Schema.Struct({
-	isPlaying: Schema.Boolean,
-	isFinished: Schema.Boolean,
+	playback: Playback,
 	/** Real ms from recording start. */
 	currentMs: Schema.Number,
 	totalMs: Schema.Number,

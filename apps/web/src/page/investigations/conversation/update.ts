@@ -1,17 +1,18 @@
 import { chartFences } from "@maple/domain/chat-chart-spec"
 import type { ChatEvent } from "@maple/domain/chat-session"
-import { Array, Result } from "effect"
+import { Result, Record as Rec, String as Str, Array as Arr } from "effect"
 import { Command, type Update } from "foldkit"
-import * as Chart from "../../../charts/chart"
-import { ChartRuntime, LoadChartRuntime } from "../../../charts/chart-runtime"
+import * as Chart from "@maple/views/charts/chart"
+import { ChartRuntime, LoadChartRuntime } from "@maple/views/charts/chart-runtime"
 import type { Resources } from "../../../platform/resources"
-import * as CopyButton from "../../../ui/copy-button"
-import * as Dialog from "../../../ui/dialog"
+import * as CopyButton from "@maple/views/ui/copy-button"
+import * as Dialog from "@maple/views/ui/dialog"
 import { taskSheetId } from "./kit/view-task"
 import { applyChatEvent, finalizeStreamingText, taskOf } from "./kit/fold"
 import { transcriptMarkdown } from "./kit/rich-text"
 import { initMinimap, updateMinimap } from "./kit/turn-minimap"
 import { TextPart } from "./kit/ui-message"
+import { isHighlighterReady } from "@maple/views/lib/highlight"
 import { highlight, highlightedFences, highlightKey } from "./kit/code-highlight"
 import {
 	AbortTurn,
@@ -37,12 +38,14 @@ type MarkdownEntry = Model["markdown"][string]
 
 /** The longest parsed text an on-screen body extends: a streaming body's previous version. */
 const parsedPrefix = (cache: Model["markdown"], text: string): MarkdownEntry | undefined =>
-	Object.entries(cache)
-		.filter(([key, entry]) => !entry.isStale && key !== text && text.startsWith(key))
-		.reduce<[string, MarkdownEntry] | undefined>(
-			(best, pair) => (best === undefined || pair[0].length > best[0].length ? pair : best),
-			undefined,
-		)?.[1]
+	Arr.reduce<[string, MarkdownEntry], [string, MarkdownEntry] | undefined>(
+		Arr.filter(
+			Rec.toEntries(cache),
+			([key, entry]) => !entry.isStale && key !== text && Str.startsWith(key)(text),
+		),
+		undefined,
+		(best, pair) => (best === undefined || pair[0].length > best[0].length ? pair : best),
+	)?.[1]
 
 /**
  * The cache keeps only the bodies on screen (a body still parsing shows its previous version's
@@ -50,9 +53,9 @@ const parsedPrefix = (cache: Model["markdown"], text: string): MarkdownEntry | u
  */
 const followMarkdown = (result: Return): Return => {
 	const model = result.model
-	const wanted = Array.dedupe(transcriptMarkdown(model.messages))
-	const markdown = Object.fromEntries(
-		wanted.flatMap((text) => {
+	const wanted = Arr.dedupe(transcriptMarkdown(model.messages))
+	const markdown = Rec.fromEntries(
+		Arr.flatMap(wanted, (text) => {
 			const own = model.markdown[text]
 			if (own !== undefined && !own.isStale) return [[text, own]]
 			const prefix = parsedPrefix(model.markdown, text)
@@ -60,16 +63,17 @@ const followMarkdown = (result: Return): Return => {
 			return shown === undefined ? [] : [[text, shown]]
 		}),
 	)
-	const missing = wanted.filter(
+	const missing = Arr.filter(
+		wanted,
 		(text) =>
 			(markdown[text]?.isStale ?? true) &&
-			!model.markdownPending.some((pending) => text.startsWith(pending)),
+			!Arr.some(model.markdownPending, (pending) => Str.startsWith(pending)(text)),
 	)
-	const fences = Object.values(markdown).flatMap(({ document }) =>
+	const fences = Arr.flatMap(Rec.values(markdown), ({ document }) =>
 		document === null ? [] : highlightedFences(document.blocks),
 	)
-	const keys = new Set(fences.map((fence) => highlightKey(fence.language, fence.code)))
-	const highlights = Object.fromEntries(Object.entries(model.highlights).filter(([key]) => keys.has(key)))
+	const keys = new Set(Arr.map(fences, (fence) => highlightKey(fence.language, fence.code)))
+	const highlights = Rec.fromEntries(Arr.filter(Rec.toEntries(model.highlights), ([key]) => keys.has(key)))
 	const coloured = withHighlights(
 		{ ...model, markdown, highlights, markdownPending: [...model.markdownPending, ...missing] },
 		fences,
@@ -84,7 +88,7 @@ const followMarkdown = (result: Return): Return => {
 const followCharts = (result: Return): Return => {
 	const model = result.model
 	if (model.chartRuntime !== null) return result
-	const hasChart = transcriptMarkdown(model.messages).some((text) => chartFences(text).length > 0)
+	const hasChart = Arr.some(transcriptMarkdown(model.messages), (text) => chartFences(text).length > 0)
 	return hasChart
 		? withCommands({ ...result, model: { ...model, chartRuntime: ChartRuntime.Loading() } }, [
 				LoadChartRuntime(),
@@ -124,7 +128,7 @@ export const init = (sessionId: string, readOnly: ReadOnly = null): Return => ({
 
 /** `handleSend`: the optimistic bubble, `submitted` and the POST; nothing while a turn runs. */
 const send = (model: Model, text: string): Return => {
-	const trimmed = text.trim()
+	const trimmed = Str.trim(text)
 	if (trimmed === "" || !model.historyReady || isLoading(model) || model.readOnly !== null) return { model }
 	const generation = model.generation + 1
 	const localId = `local-${generation}`
@@ -161,15 +165,19 @@ const withHighlights = (
 	model: Model,
 	fences: ReadonlyArray<{ readonly language: string; readonly code: string }>,
 ): Model => {
-	const missing = fences.filter((fence) => !(highlightKey(fence.language, fence.code) in model.highlights))
-	return missing.length === 0
+	// Plain tokens are not cached, so a parse after the highlighter loads colours these fences.
+	const missing = Arr.filter(
+		fences,
+		(fence) => !(highlightKey(fence.language, fence.code) in model.highlights),
+	)
+	return missing.length === 0 || !isHighlighterReady()
 		? model
 		: {
 				...model,
 				highlights: {
 					...model.highlights,
-					...Object.fromEntries(
-						missing.map((fence) => [
+					...Rec.fromEntries(
+						Arr.map(missing, (fence) => [
 							highlightKey(fence.language, fence.code),
 							highlight(fence.language, fence.code),
 						]),
@@ -179,10 +187,10 @@ const withHighlights = (
 }
 
 const toggle = (ids: ReadonlyArray<string>, id: string): ReadonlyArray<string> =>
-	ids.includes(id) ? ids.filter((other) => other !== id) : [...ids, id]
+	ids.includes(id) ? Arr.filter(ids, (other) => other !== id) : [...ids, id]
 
 const without = (ids: ReadonlyArray<string>, id: string): ReadonlyArray<string> =>
-	ids.filter((other) => other !== id)
+	Arr.filter(ids, (other) => other !== id)
 
 const toast = (type: "success" | "error", title: string) => OutMessage.RequestedToast({ type, title })
 
@@ -239,7 +247,7 @@ const step = (model: Model, message: Message): Return =>
 							stream: null,
 							generation: model.generation + 1,
 							status: "ready",
-							messages: model.messages.map(finalizeStreamingText),
+							messages: Arr.map(model.messages, finalizeStreamingText),
 						},
 						commands: [AbortTurn({ sessionId: model.sessionId })],
 					}
@@ -247,13 +255,13 @@ const step = (model: Model, message: Message): Return =>
 		// A send outlives a Stop (`runStream` after the POST): its bubble still shown, it adopts the
 		// cursor under a fresh generation so the server's `turn-end` settles the turn.
 		CompletedPostMessage: ({ generation, localId, text, result }) => {
-			if (!model.messages.some((entry) => entry.id === localId)) return { model }
+			if (!Arr.some(model.messages, (entry) => entry.id === localId)) return { model }
 			const tail = generation === model.generation ? generation : model.generation + 1
 			return Result.match(result, {
 				onSuccess: (sent) => ({
 					model: {
 						...model,
-						messages: model.messages.map((entry) =>
+						messages: Arr.map(model.messages, (entry) =>
 							entry.id === localId ? { ...entry, id: sent.messageId } : entry,
 						),
 						generation: tail,
@@ -265,7 +273,7 @@ const step = (model: Model, message: Message): Return =>
 					model: {
 						...model,
 						status: "ready",
-						messages: model.messages.filter((entry) => entry.id !== localId),
+						messages: Arr.filter(model.messages, (entry) => entry.id !== localId),
 						failedSend: { message: text, error },
 					},
 				}),
@@ -274,7 +282,7 @@ const step = (model: Model, message: Message): Return =>
 		ReceivedChatEvents: ({ generation, events, nowMs }) =>
 			model.stream === null || model.stream.generation !== generation
 				? { model }
-				: { model: events.reduce((acc, event) => foldEvent(acc, event, nowMs), model) },
+				: { model: Arr.reduce(events, model, (acc, event) => foldEvent(acc, event, nowMs)) },
 		FailedChatStream: ({ generation, message: error }) =>
 			model.stream === null || model.stream.generation !== generation
 				? { model }
@@ -295,12 +303,13 @@ const step = (model: Model, message: Message): Return =>
 				...model,
 				markdown: {
 					...model.markdown,
-					...Object.fromEntries(
-						parsed.map(({ text, document }) => [text, { document, isStale: false }]),
+					...Rec.fromEntries(
+						Arr.map(parsed, ({ text, document }) => [text, { document, isStale: false }]),
 					),
 				},
-				markdownPending: model.markdownPending.filter(
-					(text) => !parsed.some((entry) => entry.text === text),
+				markdownPending: Arr.filter(
+					model.markdownPending,
+					(text) => !Arr.some(parsed, (entry) => entry.text === text),
 				),
 			},
 		}),

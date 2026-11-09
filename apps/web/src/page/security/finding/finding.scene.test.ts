@@ -1,7 +1,8 @@
+import * as Policy from "@maple/domain/policy"
 import { OrgId } from "@maple/domain"
 import { SecurityAuditForbiddenError, SecurityAuditTargetNotFoundError } from "@maple/domain/http"
 import { SecurityAuditTargetId } from "@maple/domain/security-audit"
-import { Result, Schema } from "effect"
+import { Result, Schema, Array as Arr } from "effect"
 import {
 	click,
 	Command,
@@ -14,15 +15,17 @@ import {
 	withViewInputs,
 } from "foldkit/scene"
 import { describe, expect, test } from "vitest"
-import { toLoadFailure } from "../../../data/load-failure"
+import { toLoadFailure } from "@maple/views/data/load-failure"
 import { findingsOf, TARGET_IDS, targetsOf } from "../../../lab/security-fixture"
 import { AppRoute } from "../../../route"
-import * as Field from "../../../ui/field"
-import * as ToggleGroup from "../../../ui/toggle-group"
+import * as Field from "@maple/views/ui/field"
+import * as ToggleGroup from "@maple/views/ui/toggle-group"
 import type { PageContext } from "../../contract"
 import { Message, type Model } from "./model"
 import { init, update } from "./update"
 import { view as pageView } from "./view"
+
+const ENGINEER = Policy.grantsOf(["org:engineer"])
 
 const context: PageContext = {
 	orgId: Schema.decodeSync(OrgId)("org_acme"),
@@ -33,7 +36,7 @@ const NOW = Date.UTC(2026, 9, 23, 14, 32)
 const pageUpdate = (model: Model, message: Message) => update(model, message, context)
 const view = withViewInputs(pageView, { context })()
 const names = (commands: ReadonlyArray<{ readonly name: string }> | undefined) =>
-	(commands ?? []).map(({ name }) => name)
+	Arr.map(commands ?? [], ({ name }) => name)
 const route = AppRoute.SecurityFinding({
 	targetId: Schema.decodeSync(SecurityAuditTargetId)(TARGET_IDS.gateway),
 	fingerprint: "exports-tenant-body-8b9e",
@@ -41,18 +44,22 @@ const route = AppRoute.SecurityFinding({
 
 const loaded = (): Model => {
 	const entered = init(route, context).model
-	return [
-		Message.ReadClock({ nowMs: NOW }),
-		Message.CompletedReadIsAdmin({ isAdmin: true }),
-		Message.CompletedFetchFindings({
-			key: entered.findings.key ?? "",
-			result: Result.succeed(findingsOf(NOW, TARGET_IDS.gateway)),
-		}),
-		Message.CompletedFetchTargets({
-			key: entered.targets.key ?? "",
-			result: Result.succeed(targetsOf(NOW)),
-		}),
-	].reduce((model, message) => pageUpdate(model, message).model, entered)
+	return Arr.reduce(
+		[
+			Message.ReadClock({ nowMs: NOW }),
+			Message.CompletedReadGrants({ grants: ENGINEER }),
+			Message.CompletedFetchFindings({
+				key: entered.findings.key ?? "",
+				result: Result.succeed(findingsOf(NOW, TARGET_IDS.gateway)),
+			}),
+			Message.CompletedFetchTargets({
+				key: entered.targets.key ?? "",
+				result: Result.succeed(targetsOf(NOW)),
+			}),
+		],
+		entered,
+		(model, message) => pageUpdate(model, message).model,
+	)
 }
 
 describe("security finding", () => {
@@ -124,17 +131,21 @@ describe("security finding", () => {
 
 	test("a failed targets read shows the error with a retry, not a removed target", () => {
 		const entered = init(route, context).model
-		const failed = [
-			Message.CompletedFetchFindings({
-				key: entered.findings.key ?? "",
-				result: Result.succeed(findingsOf(NOW, TARGET_IDS.gateway)),
-			}),
-			Message.CompletedFetchTargets({
-				key: entered.targets.key ?? "",
-				// A response that did not decode: no automatic retry, so the button is the way back.
-				result: Result.fail(toLoadFailure(new Error("unexpected body"))),
-			}),
-		].reduce((model, message) => pageUpdate(model, message).model, entered)
+		const failed = Arr.reduce(
+			[
+				Message.CompletedFetchFindings({
+					key: entered.findings.key ?? "",
+					result: Result.succeed(findingsOf(NOW, TARGET_IDS.gateway)),
+				}),
+				Message.CompletedFetchTargets({
+					key: entered.targets.key ?? "",
+					// A response that did not decode: no automatic retry, so the button is the way back.
+					result: Result.fail(toLoadFailure(new Error("unexpected body"))),
+				}),
+			],
+			entered,
+			(model, message) => pageUpdate(model, message).model,
+		)
 		scene(
 			{ update: pageUpdate, view },
 			given(failed),
@@ -167,7 +178,10 @@ describe("security finding", () => {
 			{ update: pageUpdate, view },
 			given(missing),
 			expectView(text("Finding not found")).toExist(),
-			expectView(role("link", { name: "Back to findings" })).toHaveAttr("href", "/security/findings"),
+			expectView(role("link", { name: "Back to findings" })).toHaveAttr(
+				"href",
+				"/security/code/findings",
+			),
 			expectView(text(/^Couldn't load/)).not.toExist(),
 		)
 	})
@@ -186,7 +200,7 @@ describe("security finding", () => {
 		scene(
 			{ update: pageUpdate, view },
 			given(gated),
-			expectView(text("Findings and reports are visible to org admins only")).toExist(),
+			expectView(text("Findings and reports are visible to org admins and engineers only")).toExist(),
 		)
 	})
 })

@@ -2,8 +2,11 @@ import type { V2Investigation } from "@maple/domain/http/v2"
 import type { InvestigationSummary, SignalState } from "../../../lib/models/error-signal"
 import { cn } from "@maple/ui/lib/utils"
 import type { Html, HtmlBuilder } from "foldkit/html"
-import { statusDot } from "../../../ui/status-dot"
+import { statusDot } from "@maple/views/ui/status-dot"
+import { textLink } from "@maple/views/ui/text-link"
 import { WORKFLOW_LABEL, workflowRingIcon } from "./workflow"
+import { String as Str } from "effect"
+import { typography } from "@maple/views/ui/typography"
 
 // The signal state and investigation chips.
 
@@ -23,29 +26,29 @@ export const investigationChip = <M>(
 ): Html => {
 	const label = INVESTIGATION_LABEL[investigation.status]
 	const withConfidence = options.withConfidence ?? true
-	return h.button(
-		[
-			h.Type("button"),
-			h.OnClick(options.onOpen, { defaultAction: "Prevent", propagation: "Stop" }),
-			h.Class(
-				cn(
-					"inline-flex max-w-full items-center gap-1.5 text-2xs font-medium whitespace-nowrap",
-					"text-muted-foreground hover:text-foreground active:text-foreground hover:underline active:underline",
-					"focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring rounded-sm",
-					options.className,
+	return textLink(
+		h,
+		{
+			tone: "muted",
+			onClick: options.onOpen,
+			clickOptions: { defaultAction: "Prevent", propagation: "Stop" },
+			className: cn(
+				"max-w-full gap-1.5 rounded-sm text-2xs font-medium whitespace-nowrap focus-visible:rounded-sm",
+				options.className,
+			),
+			attributes: [
+				h.Title(
+					investigation.confidence
+						? `Maple ${Str.toLowerCase(label)} — ${investigation.confidence} confidence`
+						: `Maple ${Str.toLowerCase(label)}`,
 				),
-			),
-			h.Title(
-				investigation.confidence
-					? `Maple ${label.toLowerCase()} — ${investigation.confidence} confidence`
-					: `Maple ${label.toLowerCase()}`,
-			),
-		],
+			],
+		},
 		[
 			statusDot(h, { tone: "custom", className: "bg-current" }),
 			h.span([h.Class(cn("truncate", options.compact === true && "hidden @xl/page:inline"))], [label]),
 			...(withConfidence && investigation.confidence && investigation.status === "diagnosed"
-				? [h.span([h.Class("text-foreground-subtle")], ["· ", investigation.confidence])]
+				? [typography(h, { tone: "subtle" }, ["· ", investigation.confidence])]
 				: []),
 		],
 	)
@@ -68,7 +71,7 @@ export const signalStateChip = <M>(
 				),
 				h.Title("An incident is open for this error"),
 			],
-			[statusDot(h, { tone: "crit" }), h.span([h.Class("truncate")], ["Open incident"])],
+			[statusDot(h, { tone: "crit" }), typography(h, { truncate: true }, ["Open incident"])],
 		)
 	}
 	if (state.kind === "investigation") {
@@ -92,6 +95,9 @@ export const signalStateChip = <M>(
 			),
 			h.Title(`Workflow state: ${WORKFLOW_LABEL[state.state]}`),
 		],
-		[workflowRingIcon(h, state.state, 12), h.span([h.Class("truncate")], [WORKFLOW_LABEL[state.state]])],
+		[
+			workflowRingIcon(h, state.state, 12),
+			typography(h, { truncate: true }, [WORKFLOW_LABEL[state.state]]),
+		],
 	)
 }

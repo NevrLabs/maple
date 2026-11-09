@@ -1,11 +1,12 @@
-import { timingSafeEqual } from "node:crypto"
-import { Effect, Option, Redacted, Schema } from "effect"
+import { Array as Arr, Effect, Option, Redacted, Schema, String as Str } from "effect"
 import type { TenantContext as McpTenantContext } from "@maple/backend/services/auth/tenant-context"
 import { AuthService } from "@maple/backend/services/auth/AuthService"
+import { secretsEqual } from "@maple/backend/services/auth/secret-equal"
 import { ApiKeysService } from "@maple/backend/services/org/ApiKeysService"
 import { ErrorActorsService } from "@maple/backend/services/errors/ErrorActorsService"
 import { Env } from "@maple/backend/platform/Env"
 import { ActorId, OrgId, RoleName, UserId } from "@maple/domain/http"
+import { INVESTIGATION_READ_FAMILIES, missingReadScopes, scopeAllows } from "@maple/domain/http/v2"
 import {
 	McpAuthInvalidError,
 	McpAuthMissingError,
@@ -16,6 +17,8 @@ import { recordExpectedMcpFailure } from "../expected-failures"
 
 /** Exported so the audit layer classifies the same token the same way. */
 export const INTERNAL_SERVICE_PREFIX = "maple_svc_"
+/** The user every internal service call resolves to: a credential, not a person. */
+export const INTERNAL_SERVICE_USER_ID = "internal-service"
 
 /**
  * The tenant plus the rate-limit identity of the credential that produced it,
@@ -83,9 +86,26 @@ const toHeaderRecord = (headers: Headers): Record<string, string> => {
 const getBearerToken = (headers: Headers): string | undefined => {
 	const header = headers.get("authorization")
 	if (!header) return undefined
-	const [scheme, token] = header.split(" ")
-	if (!scheme || !token || scheme.toLowerCase() !== "bearer") return undefined
+	const [scheme, token] = Str.split(" ")(header)
+	if (!scheme || !token || Str.toLowerCase(scheme) !== "bearer") return undefined
 	return token
+}
+
+/**
+ * What a scoped key may do over MCP. The toolset reads across the org (the same families an
+ * investigation reads), so a key must read all of them; it may change data only when it can
+ * also write all of them. `null` scopes are a legacy full-access key.
+ */
+export const mcpScopeAccess = (
+	scopes: ReadonlyArray<string> | null,
+): "full" | "read" | { readonly missing: ReadonlyArray<string> } => {
+	const missing = missingReadScopes(scopes, INVESTIGATION_READ_FAMILIES)
+	if (missing.length > 0) return { missing }
+	return Arr.every(INVESTIGATION_READ_FAMILIES, (family) =>
+		scopeAllows(scopes, { family, access: "write" }),
+	)
+		? "full"
+		: "read"
 }
 
 const MAPLE_API_KEY_PREFIX = "maple_ak_"
@@ -96,11 +116,11 @@ const PLACEHOLDER = /\$\{[^}]*\}|^\$[A-Za-z_][A-Za-z0-9_]*$|^<[^>]+>$/
  * a JWT parse error. Undefined when the token may be valid and should be looked up.
  */
 export const describeMalformedBearer = (token: string | undefined): string | undefined => {
-	if (token === undefined || token.startsWith(MAPLE_API_KEY_PREFIX)) return undefined
+	if (token === undefined || Str.startsWith(MAPLE_API_KEY_PREFIX)(token)) return undefined
 	if (PLACEHOLDER.test(token)) {
 		return `The bearer token \`${token}\` is an unexpanded placeholder: your MCP client sent the variable name, not its value. Set the variable or paste the key; Maple API keys start with \`${MAPLE_API_KEY_PREFIX}\`.`
 	}
-	if (token.split(".").length === 3) return undefined
+	if (Str.split(".")(token).length === 3) return undefined
 	return `The bearer token is not a Maple API key. Maple API keys start with \`${MAPLE_API_KEY_PREFIX}\`; create one in Maple's settings, or connect with OAuth.`
 }
 
@@ -108,14 +128,14 @@ export const describeMalformedBearer = (token: string | undefined): string | und
  * The MCP resource identifier (RFC 8707) this deployment serves, from its configured API origin.
  * The same value apps/api binds OAuth grants to, never a forwarded host header.
  */
-export const mcpResourceUrl = (apiBaseUrl: string) => `${apiBaseUrl.replace(/\/+$/, "")}/mcp`
+export const mcpResourceUrl = (apiBaseUrl: string) => `${Str.replace(/\/+$/, "")(apiBaseUrl)}/mcp`
 
 /** Maple's own service token: the org comes from `x-org-id`, the user is `internal-service`. */
 const resolveInternalServiceTenant = Effect.fn("McpTenant.resolveInternalServiceTenant")(function* (
 	request: Request,
 	token: string,
 ) {
-	const provided = token.slice(INTERNAL_SERVICE_PREFIX.length)
+	const provided = Str.slice(INTERNAL_SERVICE_PREFIX.length)(token)
 	const env = yield* Env
 	const expected = Option.match(env.INTERNAL_SERVICE_TOKEN, {
 		onNone: () => undefined,
@@ -128,10 +148,7 @@ const resolveInternalServiceTenant = Effect.fn("McpTenant.resolveInternalService
 		})
 	}
 
-	if (
-		provided.length === expected.length &&
-		timingSafeEqual(Buffer.from(provided), Buffer.from(expected))
-	) {
+	if (secretsEqual(provided, expected)) {
 		const orgId = Option.match(env.MAPLE_ORG_ID_OVERRIDE, {
 			onNone: () => request.headers.get("x-org-id"),
 			onSome: (value) => value,
@@ -151,7 +168,7 @@ const resolveInternalServiceTenant = Effect.fn("McpTenant.resolveInternalService
 					}),
 			),
 		)
-		const validUserId = yield* decodeUserId("internal-service").pipe(
+		const validUserId = yield* decodeUserId(INTERNAL_SERVICE_USER_ID).pipe(
 			Effect.mapError(
 				(e) =>
 					new McpInvalidTenantError({
@@ -160,12 +177,13 @@ const resolveInternalServiceTenant = Effect.fn("McpTenant.resolveInternalService
 					}),
 			),
 		)
-		return {
+		const tenant: McpAuthenticatedTenant = {
 			orgId: validOrgId,
 			userId: validUserId,
 			roles: [],
 			authMode: "self_hosted",
-		} as McpAuthenticatedTenant
+		}
+		return tenant
 	}
 
 	return yield* new McpAuthInvalidError({
@@ -204,7 +222,7 @@ const resolveSessionTenant = Effect.fn("McpTenant.resolveSessionTenant")(functio
 export const resolveChatSessionTenantContext = Effect.fn("McpTenant.resolveChatSessionTenantContext")(
 	function* (request: Request) {
 		const token = getBearerToken(request.headers)
-		if (token !== undefined && token.startsWith(INTERNAL_SERVICE_PREFIX)) {
+		if (token !== undefined && Str.startsWith(INTERNAL_SERVICE_PREFIX)(token)) {
 			return yield* resolveInternalServiceTenant(request, token)
 		}
 		return yield* resolveSessionTenant(request)
@@ -218,7 +236,7 @@ export const resolveMcpTenantContext = Effect.fn("McpTenant.resolveMcpTenantCont
 		const token = getBearerToken(request.headers)
 
 		// Internal service auth (e.g. chat agent)
-		if (token && token.startsWith(INTERNAL_SERVICE_PREFIX)) {
+		if (token && Str.startsWith(INTERNAL_SERVICE_PREFIX)(token)) {
 			return yield* resolveInternalServiceTenant(request, token)
 		}
 
@@ -255,11 +273,13 @@ export const resolveMcpTenantContext = Effect.fn("McpTenant.resolveMcpTenantCont
 					reason: "invalid_target",
 				})
 			}
-			// Manual MCP/API keys remain legacy full-access credentials. Scoped keys
-			// are accepted only when they are audience-bound MCP OAuth tokens.
-			if (!isMcpOAuthToken && resolved.scopes !== null) {
+			const scopeAccess = isMcpOAuthToken ? "full" : mcpScopeAccess(resolved.scopes)
+			if (typeof scopeAccess !== "string") {
 				return yield* new McpAuthInvalidError({
-					message: "Restricted API keys are not supported by the MCP server",
+					message: `This API key's scopes are too narrow for the MCP server, whose tools read across the org. Add ${Arr.join(
+						Arr.map(scopeAccess.missing, (family) => `"${family}:read"`),
+						", ",
+					)}, or use a full-access key.`,
 					reason: "insufficient_scope",
 				})
 			}
@@ -303,6 +323,8 @@ export const resolveMcpTenantContext = Effect.fn("McpTenant.resolveMcpTenantCont
 				authMode: "self_hosted",
 				rateLimitCredentialId: `key:${resolved.keyId}`,
 				...(actorId ? { actorId } : undefined),
+				...(scopeAccess === "read" ? { readOnly: true } : undefined),
+				...(isMcpOAuthToken || resolved.scopes === null ? undefined : { scopes: resolved.scopes }),
 			} as McpAuthenticatedTenant
 		}
 

@@ -1,5 +1,16 @@
 import { afterEach, assert, describe, it } from "@effect/vitest"
-import { ConfigProvider, Effect, Exit, Layer, Option, Ref, Result, Schema } from "effect"
+import {
+	ConfigProvider,
+	Effect,
+	Exit,
+	Layer,
+	Option,
+	Ref,
+	Result,
+	Schema,
+	Array as Arr,
+	String as Str,
+} from "effect"
 import { HttpClient, type HttpClientRequest, HttpClientResponse } from "effect/http"
 import { TestClock } from "effect/testing"
 import { BillingCustomer, OrgId, UserId } from "@maple/domain/http"
@@ -25,9 +36,11 @@ import { UptimeMonitorsService } from "./UptimeMonitorsService"
 const trackedDbs: TestDb[] = []
 afterEach(() => cleanupTestDbs(trackedDbs))
 
-const ORG = Schema.decodeUnknownSync(OrgId)("org_uptime")
-const OTHER_ORG = Schema.decodeUnknownSync(OrgId)("org_uptime_other")
-const USER = Schema.decodeUnknownSync(UserId)("user_uptime")
+const ORG = Schema.decodeSync(OrgId)("org_uptime")
+const OTHER_ORG = Schema.decodeSync(OrgId)("org_uptime_other")
+const USER = Schema.decodeSync(UserId)("user_uptime")
+const tokenOf = (url: string) =>
+	Str.slice(Option.match(Str.lastIndexOf("/")(url), { onNone: () => 0, onSome: (index) => index + 1 }))(url)
 const UNKNOWN_ID = UptimeMonitorId.make("00000000-0000-4000-8000-000000000000")
 
 const config = () =>
@@ -169,7 +182,7 @@ describe("UptimeMonitorsService", () => {
 
 			const listed = yield* service.list(ORG)
 			assert.deepStrictEqual(
-				listed.map((monitor) => monitor.name),
+				Arr.map(listed, (monitor) => monitor.name),
 				["API health"],
 			)
 
@@ -185,9 +198,9 @@ describe("UptimeMonitorsService", () => {
 			assert.isFalse(paused.enabled)
 			assert.strictEqual(paused.state.status, "paused")
 			// The scraper stops probing a paused monitor; other orgs' monitors are unaffected.
-			const targets = yield* service.listProbeTargets()
+			const targets = yield* service.listProbeTargets
 			assert.deepStrictEqual(
-				targets.map((target) => target.id),
+				Arr.map(targets, (target) => target.id),
 				[other.id],
 			)
 
@@ -255,7 +268,7 @@ describe("UptimeMonitorsService", () => {
 			assert.strictEqual(up.state.consecutiveFailures, 0)
 			assert.strictEqual(up.state.statusChangedAt, 3_000)
 			assert.deepStrictEqual(
-				up.state.recent.map((check) => [check.at, check.ok]),
+				Arr.map(up.state.recent, (check) => [check.at, check.ok]),
 				[
 					[1_000, false],
 					[2_000, false],
@@ -398,7 +411,7 @@ describe("UptimeMonitorsService", () => {
 				assert.strictEqual(applied, 1)
 				assert.strictEqual((yield* service.get(ORG, kept.id)).state.status, "down")
 				assert.deepStrictEqual(
-					(yield* service.list(ORG)).map((monitor) => monitor.id),
+					Arr.map(yield* service.list(ORG), (monitor) => monitor.id),
 					[kept.id],
 				)
 			})
@@ -471,9 +484,9 @@ describe("UptimeMonitorsService", () => {
 					[corrupt.id],
 				),
 			)
-			const targets = yield* service.listProbeTargets()
+			const targets = yield* service.listProbeTargets
 			assert.deepStrictEqual(
-				targets.map((target) => target.id),
+				Arr.map(targets, (target) => target.id),
 				[healthy.id],
 			)
 		}).pipe(Effect.provide(makeLayer(testDb)))
@@ -553,7 +566,7 @@ describe("UptimeMonitorsService", () => {
 						createdBy: USER,
 					})
 					const url = monitor.heartbeatUrl ?? ""
-					const token = url.slice(url.lastIndexOf("/") + 1)
+					const token = tokenOf(url)
 					yield* service.recordPing(token, true)
 					const ruleId = monitor.alertRuleId
 					if (ruleId === null) return assert.fail("A heartbeat monitor owns an alert rule")
@@ -630,7 +643,7 @@ describe("UptimeMonitorsService", () => {
 					createdBy: USER,
 				})
 				const url = monitor.heartbeatUrl ?? ""
-				yield* service.recordPing(url.slice(url.lastIndexOf("/") + 1), true)
+				yield* service.recordPing(tokenOf(url), true)
 				yield* Ref.set(target, monitor.id)
 				// Pinged at 0 every 300 s with 60 s grace: overdue at 1000 s. The read runs at 2, the write at 1.
 				yield* Ref.set(countdown, 2)
@@ -666,7 +679,7 @@ describe("UptimeMonitorsService", () => {
 					createdBy: USER,
 				})
 				const url = monitor.heartbeatUrl ?? ""
-				const token = url.slice(url.lastIndexOf("/") + 1)
+				const token = tokenOf(url)
 				// Another ping lands between this ping's read (call 1) and write (call 2).
 				yield* racing.arm(2, Effect.orDie(service.recordPing(token, true)))
 				yield* service.recordPing(token, true)
@@ -775,8 +788,8 @@ describe("UptimeMonitorsService", () => {
 			})
 			const url = monitor.heartbeatUrl ?? ""
 			assert.match(url, /^https:\/\/api\.maple\.test\/hb\/[A-Za-z0-9_-]{22,}$/u)
-			const token = url.slice(url.lastIndexOf("/") + 1)
-			assert.deepStrictEqual(yield* service.listProbeTargets(), [])
+			const token = tokenOf(url)
+			assert.deepStrictEqual(yield* service.listProbeTargets, [])
 
 			yield* service.recordPing(token, true)
 			const up = yield* service.get(ORG, monitor.id)
@@ -788,7 +801,7 @@ describe("UptimeMonitorsService", () => {
 			assert.strictEqual(down.state.status, "down")
 			assert.strictEqual(down.state.consecutiveFailures, 1)
 			assert.deepStrictEqual(
-				down.state.recent.map((check) => check.ok),
+				Arr.map(down.state.recent, (check) => check.ok),
 				[true, false],
 			)
 
@@ -843,7 +856,7 @@ describe("UptimeMonitorsService", () => {
 	it.effect("lets only one of two concurrent creates take the plan's last slot", () => {
 		const testDb = createTestDb(trackedDbs)
 		const allowance = Layer.succeed(UptimeMonitorAllowance, {
-			limit: () => Effect.succeed(Option.some(1)),
+			limit: () => Effect.succeedSome(1),
 			track: () => Effect.void,
 		})
 		return Effect.gen(function* () {
@@ -852,10 +865,10 @@ describe("UptimeMonitorsService", () => {
 				[Effect.result(createHttp("first")), Effect.result(createHttp("second"))],
 				{ concurrency: 2 },
 			)
-			assert.strictEqual(results.filter(Result.isSuccess).length, 1)
-			const refused = results.find(Result.isFailure)
+			assert.strictEqual(Arr.filter(results, Result.isSuccess).length, 1)
+			const refused = Arr.findFirst(results, Result.isFailure)
 			assert.strictEqual(
-				refused === undefined ? null : refused.failure._tag,
+				Option.match(refused, { onNone: () => null, onSome: (failed) => failed.failure._tag }),
 				"@maple/http/errors/UptimeMonitorLimitReachedError",
 			)
 			assert.strictEqual((yield* service.list(ORG)).length, 1)
@@ -887,7 +900,7 @@ describe("UptimeMonitorsService", () => {
 			const fromMember = yield* Effect.result(createHttp("member's second", { orgId: OTHER_ORG }))
 			const fromPayer = yield* Effect.result(createHttp("payer's second"))
 			assert.deepStrictEqual(
-				[fromMember, fromPayer].map((result) =>
+				Arr.map([fromMember, fromPayer], (result) =>
 					Result.isFailure(result) ? result.failure._tag : "created",
 				),
 				[
@@ -933,7 +946,7 @@ describe("UptimeMonitorsService", () => {
 			assert.isFalse(result.ok)
 			assert.strictEqual(result.statusCode, 503)
 			assert.strictEqual(result.failedAssertion, "Status 503, expected 2xx")
-			assert.strictEqual(result.bodyPrefix, "x".repeat(2048))
+			assert.strictEqual(result.bodyPrefix, Str.repeat(2048)("x"))
 			assert.isTrue(result.bodyTruncated)
 
 			const tcp = yield* Effect.flip(
@@ -942,7 +955,7 @@ describe("UptimeMonitorsService", () => {
 			assert.strictEqual(tcp._tag, "@maple/http/errors/UptimeMonitorValidationError")
 			const local = yield* Effect.flip(service.testHttp(httpConfig("http://localhost:8080/health")))
 			assert.strictEqual(local._tag, "@maple/http/errors/UptimeMonitorValidationError")
-		}).pipe(Effect.provide(makeLayer(testDb, { respond: { status: 503, body: "x".repeat(5000) } })))
+		}).pipe(Effect.provide(makeLayer(testDb, { respond: { status: 503, body: Str.repeat(5000)("x") } })))
 	})
 
 	it.effect("names a host Cloudflare refused to reach instead of reporting its 530", () => {

@@ -1,5 +1,6 @@
 import { normalizeKey, parseWhereClause } from "@maple/domain/where-clause"
 import type { ListLogsInput } from "@maple/web-data/warehouse/logs"
+import { Array as Arr, Record as Rec } from "effect"
 
 // `buildListLogsParams`: a logs list
 // widget's where clause as `list_logs` column filters, unsupported clauses reported as warnings.
@@ -35,7 +36,9 @@ interface Acc {
 }
 
 const withoutKey = <K extends string>(record: Readonly<Partial<Record<K, "contains">>>, key: K) =>
-	Object.fromEntries(Object.entries(record).filter(([candidate]) => candidate !== key))
+	Rec.fromEntries(
+		Arr.filter(Rec.toEntries<string, "contains" | undefined>(record), ([candidate]) => candidate !== key),
+	)
 
 export const buildListLogsParams = (
 	whereClause: string,
@@ -46,9 +49,9 @@ export const buildListLogsParams = (
 		included: {},
 		excluded: {},
 		matchModes: {},
-		warnings: parsed.warnings.map((warning) => warning.message),
+		warnings: Arr.map(parsed.warnings, (warning) => warning.message),
 	}
-	const done = parsed.clauses.reduce<Acc>((acc, clause) => {
+	const done = Arr.reduce(parsed.clauses, start, (acc, clause) => {
 		const key = normalizeKey(clause.key)
 		const typedKey = clause.rawKey ?? clause.key
 		const warn = (warning: string): Acc => ({ ...acc, warnings: [...acc.warnings, warning] })
@@ -82,7 +85,7 @@ export const buildListLogsParams = (
 			}
 		const supported = mode !== undefined ? "=, != and contains" : "= and !="
 		return warn(`Logs list filter ${typedKey} supports only ${supported}; ignoring ${clause.operator}`)
-	}, start)
+	})
 	return {
 		params: { limit, ...done.included, ...done.excluded, ...done.matchModes },
 		warnings: done.warnings,

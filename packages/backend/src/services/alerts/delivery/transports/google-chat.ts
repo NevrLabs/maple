@@ -1,8 +1,9 @@
-import { Option } from "effect"
+import { Option, pipe, Schema, Array as Arr, String as Str } from "effect"
+import { replaceWith } from "@maple/strings"
 import { buildSummaryLine } from "../../AlertDeliveryDispatch"
 import {
 	alertAccentColor,
-	displayGroupKey,
+	displayGroup,
 	eventTypeEmoji,
 	formatAlertHeadline,
 	formatSeverityLabel,
@@ -11,6 +12,8 @@ import {
 } from "../../alert-formatting"
 import type { HttpTransport, RenderInput, SecretConfigOf } from "../Transport"
 
+const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown))
+
 type Config = SecretConfigOf<"google-chat">
 
 /** A card's text budget: well under Google Chat's 32k message cap, so an alert is one message. */
@@ -18,22 +21,27 @@ const MAX_TEMPLATED_BODY_CHARS = 2000
 
 /** Card text paragraphs take a small HTML subset, so every dynamic value is escaped first. */
 const escapeHtml = (value: string): string =>
-	value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;")
+	Str.replace(
+		/"/g,
+		"&quot;",
+	)(Str.replace(/>/g, "&gt;")(Str.replace(/</g, "&lt;")(Str.replace(/&/g, "&amp;")(value))))
 
 /**
  * A template's Markdown in card HTML, the same subset Telegram gets: `**b**` and `[t](url)`, with
  * http(s) links only. Escaped first, so only the tags built here reach Google Chat.
  */
 const markdownToCardHtml = (markdown: string): string =>
-	escapeHtml(markdown)
-		.replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
-		.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (match, text: string, url: string) =>
+	pipe(
+		escapeHtml(markdown),
+		Str.replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>"),
+		replaceWith(/\[([^\]]+)\]\(([^)\s]+)\)/g, (match, text = "", url = "") =>
 			/^https?:\/\//i.test(url) ? `<a href="${url}">${text}</a>` : match,
-		)
-		.replace(/\n/g, "<br>")
+		),
+		Str.replace(/\n/g, "<br>"),
+	)
 
 /** `<users/all>` is Google Chat mention syntax; a rule name or template must never ping a space. */
-const neutralizeMentions = (value: string): string => value.replace(/<(?=users\/)/gi, "<\u200B")
+const neutralizeMentions = (value: string): string => Str.replace(/<(?=users\/)/gi, "<\u200B")(value)
 
 const paragraph = (html: string) => ({ textParagraph: { text: html } })
 
@@ -55,16 +63,19 @@ const threadedUrl = (webhookUrl: string): string =>
 export const buildGoogleChatMessage = (input: RenderInput<Config>) => {
 	const { context, templated, linkUrl, chatUrl } = input
 	const accent = alertAccentColor(context.eventType, context.severity)
-	const group = displayGroupKey(context.groupKey)
+	const group = displayGroup(context)
 	const title = templated?.title ?? `${eventTypeEmoji(context.eventType)} ${formatAlertHeadline(context)}`
 	const lead = templated
 		? markdownToCardHtml(truncate(templated.body, MAX_TEMPLATED_BODY_CHARS))
 		: escapeHtml(buildSummaryLine(context, (value) => value))
-	const footer = [
-		...(context.sparkline ? [escapeHtml(context.sparkline)] : []),
-		...(context.incidentId ? [`Incident ${escapeHtml(context.incidentId)}`] : []),
-		...(context.sentAtMs != null ? [new Date(context.sentAtMs).toISOString()] : []),
-	].join("  \u{00B7}  ")
+	const footer = Arr.join(
+		[
+			...(context.sparkline ? [escapeHtml(context.sparkline)] : []),
+			...(context.incidentId ? [`Incident ${escapeHtml(context.incidentId)}`] : []),
+			...(context.sentAtMs != null ? [new Date(context.sentAtMs).toISOString()] : []),
+		],
+		"  \u{00B7}  ",
+	)
 	const details = templated
 		? []
 		: [
@@ -139,7 +150,7 @@ export const googleChatTransport: HttpTransport<Config> = {
 		// the span never records, so the path (a space id) is safe to annotate.
 		guarded: true,
 		sensitivePath: false,
-		body: JSON.stringify(buildGoogleChatMessage(input)),
+		body: encodeJson(buildGoogleChatMessage(input)),
 	}),
 	describeStatus: (status) => {
 		if (status === 401 || status === 403) {

@@ -1,12 +1,13 @@
-import { Result } from "effect"
+import * as Policy from "@maple/domain/policy"
+import { Result, String as Str } from "effect"
 import { Command } from "foldkit"
-import * as Keyed from "../../../data/keyed"
-import { requestKey } from "../../../data/request-key"
+import * as Keyed from "@maple/views/data/keyed"
+import { requestKey } from "@maple/views/data/request-key"
 import { isClerkAuthEnabled } from "../../../lib/services/common/auth-mode"
 import type { AppRoute } from "../../../route"
-import * as CopyButton from "../../../ui/copy-button"
-import * as Field from "../../../ui/field"
-import * as ToggleGroup from "../../../ui/toggle-group"
+import * as CopyButton from "@maple/views/ui/copy-button"
+import * as Field from "@maple/views/ui/field"
+import * as ToggleGroup from "@maple/views/ui/toggle-group"
 import { type PageContext, PageOutMessage, type PageReturn } from "../../contract"
 import { chainAll, slotStep } from "../../kit/keyed-step"
 import { FINDING_STATUS_LABEL } from "../kit/format"
@@ -14,7 +15,7 @@ import {
 	FetchFindingTargets,
 	FetchTargetFindings,
 	ReadFindingClock,
-	ReadFindingIsAdmin,
+	ReadFindingGrants,
 	UpdateFindingStatus,
 } from "./command"
 import { currentTriageOf, findingOf, pickedTriageOf, reasonErrorOf } from "./derive"
@@ -54,7 +55,7 @@ export const init = (route: SecurityFindingRoute, context: PageContext): Return 
 		targetId: route.targetId,
 		fingerprint: route.fingerprint,
 		nowMs: 0,
-		isAdmin: !isClerkAuthEnabled,
+		grants: isClerkAuthEnabled ? [] : Policy.allPermissions,
 		findings: Keyed.idle(),
 		targets: Keyed.idle(),
 		triage: initTriage(),
@@ -71,7 +72,7 @@ export const init = (route: SecurityFindingRoute, context: PageContext): Return 
 		...loaded,
 		commands: [
 			ReadFindingClock(),
-			...(isClerkAuthEnabled ? [ReadFindingIsAdmin()] : []),
+			...(isClerkAuthEnabled ? [ReadFindingGrants()] : []),
 			...(loaded.commands ?? []),
 		],
 	}
@@ -102,7 +103,7 @@ const withTriage = (model: Model): Model => {
 export const update = (model: Model, message: Message, context: PageContext): Return =>
 	Message.match<Return>(message, {
 		ReadClock: ({ nowMs }) => ({ model: { ...model, nowMs } }),
-		CompletedReadIsAdmin: ({ isAdmin }) => ({ model: { ...model, isAdmin } }),
+		CompletedReadGrants: ({ grants }) => ({ model: { ...model, grants } }),
 		CompletedFetchFindings: ({ key, result }) => ({
 			model: withTriage({ ...model, findings: Keyed.accept(model.findings, key, result) }),
 		}),
@@ -122,7 +123,7 @@ export const update = (model: Model, message: Message, context: PageContext): Re
 			const finding = findingOf(model)
 			if (finding === null || model.isSaving) return { model }
 			const status = pickedTriageOf(model, finding)
-			const reason = model.reason.value.trim()
+			const reason = Str.trim(model.reason.value)
 			if (status === currentTriageOf(finding) && finding.status !== "fixed") return { model }
 			if (reasonErrorOf(reason) !== null) return { model: { ...model, isTriageSubmitted: true } }
 			return {
@@ -155,7 +156,7 @@ export const update = (model: Model, message: Message, context: PageContext): Re
 						...refreshed,
 						outMessage: toast(
 							"success",
-							`Marked ${FINDING_STATUS_LABEL[triage.status].toLowerCase()}`,
+							`Marked ${Str.toLowerCase(FINDING_STATUS_LABEL[triage.status])}`,
 						),
 					}
 				},

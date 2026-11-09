@@ -9,7 +9,6 @@ import {
 	SOURCE_LIMITS,
 	SourceNotFoundError,
 	SourcePersistenceError,
-	type SourceTokenStatus,
 	SourceValidationError,
 	SourceWithSecret,
 	type UpdateSourceRequest,
@@ -18,6 +17,7 @@ import {
 import {
 	SourceId,
 	type SourcePlatform,
+	sourceTokenPrefix,
 	type SourceResourceAttribute,
 	type SourceSignal,
 } from "@maple/domain/primitives"
@@ -25,7 +25,7 @@ import { hashIngestKey, parseIngestKeyLookupHmacKey } from "@maple/db"
 import * as Orm from "@maple-dev/effect-orm/database"
 import * as PG from "@maple-dev/effect-orm/postgres"
 import { Sources, type SourceRow } from "@maple/db/tables"
-import { Array as Arr, Clock, Context, Effect, Layer, Order, Redacted, Schema } from "effect"
+import { Array as Arr, Clock, Context, Effect, Layer, Order, Redacted, Schema, String as Str } from "effect"
 import type { SourceHealthResult } from "@maple/domain/source-health"
 import { Database, type DatabaseError } from "@maple/backend/platform/DatabaseLive"
 import { makeDbExecute } from "@maple/backend/platform/db-execute"
@@ -39,7 +39,6 @@ import {
 	statusOf,
 } from "./source-rows"
 
-const SOURCE_TOKEN_PREFIX = "maple_src_"
 const {
 	maxSourcesPerOrg: MAX_SOURCES_PER_ORG,
 	maxResourceAttributes: MAX_RESOURCE_ATTRIBUTES,
@@ -59,8 +58,12 @@ const invalid = (message: string) => new SourceValidationError({ message })
 const decodeIsoSync = Schema.decodeUnknownSync(IsoDateTimeString)
 const toIso = (epochMs: number) => decodeIsoSync(new Date(epochMs).toISOString())
 
-const generateSecret = () => `${SOURCE_TOKEN_PREFIX}${randomBytes(24).toString("base64url")}`
-const displayPrefix = (secret: string) => secret.slice(0, SOURCE_TOKEN_PREFIX.length + 5)
+// A browser source gets a public token (`maple_src_pk_`), safe in client code; the gateway treats both alike.
+const generateSecret = (platform: SourcePlatform) => {
+	const prefix = sourceTokenPrefix(platform)
+	const secret = `${prefix}${randomBytes(24).toString("base64url")}`
+	return { secret, keyPrefix: Str.slice(0, prefix.length + 5)(secret) }
+}
 
 const isoOrNull = (epochMs: number | null) => (epochMs === null ? null : toIso(epochMs))
 
@@ -107,7 +110,7 @@ const rowToSource = (row: SourceRow, now: number, owner: SourceOwner = NO_OWNER)
 }
 
 const normalizeName = Effect.fnUntraced(function* (name: string) {
-	const trimmed = name.trim()
+	const trimmed = Str.trim(name)
 	if (trimmed.length === 0) return yield* invalid("Name must not be empty")
 	if (trimmed.length > MAX_NAME_LENGTH) {
 		return yield* invalid(`Name must be at most ${MAX_NAME_LENGTH} characters`)
@@ -116,7 +119,7 @@ const normalizeName = Effect.fnUntraced(function* (name: string) {
 })
 
 const normalizeDescription = Effect.fnUntraced(function* (description: string | null) {
-	const trimmed = description?.trim() ?? ""
+	const trimmed = typeof description === "string" ? Str.trim(description) : ""
 	if (trimmed.length > MAX_DESCRIPTION_LENGTH) {
 		return yield* invalid(`Description must be at most ${MAX_DESCRIPTION_LENGTH} characters`)
 	}
@@ -131,11 +134,8 @@ const normalizeSignals = Effect.fnUntraced(function* (signals: ReadonlyArray<Sou
 })
 
 /** The same signal set, in any order; `null` (every signal) only equals `null`. */
-const sameSignals = (
-	a: ReadonlyArray<SourceSignal> | null,
-	b: ReadonlyArray<SourceSignal> | null,
-): boolean =>
-	a === null || b === null ? a === b : a.length === b.length && a.every((signal) => b.includes(signal))
+const sameSignals = (a: ReadonlyArray<SourceSignal> | null, b: ReadonlyArray<SourceSignal> | null): boolean =>
+	a === null || b === null ? a === b : a.length === b.length && Arr.every(a, (signal) => b.includes(signal))
 
 const normalizeRateLimit = Effect.fnUntraced(function* (rps: number | null) {
 	if (rps === null) return null
@@ -150,7 +150,7 @@ const normalizeAttributes = Effect.fnUntraced(function* (attributes: ReadonlyArr
 		return yield* invalid(`At most ${MAX_RESOURCE_ATTRIBUTES} resource attributes per source`)
 	}
 	const normalized = Arr.map(attributes, (attribute) => ({
-		key: attribute.key.trim(),
+		key: Str.trim(attribute.key),
 		value: attribute.value,
 		mode: attribute.mode,
 	}))
@@ -167,8 +167,8 @@ const normalizeAttributes = Effect.fnUntraced(function* (attributes: ReadonlyArr
 					`Attribute values must be at most ${MAX_ATTRIBUTE_VALUE_LENGTH} characters`,
 				)
 			}
-			const lower = attribute.key.toLowerCase()
-			if (RESERVED_ATTRIBUTE_KEYS.has(lower) || lower.startsWith(RESERVED_ATTRIBUTE_PREFIX)) {
+			const lower = Str.toLowerCase(attribute.key)
+			if (RESERVED_ATTRIBUTE_KEYS.has(lower) || Str.startsWith(RESERVED_ATTRIBUTE_PREFIX)(lower)) {
 				return yield* invalid(`"${attribute.key}" is reserved by Maple and cannot be overridden`)
 			}
 		}),
@@ -305,18 +305,16 @@ export class SourcesService extends Context.Service<SourcesService>()(
 					[selectAll(orgId), dbExecute((db) => readSourceOwners(db, orgId, now))],
 					{ concurrency: "unbounded" },
 				)
-				const missingDefault = !before.some((row) => row.kind === "default")
+				const missingDefault = !Arr.some(before, (row) => row.kind === "default")
 				if (missingDefault) yield* ensureDefault(orgId, now)
 				return toSources(missingDefault ? yield* selectAll(orgId) : before, owners, now)
 			})
 
 			const get = Effect.fn("SourcesService.get")(function* (orgId: OrgId, sourceId: SourceId) {
 				yield* Effect.annotateCurrentSpan({ orgId, "maple.source.id": sourceId })
-				return yield* toSource(
-					orgId,
-					yield* requireRow(orgId, sourceId),
-					yield* Clock.currentTimeMillis,
-				)
+				const row = yield* requireRow(orgId, sourceId)
+				const nowMs = yield* Clock.currentTimeMillis
+				return yield* toSource(orgId, row, nowMs)
 			})
 
 			const create = Effect.fn("SourcesService.create")(function* (
@@ -334,7 +332,7 @@ export class SourcesService extends Context.Service<SourcesService>()(
 				const expiresAt = yield* normalizeExpiry(request.expiresAtMs ?? null, now)
 
 				const id = newSourceId()
-				const secret = generateSecret()
+				const { secret, keyPrefix } = generateSecret(request.platform)
 				yield* Effect.annotateCurrentSpan("maple.source.id", id)
 				// The per-org lock makes the source cap hold under concurrent creates.
 				const rows = yield* dbExecute((db) =>
@@ -360,7 +358,7 @@ export class SourcesService extends Context.Service<SourcesService>()(
 										platform: request.platform,
 										kind: "token",
 										keyHash: hashIngestKey(secret, lookupHmacKey),
-										keyPrefix: displayPrefix(secret),
+										keyPrefix,
 										allowedSignals,
 										rateLimitRps,
 										resourceAttributes,
@@ -394,7 +392,10 @@ export class SourcesService extends Context.Service<SourcesService>()(
 			) {
 				yield* Effect.annotateCurrentSpan({ orgId, "maple.source.id": sourceId })
 				const existing = yield* requireRow(orgId, sourceId)
-				if (existing.kind !== "token" && RULE_FIELDS.some((field) => request[field] !== undefined)) {
+				if (
+					existing.kind !== "token" &&
+					Arr.some(RULE_FIELDS, (field) => request[field] !== undefined)
+				) {
 					return yield* tokenSourceOnly(existing, "take ingest rules")
 				}
 				const now = yield* Clock.currentTimeMillis
@@ -484,10 +485,10 @@ export class SourcesService extends Context.Service<SourcesService>()(
 				const existing = yield* requireRow(orgId, sourceId)
 				if (existing.kind !== "token") return yield* tokenSourceOnly(existing, "be rolled here")
 				const now = yield* Clock.currentTimeMillis
-				const secret = generateSecret()
+				const { secret, keyPrefix } = generateSecret(existing.platform)
 				const row = yield* updateRow(orgId, sourceId, {
 					keyHash: hashIngestKey(secret, lookupHmacKey),
-					keyPrefix: displayPrefix(secret),
+					keyPrefix,
 					rolledAt: now,
 					updatedAt: now,
 					updatedBy: userId,
@@ -511,7 +512,8 @@ export class SourcesService extends Context.Service<SourcesService>()(
 				)
 				const row = rows[0]
 				if (row === undefined) return yield* notFound(sourceId)
-				return rowToSource(row, yield* Clock.currentTimeMillis)
+				const nowMs = yield* Clock.currentTimeMillis
+				return rowToSource(row, nowMs)
 			})
 
 			return { list, get, create, update, pause, resume, roll, delete: remove }

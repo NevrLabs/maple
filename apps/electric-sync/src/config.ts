@@ -1,6 +1,6 @@
 import type { AuthEnv } from "@maple/auth"
 import { optionalRedacted, optionalString, stringWithDefault } from "@maple/infra/config-helpers"
-import { Config, Context, Effect, Layer, Option, Redacted, Schema } from "effect"
+import { Config, Context, Effect, Layer, Option, Redacted, Schema, String as Str } from "effect"
 
 /**
  * Standalone config for the Electric shape-sync worker. Deliberately a small,
@@ -26,7 +26,7 @@ class SyncConfigInvalidError extends Schema.TaggedError<SyncConfigInvalidError>(
 export interface SyncConfigValues extends AuthEnv {
 	readonly ELECTRIC_URL: Option.Option<string>
 	readonly ELECTRIC_SOURCE_ID: Option.Option<string>
-	readonly ELECTRIC_SECRET: Option.Option<Redacted.Redacted<string>>
+	readonly ELECTRIC_SECRET: Option.Option<Redacted.Redacted>
 }
 
 const syncConfig = Config.all({
@@ -40,6 +40,10 @@ const syncConfig = Config.all({
 	MAPLE_AUTH_MODE: stringWithDefault("MAPLE_AUTH_MODE", "self_hosted"),
 	MAPLE_DEFAULT_ORG_ID: stringWithDefault("MAPLE_DEFAULT_ORG_ID", "default"),
 	MAPLE_ORG_ID_OVERRIDE: optionalString("MAPLE_ORG_ID_OVERRIDE"),
+	MAPLE_ORG_ID_OVERRIDE_ADMITS_NONMEMBERS: stringWithDefault(
+		"MAPLE_ORG_ID_OVERRIDE_ADMITS_NONMEMBERS",
+		"false",
+	).pipe(Config.map((value) => value === "1" || value === "true")),
 	// Same default as @maple/api's Env; deploys derive it from the stage.
 	MAPLE_ENVIRONMENT: stringWithDefault("MAPLE_ENVIRONMENT", "development"),
 	MAPLE_ROOT_PASSWORD: optionalRedacted("MAPLE_ROOT_PASSWORD"),
@@ -53,9 +57,9 @@ const syncConfig = Config.all({
 // surface as a per-request defect instead of a startup error.
 const makeSyncConfig = Effect.gen(function* () {
 	const config: SyncConfigValues = yield* syncConfig
-	const authMode = config.MAPLE_AUTH_MODE.toLowerCase()
+	const authMode = Str.toLowerCase(config.MAPLE_AUTH_MODE)
 
-	if (config.MAPLE_DEFAULT_ORG_ID.trim().length === 0) {
+	if (Str.trim(config.MAPLE_DEFAULT_ORG_ID).length === 0) {
 		return yield* new SyncConfigInvalidError({
 			variable: "MAPLE_DEFAULT_ORG_ID",
 			message: "MAPLE_DEFAULT_ORG_ID cannot be empty",

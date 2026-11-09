@@ -1,5 +1,7 @@
 import { countLabel } from "@maple/ui/lib/format"
 import { formatRelativeTimeOrDate } from "@maple/ui/lib/time-format"
+import { timestamp } from "@maple/views/ui/timestamp"
+import type { Html, HtmlBuilder } from "foldkit/html"
 import type { DashboardsSearch } from "../../../route/search"
 import type { DashboardDocument } from "@maple/domain/http"
 import {
@@ -10,6 +12,7 @@ import {
 	readsFromLabel,
 } from "../kit/summary"
 import type { Glyph, ListDashboard, Model, Scope } from "./model"
+import { Array as Arr, String as Str, Order } from "effect"
 
 // The pure halves of `DashboardList` and `dashboard-summary.ts`.
 
@@ -17,66 +20,76 @@ type Search = typeof DashboardsSearch.Type
 
 /** "Untitled dashboard" for a blank name (`displayName`). */
 export const displayName = (name: string | undefined): string =>
-	name !== undefined && name.trim() !== "" ? name : "Untitled dashboard"
+	name !== undefined && Str.trim(name) !== "" ? name : "Untitled dashboard"
 
 /** `dashboardMatches`: name, description or tag contains the query. */
 export const dashboardMatches = (dashboard: ListDashboard, query: string): boolean => {
-	const needle = query.trim().toLowerCase()
+	const needle = Str.toLowerCase(Str.trim(query))
 	if (needle.length === 0) return true
 	return (
-		dashboard.name.toLowerCase().includes(needle) ||
-		(dashboard.description?.toLowerCase().includes(needle) ?? false) ||
-		dashboard.tags.some((tag) => tag.toLowerCase().includes(needle))
+		Str.includes(needle)(Str.toLowerCase(dashboard.name)) ||
+		(dashboard.description !== null &&
+			dashboard.description !== undefined &&
+			Str.includes(needle)(Str.toLowerCase(dashboard.description))) ||
+		Arr.some(dashboard.tags, (tag) => Str.includes(needle)(Str.toLowerCase(tag)))
 	)
 }
 
 export const collectTags = (dashboards: ReadonlyArray<ListDashboard>): ReadonlyArray<string> =>
-	Array.from(new Set(dashboards.flatMap((dashboard) => dashboard.tags))).sort()
+	Array.from(new Set(Arr.flatMap(dashboards, (dashboard) => dashboard.tags))).sort()
 
 export const matchesTags = (dashboard: ListDashboard, tags: ReadonlyArray<string>): boolean =>
-	tags.every((tag) => dashboard.tags.includes(tag))
+	Arr.every(tags, (tag) => dashboard.tags.includes(tag))
 
 export const sortDashboards = (
 	dashboards: ReadonlyArray<ListDashboard>,
 	sort: DashboardSortOption,
 ): ReadonlyArray<ListDashboard> =>
-	dashboards.toSorted((a, b) => {
+	Arr.sort(dashboards, (a: ListDashboard, b: ListDashboard) => {
 		switch (sort) {
 			case "name-asc":
-				return a.name.localeCompare(b.name)
+				return Str.localeCompare(b.name)(a.name)
 			case "name-desc":
-				return b.name.localeCompare(a.name)
+				return Str.localeCompare(a.name)(b.name)
 			case "created":
-				return epochOf(b.createdAt) - epochOf(a.createdAt)
+				return Order.Number(epochOf(b.createdAt), epochOf(a.createdAt))
 			case "widgets":
-				return b.widgetCount - a.widgetCount
+				return Order.Number(b.widgetCount, a.widgetCount)
 			case "updated":
-				return epochOf(b.updatedAt) - epochOf(a.updatedAt)
+				return Order.Number(epochOf(b.updatedAt), epochOf(a.updatedAt))
 		}
 	})
 
-/** `headerSummary` with `formatRelativeTimeOrDate`. */
-export const headerSummary = (
+/** `headerSummary`: counts, then the newest edit as a timestamp (`formatRelativeTimeOrDate` text). */
+export const headerSummary = <M>(
+	h: HtmlBuilder<M>,
 	dashboards: ReadonlyArray<ListDashboard>,
 	nowMs: number,
 	timeZone: string,
 	locale: string,
-): string => {
-	if (dashboards.length === 0) return "No dashboards yet"
-	const widgets = dashboards.reduce((total, dashboard) => total + dashboard.widgetCount, 0)
-	const parts = [
+): ReadonlyArray<Html | string> => {
+	if (dashboards.length === 0) return ["No dashboards yet"]
+	const widgets = Arr.reduce(dashboards, 0, (total, dashboard) => total + dashboard.widgetCount)
+	const parts: Array<Html | string> = [
 		countLabel(dashboards.length, "dashboard", undefined, locale),
 		countLabel(widgets, "widget", undefined, locale),
 	]
-	const latest = dashboards.reduce<string | null>(
-		(newest, dashboard) =>
-			newest === null || epochOf(dashboard.updatedAt) > epochOf(newest) ? dashboard.updatedAt : newest,
-		null,
+	const latest = Arr.reduce<ListDashboard, string | null>(dashboards, null, (newest, dashboard) =>
+		newest === null || epochOf(dashboard.updatedAt) > epochOf(newest) ? dashboard.updatedAt : newest,
 	)
-	if (latest !== null) parts.push(`last edited ${formatRelativeTimeOrDate(latest, nowMs, timeZone, locale)}`)
-	const empty = dashboards.filter((dashboard) => dashboard.widgetCount === 0).length
+	if (latest !== null)
+		parts.push(
+			timestamp(h, {
+				value: latest,
+				timeZone,
+				nowMs,
+				prefix: "last edited",
+				label: formatRelativeTimeOrDate(latest, nowMs, timeZone, locale),
+			}),
+		)
+	const empty = Arr.filter(dashboards, (dashboard) => dashboard.widgetCount === 0).length
 	if (empty > 0) parts.push(`${empty} with no widgets`)
-	return parts.join(" · ")
+	return Arr.flatMap(parts, (part, index) => (index === 0 ? [part] : [" · ", part]))
 }
 
 export const queryOf = (search: Search): string => search.q ?? ""
@@ -100,14 +113,15 @@ export const sectionsOf = (model: Model, dashboards: ReadonlyArray<ListDashboard
 	const tags = tagsOf(model.search)
 	const scope = scopeOf(model.search)
 	const isFavorite = (dashboard: ListDashboard) => model.favorites.includes(dashboard.id)
-	const searched = dashboards.filter(
+	const searched = Arr.filter(
+		dashboards,
 		(dashboard) => dashboardMatches(dashboard, query) && matchesTags(dashboard, tags),
 	)
-	const inScope = scope === "favorites" ? searched.filter(isFavorite) : searched
+	const inScope = scope === "favorites" ? Arr.filter(searched, isFavorite) : searched
 	const sorted = sortDashboards(inScope, sortOf(model))
 	return {
-		favorited: sorted.filter(isFavorite),
-		others: scope === "favorites" ? [] : sorted.filter((dashboard) => !isFavorite(dashboard)),
+		favorited: Arr.filter(sorted, isFavorite),
+		others: scope === "favorites" ? [] : Arr.filter(sorted, (dashboard) => !isFavorite(dashboard)),
 		matched: searched.length,
 		scoped: inScope.length,
 	}
@@ -127,7 +141,7 @@ const glyphOf = (document: DashboardDocument): Glyph => {
 			return "ChartBarIcon"
 		case "Raw SQL":
 			return "CodeIcon"
-		case undefined:
+		default:
 			return "FileIcon"
 	}
 }

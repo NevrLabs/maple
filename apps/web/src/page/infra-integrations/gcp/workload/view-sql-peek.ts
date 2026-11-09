@@ -6,24 +6,34 @@ import { cn } from "@maple/ui/lib/utils"
 import { formatClockInTimezone } from "@maple/web-data/lib/timezone-format"
 import { AsyncData } from "foldkit"
 import type { Html, HtmlBuilder } from "foldkit/html"
-import type { LoadFailure } from "../../../../data/load-failure"
+import { heading } from "@maple/views/ui/heading"
+import type { LoadFailure } from "@maple/views/data/load-failure"
 import { AppRoute, hrefOf } from "../../../../route"
-import { linkButton } from "../../../../ui/button"
-import * as CopyButton from "../../../../ui/copy-button"
-import * as DialogView from "../../../../ui/dialog-view"
-import { emptyMessage } from "../../../../ui/empty"
-import { errorState } from "../../../../ui/error-state"
-import { eyebrow } from "../../../../ui/eyebrow"
-import { icon } from "../../../../ui/icon"
-import { meter } from "../../../../ui/meter"
-import { skeleton } from "../../../../ui/skeleton"
-import { serviceDot } from "../../../../ui/values"
+import { linkButton } from "@maple/views/ui/button"
+import * as CopyButton from "@maple/views/ui/copy-button"
+import * as DialogView from "@maple/views/ui/dialog-view"
+import { emptyMessage } from "@maple/views/ui/empty"
+import { errorState } from "@maple/views/ui/error-state"
+import { eyebrow } from "@maple/views/ui/eyebrow"
+import { icon } from "@maple/views/ui/icon"
+import { meter } from "@maple/views/ui/meter"
+import { skeleton, skeletonBlock } from "@maple/views/ui/skeleton"
+import { serviceDot } from "@maple/views/ui/values"
 import { heroChip } from "../../../infra/kit/hero-chip"
 import { statRail, statRailItem } from "../../../kit/stat-rail"
 import type { StatementSpan } from "../data"
 import { Message, type Model } from "./model"
 import { type QueryPeek, statementTracesHref } from "./peek"
 import { appP95Tone, lockTone } from "./view-sql"
+import { typography, typographyClass } from "@maple/views/ui/typography"
+import { hstack, hstackClass, vstack } from "@maple/views/ui/stack"
+import { timestamp } from "@maple/views/ui/timestamp"
+import { Array as Arr } from "effect"
+import { selectableRow } from "@maple/views/ui/selectable-row"
+
+/** A peek list row: a link on the subtle hairline that tints on hover. */
+const PEEK_ROW =
+	"flex items-center gap-3 border-b border-border-subtle px-1 py-2 last:border-0 hover:bg-surface-sunken active:bg-surface-sunken"
 
 // `GcpQueryPeekSheet`: one Query Insights statement, its callers and its slowest traced calls.
 
@@ -39,20 +49,18 @@ export type QueryPeekInputs = Readonly<{
 	traceSide: AsyncData.AsyncData<unknown, LoadFailure>
 	timeSearch: TimeSearch
 	timeZone: string
+	nowMs: number
 }>
 
 const DB_TRACING_DOCS = "https://maple.dev/docs/concepts/otel-conventions#database-queries"
 const SPAN_ROWS = 5
-const SUB = "text-2xs text-muted-foreground"
+const SUB = typographyClass({ size: "2xs", tone: "muted" })
 
 const sectionHead = (h: H, title: string, hint: string): Html =>
-	h.div(
-		[h.Class("flex items-baseline justify-between gap-3")],
-		[
-			h.h3([h.Class("shrink-0 text-xs font-semibold text-foreground")], [title]),
-			h.span([h.Class(cn(SUB, "truncate"))], [hint]),
-		],
-	)
+	hstack(h, { gap: "3", align: "baseline", justify: "between" }, [
+		heading(h, { level: 3, variant: "section", className: "shrink-0" }, [title]),
+		h.span([h.Class(cn(SUB, "truncate"))], [hint]),
+	])
 
 const header = (h: H, model: Model, peek: QueryPeek, inputs: QueryPeekInputs): Html => {
 	const where = inputs.where
@@ -62,7 +70,7 @@ const header = (h: H, model: Model, peek: QueryPeek, inputs: QueryPeekInputs): H
 		h,
 		"sheet",
 		[
-			eyebrow(h, { as: "div", className: "flex items-center gap-2" }, [
+			eyebrow(h, { as: "div", className: hstackClass({ gap: "2" }) }, [
 				"Statement",
 				h.span([h.Class("normal-case tracking-normal")], [`· ${where}`]),
 			]),
@@ -98,21 +106,17 @@ const header = (h: H, model: Model, peek: QueryPeek, inputs: QueryPeekInputs): H
 					),
 				],
 			),
-			h.div(
-				[h.Class("flex flex-wrap items-center gap-1.5")],
-				[
-					heroChip(h, `hash ${peek.statement.queryHash}`),
-					heroChip(
-						h,
-						traced !== undefined
-							? `Query Insights + ${traced.serviceCount} ${traced.serviceCount === 1 ? "service" : "services"} traced`
-							: AsyncData.isSuccess(inputs.traceSide) ||
-								  AsyncData.isRefreshing(inputs.traceSide)
-								? "Query Insights only"
-								: "Query Insights",
-					),
-				],
-			),
+			hstack(h, { gap: "1.5", wrap: true }, [
+				heroChip(h, `hash ${peek.statement.queryHash}`),
+				heroChip(
+					h,
+					traced !== undefined
+						? `Query Insights + ${traced.serviceCount} ${traced.serviceCount === 1 ? "service" : "services"} traced`
+						: AsyncData.isSuccess(inputs.traceSide) || AsyncData.isRefreshing(inputs.traceSide)
+							? "Query Insights only"
+							: "Query Insights",
+				),
+			]),
 		],
 		"gap-2 pr-14",
 	)
@@ -172,12 +176,9 @@ const stats = (h: H, peek: QueryPeek): ReadonlyArray<Html> => {
 					h.div(
 						[h.Class("space-y-1 rounded-md border border-severity-error-a4 p-3")],
 						[
-							h.p(
-								[h.Class("text-xs font-medium text-foreground")],
-								[
-									`${wait.service} waits ${formatLatency(wait.appP95Ms)} for a query the database runs in ${formatLatency(wait.dbP95Ms)}`,
-								],
-							),
+							typography(h, { size: "xs", tone: "foreground", weight: "medium", as: "p" }, [
+								`${wait.service} waits ${formatLatency(wait.appP95Ms)} for a query the database runs in ${formatLatency(wait.dbP95Ms)}`,
+							]),
 							h.p(
 								[h.Class(SUB)],
 								[
@@ -200,24 +201,21 @@ const callers = (h: H, peek: QueryPeek, timeSearch: TimeSearch): Html => {
 			sectionHead(h, "Called by", more > 0 ? `the busiest, +${more} more` : "client spans"),
 			h.div(
 				[h.Class("border-y border-border-subtle")],
-				services.map((service) =>
-					h.a(
-						[
-							h.Href(hrefOf(AppRoute.Service({ serviceName: service, search: timeSearch }))),
-							h.Class(
-								"flex items-center gap-3 border-b border-border-subtle px-1 py-2 last:border-0 hover:bg-surface-sunken active:bg-surface-sunken",
-							),
-						],
+				Arr.map(services, (service) =>
+					selectableRow(
+						h,
+						{
+							href: hrefOf(AppRoute.Service({ serviceName: service, search: timeSearch })),
+							isSelected: false,
+							className: PEEK_ROW,
+						},
 						[
 							serviceDot(h, { serviceName: service }),
 							h.span(
 								[h.Class("min-w-0 flex-1 truncate font-mono text-xs text-foreground")],
 								[service],
 							),
-							h.span(
-								[h.Class("text-muted-foreground")],
-								[icon(h, "ChevronRightIcon", { size: 14 })],
-							),
+							typography(h, { tone: "muted" }, [icon(h, "ChevronRightIcon", { size: 14 })]),
 						],
 					),
 				),
@@ -226,26 +224,35 @@ const callers = (h: H, peek: QueryPeek, timeSearch: TimeSearch): Html => {
 	)
 }
 
-const spanRow = (h: H, span: StatementSpan, slowestMs: number, timeZone: string): Html => {
-	const time = formatClockInTimezone(span.timestamp, { timeZone })
+const spanRow = (
+	h: H,
+	span: StatementSpan,
+	slowestMs: number,
+	clock: Readonly<{ timeZone: string; nowMs: number }>,
+): Html => {
 	const tone = latencyToneClass(span.durationMs)
-	return h.a(
-		[
-			h.Href(
-				hrefOf(
-					AppRoute.Trace({
-						traceId: span.traceId,
-						search: { spanId: span.spanId, t: span.timestamp },
-					}),
-				),
+	return selectableRow(
+		h,
+		{
+			href: hrefOf(
+				AppRoute.Trace({
+					traceId: span.traceId,
+					search: { spanId: span.spanId, t: span.timestamp },
+				}),
 			),
-			h.AriaLabel(`Open trace: ${span.serviceName}, ${formatLatency(span.durationMs)}`),
-			h.Class(
-				"flex items-center gap-3 border-b border-border-subtle px-1 py-2 last:border-0 hover:bg-surface-sunken active:bg-surface-sunken",
-			),
-		],
+			isSelected: false,
+			className: PEEK_ROW,
+			attributes: [h.AriaLabel(`Open trace: ${span.serviceName}, ${formatLatency(span.durationMs)}`)],
+		},
 		[
-			h.span([h.Class("w-16 shrink-0 font-mono text-2xs tabular-nums text-muted-foreground")], [time]),
+			timestamp(h, {
+				value: span.timestamp,
+				timeZone: clock.timeZone,
+				nowMs: clock.nowMs,
+				label: formatClockInTimezone(span.timestamp, { timeZone: clock.timeZone }),
+				mono: true,
+				className: typographyClass({ size: "2xs", tone: "muted", className: "w-16 shrink-0" }),
+			}),
 			h.span([h.Class("w-28 shrink-0 truncate font-mono text-xs text-foreground")], [span.serviceName]),
 			meter(h, {
 				value: span.durationMs,
@@ -258,7 +265,7 @@ const spanRow = (h: H, span: StatementSpan, slowestMs: number, timeZone: string)
 				[h.Class(cn("w-14 shrink-0 text-right font-mono text-xs tabular-nums", tone))],
 				[formatLatency(span.durationMs)],
 			),
-			h.span([h.Class("text-muted-foreground")], [icon(h, "ArrowRightIcon", { size: 14 })]),
+			typography(h, { tone: "muted" }, [icon(h, "ArrowRightIcon", { size: 14 })]),
 		],
 	)
 }
@@ -280,7 +287,7 @@ const slowestCalls = (h: H, inputs: QueryPeekInputs): Html => {
 		onData: (spans) =>
 			spans.length === 0
 				? emptyMessage(h, { dashed: true, className: "px-3 py-4 text-xs" }, [
-						"No traced call of it was kept in this window.",
+						"No traced call of it was kept in this window",
 					])
 				: h.div(
 						[
@@ -291,7 +298,7 @@ const slowestCalls = (h: H, inputs: QueryPeekInputs): Html => {
 								),
 							),
 						],
-						spans.map((span) => spanRow(h, span, spans[0]?.durationMs ?? 0, inputs.timeZone)),
+						Arr.map(spans, (span) => spanRow(h, span, spans[0]?.durationMs ?? 0, inputs)),
 					),
 	})
 	return h.section(
@@ -301,43 +308,42 @@ const slowestCalls = (h: H, inputs: QueryPeekInputs): Html => {
 }
 
 const notTraced = (h: H): Html =>
-	h.div(
-		[h.Class("flex flex-col items-start gap-3 rounded-md border border-dashed px-5 py-6")],
-		[
-			h.span(
-				[
-					h.Class(
-						"flex size-8 items-center justify-center rounded-md bg-muted text-muted-foreground",
-					),
-				],
-				[icon(h, "DatabaseIcon", { size: 16 })],
-			),
-			h.h3([h.Class("text-sm font-semibold text-foreground")], ["No traces recorded this query"]),
-			h.p(
-				[h.Class("max-w-md text-xs leading-relaxed text-muted-foreground")],
-				[
-					"No client span with this statement reached Maple in the window, so there is no caller or trace to open. Trace the service that runs it with OpenTelemetry's database instrumentation, keeping ",
-					h.code([h.Class("font-mono")], ["db.query.text"]),
-					" on the span.",
-				],
-			),
-			linkButton(
-				h,
-				{
-					variant: "outline",
-					size: "sm",
-					href: DB_TRACING_DOCS,
-					attributes: [h.Target("_blank"), h.Rel("noreferrer")],
-				},
-				["Set up database tracing", icon(h, "ArrowRightIcon")],
-			),
-		],
-	)
+	vstack(h, { gap: "3", align: "start", className: "rounded-md border border-dashed px-5 py-6" }, [
+		hstack(
+			h,
+			{
+				align: "center",
+				justify: "center",
+				as: "span",
+				className: "size-8 rounded-md bg-muted text-muted-foreground",
+			},
+			[icon(h, "DatabaseIcon", { size: 16 })],
+		),
+		heading(h, { level: 3, variant: "section" }, ["No traces recorded this query"]),
+		h.p(
+			[h.Class("max-w-md text-xs leading-relaxed text-muted-foreground")],
+			[
+				"No client span with this statement reached Maple in the window, so there is no caller or trace to open. Trace the service that runs it with OpenTelemetry's database instrumentation, keeping ",
+				h.code([h.Class("font-mono")], ["db.query.text"]),
+				" on the span.",
+			],
+		),
+		linkButton(
+			h,
+			{
+				variant: "outline",
+				size: "sm",
+				href: DB_TRACING_DOCS,
+				attributes: [h.Target("_blank"), h.Rel("noreferrer")],
+			},
+			["Set up database tracing", icon(h, "ArrowRightIcon")],
+		),
+	])
 
 /** A statement the traces did not match: still loading, failed, or not traced at all. */
 const untraced = (h: H, inputs: QueryPeekInputs): Html =>
 	AsyncData.matchData(inputs.traceSide, {
-		onEmpty: () => skeleton(h, "h-40 w-full rounded-md"),
+		onEmpty: () => skeletonBlock(h, { height: "40" }),
 		onFailure: (failure) =>
 			errorState(h, { failure, title: "Couldn't load what the traces saw", variant: "inline" }),
 		onData: () => notTraced(h),
@@ -348,10 +354,9 @@ const footer = (h: H, peek: QueryPeek, timeSearch: TimeSearch): Html =>
 		h,
 		"sheet",
 		[
-			h.span(
-				[h.Class("font-mono text-2xs tabular-nums text-muted-foreground")],
-				[`${peek.index + 1} of ${peek.count} statements`],
-			),
+			typography(h, { size: "2xs", tone: "muted", mono: true, numeric: true }, [
+				`${peek.index + 1} of ${peek.count} statements`,
+			]),
 			...(peek.traced === undefined
 				? []
 				: [

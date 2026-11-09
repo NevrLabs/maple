@@ -21,17 +21,18 @@ import { shortId } from "@maple/ui/lib/ids"
 import { cn } from "@maple/ui/lib/utils"
 import { AsyncData, Submodel } from "foldkit"
 import type { Html, HtmlBuilder } from "foldkit/html"
-import * as Chart from "../../../../charts/chart"
-import * as InfraMetricChart from "../../../../charts/infra-metric-chart"
-import { INFRA_CHART_TOKENS } from "../../../../charts/infra-metric-series"
-import { ResolveThemeColors, type ThemeColors } from "../../../../charts/theme-colors"
+import * as Chart from "@maple/views/charts/chart"
+import * as InfraMetricChart from "@maple/views/charts/infra-metric-chart"
+import { INFRA_CHART_TOKENS } from "@maple/views/charts/infra-metric-series"
+import { ResolveThemeColors, type ThemeColors } from "@maple/views/charts/theme-colors"
 import { AppRoute, hrefOf } from "../../../../route"
-import { detailRailGroup, detailRailMetaRow } from "../../../../ui/detail-rail"
-import { errorState } from "../../../../ui/error-state"
-import { segmentedBar } from "../../../../ui/meter"
-import { panel, panelHeader } from "../../../../ui/panel"
-import { skeleton } from "../../../../ui/skeleton"
-import { statusDot } from "../../../../ui/status-dot"
+import { detailRailGroup, detailRailMetaRow } from "@maple/views/ui/detail-rail"
+import { errorState } from "@maple/views/ui/error-state"
+import { segmentedBar } from "@maple/views/ui/meter"
+import { panel, panelHeader } from "@maple/views/ui/panel"
+import { skeleton } from "@maple/views/ui/skeleton"
+import { statusDot } from "@maple/views/ui/status-dot"
+import { textLinkClass } from "@maple/views/ui/text-link"
 import type { PageViewInputs } from "../../../contract"
 import { dashboardPage } from "../../../kit/dashboard-page"
 import { correlationStrips, type StripSeries } from "../../../infra/kit/correlation-strips"
@@ -39,11 +40,15 @@ import { heroChip } from "../../../infra/kit/hero-chip"
 import { pageHeroParts } from "../../../infra/kit/page-parts"
 import { pageTime } from "../../kit/page-time"
 import { formatTimeInTimezone } from "@maple/web-data/lib/timezone-format"
+import { timestamp } from "@maple/views/ui/timestamp"
 import type { WorkerDetail } from "../data"
 import { MountLinkedCursor } from "./command"
 import { type PageData, pageOf, type Traced } from "./derive"
 import { Message, type Model } from "./model"
 import { DEFAULT_PRESET } from "./update"
+import { typography, typographyClass } from "@maple/views/ui/typography"
+import { hstack, vstack } from "@maple/views/ui/stack"
+import { Array as Arr, String as Str, Order } from "effect"
 
 // `WorkerDetailPage` and its parts.
 
@@ -57,15 +62,12 @@ const header = (h: H, model: Model, data: PageData) => {
 	const { row, accountName, traced, currentVersion } = data
 	const tracedService = traced?.service ?? null
 	return pageHeroParts(h, {
-		title: h.span(
-			[h.Class("flex items-center gap-3")],
-			[
-				...(row === null
-					? []
-					: [statusDot(h, { tone: WORKER_HEALTH_TONE[workerHealth(row)], size: "lg" })]),
-				model.scriptName,
-			],
-		),
+		title: hstack(h, { gap: "3", as: "span" }, [
+			...(row === null
+				? []
+				: [statusDot(h, { tone: WORKER_HEALTH_TONE[workerHealth(row)], size: "lg" })]),
+			model.scriptName,
+		]),
 		meta: [
 			heroChip(h, "worker"),
 			...(accountName === null ? [] : [heroChip(h, ["account ", accountName])]),
@@ -81,16 +83,26 @@ const header = (h: H, model: Model, data: PageData) => {
 }
 
 const figure = (h: H, value: string, caption: string, className?: string): Html =>
-	h.div(
-		[h.Class("flex flex-col items-start @2xl:items-end")],
-		[
-			h.span(
-				[h.Class(cn("font-mono text-sm font-semibold tabular-nums text-foreground", className))],
-				[value],
-			),
-			h.span([h.Class("font-mono text-3xs text-muted-foreground")], [caption]),
-		],
-	)
+	vstack(h, { align: "start", className: "@2xl:items-end" }, [
+		h.span(
+			[
+				h.Class(
+					cn(
+						typographyClass({
+							size: "sm",
+							tone: "foreground",
+							weight: "semibold",
+							mono: true,
+							numeric: true,
+						}),
+						className,
+					),
+				),
+			],
+			[value],
+		),
+		typography(h, { size: "3xs", tone: "muted", mono: true }, [caption]),
+	])
 
 /** `CloudflareTraceGapCallout`: failures Cloudflare saw that the Worker's spans never recorded. */
 const traceGapCallout = (h: H, exceptions: number, tracedErrors: number, tracedService: string): Html =>
@@ -103,16 +115,13 @@ const traceGapCallout = (h: H, exceptions: number, tracedErrors: number, tracedS
 					h.div(
 						[h.Class("flex-1 space-y-1 px-4 py-3")],
 						[
-							h.p(
-								[h.Class("text-sm font-medium text-foreground")],
-								[
-									formatNumber(exceptions),
-									" exceptions in Cloudflare,",
-									" ",
-									tracedErrors === 0 ? "none" : formatNumber(tracedErrors),
-									" in traces",
-								],
-							),
+							typography(h, { size: "sm", tone: "foreground", weight: "medium", as: "p" }, [
+								formatNumber(exceptions),
+								" exceptions in Cloudflare,",
+								" ",
+								tracedErrors === 0 ? "none" : formatNumber(tracedErrors),
+								" in traces",
+							]),
 							h.p(
 								[h.Class("max-w-prose text-xs text-muted-foreground")],
 								[
@@ -123,20 +132,20 @@ const traceGapCallout = (h: H, exceptions: number, tracedErrors: number, tracedS
 							),
 						],
 					),
-					h.div(
-						[
-							h.Class(
-								"flex items-center gap-6 border-t px-4 py-3 @2xl:self-stretch @2xl:border-t-0 @2xl:border-l @2xl:px-5",
-							),
-						],
+					hstack(
+						h,
+						{
+							gap: "6",
+							align: "center",
+							className:
+								"border-t px-4 py-3 @2xl:self-stretch @2xl:border-t-0 @2xl:border-l @2xl:px-5",
+						},
 						[
 							figure(h, formatNumber(exceptions), "Cloudflare", "text-severity-error"),
 							figure(h, formatNumber(tracedErrors), "traces"),
 							h.a(
 								[
-									h.Class(
-										"ml-auto font-mono text-xs text-primary hover:text-primary/80 active:text-primary/80 @2xl:ml-0",
-									),
+									h.Class(textLinkClass("primary", true, "ml-auto text-xs @2xl:ml-0")),
 									h.Href(hrefOf(AppRoute.Logs({ search: { services: [tracedService] } }))),
 								],
 								["Logs in this window"],
@@ -156,12 +165,34 @@ const summary = (
 	captionClassName?: string,
 ): ReadonlyArray<Html> => [
 	h.span(
-		[h.Class(cn("font-mono text-sm font-semibold tabular-nums text-foreground", valueClassName))],
+		[
+			h.Class(
+				cn(
+					typographyClass({
+						size: "sm",
+						tone: "foreground",
+						weight: "semibold",
+						mono: true,
+						numeric: true,
+					}),
+					valueClassName,
+				),
+			),
+		],
 		[value],
 	),
 	...(caption === undefined
 		? []
-		: [h.span([h.Class(cn("font-mono text-3xs text-muted-foreground", captionClassName))], [caption])]),
+		: [
+				h.span(
+					[
+						h.Class(
+							cn(typographyClass({ size: "3xs", tone: "muted", mono: true }), captionClassName),
+						),
+					],
+					[caption],
+				),
+			]),
 ]
 
 /** `buildStrips`: invocations, failures, CPU and duration, then Durable Objects when bound. */
@@ -221,9 +252,9 @@ const buildStrips = (h: H, detail: WorkerDetail, data: PageData): ReadonlyArray<
 			),
 		},
 	]
-	if (!detail.durableObjectBuckets.some((b) => b.requests > 0)) return strips
-	const calls = detail.durableObjectBuckets.reduce((acc, b) => acc + b.requests, 0)
-	const errors = detail.durableObjectBuckets.reduce((acc, b) => acc + b.errors, 0)
+	if (!Arr.some(detail.durableObjectBuckets, (b) => b.requests > 0)) return strips
+	const calls = Arr.reduce(detail.durableObjectBuckets, 0, (acc, b) => acc + b.requests)
+	const errors = Arr.reduce(detail.durableObjectBuckets, 0, (acc, b) => acc + b.errors)
 	return [
 		...strips,
 		{
@@ -261,13 +292,17 @@ const signals = (
 ): Html =>
 	correlationStrips(h, {
 		strips: buildStrips(h, detail, data),
-		xDomain: [
-			...new Set(
-				[...detail.outcomeBuckets, ...detail.latencyBuckets, ...detail.durableObjectBuckets].map(
-					(b) => b.bucket,
+		xDomain: Arr.sort(
+			[
+				...new Set(
+					Arr.map(
+						[...detail.outcomeBuckets, ...detail.latencyBuckets, ...detail.durableObjectBuckets],
+						(b) => b.bucket,
+					),
 				),
-			),
-		].toSorted(),
+			],
+			Order.String,
+		),
 		markers: data.markers,
 		isWaiting,
 		theme: ctx.theme,
@@ -290,12 +325,13 @@ const outcomes = (h: H, detail: WorkerDetail): Html => {
 		panelHeader(h, { title: "Outcomes" }),
 		h.div(
 			[h.Class("divide-y divide-border-subtle")],
-			totals.byStatus.map(({ status, count }) => {
+			Arr.map(totals.byStatus, ({ status, count }) => {
 				const success = status === "success"
 				const share = totals.invocations > 0 ? count / totals.invocations : 0
 				const label = outcomeLabel(status)
-				return h.div(
-					[h.Key(status), h.Class("flex items-center gap-4 px-4 py-2.5")],
+				return hstack(
+					h,
+					{ gap: "4", align: "center", className: "px-4 py-2.5", attributes: [h.Key(status)] },
 					[
 						h.span([
 							h.AriaHidden(true),
@@ -306,24 +342,18 @@ const outcomes = (h: H, detail: WorkerDetail): Html => {
 								),
 							),
 						]),
-						h.div(
-							[h.Class("flex min-w-0 flex-1 items-baseline gap-2")],
-							[
-								h.span([h.Class("truncate text-xs text-foreground")], [label]),
-								...(label.toLowerCase() === status.toLowerCase()
-									? []
-									: [
-											h.span(
-												[
-													h.Class(
-														"truncate font-mono text-3xs text-muted-foreground",
-													),
-												],
-												[status],
-											),
-										]),
-							],
-						),
+						hstack(h, { gap: "2", align: "baseline", shrink: true, grow: true }, [
+							typography(h, { size: "xs", tone: "foreground", truncate: true }, [label]),
+							...(Str.toLowerCase(label) === Str.toLowerCase(status)
+								? []
+								: [
+										typography(
+											h,
+											{ size: "3xs", tone: "muted", mono: true, truncate: true },
+											[status],
+										),
+									]),
+						]),
 						segmentedBar(h, {
 							className: "w-48 shrink-0",
 							minVisible: 1,
@@ -361,77 +391,82 @@ const outcomes = (h: H, detail: WorkerDetail): Html => {
 /** `CloudflareWorkerRail`. */
 const rail = (h: H, data: PageData, timeZone: string): Html => {
 	const { row, traced } = data
-	const deploys = data.markers.map((marker) => ({ commitSha: marker.id, firstSeen: marker.at }))
-	const present = (nodes: ReadonlyArray<Html | null>) => nodes.filter((node): node is Html => node !== null)
-	return h.div(
-		[h.Class("flex flex-col")],
-		[
-			detailRailGroup(
-				h,
-				"Worker",
-				present([
-					detailRailMetaRow(h, { icon: "UserIcon", label: "account", value: data.accountName }),
-					detailRailMetaRow(h, {
-						icon: "ServerIcon",
-						label: "durable objects",
-						value:
-							row === null
-								? null
-								: row.doRequests > 0
-									? `${formatNumber(row.doRequests)} calls`
-									: "none bound",
-					}),
-					detailRailMetaRow(h, {
-						icon: "StopwatchIcon",
-						label: "cpu p50",
-						value: row !== null && row.cpuP50Ms > 0 ? formatLatency(row.cpuP50Ms) : null,
-					}),
-				]),
-			),
-			detailRailGroup(
-				h,
-				"Deploys in window",
-				deploys.length === 0
-					? [h.p([h.Class("text-2xs text-muted-foreground")], ["No new version in this window."])]
-					: present(
-							deploys.map((deploy) =>
-								detailRailMetaRow(h, {
-									icon: "CodeIcon",
-									label: shortId(deploy.commitSha, "sha"),
-									value: formatTimeInTimezone(deploy.firstSeen, { timeZone }),
+	const deploys = Arr.map(data.markers, (marker) => ({ commitSha: marker.id, firstSeen: marker.at }))
+	const present = (nodes: ReadonlyArray<Html | null>) =>
+		Arr.filter(nodes, (node): node is Html => node !== null)
+	return vstack(h, {}, [
+		detailRailGroup(
+			h,
+			"Worker",
+			present([
+				detailRailMetaRow(h, { icon: "UserIcon", label: "account", value: data.accountName }),
+				detailRailMetaRow(h, {
+					icon: "ServerIcon",
+					label: "durable objects",
+					value:
+						row === null
+							? null
+							: row.doRequests > 0
+								? `${formatNumber(row.doRequests)} calls`
+								: "none bound",
+				}),
+				detailRailMetaRow(h, {
+					icon: "StopwatchIcon",
+					label: "cpu p50",
+					value: row !== null && row.cpuP50Ms > 0 ? formatLatency(row.cpuP50Ms) : null,
+				}),
+			]),
+		),
+		detailRailGroup(
+			h,
+			"Deploys in window",
+			deploys.length === 0
+				? [typography(h, { size: "2xs", tone: "muted", as: "p" }, ["No new version in this window."])]
+				: present(
+						Arr.map(deploys, (deploy) =>
+							detailRailMetaRow(h, {
+								icon: "CodeIcon",
+								label: shortId(deploy.commitSha, "sha"),
+								value: formatTimeInTimezone(deploy.firstSeen, { timeZone }),
+								display: timestamp(h, {
+									value: deploy.firstSeen,
+									timeZone,
+									label: formatTimeInTimezone(deploy.firstSeen, { timeZone }),
 								}),
-							),
+							}),
 						),
-			),
-			detailRailGroup(h, "Traces", tracesRail(h, traced)),
-		],
-	)
+					),
+		),
+		detailRailGroup(h, "Traces", tracesRail(h, traced)),
+	])
 }
 
 const tracesRail = (h: H, traced: Traced | null): ReadonlyArray<Html> =>
 	traced === null
 		? [
-				h.p(
-					[h.Class("text-2xs leading-relaxed text-muted-foreground")],
-					["No service with this name sends spans, so Cloudflare's counts are all there is."],
-				),
+				typography(h, { size: "2xs", tone: "muted", as: "p", className: "leading-relaxed" }, [
+					"No service with this name sends spans, so Cloudflare's counts are all there is.",
+				]),
 			]
 		: [
-				...[
-					detailRailMetaRow(h, {
-						icon: "PulseIcon",
-						label: "spans",
-						value: formatNumber(traced.spans),
-					}),
-					detailRailMetaRow(h, {
-						icon: "PulseIcon",
-						label: "error spans",
-						value: formatNumber(traced.errors),
-					}),
-				].filter((node): node is Html => node !== null),
+				...Arr.filter(
+					[
+						detailRailMetaRow(h, {
+							icon: "PulseIcon",
+							label: "spans",
+							value: formatNumber(traced.spans),
+						}),
+						detailRailMetaRow(h, {
+							icon: "PulseIcon",
+							label: "error spans",
+							value: formatNumber(traced.errors),
+						}),
+					],
+					(node): node is Html => node !== null,
+				),
 				h.a(
 					[
-						h.Class("pt-1 font-mono text-xs text-primary hover:text-primary/80 active:text-primary/80"),
+						h.Class(textLinkClass("primary", true, "pt-1 text-xs")),
 						h.Href(hrefOf(AppRoute.Service({ serviceName: traced.service, search: {} }))),
 					],
 					["Open ", traced.service],

@@ -99,13 +99,13 @@ seam when constructing the API client without the Alchemy provider collection.
 
 ## Resources
 
-| Resource                 | Semantics                                                                                                                                                                                                                                                          |
-| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `Maple.Dashboard`        | Full CRUD over typed native v2 dashboard data (`snake_case`, see `/v2/docs`). Updates PATCH in place. Set `dashboardId` to adopt an existing dashboard, and `refresh_interval_seconds` to manage its refresh cadence.                                              |
-| `Maple.AlertDestination` | Full CRUD for declaratively provisionable types (PagerDuty, webhook, Discord, Telegram, email). Channel secrets are write-only and accept `Redacted` values. Chat-connector destinations use workspaces linked in Maple. Changing `type` replaces the destination. |
-| `Maple.AlertRule`        | Full CRUD. `destination_ids` accepts outputs from `Maple.AlertDestination`. Lost state is recovered only when the rule's ownership tag matches the stack, stage, and logical resource. Other rules require explicit adoption.                                      |
-| `Maple.ApiKey`           | Create / roll / revoke (the API has no key update). Changing props replaces the key; bumping the `rotate` prop rolls it in place (same name/scopes, new secret). `secret` is captured once and preserved in Alchemy state; it can never be re-read from the API.   |
-| `Maple.IngestKeys`       | Read-only per-org singleton. Surfaces `publicKey` / `privateKey` as `Redacted` outputs; delete only stops tracking it.                                                                                                                                             |
+| Resource                 | Semantics                                                                                                                                                                                                                                                                                                             |
+| ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Maple.Dashboard`        | Full CRUD over typed native v2 dashboard data (`snake_case`, see `/v2/docs`). Updates PATCH in place. Set `dashboardId` to adopt an existing dashboard, and `refresh_interval_seconds` to manage its refresh cadence.                                                                                                 |
+| `Maple.AlertDestination` | Full CRUD for declaratively provisionable types (PagerDuty, incident.io, webhook, Discord, Telegram, Google Chat, Microsoft Teams, email, Linear). Channel secrets are write-only and accept `Redacted` values. Chat-connector destinations use workspaces linked in Maple. Changing `type` replaces the destination. |
+| `Maple.AlertRule`        | Full CRUD. `destination_ids` accepts outputs from `Maple.AlertDestination`. Lost state is recovered only when the rule's ownership tag matches the stack, stage, and logical resource. Other rules require explicit adoption.                                                                                         |
+| `Maple.ApiKey`           | Create / roll / revoke (the API has no key update). Changing props replaces the key; bumping the `rotate` prop rolls it in place (same name/scopes, new secret). `secret` is captured once and preserved in Alchemy state; it can never be re-read from the API.                                                      |
+| `Maple.IngestKeys`       | Read-only per-org singleton. Surfaces `publicKey` / `privateKey` as `Redacted` outputs; delete only stops tracking it.                                                                                                                                                                                                |
 
 ## Typed dashboard data
 
@@ -195,6 +195,55 @@ options (`anticipatedErrorIdentifiers`, `dropSpanNames`, `serviceNamespace`, …
 Cloudflare options, forwarded unchanged.
 
 Full docs: [maple.dev/docs/iac/alchemy](https://maple.dev/docs/iac/alchemy).
+
+## Local development
+
+`Local` runs Maple Local inside `alchemy dev`: an embedded OTLP collector, query API and
+chDB store that every Worker in the stack exports to, with no Maple account or keys. Declare it
+once and pass it to each Worker's `Telemetry`:
+
+```typescript
+// observability.ts
+import { Local } from "@maple-dev/alchemy/local"
+export const Observability = Local("observability")
+
+// alchemy.run.ts
+import { localProviders } from "@maple-dev/alchemy/local"
+// providers: Layer.mergeAll(Cloudflare.providers(), localProviders())
+
+// api.ts (and every other Worker)
+}).pipe(Effect.provide(Telemetry({ serviceName: "api", local: Observability }))),
+```
+
+Open the dashboard at the `dashboardUrl` output (`https://local.maple.dev`, reading from your
+machine); ingest and queries never leave it.
+
+- **Dev only.** Under `alchemy dev` the Workers export keylessly to the local endpoint and
+  `ingestKey`/`endpoint` are ignored. On deploy `Local` starts nothing, its outputs are
+  `undefined`, and `Telemetry` uses `ingestKey` and `endpoint` as usual, so one stack can keep both.
+  `localProviders()` needs no Maple credentials.
+- **One server per stack.** Every Worker that passes the same `Local` shares it; the server
+  survives stack hot reloads and closes its store when `alchemy dev` exits.
+- **Storage.** Data persists per stack, stage and resource under
+  `.alchemy/maple-local/<hash>/data`. Set `dataDir` to keep it elsewhere.
+- **Several `alchemy dev` sessions.** The listener takes `4318`, or any free port when another
+  project or worktree already holds it; the Workers get the bound endpoint either way. Setting
+  `port` binds exactly that port and fails if it is taken. A second session of the same stack and
+  stage shares the running server instead of opening the store again, and takes the store over on
+  the same port when the first session exits.
+- **libchdb.** On first use the sidecar downloads the chDB release Maple pins (the same one the
+  `maple` CLI ships with), verifies its sha256, and caches it in `~/.maple/cache/libchdb`
+  (~330 MB, shared by every project). Set `MAPLE_LIBCHDB` to use a library you already have; a
+  different chDB release is refused before the store is touched.
+- **Unclean shutdowns.** Maple Local closes its store on exits observed by the JavaScript
+  runtime, including another handler calling `process.exit()` before Alchemy finishes teardown.
+  A death the runtime cannot observe (SIGKILL of the sidecar itself, an OOM kill, or power loss)
+  can still leave it unclean. Reopening such a store can crash chDB, so it is refused. A sharing
+  session logs a dirty-store takeover refusal and recovery instructions once, then stops trying
+  to take over. Set `onDirtyStore: "wipe"` on `Local` to discard its data and start fresh; that
+  change restarts the server and is safe to leave set.
+- **Requirements.** Bun (the sidecar uses Bun's FFI), on macOS or Linux, x64 or arm64.
+  Periodic checkpoints are a `maple start` feature; this store keeps none.
 
 ## Notes
 

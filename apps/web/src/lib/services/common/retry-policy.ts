@@ -1,10 +1,10 @@
-import { Effect, Option, Schedule } from "effect"
+import { Effect, Option, Schedule, String as Str } from "effect"
 import { HttpClient, HttpClientError, HttpClientRequest, type HttpClientResponse } from "effect/http"
 
 const IDEMPOTENT_METHODS = new Set(["GET", "HEAD", "OPTIONS"])
 
 export const isIdempotentRequest = (request: HttpClientRequest.HttpClientRequest): boolean =>
-	IDEMPOTENT_METHODS.has(request.method.toUpperCase())
+	IDEMPOTENT_METHODS.has(Str.toUpperCase(request.method))
 
 /** Retry transport failures only for idempotent requests, excluding client timeouts. */
 export const isRetryableTransportError = (error: unknown): boolean => {
@@ -20,7 +20,7 @@ export const isRetryableTransportError = (error: unknown): boolean => {
 const isV2Request = (request: HttpClientRequest.HttpClientRequest): boolean => {
 	try {
 		const pathname = new URL(request.url).pathname
-		return pathname === "/v2" || pathname.startsWith("/v2/")
+		return pathname === "/v2" || Str.startsWith("/v2/")(pathname)
 	} catch {
 		return false
 	}
@@ -56,13 +56,14 @@ export const withMapleRetryPolicy = <E, R>(
 	})
 
 interface UnauthorizedResignOptions<E, R> {
+	/** Which 401s to resend; a mutation only when its 401 provably wrote nothing. */
 	readonly shouldRetry: (request: HttpClientRequest.HttpClientRequest) => boolean
 	/** Bypasses any token cache: a resend with the token that just got a 401 is pointless. */
 	readonly freshToken: Effect.Effect<Option.Option<string>, E, R>
 }
 
 /**
- * Re-sends a 401 read, re-signed with a freshly fetched bearer each time. Wrap the signing
+ * Re-sends a 401 that `shouldRetry` picks, re-signed with a freshly fetched bearer each time. Wrap the signing
  * client: `HttpClient.transform` alone replays the already-signed request.
  */
 export const withUnauthorizedResign = <E, R, E2, R2>(
@@ -70,7 +71,7 @@ export const withUnauthorizedResign = <E, R, E2, R2>(
 	options: UnauthorizedResignOptions<E2, R2>,
 ): HttpClient.HttpClient.With<E | E2, R | R2> =>
 	HttpClient.transform(client, (requestEffect, request) => {
-		if (!isIdempotentRequest(request) || !options.shouldRetry(request)) return requestEffect
+		if (!options.shouldRetry(request)) return requestEffect
 		const resend = options.freshToken.pipe(
 			Effect.map(
 				Option.match({
@@ -80,13 +81,14 @@ export const withUnauthorizedResign = <E, R, E2, R2>(
 			),
 			Effect.flatMap((signed) => client.postprocess(Effect.succeed(signed))),
 		)
-		return Effect.flatMap(requestEffect, (response) =>
-			response.status === 401
-				? Effect.repeat(resend, {
-						times: 2,
-						schedule: Schedule.passthrough(mapleRetrySchedule),
-						while: (retried) => retried.status === 401,
-					})
-				: Effect.succeed(response),
+		return Effect.filterOrElse(
+			requestEffect,
+			(response) => response.status !== 401,
+			() =>
+				Effect.repeat(resend, {
+					times: 2,
+					schedule: Schedule.passthrough(mapleRetrySchedule),
+					while: (retried) => retried.status === 401,
+				}),
 		)
 	})

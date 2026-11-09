@@ -1,11 +1,12 @@
 import {
+	DashboardDocument,
 	DashboardId,
 	defaultWidgetLayout,
 	DashboardRefreshIntervalSeconds,
 	DashboardVariableSchema,
 	TimeRangeSchema,
 } from "@maple/domain/http"
-import { Clock, Duration, Effect, Queue, Random, Result, Schema, Stream } from "effect"
+import { Clock, Duration, Effect, Queue, Random, Result, Schema, Stream, Array as Arr } from "effect"
 import { Command, Mount } from "foldkit"
 import { createQueryDraft } from "@maple/query-engine/query-builder"
 import { makeQueryDataSource } from "@maple/widgets/dashboard"
@@ -21,17 +22,35 @@ import {
 } from "../kit/layout"
 import { errorMessageOf, mutateDashboard, readDocument, type WriteSync } from "../kit/store"
 import { fetchWidgetData, toWidgetFailure } from "../kit/widget-data"
+import { getWidgetServerFunction } from "@maple/web-data/warehouse/widget-data-sources"
 import { fetchVariableOptions } from "../kit/variables"
 import { deriveDefaultWidgetTitle } from "../widget/drafts"
 import { Message } from "./message"
+import { LayoutChange } from "./model"
 import { ShareMessage } from "./share"
-import { toLoadFailure } from "../../../data/load-failure"
+import { toLoadFailure } from "@maple/views/data/load-failure"
 import { presetById } from "./picker-catalog"
 import { applySectionEdit, SectionEdit } from "./section-edit"
 
 export const ReadClock = Command.define("ReadDashboardClock", {
 	messages: [Message.CompletedReadClock],
 	execute: Effect.map(Clock.currentTimeMillis, (nowMs) => Message.CompletedReadClock({ nowMs })),
+})
+
+/** The chart code failed to load: a fresh page load is the only way to fetch it again. */
+export const ReloadPage = Command.define("ReloadDashboardPage", {
+	messages: [Message.ReloadedPage],
+	execute: Effect.sync(() => {
+		window.location.reload()
+		return Message.ReloadedPage()
+	}),
+})
+
+const WIDGET_FAILURE_KIND = "maple.dashboard.widget.failure_kind"
+
+/** The widget endpoint when it is a catalog name (the args scrubber redacts the `endpoint` arg). */
+const widgetEndpointAttribute = (endpoint: string) => ({
+	"maple.dashboard.widget.endpoint": getWidgetServerFunction(endpoint) === undefined ? "unknown" : endpoint,
 })
 
 /** `widgetFetchAtom`: one fetch per request key, however many tiles share it. */
@@ -45,7 +64,11 @@ export const FetchWidget = Command.define("FetchDashboardWidget", {
 	execute: ({ key, endpoint, params }) =>
 		fetchWidgetData(endpoint, params).pipe(
 			Effect.mapError(toWidgetFailure),
+			Effect.tapError((failure) => Effect.annotateCurrentSpan(WIDGET_FAILURE_KIND, failure.kind)),
+			// The command span is Ok (its Message carries the Result); this child records the failure.
+			Effect.withSpan("dashboard.widget.fetch", { attributes: widgetEndpointAttribute(endpoint) }),
 			Effect.result,
+			Effect.tap(() => Effect.annotateCurrentSpan(widgetEndpointAttribute(endpoint))),
 			Effect.map((result) => Message.CompletedFetchWidget({ key, result })),
 		),
 })
@@ -78,11 +101,18 @@ export const FetchShares = Command.define("FetchDashboardShares", {
 			const client = yield* MapleApiV2Client
 			const id = yield* decodeDashboardId(dashboardId)
 			const shares = yield* client.dashboards.listShares({ params: { id } })
-			return shares.map((share) => ({ widgetId: share.widgetId ?? null, mode: share.mode, token: share.token }))
+			// A session always reads the token; a share without one cannot be linked to.
+			return Arr.flatMap(shares, (share) =>
+				share.token === undefined
+					? []
+					: [{ widgetId: share.widgetId ?? null, mode: share.mode, token: share.token }],
+			)
 		}).pipe(
 			Effect.mapError(toLoadFailure),
 			Effect.result,
-			Effect.map((result) => Message.GotShareMessage({ message: ShareMessage.CompletedFetchShares({ seq, result }) })),
+			Effect.map((result) =>
+				Message.GotShareMessage({ message: ShareMessage.CompletedFetchShares({ seq, result }) }),
+			),
 		),
 })
 
@@ -149,7 +179,8 @@ export const CloneWidget = Command.define("CloneDashboardWidget", {
 	execute: ({ orgId, dashboardId, widgetId }) =>
 		Effect.gen(function* () {
 			const nowMs = yield* Clock.currentTimeMillis
-			const newId = generateWidgetId(nowMs, yield* Random.next)
+			const random = yield* Random.next
+			const newId = generateWidgetId(nowMs, random)
 			return yield* toWriteMessage(
 				mutateDashboard(orgId, dashboardId, (document, nowIso) =>
 					withClone(document, widgetId, newId, nowIso),
@@ -160,47 +191,43 @@ export const CloneWidget = Command.define("CloneDashboardWidget", {
 
 /** `updateWidgetLayouts`: one commit per finished drag or resize, only the changed boxes. */
 export const UpdateWidgetLayouts = Command.define("UpdateDashboardWidgetLayouts", {
-	args: {
-		...Target,
-		layouts: Schema.Array(
-			Schema.Struct({
-				i: Schema.String,
-				x: Schema.Number,
-				y: Schema.Number,
-				w: Schema.Number,
-				h: Schema.Number,
-			}),
-		),
-	},
-	messages: [Message.CompletedWrite],
-	execute: ({ orgId, dashboardId, layouts }) =>
-		toWriteMessage(
-			mutateDashboard(
-				orgId,
-				dashboardId,
-				(document, nowIso) => withLayouts(document, layouts, nowIso) ?? document,
-			),
+	args: { ...Target, generation: Schema.Number, layouts: Schema.Array(LayoutChange) },
+	messages: [Message.CompletedLayoutWrite],
+	execute: ({ orgId, dashboardId, generation, layouts }) =>
+		mutateDashboard(
+			orgId,
+			dashboardId,
+			(document, nowIso) => withLayouts(document, layouts, nowIso) ?? document,
+		).pipe(
+			Effect.mapError((error) => errorMessageOf(error)),
+			Effect.result,
+			Effect.map((result) => Message.CompletedLayoutWrite({ generation, result })),
 		),
 })
 
 export const ExportDashboard = Command.define("ExportDashboardJson", {
-	args: { orgId: Schema.String, dashboardId: Schema.String },
+	/** `snapshot`: a previewed version exports as shown, not the live board. */
+	args: { orgId: Schema.String, dashboardId: Schema.String, snapshot: Schema.NullOr(DashboardDocument) },
 	messages: [Message.CompletedExport],
-	execute: ({ orgId, dashboardId }) =>
-		readDocument(orgId, dashboardId).pipe(
+	execute: ({ orgId, dashboardId, snapshot }) =>
+		(snapshot === null ? readDocument(orgId, dashboardId) : Effect.succeed(snapshot)).pipe(
 			Effect.flatMap(downloadPortable),
-			Effect.ignore,
-			Effect.as(Message.CompletedExport()),
+			Effect.as(Message.CompletedExport({ error: null })),
+			Effect.catch((error) =>
+				Effect.succeed(Message.CompletedExport({ error: errorMessageOf(error) })),
+			),
 		),
 })
 
 // MOUNTS
 
-type HandleMessage =
-	| typeof Message.PressedGrip.Type
-	| typeof Message.PressedResizeHandle.Type
-	| typeof Message.PressedGripKey.Type
-	| typeof Message.BlurredGrip.Type
+const HandleMessage = Schema.Union([
+	Message.PressedGrip,
+	Message.PressedResizeHandle,
+	Message.PressedGripKey,
+	Message.BlurredGrip,
+])
+type HandleMessage = typeof HandleMessage.Type
 
 /** This grid's own cell for an event target on one of its handles (`cellOf`). */
 const handleCellOf = (container: Element, target: EventTarget | null, selector: string) => {
@@ -334,13 +361,17 @@ const quantizeWidthPx = (widthPx: number): number | undefined =>
 
 /**
  * `useInViewportSticky` + `useMeasuredWidthPx` on a tile's root: its quantized width now and on
- * every resize, and (once) that it came within 200 px of the viewport for 200 ms.
+ * every resize, that it came within 200 px of the viewport for 200 ms, and that it left again.
  */
 export const WatchWidget = Mount.defineStream("WatchDashboardWidget", {
 	args: { widgetId: Schema.String },
-	messages: [Message.MeasuredWidget, Message.RevealedWidget],
+	messages: [Message.MeasuredWidget, Message.RevealedWidget, Message.HidWidget],
 	execute: ({ element, widgetId }) =>
-		Stream.callback<typeof Message.MeasuredWidget.Type | typeof Message.RevealedWidget.Type>((queue) =>
+		Stream.callback<
+			| typeof Message.MeasuredWidget.Type
+			| typeof Message.RevealedWidget.Type
+			| typeof Message.HidWidget.Type
+		>((queue) =>
 			Effect.acquireRelease(
 				Effect.sync(() => {
 					const measure = (width: number) => {
@@ -350,23 +381,24 @@ export const WatchWidget = Mount.defineStream("WatchDashboardWidget", {
 					}
 					measure(element.getBoundingClientRect().width)
 					const resizes = new ResizeObserver((entries) =>
-						entries.forEach((entry) => measure(entry.contentRect.width)),
+						Arr.forEach(entries, (entry) => measure(entry.contentRect.width)),
 					)
 					resizes.observe(element)
-					const reveal = { timer: 0, isDone: false }
+					const reveal = { timer: 0, isShown: false }
 					const intersections = new IntersectionObserver(
 						(entries) => {
-							if (reveal.isDone) return
-							const isIntersecting = entries.some((entry) => entry.isIntersecting)
-							if (isIntersecting && reveal.timer === 0) {
+							const isIntersecting = Arr.some(entries, (entry) => entry.isIntersecting)
+							if (isIntersecting && !reveal.isShown && reveal.timer === 0) {
 								reveal.timer = window.setTimeout(() => {
-									reveal.isDone = true
-									intersections.disconnect()
+									reveal.timer = 0
+									reveal.isShown = true
 									Queue.offerUnsafe(queue, Message.RevealedWidget({ widgetId }))
 								}, 200)
-							} else if (!isIntersecting && reveal.timer !== 0) {
+							} else if (!isIntersecting) {
 								window.clearTimeout(reveal.timer)
 								reveal.timer = 0
+								if (reveal.isShown) Queue.offerUnsafe(queue, Message.HidWidget({ widgetId }))
+								reveal.isShown = false
 							}
 						},
 						{ rootMargin: "200px" },
@@ -431,8 +463,11 @@ export const AddWidget = Command.define("AddDashboardWidget", {
 	execute: ({ orgId, dashboardId, presetId, chartId, target }) =>
 		Effect.gen(function* () {
 			const picked = pickedWidget({ presetId, chartId })
-			if (picked === null) return Message.CompletedWrite({ result: Result.succeed("Synced" satisfies WriteSync) })
-			const id = generateWidgetId(yield* Clock.currentTimeMillis, yield* Random.next)
+			if (picked === null)
+				return Message.CompletedWrite({ result: Result.succeed("Synced" satisfies WriteSync) })
+			const now = yield* Clock.currentTimeMillis
+			const random = yield* Random.next
+			const id = generateWidgetId(now, random)
 			return yield* toWriteMessage(
 				mutateDashboard(orgId, dashboardId, (document, nowIso) =>
 					withAddedWidget(
@@ -484,7 +519,11 @@ export const SaveVariables = Command.define("SaveDashboardVariables", {
 	messages: [Message.CompletedWrite],
 	execute: ({ orgId, dashboardId, variables }) =>
 		toWriteMessage(
-			mutateDashboard(orgId, dashboardId, (document, nowIso) => ({ ...document, variables, updatedAt: nowIso })),
+			mutateDashboard(orgId, dashboardId, (document, nowIso) => ({
+				...document,
+				variables,
+				updatedAt: nowIso,
+			})),
 		),
 })
 

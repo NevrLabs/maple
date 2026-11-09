@@ -1,9 +1,10 @@
-import { chartBucketSeconds } from "../../../../components/infra/chart-units"
+import { chartBucketSeconds } from "@maple/views/lib/infra-chart-units"
 import { toIsoBucket } from "@maple/web-data/warehouse/timeseries-utils"
 import { AsyncData } from "foldkit"
 import type { TimeWindow } from "../../../../data/time-range"
 import type { ServiceWorkload } from "../lens/rail"
 import type { Model } from "./model"
+import { Array as Arr, String as Str, Option } from "effect"
 
 // Pure derivations of `LensBody`.
 
@@ -18,8 +19,10 @@ export type LinkedWorkload = Readonly<{
 /** `firstLinkedWorkload`: the first row with a kind the downstream queries accept. */
 export const linkedWorkload = (model: Model): LinkedWorkload | null => {
 	const rows: ReadonlyArray<ServiceWorkload> = AsyncData.getOrElse(model.linked.data, () => [])
-	const found = rows.find((row) => row.workloadKind !== "unknown")
-	if (found === undefined || found.workloadKind === "unknown") return null
+	const match = Arr.findFirst(rows, (row) => row.workloadKind !== "unknown")
+	if (Option.isNone(match)) return null
+	const found = match.value
+	if (found.workloadKind === "unknown") return null
 	return {
 		workloadKind: found.workloadKind,
 		workloadName: found.workloadName,
@@ -47,17 +50,21 @@ export const bucketSecondsOf = (model: Model, window: TimeWindow): number => {
 export const worstPerBucket = (
 	rows: ReadonlyArray<Readonly<{ bucket: string; value: number }>>,
 ): ReadonlyArray<Readonly<{ bucket: string; value: number }>> =>
-	[
-		...rows
-			.reduce((byBucket, row) => {
+	Arr.map(
+		[
+			...Arr.reduce(rows, new Map<string, number>(), (byBucket, row) => {
 				const current = byBucket.get(row.bucket)
-				return current === undefined || row.value > current ? byBucket.set(row.bucket, row.value) : byBucket
-			}, new Map<string, number>())
-			.entries(),
-	]
-		.map(([bucket, value]) => ({ bucket, value }))
-		.sort((a, b) => a.bucket.localeCompare(b.bucket))
+				return current === undefined || row.value > current
+					? byBucket.set(row.bucket, row.value)
+					: byBucket
+			}).entries(),
+		],
+		([bucket, value]) => ({ bucket, value }),
+	).sort((a, b) => Str.localeCompare(b.bucket)(a.bucket))
 
 /** The CPU rows on the service series' bucket spelling (`toIsoBucket`). */
 export const cpuRowsOf = (model: Model) =>
-	AsyncData.getOrElse(model.cpu.data, () => []).map((row) => ({ ...row, bucket: toIsoBucket(row.bucket) }))
+	Arr.map(
+		AsyncData.getOrElse(model.cpu.data, () => []),
+		(row) => ({ ...row, bucket: toIsoBucket(row.bucket) }),
+	)

@@ -1,5 +1,5 @@
 import { describe, it } from "@effect/vitest"
-import { Effect } from "effect"
+import { Effect, Array as Arr, String as Str } from "effect"
 import { afterEach, expect, vi } from "vitest"
 import { layer } from "./layer.js"
 
@@ -13,8 +13,7 @@ import { layer } from "./layer.js"
 // for the whole file and each test swaps the handler behind it.
 const ok = async (_request: Request) => new Response(null, { status: 200 })
 let onFetch = ok
-globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) =>
-	onFetch(new Request(input, init))) as typeof fetch
+globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => onFetch(new Request(input, init))
 
 const setupFetch = () => {
 	onFetch = ok
@@ -49,13 +48,13 @@ describe("Maple.layer (client) — session linking after refactor", () => {
 		// The session sink saw this span's trace id — proves the decorator is
 		// still wired into Maple.layer post-extraction.
 		expect(recordTraceId).toHaveBeenCalledTimes(1)
-		expect(recordTraceId.mock.calls[0][0]).toMatch(/^[0-9a-f]{32}$/i)
+		expect(Arr.getUnsafe(Arr.getUnsafe(recordTraceId.mock.calls, 0), 0)).toMatch(/^[0-9a-f]{32}$/i)
 	})
 
 	it("applies span options and still stamps session.id on the exported span", async () => {
 		const bodies: Array<string> = []
 		onFetch = async (request) => {
-			if (request.url.endsWith("/v1/traces")) bodies.push(await request.text())
+			if (Str.endsWith("/v1/traces")(request.url)) bodies.push(await request.text())
 			return new Response(null, { status: 200 })
 		}
 		const g = globalThis as Record<string, unknown>
@@ -79,7 +78,7 @@ describe("Maple.layer (client) — session linking after refactor", () => {
 			),
 		)
 
-		const payload = bodies.join("\n")
+		const payload = Arr.join(bodies, "\n")
 		expect(payload).toContain('"page-load"')
 		expect(payload).not.toContain('"noise.poll"')
 		expect(payload).toContain("sess-xyz")

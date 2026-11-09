@@ -1,13 +1,20 @@
 import { scrubUrl } from "@maple/browser-session"
-import { Effect, Layer, Predicate, Tracer } from "effect"
+import { Effect, Layer, Predicate, Tracer, Array as Arr, Record as Rec, String as Str } from "effect"
 import {
 	type FlushableTelemetry,
 	type MapleClientFlushableConfig,
 	make as makeFlushable,
 } from "../client/flushable.js"
+import { withIntegration } from "../client/flushable-integration.js"
 import { type CommandArgsPolicy, makeArgsScrubber } from "./args.js"
 import { makeRecentMessages, messageTag } from "./message.js"
-import { type FoldkitTracing, makeFoldkitTracing, NAVIGATION_ARG, nowNanos } from "./tracer.js"
+import {
+	documentStartNanos,
+	type FoldkitTracing,
+	makeFoldkitTracing,
+	NAVIGATION_ARG,
+	nowNanos,
+} from "./tracer.js"
 
 // Foldkit is typed structurally so the SDK has no dependency on it: these are
 // the parts of `Runtime.makeApplication`'s config the instrumentation reads.
@@ -71,6 +78,7 @@ interface FoldkitAppConfig {
 // SDK cannot name. Only the shape Foldkit guarantees is checked here; the
 // wrappers pass every value through untouched.
 const isFn = <Fn>(value: unknown): value is Fn => typeof value === "function"
+// BOUNDARY: a config field is whatever the app put there.
 const field = (owner: unknown, key: string): unknown =>
 	Predicate.hasProperty(owner, key) ? owner[key] : undefined
 const fnField = <Fn>(owner: unknown, key: string): Fn | undefined => {
@@ -90,6 +98,7 @@ const parseAppConfig = <Config extends object>(app: Config): FoldkitAppConfig =>
 	const slow = field(app, "slow")
 	const slowThresholds = field(slow, "thresholdOverrides")
 	return {
+		// @effect-diagnostics-next-line anyUnknownInErrorContext:off -- the app's own Layer, passed through untouched
 		resources: Layer.isLayer(resources) ? resources : undefined,
 		init: fnField<InitFn>(app, "init"),
 		update: fnField<UpdateFn>(app, "update"),
@@ -211,7 +220,7 @@ export const make = (config: MapleFoldkitConfig): MapleFoldkit => {
 	// either way it runs first, so the open navigation ends while that flush can still send it.
 	const canListen = typeof globalThis.addEventListener === "function"
 	if (canListen) globalThis.addEventListener("pagehide", tracing.interruptAll, { capture: true })
-	const telemetry = makeFlushable(config)
+	const telemetry = makeFlushable(withIntegration({ ...config }, { pageloadLink: tracing.pageloadLink }))
 	const scrubArgs = makeArgsScrubber(config.commandArgs)
 	const recent = makeRecentMessages(20)
 	const marks = makeNavigationMarks()
@@ -229,8 +238,11 @@ export const make = (config: MapleFoldkitConfig): MapleFoldkit => {
 		tracing.registerCommand(command.name)
 		// Namespaced, so an app's `orgId` or `limit` arg never collides with a semconv or backend key.
 		const args = {
-			...Object.fromEntries(
-				Object.entries(scrubArgs(command.args)).map(([key, value]) => [`${ARG_PREFIX}${key}`, value]),
+			...Rec.fromEntries(
+				Arr.map(Rec.toEntries(scrubArgs(command.args)), ([key, value]) => [
+					`${ARG_PREFIX}${key}`,
+					value,
+				]),
 			),
 			"maple.foldkit.message": tag,
 		}
@@ -238,6 +250,7 @@ export const make = (config: MapleFoldkitConfig): MapleFoldkit => {
 		return {
 			...command,
 			args: { ...args, [NAVIGATION_ARG]: navigationId },
+			// @effect-diagnostics-next-line anyUnknownInErrorContext:off -- the app's Command, typed by the app, passed through
 			effect: Effect.tap(command.effect, (message) =>
 				Effect.sync(() => marks.set(message, navigationId)),
 			),
@@ -249,7 +262,7 @@ export const make = (config: MapleFoldkitConfig): MapleFoldkit => {
 			return result
 		return {
 			...result,
-			commands: result.commands.map((command) => instrumentCommand(command, tag, navigationId)),
+			commands: Arr.map(result.commands, (command) => instrumentCommand(command, tag, navigationId)),
 		}
 	}
 
@@ -272,7 +285,7 @@ export const make = (config: MapleFoldkitConfig): MapleFoldkit => {
 							route: routeOf(url),
 							path: scrubUrl(url.pathname),
 							// The page load began at navigation start, not when the app's JS got here.
-							startTime: BigInt(Math.round(performance.timeOrigin * 1_000_000)),
+							startTime: documentStartNanos(),
 							attributes: bootTiming(),
 						})
 			return withCommands(init(flags, url), "init", navigationId)
@@ -321,7 +334,7 @@ export const make = (config: MapleFoldkitConfig): MapleFoldkit => {
 				: Predicate.hasProperty(context.message, "value")
 					? context.message.value
 					: undefined
-		tracing.recordPhase(`foldkit.${context._tag.toLowerCase()}`, startTime, endTime, {
+		tracing.recordPhase(`foldkit.${Str.toLowerCase(context._tag)}`, startTime, endTime, {
 			"maple.foldkit.phase": context._tag,
 			"maple.foldkit.duration_ms": context.durationMs,
 			"maple.foldkit.threshold_ms": context.thresholdMs,
@@ -334,6 +347,7 @@ export const make = (config: MapleFoldkitConfig): MapleFoldkit => {
 		const { init, update, onUrlChange, crashReport, onSlow } = parsed
 		return {
 			...app,
+			// @effect-diagnostics-next-line anyUnknownInErrorContext:off -- the app's own Layer, merged and passed through
 			resources: parsed.resources === undefined ? layer : Layer.merge(parsed.resources, layer),
 			crash: {
 				...parsed.crash,

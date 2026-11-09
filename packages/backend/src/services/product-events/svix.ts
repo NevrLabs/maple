@@ -1,4 +1,4 @@
-import { Effect, Option, Schema } from "effect"
+import { Effect, Option, Schema, Array as Arr, String as Str } from "effect"
 
 /**
  * Svix (Standard Webhooks) signature verification, shared by the Clerk and
@@ -46,7 +46,8 @@ const decodeBase64 = (value: string): Uint8Array<ArrayBuffer> | undefined =>
 	Option.liftThrowable(atob)(value).pipe(
 		Option.map((binary) => {
 			const bytes = new Uint8Array(new ArrayBuffer(binary.length))
-			for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+			for (let i = 0; i < binary.length; i++)
+				bytes[i] = Option.getOrElse(Str.charCodeAt(i)(binary), () => 0)
 			return bytes
 		}),
 		Option.getOrUndefined,
@@ -61,13 +62,15 @@ const encodeBase64 = (bytes: ArrayBuffer): string => {
 const constantTimeEqual = (a: string, b: string): boolean => {
 	if (a.length !== b.length) return false
 	let diff = 0
-	for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i)
+	for (let i = 0; i < a.length; i++)
+		diff |=
+			Option.getOrElse(Str.charCodeAt(i)(a), () => 0) ^ Option.getOrElse(Str.charCodeAt(i)(b), () => 0)
 	return diff === 0
 }
 
 const secretBytes = (secret: string): Uint8Array<ArrayBuffer> | undefined => {
-	const raw = secret.startsWith("whsec_") ? secret.slice("whsec_".length) : secret
-	const bytes = decodeBase64(raw.trim())
+	const raw = Str.startsWith("whsec_")(secret) ? Str.slice("whsec_".length)(secret) : secret
+	const bytes = decodeBase64(Str.trim(raw))
 	return bytes === undefined || bytes.length === 0 ? undefined : bytes
 }
 
@@ -90,13 +93,21 @@ export const signSvix = (secret: string, id: string, timestamp: string, body: st
 		return encodeBase64(mac)
 	})
 
-export const verifySvixSignature = (options: {
-	readonly secret: string
+interface CheckedSvixHeaders {
+	readonly id: string
+	readonly timestamp: string
+	readonly signature: string
+}
+
+/**
+ * The checks that need no body: all three headers present and the timestamp inside the tolerance.
+ * A receiver runs this before reading the body.
+ */
+export const checkSvixHeaders = (options: {
 	readonly headers: SvixHeaders
-	readonly body: string
 	readonly nowMs: number
 	readonly toleranceSeconds?: number | undefined
-}): Effect.Effect<void, SvixVerificationError> =>
+}): Effect.Effect<CheckedSvixHeaders, SvixVerificationError> =>
 	Effect.gen(function* () {
 		const { id, timestamp, signature } = options.headers
 		if (!id || !timestamp || !signature) {
@@ -119,13 +130,27 @@ export const verifySvixSignature = (options: {
 				reason: "stale_timestamp",
 			})
 		}
+		return { id, timestamp, signature }
+	})
+
+export const verifySvixSignature = (options: {
+	readonly secret: string
+	readonly headers: SvixHeaders
+	readonly body: string
+	readonly nowMs: number
+	readonly toleranceSeconds?: number | undefined
+}): Effect.Effect<void, SvixVerificationError> =>
+	Effect.gen(function* () {
+		const { id, timestamp, signature } = yield* checkSvixHeaders(options)
 		const expected = yield* signSvix(options.secret, id, timestamp, options.body)
-		const provided = signature
-			.split(" ")
-			.map((entry) => entry.trim())
-			.filter((entry) => entry.startsWith("v1,"))
-			.map((entry) => entry.slice(3))
-		if (!provided.some((candidate) => constantTimeEqual(candidate, expected))) {
+		const provided = Arr.map(
+			Arr.filter(
+				Arr.map(Str.split(" ")(signature), (entry) => Str.trim(entry)),
+				(entry) => Str.startsWith("v1,")(entry),
+			),
+			(entry) => Str.slice(3)(entry),
+		)
+		if (!Arr.some(provided, (candidate) => constantTimeEqual(candidate, expected))) {
 			return yield* new SvixVerificationError({
 				message: "Signature mismatch",
 				reason: "signature_mismatch",

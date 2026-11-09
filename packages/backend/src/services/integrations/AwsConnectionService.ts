@@ -30,7 +30,7 @@ import {
 	type OrgId,
 	type UserId,
 } from "@maple/domain/primitives"
-import { Cause, Clock, Context, Effect, Layer, Option, Redacted } from "effect"
+import { Cause, Clock, Context, Effect, Layer, Option, Redacted, Array as Arr, String as Str } from "effect"
 import { FetchHttpClient, HttpClient } from "effect/http"
 import { decryptAes256Gcm, encryptAes256Gcm, parseBase64Aes256GcmKey } from "@maple/backend/platform/Crypto"
 import { Database } from "@maple/backend/platform/DatabaseLive"
@@ -152,7 +152,7 @@ export interface AwsConnectionServiceApi {
 		IntegrationsNotFoundError | AwsIntegrationUnavailableError | IntegrationsPersistenceError
 	>
 	/** The hourly sweep: every connection not checked within the hour, except paused ones. */
-	readonly checkDue: () => Effect.Effect<AwsCheckSweep, IntegrationsPersistenceError>
+	readonly checkDue: Effect.Effect<AwsCheckSweep, IntegrationsPersistenceError>
 	/** Deleting the row is the disconnect: Maple stops assuming the role. */
 	readonly delete: (
 		orgId: OrgId,
@@ -190,11 +190,11 @@ const SWEEP_BUDGET_MS = 10 * 60_000
 const SWEEP_CONCURRENCY = 2
 
 const sameModules = (a: ReadonlyArray<AwsModule>, b: ReadonlyArray<AwsModule>) =>
-	a.length === b.length && a.every((module) => b.includes(module))
+	a.length === b.length && Arr.every(a, (module) => b.includes(module))
 
 /** Modules in their canonical order, without repeats. */
 const normalizeModules = (modules: ReadonlyArray<AwsModule>) =>
-	AWS_MODULES.filter((module) => modules.includes(module))
+	Arr.filter(AWS_MODULES, (module) => modules.includes(module))
 
 const toConnection = (issuer: string, row: AwsConnectionRow): AwsConnection => {
 	const names = awsConnectionResourceNames(row.id)
@@ -225,7 +225,7 @@ const toConnection = (issuer: string, row: AwsConnectionRow): AwsConnection => {
 const streamSecretAad = (connectionId: string) =>
 	Buffer.from(`aws_connections:stream:v1:${connectionId}`, "utf8")
 
-const MODULE_INFO: ReadonlyArray<AwsModuleInfo> = AWS_MODULES.map((module) => ({
+const MODULE_INFO: ReadonlyArray<AwsModuleInfo> = Arr.map(AWS_MODULES, (module) => ({
 	module,
 	title: AWS_MODULE_SPECS[module].title,
 	summary: AWS_MODULE_SPECS[module].summary,
@@ -235,12 +235,12 @@ const MODULE_INFO: ReadonlyArray<AwsModuleInfo> = AWS_MODULES.map((module) => ({
 const validateModules = (
 	modules: ReadonlyArray<AwsModule>,
 ): Effect.Effect<ReadonlyArray<AwsModule>, ModulesError> => {
-	const planned = modules.filter((module) => !isAwsModuleAvailable(module))
+	const planned = Arr.filter(modules, (module) => !isAwsModuleAvailable(module))
 	return planned.length === 0
 		? Effect.succeed(normalizeModules(modules))
 		: Effect.fail(
 				new IntegrationsValidationError({
-					message: `Maple does not read ${planned.join(", ")} from AWS yet.`,
+					message: `Maple does not read ${Arr.join(planned, ", ")} from AWS yet.`,
 				}),
 			)
 }
@@ -265,18 +265,25 @@ export const interpretCheck = (
 ): CheckResult => {
 	const roleName = awsConnectionResourceNames(row.id).roleName
 	if (result._tag === "Ok") {
-		const version = Number(result.tags.find((tag) => tag.key === AWS_ROLE_TAGS.templateVersion)?.value)
+		const version = Number(
+			Option.getOrUndefined(
+				Option.map(
+					Arr.findFirst(result.tags, (tag) => tag.key === AWS_ROLE_TAGS.templateVersion),
+					(tag) => tag.value,
+				),
+			),
+		)
 		const granted = normalizeModules(
-			result.attachedPolicyNames.flatMap((name) => {
+			Arr.flatMap(result.attachedPolicyNames, (name) => {
 				const module = awsModuleOfPolicyName(roleName, name)
 				return module === undefined ? [] : [module]
 			}),
 		)
-		const missing = row.modules.filter((module) => !granted.includes(module))
+		const missing = Arr.filter(row.modules, (module) => !granted.includes(module))
 		const error =
 			missing.length === 0
 				? null
-				: `The role does not grant ${missing.join(", ")} yet: run the setup script again.`
+				: `The role does not grant ${Arr.join(missing, ", ")} yet: run the setup script again.`
 		return {
 			changes: {
 				verifiedAt: row.verifiedAt ?? now,
@@ -348,7 +355,7 @@ export class AwsConnectionService extends Context.Service<AwsConnectionService, 
 				Redacted.value(env.MAPLE_INGEST_KEY_LOOKUP_HMAC_KEY),
 				persistence,
 			)
-			const ingestBaseUrl = env.MAPLE_INGEST_PUBLIC_URL.replace(/\/+$/, "")
+			const ingestBaseUrl = Str.replace(/\/+$/, "")(env.MAPLE_INGEST_PUBLIC_URL)
 
 			/** A new stream secret as the four columns that hold it. */
 			const mintStreamSecret = (connectionId: AwsConnectionId) =>
@@ -371,7 +378,7 @@ export class AwsConnectionService extends Context.Service<AwsConnectionService, 
 			const issuer = awsOidcIssuer(env.MAPLE_API_BASE_URL)
 			// Without a usable key nothing can be assumed, so no setup is handed out either.
 			const signer: AwsOidcSigner | undefined = yield* Option.match(env.MAPLE_AWS_OIDC_SIGNING_KEY, {
-				onNone: () => Effect.succeed(undefined),
+				onNone: () => Effect.undefined,
 				onSome: (key) =>
 					makeAwsOidcSigner(issuer, key).pipe(
 						Effect.catchTag("@maple/backend/integrations/AwsOidcKeyError", (error) =>
@@ -410,7 +417,7 @@ export class AwsConnectionService extends Context.Service<AwsConnectionService, 
 				return {
 					available: signer !== undefined,
 					modules: MODULE_INFO,
-					connections: rows.map(connectionOf),
+					connections: Arr.map(rows, connectionOf),
 				}
 			})
 
@@ -501,8 +508,11 @@ export class AwsConnectionService extends Context.Service<AwsConnectionService, 
 						streamSecretHash: null,
 					}),
 				}
-				if (Object.keys(changes).length === 0)
-					return connectionOf(yield* selectRow(orgId, connectionId))
+				// @effect-diagnostics-next-line preferEffectRecord:off -- not a record type; Rec.keys would need a cast
+				if (Object.keys(changes).length === 0) {
+					const current = yield* selectRow(orgId, connectionId)
+					return connectionOf(current)
+				}
 				const [row] = yield* dbExecute((db) =>
 					db.run(
 						PG.update(AwsConnections)
@@ -680,7 +690,7 @@ export class AwsConnectionService extends Context.Service<AwsConnectionService, 
 										.where(($) => [
 											PG.inList(
 												$.id,
-												due.map((row) => row.id),
+												Arr.map(due, (row) => row.id),
 											),
 											PG.or($.checkLeaseUntil.isNull(), $.checkLeaseUntil.lt(now)),
 										])
@@ -688,7 +698,7 @@ export class AwsConnectionService extends Context.Service<AwsConnectionService, 
 								),
 							)
 				// RETURNING keeps no order: check in the due order, never-checked first.
-				const rank = new Map(due.map((row, index) => [row.id, index]))
+				const rank = new Map(Arr.map(due, (row, index) => [row.id, index]))
 				const ordered = [...claimed].sort(
 					(a, b) =>
 						(rank.get(a.id) ?? Number.MAX_SAFE_INTEGER) -
@@ -701,7 +711,7 @@ export class AwsConnectionService extends Context.Service<AwsConnectionService, 
 						// deadline, and the rows left stay leased, then come due again.
 						Effect.flatMap(Clock.currentTimeMillis, (now) =>
 							now >= deadlineAt
-								? Effect.succeed(undefined)
+								? Effect.undefined
 								: runCheck(signer, row).pipe(Effect.map(({ ok }) => ok)),
 						).pipe(
 							Effect.withSpan("AwsConnectionService.checkDue.connection", {
@@ -720,8 +730,8 @@ export class AwsConnectionService extends Context.Service<AwsConnectionService, 
 						),
 					{ concurrency: SWEEP_CONCURRENCY },
 				)
-				const ran = results.filter((ok) => ok !== undefined)
-				return { due: due.length, checked: ran.length, failures: ran.filter((ok) => !ok).length }
+				const ran = Arr.filter(results, (ok) => ok !== undefined)
+				return { due: due.length, checked: ran.length, failures: Arr.filter(ran, (ok) => !ok).length }
 			})
 
 			/**
@@ -748,11 +758,11 @@ export class AwsConnectionService extends Context.Service<AwsConnectionService, 
 					),
 				)
 
-			const checkDue = Effect.fn("AwsConnectionService.checkDue")(function* () {
+			const checkDue = Effect.gen(function* () {
 				if (signer === undefined) return { due: 0, checked: 0, failures: 0 }
 				const startedAt = yield* Clock.currentTimeMillis
 				return yield* sweepFrom(signer, startedAt, { due: 0, checked: 0, failures: 0 })
-			})
+			}).pipe(Effect.withSpan("AwsConnectionService.checkDue"))
 
 			const deleteConnection = Effect.fn("AwsConnectionService.delete")(function* (
 				orgId: OrgId,

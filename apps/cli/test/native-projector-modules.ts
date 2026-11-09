@@ -14,9 +14,9 @@ import {
 	readlinkSync,
 } from "node:fs"
 import { createHash } from "node:crypto"
-import { serverPidPath, storeMarkerPath, storeOpenMarkerPath } from "../src/server/store-version"
+import { serverPidPath, storeMarkerPath, storeOpenMarkerPath } from "@maple/local-server/store-version"
 import { tmpdir } from "node:os"
-import { Schema } from "effect"
+import { Schema, Array as Arr, String as Str } from "effect"
 import { join, resolve } from "node:path"
 
 const bundle = resolve(process.argv[2] ?? "dist")
@@ -42,9 +42,7 @@ const storeDigest = (path: string): string => {
 		return createHash("sha256")
 			.update(
 				JSON.stringify(
-					readdirSync(path)
-						.sort()
-						.map((name) => [name, storeDigest(join(path, name))]),
+					Arr.map(readdirSync(path).sort(), (name) => [name, storeDigest(join(path, name))]),
 				),
 			)
 			.digest("hex")
@@ -96,8 +94,12 @@ const exit = async (child: ReturnType<typeof spawn>) => {
 		clearTimeout(timer)
 	}
 }
-const healthy = async () => {
-	for (let i = 0; i < 200; i++) {
+// CI boots six native probes on one runner at once, so a cold chDB start can take well over 20s.
+// A foreground server that dies during startup fails at once instead of at the deadline.
+const healthy = async (server?: ReturnType<typeof Bun.spawn>) => {
+	const deadline = Date.now() + 60_000
+	while (Date.now() < deadline) {
+		ok(server?.exitCode == null, `server exited with ${server?.exitCode} before /health; inspect ${root}`)
 		const response = await fetch(`${url}/health`, { signal: AbortSignal.timeout(1000) }).catch(() => null)
 		if (response?.ok) return
 		await Bun.sleep(100)
@@ -109,7 +111,7 @@ const request = async (path: string, body?: unknown) => {
 		method: body === undefined ? "GET" : "POST",
 		headers: {
 			"content-type": "application/json",
-			"x-maple-maintenance-token": readFileSync(`${data}.maintenance-token`, "utf8").trim(),
+			"x-maple-maintenance-token": Str.trim(readFileSync(`${data}.maintenance-token`, "utf8")),
 		},
 		body: body === undefined ? undefined : JSON.stringify(body),
 		signal: AbortSignal.timeout(10_000),
@@ -159,12 +161,15 @@ const stop = async () => strictEqual(await exit(spawn("stop", ["stop", "--data-d
 let detached = false
 try {
 	const foreground = spawn("foreground", [...args, ...moduleArgs])
-	await healthy()
+	await healthy(foreground)
 	await request("/local/eventing/projections", projection)
 	await request("/v1/logs", ingest)
 	const first = outbox(await request("/local/eventing/outbox"))
 	strictEqual(first.events.length, 1)
-	deepStrictEqual(first.events[0].event.data, { label: "external projector", occurrenceId: "delivery-42" })
+	deepStrictEqual(Arr.getUnsafe(first.events, 0).event.data, {
+		label: "external projector",
+		occurrenceId: "delivery-42",
+	})
 	await stop()
 	await exit(foreground)
 
@@ -201,7 +206,7 @@ try {
 		}
 		writeFileSync(storeOpenMarkerPath(data), "simulated unclean shutdown\n")
 		const before = storeDigest(data)
-		const wipeArgs = args.map((value) => (value === "fail" ? "wipe" : value))
+		const wipeArgs = Arr.map(args, (value) => (value === "fail" ? "wipe" : value))
 		notStrictEqual(
 			await exit(
 				spawn(`invalid-wipe-${background}`, [
@@ -227,12 +232,12 @@ try {
 	await request("/v1/logs", ingest)
 	const restarted = outbox(await request("/local/eventing/outbox"))
 	strictEqual(restarted.events.length, 1)
-	strictEqual(restarted.events[0].event.id, first.events[0].event.id)
+	strictEqual(Arr.getUnsafe(restarted.events, 0).event.id, Arr.getUnsafe(first.events, 0).event.id)
 	await stop()
 	detached = false
 
 	// Exactly one registration per serving process, always under its PID claim.
-	const owners = readFileSync(registrations, "utf8").trim().split("\n")
+	const owners = Str.split("\n")(Str.trim(readFileSync(registrations, "utf8")))
 	strictEqual(owners.length, 2)
 	strictEqual(new Set(owners).size, 2)
 

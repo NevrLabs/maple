@@ -10,15 +10,14 @@ import type { MapleApiV2Client } from "../../platform/api-clients"
 
 const decodeDocument = Schema.decodeUnknownOption(DashboardDocument)
 const decodeDashboardId = Schema.decodeUnknownEffect(DashboardId)
+const decodeJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown))
 
 /** `rowToDashboard`: migrate the stored payload, then decode; an undecodable row is `None`. */
 export const rowToDocument = (row: DashboardRow): Option.Option<DashboardDocument> =>
-	Option.flatMap(
-		Option.liftThrowable((payload: unknown) =>
-			migrateToLatest(typeof payload === "string" ? JSON.parse(payload) : payload),
-		)(row.payload_json),
-		decodeDocument,
-	)
+	(typeof row.payload_json === "string"
+		? decodeJson(row.payload_json)
+		: Option.some(row.payload_json)
+	).pipe(Option.flatMap(Option.liftThrowable(migrateToLatest)), Option.flatMap(decodeDocument))
 
 /** `rowToUpdateRequest`: the full PATCH body from the row's optimistic payload. */
 const toUpdateRequest = (document: DashboardDocument): V2DashboardUpdateParams => ({
@@ -74,21 +73,20 @@ export const makeDashboardsCollection = (config: {
 		},
 		onUpdate: ({ transaction }) =>
 			Effect.gen(function* () {
-				const { modified } = transaction.mutations[0]
-				const document = yield* Option.match(rowToDocument(modified), {
-					onNone: () =>
-						Effect.fail(
-							new UndecodableDashboardError({
-								message: "This dashboard's saved layout couldn't be read",
-								rawId: modified.id,
-							}),
-						),
-					onSome: Effect.succeed,
-				})
+				const { modified, original } = transaction.mutations[0]
+				const document = yield* Effect.fromOption(
+					rowToDocument(modified),
+					() =>
+						new UndecodableDashboardError({
+							message: "This dashboard's saved layout couldn't be read",
+							rawId: modified.id,
+						}),
+				)
 				const id = yield* decodeDashboardId(modified.id)
 				const result = yield* config.client.dashboards.update({
 					params: { id },
-					payload: toUpdateRequest(document),
+					// The version this edit was based on: a newer save by someone else is a 409, not overwritten.
+					payload: { ...toUpdateRequest(document), expectedVersion: original.version },
 				})
 				return { txid: yield* requireTxid(result.txid) }
 			}),

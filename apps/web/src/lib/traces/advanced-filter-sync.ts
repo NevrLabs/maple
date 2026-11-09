@@ -7,7 +7,7 @@ import {
 	type Operator,
 	type ParsedClause,
 } from "@maple/domain/where-clause"
-import { Match } from "effect"
+import { Match, Array as Arr, String as Str } from "effect"
 
 /**
  * How an attribute filter compares. Absent means equality; `exists` carries an
@@ -126,9 +126,12 @@ export function attributeFilterOperator(entry: Pick<AttributeFilterEntry, "match
 
 /** An attribute filter entry as where-clause text; a group reads back as `(a OR b)`. */
 export function formatAttributeClause(prefix: string, entry: AttributeFilterEntry): string {
-	if (entry.or?.length) {
+	if (entry.or !== undefined && entry.or.length > 0) {
 		const { or, ...first } = entry
-		return `(${[first, ...or].map((member) => formatAttributeClause(prefix, member)).join(" OR ")})`
+		return `(${Arr.join(
+			Arr.map([first, ...or], (member) => formatAttributeClause(prefix, member)),
+			" OR ",
+		)})`
 	}
 	const operator = attributeFilterOperator(entry)
 	if (entry.matchMode === "exists") return `${prefix}${entry.key} ${operator}`
@@ -140,16 +143,16 @@ export function parseWhereClause(whereClause: string | undefined): {
 	/** One message per clause that was not applied, for the editor to show. */
 	warnings: string[]
 } {
-	if (!whereClause || !whereClause.trim()) {
+	if (!whereClause || !Str.trim(whereClause)) {
 		return {
 			filters: { attributeFilters: [], resourceAttributeFilters: [] },
 			warnings: [],
 		}
 	}
 
-	const parsedClauses = parseWhereClauses(whereClause.trim(), { orGroups: true })
+	const parsedClauses = parseWhereClauses(Str.trim(whereClause), { orGroups: true })
 	const clauses = parsedClauses.clauses
-	const warnings = parsedClauses.warnings.map((warning) => warning.message)
+	const warnings = Arr.map(parsedClauses.warnings, (warning) => warning.message)
 
 	let parsed: ParsedWhereClauseFilters = { attributeFilters: [], resourceAttributeFilters: [] }
 
@@ -172,7 +175,7 @@ export function parseWhereClause(whereClause: string | undefined): {
 		}
 
 		// Attribute keys are case-sensitive, so they come from the key as typed.
-		const typedKey = (clause.rawKey ?? clause.key).trim()
+		const typedKey = Str.trim(clause.rawKey ?? clause.key)
 		function pushAttribute(target: AttributeFilterEntry[], attributeKey: string, label: string) {
 			if (!attributeKey) {
 				warnings.push(`Missing attribute key ignored: ${label}`)
@@ -192,13 +195,13 @@ export function parseWhereClause(whereClause: string | undefined): {
 			})
 		}
 
-		if (key.startsWith("attr.")) {
-			pushAttribute(parsed.attributeFilters, typedKey.slice(5).trim(), typedKey)
+		if (Str.startsWith("attr.")(key)) {
+			pushAttribute(parsed.attributeFilters, Str.trim(Str.slice(5)(typedKey)), typedKey)
 			return parsed
 		}
 
-		if (key.startsWith("resource.")) {
-			pushAttribute(parsed.resourceAttributeFilters, typedKey.slice(9).trim(), typedKey)
+		if (Str.startsWith("resource.")(key)) {
+			pushAttribute(parsed.resourceAttributeFilters, Str.trim(Str.slice(9)(typedKey)), typedKey)
 			return parsed
 		}
 
@@ -319,7 +322,10 @@ export function parseWhereClause(whereClause: string | undefined): {
 	// (service, span name, http method, ...) are single-valued params and cannot
 	// be OR-ed.
 	for (const group of parsedClauses.groups) {
-		const label = `(${group.map((c) => c.rawKey ?? c.key).join(" OR ")})`
+		const label = `(${Arr.join(
+			Arr.map(group, (c) => c.rawKey ?? c.key),
+			" OR ",
+		)})`
 		const members: Array<{
 			map: "attributeFilters" | "resourceAttributeFilters"
 			entry: AttributeFilterEntry
@@ -331,7 +337,9 @@ export function parseWhereClause(whereClause: string | undefined): {
 				clause,
 				memberWarnings,
 			)
-			const setsOtherField = Object.entries(alone).some(
+			const setsOtherField = Arr.some(
+				// @effect-diagnostics-next-line preferEffectRecord:off -- not a record type; Rec.toEntries would need a cast
+				Object.entries(alone),
 				([field, value]) =>
 					field !== "attributeFilters" &&
 					field !== "resourceAttributeFilters" &&
@@ -353,7 +361,7 @@ export function parseWhereClause(whereClause: string | undefined): {
 		}
 		const [first, ...rest] = members
 		if (first === undefined) continue
-		if (rest.some((m) => m.map !== first.map)) {
+		if (Arr.some(rest, (m) => m.map !== first.map)) {
 			warnings.push(`OR group ignored: its members mix span and resource attributes: ${label}`)
 			continue
 		}
@@ -363,7 +371,7 @@ export function parseWhereClause(whereClause: string | undefined): {
 		}
 		parsed = {
 			...parsed,
-			[first.map]: [...parsed[first.map], { ...first.entry, or: rest.map((m) => m.entry) }],
+			[first.map]: [...parsed[first.map], { ...first.entry, or: Arr.map(rest, (m) => m.entry) }],
 		}
 	}
 
@@ -454,7 +462,7 @@ export function toWhereClause(filters: ParsedWhereClauseFilters): string | undef
 		return undefined
 	}
 
-	return clauses.join(" AND ")
+	return Arr.join(clauses, " AND ")
 }
 
 type ClauseFields = Omit<TracesSearchLike, "startTime" | "endTime" | "whereClause">
@@ -494,14 +502,18 @@ function clauseFields(filters: ParsedWhereClauseFilters): ClauseFields {
 	if (filters.resourceAttributeFilters.length > 0) {
 		fields.resourceAttributeFilters = filters.resourceAttributeFilters
 	}
-	if (filters.excludedServices?.length) fields.excludedServices = filters.excludedServices
-	if (filters.excludedSpanNames?.length) fields.excludedSpanNames = filters.excludedSpanNames
-	if (filters.excludedDeploymentEnvs?.length) {
+	if (filters.excludedServices !== undefined && filters.excludedServices.length > 0)
+		fields.excludedServices = filters.excludedServices
+	if (filters.excludedSpanNames !== undefined && filters.excludedSpanNames.length > 0)
+		fields.excludedSpanNames = filters.excludedSpanNames
+	if (filters.excludedDeploymentEnvs !== undefined && filters.excludedDeploymentEnvs.length > 0) {
 		fields.excludedDeploymentEnvs = filters.excludedDeploymentEnvs
 	}
-	if (filters.excludedNamespaces?.length) fields.excludedNamespaces = filters.excludedNamespaces
-	if (filters.excludedHttpMethods?.length) fields.excludedHttpMethods = filters.excludedHttpMethods
-	if (filters.excludedHttpStatusCodes?.length) {
+	if (filters.excludedNamespaces !== undefined && filters.excludedNamespaces.length > 0)
+		fields.excludedNamespaces = filters.excludedNamespaces
+	if (filters.excludedHttpMethods !== undefined && filters.excludedHttpMethods.length > 0)
+		fields.excludedHttpMethods = filters.excludedHttpMethods
+	if (filters.excludedHttpStatusCodes !== undefined && filters.excludedHttpStatusCodes.length > 0) {
 		fields.excludedHttpStatusCodes = filters.excludedHttpStatusCodes
 	}
 
@@ -518,7 +530,7 @@ function clauseFields(filters: ParsedWhereClauseFilters): ClauseFields {
  * Params the previous clause never set (sidebar selections) are kept.
  */
 export function applyWhereClause(search: TracesSearchLike, whereClause: string): TracesSearchLike {
-	const trimmed = whereClause.trim()
+	const trimmed = Str.trim(whereClause)
 
 	if (!trimmed) {
 		return {
@@ -551,6 +563,7 @@ export function applyWhereClause(search: TracesSearchLike, whereClause: string):
 
 	const carried: TracesSearchLike = { ...search }
 	if (search.whereClause) {
+		// @effect-diagnostics-next-line preferEffectRecord:off -- not a record type; Rec.keys would need a cast
 		for (const key of Object.keys(clauseFields(parseWhereClause(search.whereClause).filters))) {
 			delete carried[key as keyof ClauseFields]
 		}

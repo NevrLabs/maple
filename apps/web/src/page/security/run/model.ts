@@ -1,3 +1,4 @@
+import * as Policy from "@maple/domain/policy"
 import {
 	SecurityAuditEvent,
 	SecurityAuditEventsResponse,
@@ -10,13 +11,13 @@ import {
 import { SecurityAuditRunId } from "@maple/domain/security-audit"
 import { Schema } from "effect"
 import { defineMessageUnion } from "foldkit/message"
-import { KeyedSchema } from "../../../data/keyed"
-import { LoadFailure } from "../../../data/load-failure"
-import * as Dialog from "../../../ui/dialog"
+import { KeyedSchema } from "@maple/views/data/keyed"
+import { LoadFailure } from "@maple/views/data/load-failure"
+import * as Dialog from "@maple/views/ui/dialog"
 import { ParsedMarkdown } from "../../kit/markdown"
 import { SeverityBucket } from "../kit/findings"
 
-// `/security/runs/$runId`: one audit run, live while it is in progress.
+// `/security/code/runs/$runId`: one audit run, live while it is in progress.
 
 export const UnitFilter = Schema.Literals([
 	"all",
@@ -39,7 +40,7 @@ const ReportDoc = Schema.Literals(["report", "findingsDetail", "needsValidation"
 export const Model = Schema.Struct({
 	runId: SecurityAuditRunId,
 	nowMs: Schema.Finite,
-	isAdmin: Schema.Boolean,
+	grants: Schema.Array(Policy.PermissionName),
 	run: KeyedSchema(SecurityAuditRunDetail, LoadFailure),
 	/** The newest page, re-read while the run is live. */
 	events: KeyedSchema(SecurityAuditEventsResponse, LoadFailure),
@@ -81,6 +82,10 @@ export const Model = Schema.Struct({
 })
 export type Model = typeof Model.Type
 
+/** The viewer may add targets, change settings and start or stop runs (`security_audit:run`). */
+export const canRunAudits = (model: Pick<Model, "grants">): boolean =>
+	Policy.has(model.grants, "security_audit:run")
+
 const result = <S extends Schema.Top>(schema: S) => ({
 	key: Schema.String,
 	result: Schema.Result(schema, LoadFailure),
@@ -88,7 +93,7 @@ const result = <S extends Schema.Top>(schema: S) => ({
 
 export const Message = defineMessageUnion({
 	ReadClock: { nowMs: Schema.Finite },
-	CompletedReadIsAdmin: { isAdmin: Schema.Boolean },
+	CompletedReadGrants: { grants: Schema.Array(Policy.PermissionName) },
 	CompletedFetchRun: result(SecurityAuditRunDetail),
 	CompletedFetchEvents: result(SecurityAuditEventsResponse),
 	CompletedFetchOlderEvents: { result: Schema.Result(SecurityAuditEventsResponse, LoadFailure) },

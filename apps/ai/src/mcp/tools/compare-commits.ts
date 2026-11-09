@@ -1,4 +1,4 @@
-import { DateTime, Effect, Schema } from "effect"
+import { DateTime, Effect, Schema, Array as Arr, String as Str } from "effect"
 import { CompareCommitsOutput } from "@maple/domain/mcp-outputs"
 import { VCS_COMMIT_RANGE_COMMITS_MAX } from "@maple/domain/http"
 import { CH } from "@maple/query-engine"
@@ -17,6 +17,12 @@ const WINDOW = P.timeWindow({ defaultHours: 14 * 24, maxHours: MCP_DISCOVERY_MAX
 const FULL_SHA = /^[0-9a-f]{40}$/
 
 type Output = typeof CompareCommitsOutput.Type
+
+/** GitHub's compare view for two SHAs, from a commit's GitHub URL; undefined for another host. */
+const githubCompareUrl = (commitUrl: string, base: string, head: string): string | undefined => {
+	const match = /^(https:\/\/github\.com\/[^/]+\/[^/]+)\/commit\/[0-9a-f]{40}$/.exec(commitUrl)
+	return match?.[1] === undefined ? undefined : `${match[1]}/compare/${base}...${head}`
+}
 
 /** The service's two newest versions in one environment: the given one, or the newest deploy's. */
 const latestTwoVersions = (
@@ -45,7 +51,7 @@ const latestTwoVersions = (
 				(a, b) => DateTime.toEpochMillis(b.firstSeen) - DateTime.toEpochMillis(a.firstSeen),
 			)
 			const env = environment ?? newestFirst[0]?.environment
-			const [head, base] = newestFirst.filter((row) => row.environment === env)
+			const [head, base] = Arr.filter(newestFirst, (row) => row.environment === env)
 			return head === undefined || base === undefined
 				? undefined
 				: { head: head.commitSha, base: base.commitSha, environment: head.environment }
@@ -94,7 +100,7 @@ export function registerCompareCommitsTool(server: McpToolRegistrar) {
 					["head", params.head],
 				] as const,
 				([name, sha]) =>
-					sha === undefined || FULL_SHA.test(sha.toLowerCase())
+					sha === undefined || FULL_SHA.test(Str.toLowerCase(sha))
 						? Effect.void
 						: Effect.fail(
 								new McpInvalidInputError({
@@ -108,8 +114,8 @@ export function registerCompareCommitsTool(server: McpToolRegistrar) {
 			const { st, et } = yield* WINDOW.resolve(params, TOOL)
 			const ends = given
 				? {
-						base: (params.base ?? "").toLowerCase(),
-						head: (params.head ?? "").toLowerCase(),
+						base: Str.toLowerCase(params.base ?? ""),
+						head: Str.toLowerCase(params.head ?? ""),
 						environment: params.environment,
 					}
 				: yield* latestTwoVersions(params.service ?? "", params.environment, st, et)
@@ -124,7 +130,6 @@ export function registerCompareCommitsTool(server: McpToolRegistrar) {
 					base: "",
 					head: "",
 					status: "unavailable" as const,
-					repository: "",
 					totalCount: 0,
 					truncated: false,
 					commits: [],
@@ -140,7 +145,7 @@ export function registerCompareCommitsTool(server: McpToolRegistrar) {
 				})
 				.pipe(Effect.mapError(toQueryError))
 
-			const unavailableReason = Effect.fn("McpTool.compareCommits.unavailableReason")(function* () {
+			const unavailable = Effect.fn("McpTool.compareCommits.unavailable")(function* () {
 				// Which end Maple knows says whether the gap is a missing sync or the wrong branch.
 				const known = yield* commits
 					.resolveCommitDetails(tenant.orgId, [ends.base, ends.head])
@@ -148,43 +153,86 @@ export function registerCompareCommitsTool(server: McpToolRegistrar) {
 				const knows = (sha: string) => known.find((commit) => commit.sha === sha)
 				const base = knows(ends.base)
 				const head = knows(ends.head)
-				if (base === undefined && head === undefined)
-					return "Neither commit is in a connected repository; list_integrations provider=github shows which repositories sync."
-				if (base === undefined || head === undefined)
-					return `Only the ${base === undefined ? "head" : "base"} commit is known; the other is not on a connected repository's tracked branch.`
+				const repository = head?.repoFullName || base?.repoFullName || undefined
+				const found = { ...(repository === undefined ? undefined : { repository }) }
+				if (base === undefined || head === undefined) {
+					return {
+						...found,
+						reason:
+							base === undefined && head === undefined
+								? "Neither commit is in a connected repository; list_integrations provider=github shows which repositories sync."
+								: `Only the ${base === undefined ? "head" : "base"} commit is known${repository === undefined ? "" : ` (in ${repository})`}; the other is in no connected repository.`,
+					}
+				}
 				if (base.repoFullName !== head.repoFullName)
-					return `The commits are in different repositories (${base.repoFullName}, ${head.repoFullName}).`
-				return base.committedAt > head.committedAt
-					? "`base` is newer than `head`; swap them."
-					: "Both commits are known but not both on the tracked branch, so the commits between them cannot be listed."
+					return {
+						...found,
+						reason: `The commits are in different repositories (base in ${base.repoFullName}, head in ${head.repoFullName}).`,
+					}
+				if (base.committedAt > head.committedAt)
+					return { ...found, reason: "`base` is newer than `head`; swap them." }
+				// A SHA read from GitHub on demand is not on the branch Maple syncs, so the history
+				// between the two is not stored; GitHub's own compare view still lists it.
+				const offBranch = Arr.filter(
+					[
+						["base", base],
+						["head", head],
+					] as const,
+					([, commit]) => commit.resolved === "fetched",
+				)
+				const compareUrl = githubCompareUrl(head.htmlUrl, ends.base, ends.head)
+				const which =
+					offBranch.length === 0
+						? "One of the commits is not on the branch Maple syncs"
+						: `The ${Arr.join(
+								Arr.map(
+									offBranch,
+									([name, commit]) => `${name} (${Str.slice(0, 12)(commit.sha)})`,
+								),
+								" and ",
+							)} ${offBranch.length === 1 ? "is" : "are"} not on ${repository}'s tracked branch (deployed from another branch, or pushed after the last sync)`
+				return {
+					...found,
+					...(compareUrl === undefined ? undefined : { compareUrl }),
+					reason: `${which}, so Maple cannot list the commits between them.${compareUrl === undefined ? "" : ` GitHub compares them at ${compareUrl}.`}`,
+				}
 			})
 
 			const resolved = range !== undefined && range.status === "resolved"
+			const missing = resolved ? undefined : yield* unavailable()
+			const repository = resolved ? range.repoFullName : missing?.repository
 			return {
 				...where,
 				base: ends.base,
 				head: ends.head,
 				status: resolved ? ("resolved" as const) : ("unavailable" as const),
-				repository: range?.repoFullName ?? "",
+				...(repository === undefined || repository === "" ? undefined : { repository }),
 				totalCount: range?.totalCount ?? 0,
 				truncated: range?.truncated ?? false,
-				commits: (range?.commits ?? []).map((commit) => ({
+				commits: Arr.map(range?.commits ?? [], (commit) => ({
 					sha: commit.sha,
-					title: commit.message.split("\n")[0] ?? "",
+					title: Str.split("\n")(commit.message)[0] ?? "",
 					author: commit.authorLogin ?? commit.authorName,
 					committedAt: new Date(commit.committedAt).toISOString(),
 					url: commit.htmlUrl,
 				})),
-				...(resolved ? undefined : { reason: yield* unavailableReason() }),
+				...(missing === undefined
+					? undefined
+					: {
+							reason: missing.reason,
+							...(missing.compareUrl === undefined
+								? undefined
+								: { compareUrl: missing.compareUrl }),
+						}),
 			}
 		}),
 		render: (output) => {
 			const scope: ReadonlyArray<readonly [string, string | undefined]> = [
 				["Service", output.service],
 				["Environment", output.environment],
-				["Base", output.base === "" ? undefined : output.base.slice(0, 12)],
-				["Head", output.head === "" ? undefined : output.head.slice(0, 12)],
-				["Repository", output.repository === "" ? undefined : output.repository],
+				["Base", output.base === "" ? undefined : Str.slice(0, 12)(output.base)],
+				["Head", output.head === "" ? undefined : Str.slice(0, 12)(output.head)],
+				["Repository", output.repository],
 			]
 			if (output.status === "unavailable") {
 				return {
@@ -209,12 +257,12 @@ export function registerCompareCommitsTool(server: McpToolRegistrar) {
 				scope,
 				blocks: [
 					doc.text(
-						`${output.truncated ? "At least " : ""}${output.totalCount} commit${output.totalCount === 1 ? "" : "s"} after ${output.base.slice(0, 12)} up to ${output.head.slice(0, 12)}, newest first.`,
+						`${output.truncated ? "At least " : ""}${output.totalCount} commit${output.totalCount === 1 ? "" : "s"} after ${Str.slice(0, 12)(output.base)} up to ${Str.slice(0, 12)(output.head)}, newest first.`,
 					),
 					doc.table(
 						["Commit", "Committed", "Author", "Title"],
-						output.commits.map((commit) => [
-							commit.sha.slice(0, 12),
+						Arr.map(output.commits, (commit) => [
+							Str.slice(0, 12)(commit.sha),
 							commit.committedAt,
 							commit.author ?? "—",
 							truncate(commit.title, 120),

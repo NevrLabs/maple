@@ -1,5 +1,5 @@
 import { readLocalStorage, writeLocalStorage } from "@maple/ui/lib/local-storage"
-import { Clock, Duration, Effect, Option, Result, Schema } from "effect"
+import { Clock, Duration, Effect, Option, Result, Schema, Array as Arr } from "effect"
 import { Command, Dom } from "foldkit"
 import { File as FoldkitFile } from "foldkit/file"
 import { trackProduct } from "../../../data/analytics"
@@ -17,16 +17,33 @@ import {
 	parsePortable,
 	toPortable,
 } from "../kit/portable"
-import { awaitTxid, deleteDashboard, errorMessageOf, mutateDashboard, readDocument } from "../kit/store"
-import { readLocale } from "../../kit/locale"
+import {
+	awaitTxid,
+	DashboardConflictError,
+	DashboardUnreadableError,
+	deleteDashboard,
+	errorMessageOf,
+	mutateDashboard,
+	readDocument,
+} from "../kit/store"
+import { readLocale } from "@maple/views/lib/locale"
 import type { V2Dashboard } from "@maple/domain/http/v2"
 import { documentOf } from "../view/command-history"
 import { toListDashboard } from "./derive"
-import { Message } from "./message"
+import { Message, type WriteFailure } from "./message"
 
 /** `dashboardSortAtom`'s key: the default sort for a URL without `?sort`. */
 const SORT_KEY = "maple.dashboards.sort"
 const decodeStoredSort = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.String))
+const encodeStoredSort = Schema.encodeSync(Schema.fromJsonString(Schema.String))
+const encodeFavorites = Schema.encodeSync(Schema.fromJsonString(Schema.Array(Schema.String)))
+const decodeImportJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))
+
+/** The picked import file could not be read. */
+export class DashboardImportFileError extends Schema.TaggedError<DashboardImportFileError>()(
+	"@maple/web/dashboards/DashboardImportFileError",
+	{ message: Schema.String, cause: Schema.Defect() },
+) {}
 
 export const ReadClock = Command.define("ReadDashboardsListClock", {
 	messages: [Message.CompletedReadClock],
@@ -64,10 +81,10 @@ export const SavePreferences = Command.define("SaveDashboardsPreferences", {
 	execute: ({ favorites, sort }) =>
 		Effect.sync(() => {
 			if (favorites !== null) {
-				writeLocalStorage(DASHBOARD_FAVORITES_KEY, JSON.stringify(favorites))
+				writeLocalStorage(DASHBOARD_FAVORITES_KEY, encodeFavorites(favorites))
 				window.dispatchEvent(new Event(DASHBOARD_FAVORITES_EVENT))
 			}
-			if (sort !== null) writeLocalStorage(SORT_KEY, JSON.stringify(sort))
+			if (sort !== null) writeLocalStorage(SORT_KEY, encodeStoredSort(sort))
 			return Message.CompletedSavePreferences()
 		}),
 })
@@ -102,13 +119,50 @@ const createFromPortable = (orgId: string, portable: PortableDashboard) =>
 const toResult = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
 	Effect.result(Effect.mapError(effect, (error) => errorMessageOf(error)))
 
+/** A v2 error envelope for a refused request: invalid, missing or conflicting, not auth or outage. */
+const isRefusalEnvelope = Schema.is(
+	Schema.Struct({
+		error: Schema.Struct({
+			type: Schema.Literals(["invalid_request_error", "not_found_error", "conflict_error"]),
+			message: Schema.String,
+		}),
+	}),
+)
+
+/** The refusal's own message (name taken, conflict), found anywhere down the `cause` chain. */
+export const refusalMessageOf = (error: unknown, depth = 0): Option.Option<string> => {
+	if (depth > 5 || typeof error !== "object" || error === null) return Option.none()
+	if (isRefusalEnvelope(error)) return Option.some(error.error.message)
+	return "cause" in error ? refusalMessageOf(error.cause, depth + 1) : Option.none()
+}
+
+/** The API refused this write (anywhere down the `cause` chain): the store itself is still healthy. */
+export const isRejected = (error: unknown, depth = 0): boolean => {
+	if (depth > 5 || typeof error !== "object" || error === null) return false
+	if (
+		Schema.is(DashboardUnreadableError)(error) ||
+		Schema.is(DashboardConflictError)(error) ||
+		isRefusalEnvelope(error)
+	)
+		return true
+	return "cause" in error && isRejected(error.cause, depth + 1)
+}
+
+const toWriteResult = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+	Effect.result(
+		Effect.mapError(effect, (error): WriteFailure => ({
+			message: Option.getOrElse(refusalMessageOf(error), () => errorMessageOf(error)),
+			isRejected: isRejected(error),
+		})),
+	)
+
 /** `createDashboard("Untitled Dashboard")`. */
 export const CreateDashboard = Command.define("CreateDashboard", {
 	args: { orgId: Schema.String },
 	messages: [Message.CompletedCreateDashboard],
 	execute: ({ orgId }) =>
 		Effect.map(
-			toResult(
+			toWriteResult(
 				createFromPortable(orgId, {
 					name: "Untitled Dashboard",
 					timeRange: { type: "relative", value: "12h" },
@@ -126,7 +180,7 @@ export const DuplicateDashboard = Command.define("DuplicateDashboard", {
 	messages: [Message.CompletedDuplicateDashboard],
 	execute: ({ orgId, id }) =>
 		Effect.map(
-			toResult(
+			toWriteResult(
 				Effect.flatMap(readDocument(orgId, id), (document) =>
 					createFromPortable(orgId, { ...toPortable(document), name: `${document.name} copy` }),
 				),
@@ -141,8 +195,10 @@ export const ExportDashboard = Command.define("ExportDashboard", {
 	execute: ({ orgId, id }) =>
 		readDocument(orgId, id).pipe(
 			Effect.flatMap(downloadPortable),
-			Effect.ignore,
-			Effect.as(Message.CompletedExportDashboard()),
+			Effect.match({
+				onFailure: (error) => Message.CompletedExportDashboard({ error: errorMessageOf(error) }),
+				onSuccess: () => Message.CompletedExportDashboard({ error: null }),
+			}),
 		),
 })
 
@@ -154,8 +210,15 @@ export const ImportDashboard = Command.define("ImportDashboard", {
 		Effect.map(
 			toResult(
 				Effect.gen(function* () {
-					const raw = yield* Effect.tryPromise(() => file.text())
-					const parsed: unknown = yield* Effect.try(() => JSON.parse(raw))
+					const raw = yield* Effect.tryPromise({
+						try: () => file.text(),
+						catch: (cause) =>
+							new DashboardImportFileError({
+								message: "Could not read the dashboard file",
+								cause,
+							}),
+					})
+					const parsed = yield* decodeImportJson(raw)
 					if (isPersesDashboardJson(parsed)) {
 						const client = yield* MapleApiV2Client
 						const imported = yield* client.dashboards.importPerses({
@@ -169,7 +232,8 @@ export const ImportDashboard = Command.define("ImportDashboard", {
 							warnings: imported.warnings,
 						}
 					}
-					return yield* createFromPortable(orgId, yield* parsePortable(parsed))
+					const portable = yield* parsePortable(parsed)
+					return yield* createFromPortable(orgId, portable)
 				}),
 			),
 			(result) => Message.CompletedImportDashboard({ result }),
@@ -180,7 +244,7 @@ export const DeleteDashboard = Command.define("DeleteDashboard", {
 	args: { orgId: Schema.String, id: Schema.String },
 	messages: [Message.CompletedDeleteDashboard],
 	execute: ({ orgId, id }) =>
-		Effect.map(toResult(deleteDashboard(orgId, id)), (result) =>
+		Effect.map(toWriteResult(deleteDashboard(orgId, id)), (result) =>
 			Message.CompletedDeleteDashboard({ result }),
 		),
 })
@@ -191,7 +255,7 @@ export const SaveTags = Command.define("SaveDashboardTags", {
 	messages: [Message.CompletedSaveTags],
 	execute: ({ orgId, id, tags }) =>
 		Effect.map(
-			toResult(
+			toWriteResult(
 				mutateDashboard(orgId, id, (document, nowIso) => ({ ...document, tags, updatedAt: nowIso })),
 			),
 			(result) => Message.CompletedSaveTags({ result }),
@@ -208,7 +272,10 @@ const listPages = (
 	cursor: string | null,
 	page: number,
 	read: ReadonlyArray<V2Dashboard>,
-): Effect.Effect<ReadonlyArray<V2Dashboard>, unknown> =>
+): Effect.Effect<
+	ReadonlyArray<V2Dashboard>,
+	Effect.Error<ReturnType<MapleApiV2Client["Service"]["dashboards"]["list"]>>
+> =>
 	Effect.flatMap(
 		client.dashboards.list({
 			query: cursor === null ? { limit: FALLBACK_PAGE_SIZE } : { limit: FALLBACK_PAGE_SIZE, cursor },
@@ -234,7 +301,7 @@ export const FetchDashboardsFallback = Command.define("FetchDashboardsFallback",
 			const documents = yield* Effect.forEach(dashboards, (dashboard) =>
 				Effect.option(documentOf(dashboard)),
 			)
-			return documents.flatMap((document) => Option.toArray(Option.map(document, toListDashboard)))
+			return Arr.flatMap(documents, (document) => Option.toArray(Option.map(document, toListDashboard)))
 		}).pipe(
 			// A hung snapshot read gives up too, so the list lands on its error state.
 			Effect.timeout(FALLBACK_TIMEOUT),

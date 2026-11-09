@@ -1,10 +1,13 @@
 import { OrgId } from "@maple/domain"
-import { Result, Schema } from "effect"
+import { Result, Schema, Array as Arr } from "effect"
 import { expect as expectView, given, Mount, role, scene, text, withViewInputs } from "foldkit/scene"
 import { describe, expect, test } from "vitest"
-import { ResolveThemeColors, ThemeMessage } from "../../../charts/theme-colors"
+import { ResolveThemeColors, ThemeMessage } from "@maple/views/charts/theme-colors"
+import { toLoadFailure } from "@maple/views/data/load-failure"
 import { PageOutMessage, type PageContext } from "../../contract"
 import type { MetricRow } from "../shared"
+import { behindToastContent } from "../../dashboards/kit/store"
+import * as AddToDashboard from "./add-to-dashboard"
 import { MountWhereCaret } from "./command"
 import { appendWhereFilter } from "./derive"
 import { CaretMessage } from "./where-editor"
@@ -36,7 +39,7 @@ const row = (serviceName: string, metricType = "histogram", isMonotonic = false)
 })
 
 const names = (commands: ReadonlyArray<{ readonly name: string }> | undefined) =>
-	(commands ?? []).map(({ name }) => name)
+	Arr.map(commands ?? [], ({ name }) => name)
 
 const windowed = (search: Search = {}): Model =>
 	pageUpdate(
@@ -66,7 +69,7 @@ const loaded = (rows: ReadonlyArray<MetricRow>, search: Search = {}): Model => {
 		Message.CompletedLoadChartRuntime(),
 		Message.ResolvedThemeColors({ colors: {} }),
 	]
-	return steps.reduce((model, message) => pageUpdate(model, message).model, base)
+	return Arr.reduce(steps, base, (model, message) => pageUpdate(model, message).model)
 }
 
 const themeResolved = () =>
@@ -148,6 +151,31 @@ describe("metric detail", () => {
 		expect(changed.model.whereInput).toBe('service.name = "payment-svc"')
 	})
 
+	test("Try again on a failed chart asks for the chart only, without a Reload", () => {
+		const base = withCatalog(windowed(), [row("payment-svc")]).model
+		const failed = Arr.reduce(
+			[
+				Message.CompletedFetchAttributeKeys({
+					key: base.attributeKeys.key ?? "",
+					result: Result.succeed([]),
+				}),
+				Message.CompletedFetchTimeseries({
+					key: base.timeseries.key ?? "",
+					result: Result.fail(toLoadFailure("down")),
+				}),
+				Message.CompletedFetchBreakdown({
+					key: base.breakdown.key ?? "",
+					result: Result.succeed([]),
+				}),
+			],
+			base,
+			(model, message) => pageUpdate(model, message).model,
+		)
+		const retried = pageUpdate(failed, Message.ClickedRetryChart())
+		expect(names(retried.commands)).toEqual(["FetchMetricTimeseries"])
+		expect(retried.model.isReloading).toBe(false)
+	})
+
 	test("after a Reload a where change reads under the kept window; only a new preset re-resolves", () => {
 		const reloaded = pageUpdate(loaded([row("payment-svc")]), Message.ClickedReload()).model
 		const search = { where: 'service.name = "payment-svc"' }
@@ -159,7 +187,7 @@ describe("metric detail", () => {
 			{ metricName: NAME, search: { ...search, timePreset: "1h" } },
 			context,
 		)
-		expect(moved.commands?.map(({ name, args }) => [name, args?.["mode"]])).toEqual([
+		expect(Arr.map(moved.commands ?? [], ({ name, args }) => [name, args?.["mode"]])).toEqual([
 			["ResolveMetricWindow", "Refresh"],
 		])
 	})
@@ -188,11 +216,14 @@ describe("metric detail", () => {
 			{ update: pageUpdate, view },
 			given(loaded([row("payment-svc"), row("checkout-api")])),
 			themeResolved(),
-			Mount.resolve(MountWhereCaret, Message.GotCaretMessage({ message: CaretMessage.BlurredEditor() })),
+			Mount.resolve(
+				MountWhereCaret,
+				Message.GotCaretMessage({ message: CaretMessage.BlurredEditor() }),
+			),
 			expectView(text(`avg(${NAME})`)).toExist(),
 			expectView(text("Top values · avg per value")).toExist(),
 			expectView(role("button", { name: /^Filter to service\.name = payment-svc/ })).toExist(),
-			expectView(text("No datapoints match this query in the selected range.")).toExist(),
+			expectView(text("No datapoints match this query in this window")).toExist(),
 			expectView(text("http.route")).toExist(),
 			expectView(role("button", { name: "Copy Link" })).toExist(),
 		)
@@ -203,7 +234,50 @@ describe("metric detail", () => {
 			{ update: pageUpdate, view },
 			given(withCatalog(windowed(), []).model),
 			themeResolved(),
-			expectView(text("No data for this metric in the selected range")).toExist(),
+			expectView(text("No data for this metric in this window")).toExist(),
 		)
+	})
+
+	describe("add to dashboard", () => {
+		const landed = (sync: "Synced" | "Behind") => {
+			const model = loaded([row("checkout-api")])
+			const adding = { ...model, addToDashboard: { ...model.addToDashboard, addingTo: "dash_1" } }
+			return pageUpdate(
+				adding,
+				Message.GotAddToDashboardMessage({
+					message: AddToDashboard.Message.CompletedAddWidget({
+						dashboardId: "dash_1",
+						result: Result.succeed(sync),
+					}),
+				}),
+			).outMessage
+		}
+
+		test("the widget picks up the catalog's declared unit", () => {
+			const model = loaded([row("checkout-api")])
+			const adding = pageUpdate(
+				model,
+				Message.GotAddToDashboardMessage({
+					message: AddToDashboard.Message.ClickedDashboard({ dashboardId: "dash_1" }),
+				}),
+			)
+			expect(adding.commands?.[0]?.args).toMatchObject({ declaredUnit: "s" })
+		})
+
+		test("a write this tab did not sync back opens the dashboard with the behind toast", () => {
+			expect(landed("Behind")).toEqual(
+				PageOutMessage.RequestedNavigation({
+					url: "/dashboards/dash_1",
+					isReplace: false,
+					toast: behindToastContent,
+				}),
+			)
+		})
+
+		test("a synced write opens the dashboard without a toast", () => {
+			expect(landed("Synced")).toEqual(
+				PageOutMessage.RequestedNavigation({ url: "/dashboards/dash_1", isReplace: false }),
+			)
+		})
 	})
 })

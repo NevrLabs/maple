@@ -1,5 +1,5 @@
 import { HttpApiBuilder } from "effect/http-api"
-import { Clock, Effect, Option, Schema } from "effect"
+import { Clock, Effect, Option, Schema, Array as Arr } from "effect"
 import { EdgeCacheService } from "@maple/cache"
 import {
 	AttachResult,
@@ -31,9 +31,16 @@ import {
 	summariseSubscriptions,
 } from "@maple/backend/services/billing/autumn-client"
 import { AutumnClient, type AutumnResult } from "@maple/backend/services/billing/autumn-http"
+import {
+	AI_CREDIT_SOURCE_PROPERTY,
+	aiCreditUsageOf,
+	AutumnGroupedAggregate,
+} from "@maple/backend/services/billing/ai-credit-usage"
+import { AI_CREDITS_FEATURE_ID } from "@maple/domain/billing"
 import { StripeClient } from "@maple/backend/services/billing/stripe-http"
 import {
 	ensureStripeCustomerId,
+	failIfCustomerMissing,
 	isAlreadyRemoved,
 	readBillingProfile,
 	readStripeCustomerId,
@@ -42,7 +49,7 @@ import {
 import { forkRequestScoped } from "@maple/backend/platform/fork-request-scoped"
 import { emitPlanStartedFromAttach } from "@maple/backend/services/billing/plan-events"
 import { ProductEventsService } from "@maple/backend/services/product-events/ProductEventsService"
-import { requireAdmin } from "@maple/backend/services/auth/auth"
+import * as Policy from "@maple/domain/policy"
 import { DailySpendService } from "@maple/backend/services/billing/DailySpendService"
 import { OrganizationService } from "@maple/backend/services/org/OrganizationService"
 import { BillingCustomerResolver } from "@maple/backend/services/billing/BillingCustomerResolver"
@@ -75,9 +82,13 @@ export const resolveCycleWindow = (
 	customer: BillingCustomer,
 	nowMs: number,
 ): { readonly startMs: number; readonly endMs: number; readonly nowMs: number } => {
-	const active = customer.subscriptions.find((sub) => sub.status === "active")
-	if (active?.currentPeriodStart != null && active.currentPeriodEnd != null) {
-		return { startMs: active.currentPeriodStart, endMs: active.currentPeriodEnd, nowMs }
+	const active = Arr.findFirst(customer.subscriptions, (sub) => sub.status === "active")
+	if (
+		Option.isSome(active) &&
+		active.value.currentPeriodStart != null &&
+		active.value.currentPeriodEnd != null
+	) {
+		return { startMs: active.value.currentPeriodStart, endMs: active.value.currentPeriodEnd, nowMs }
 	}
 	const now = new Date(nowMs)
 	return {
@@ -96,8 +107,8 @@ export const sumDailySpend = (
 	new DailySpendResponse({
 		cycleStart: first.cycleStart,
 		cycleEnd: first.cycleEnd,
-		days: first.days.map((day, index) =>
-			rest.reduce((sum, other) => {
+		days: Arr.map(first.days, (day, index) =>
+			Arr.reduce(rest, day, (sum, other) => {
 				const next = other.days[index]
 				return next === undefined || next.date !== day.date
 					? sum
@@ -109,18 +120,18 @@ export const sumDailySpend = (
 							browserSessions: sum.browserSessions + next.browserSessions,
 							productEvents: (sum.productEvents ?? 0) + (next.productEvents ?? 0),
 						})
-			}, day),
+			}),
 		),
 	})
 
 const orgUsageTotals = (orgId: OrgId, spend: DailySpendResponse) =>
 	new BillingAccountOrgUsage({
 		orgId,
-		logsGB: spend.days.reduce((sum, day) => sum + day.logsGB, 0),
-		tracesGB: spend.days.reduce((sum, day) => sum + day.tracesGB, 0),
-		metricsGB: spend.days.reduce((sum, day) => sum + day.metricsGB, 0),
-		browserSessions: spend.days.reduce((sum, day) => sum + day.browserSessions, 0),
-		productEvents: spend.days.reduce((sum, day) => sum + (day.productEvents ?? 0), 0),
+		logsGB: Arr.reduce(spend.days, 0, (sum, day) => sum + day.logsGB),
+		tracesGB: Arr.reduce(spend.days, 0, (sum, day) => sum + day.tracesGB),
+		metricsGB: Arr.reduce(spend.days, 0, (sum, day) => sum + day.metricsGB),
+		browserSessions: Arr.reduce(spend.days, 0, (sum, day) => sum + day.browserSessions),
+		productEvents: Arr.reduce(spend.days, 0, (sum, day) => sum + (day.productEvents ?? 0)),
 	})
 
 export const HttpBillingLive = HttpApiBuilder.group(MapleInternalApi, "billing", (handlers) =>
@@ -167,13 +178,13 @@ export const HttpBillingLive = HttpApiBuilder.group(MapleInternalApi, "billing",
 						? autumn.updateCustomerName(customerId, org.name).pipe(
 								// No customer yet (a 404 from the update): create it already named,
 								// or attach would create it unnamed.
-								Effect.flatMap((result) =>
-									result.statusCode === 404
-										? autumn.getOrCreateCustomer(customerId, {
-												expand: [],
-												customerData: { name: org.name },
-											})
-										: Effect.succeed(result),
+								Effect.filterOrElse(
+									(result) => result.statusCode !== 404,
+									() =>
+										autumn.getOrCreateCustomer(customerId, {
+											expand: [],
+											customerData: { name: org.name },
+										}),
 								),
 								Effect.flatMap(ensureOk),
 							)
@@ -189,10 +200,10 @@ export const HttpBillingLive = HttpApiBuilder.group(MapleInternalApi, "billing",
 		// customer to write to (created through Autumn on first use).
 		const stripeCustomerForWrite = (tenant: CurrentTenant.TenantSchema) =>
 			Effect.gen(function* () {
-				yield* requireAdmin(
+				yield* Policy.check(
 					tenant.roles,
-					() =>
-						new BillingForbiddenError({ message: "Only org admins can manage billing details" }),
+					"billing:manage",
+					(denial) => new BillingForbiddenError({ message: denial.message }),
 				)
 				yield* Effect.annotateCurrentSpan({ orgId: tenant.orgId })
 				const customerId = yield* billingCustomers.requireOwnBilling(tenant.orgId)
@@ -226,11 +237,10 @@ export const HttpBillingLive = HttpApiBuilder.group(MapleInternalApi, "billing",
 						// from now rather than forward from the reset, so mid-cycle it
 						// folded most of the previous cycle into "this cycle's usage".
 						const { customerId, result: customerResult } = yield* readCustomer(tenant.orgId)
-						const customer = yield* decodeUpstream(
-							BillingCustomer,
-							yield* ensureOk(customerResult),
-						)
-						const cycle = resolveCycleWindow(customer, yield* Clock.currentTimeMillis)
+						const okCustomer = yield* ensureOk(customerResult)
+						const customer = yield* decodeUpstream(BillingCustomer, okCustomer)
+						const now = yield* Clock.currentTimeMillis
+						const cycle = resolveCycleWindow(customer, now)
 						yield* Effect.annotateCurrentSpan({ orgId: tenant.orgId })
 						const result = yield* autumn.aggregateEvents(customerId, {
 							featureId: query.featureId,
@@ -238,6 +248,27 @@ export const HttpBillingLive = HttpApiBuilder.group(MapleInternalApi, "billing",
 						})
 						const response = yield* ensureOk(result)
 						return yield* decodeUpstream(BillingUsage, response)
+					}),
+				)
+				.handle("getAiCreditUsage", () =>
+					Effect.gen(function* () {
+						const tenant = yield* CurrentTenant.Context
+						const { customerId, result: customerResult } = yield* readCustomer(tenant.orgId)
+						const customer = yield* ensureOk(customerResult).pipe(
+							Effect.flatMap((body) => decodeUpstream(BillingCustomer, body)),
+						)
+						const now = yield* Clock.currentTimeMillis
+						const cycle = resolveCycleWindow(customer, now)
+						yield* Effect.annotateCurrentSpan({ orgId: tenant.orgId })
+						const result = yield* autumn.aggregateEvents(customerId, {
+							featureId: AI_CREDITS_FEATURE_ID,
+							customRange: { start: cycle.startMs, end: cycle.endMs },
+							groupBy: AI_CREDIT_SOURCE_PROPERTY,
+						})
+						const aggregate = yield* ensureOk(result).pipe(
+							Effect.flatMap((body) => decodeUpstream(AutumnGroupedAggregate, body)),
+						)
+						return aiCreditUsageOf(aggregate)
 					}),
 				)
 				// Invoices ride along on getOrCreateCustomer via `expand`, but through a
@@ -265,7 +296,8 @@ export const HttpBillingLive = HttpApiBuilder.group(MapleInternalApi, "billing",
 						const { result } = yield* readCustomer(tenant.orgId)
 						const response = yield* ensureOk(result)
 						const customer = yield* decodeUpstream(BillingCustomer, response)
-						const cycle = resolveCycleWindow(customer, yield* Clock.currentTimeMillis)
+						const now = yield* Clock.currentTimeMillis
+						const cycle = resolveCycleWindow(customer, now)
 						yield* Effect.annotateCurrentSpan({ orgId: tenant.orgId })
 						// A billing org's invoice carries its members' usage, so its chart does too.
 						const members = yield* billingOrgs.members(tenant.orgId)
@@ -289,11 +321,12 @@ export const HttpBillingLive = HttpApiBuilder.group(MapleInternalApi, "billing",
 				.handle("updateBillingControls", ({ payload }) =>
 					Effect.gen(function* () {
 						const tenant = yield* CurrentTenant.Context
-						yield* requireAdmin(
+						yield* Policy.check(
 							tenant.roles,
-							() =>
+							"billing:manage",
+							(denial) =>
 								new BillingForbiddenError({
-									message: "Only org admins can manage billing controls",
+									message: denial.message,
 								}),
 						)
 						yield* Effect.annotateCurrentSpan({ orgId: tenant.orgId })
@@ -330,11 +363,12 @@ export const HttpBillingLive = HttpApiBuilder.group(MapleInternalApi, "billing",
 						const tenant = yield* CurrentTenant.Context
 						// Starting or changing a plan is an org-wide spend decision, so
 						// it is gated like every other billing write in this group.
-						yield* requireAdmin(
+						yield* Policy.check(
 							tenant.roles,
-							() =>
+							"billing:manage",
+							(denial) =>
 								new BillingForbiddenError({
-									message: "Only org admins can change the subscription",
+									message: denial.message,
 								}),
 						)
 						// `/v1/billing.attach` carries no identity fields in Autumn 2.3.0, so
@@ -416,11 +450,12 @@ export const HttpBillingLive = HttpApiBuilder.group(MapleInternalApi, "billing",
 						// The Stripe portal can cancel the subscription and exposes the
 						// payment methods and invoice history — admin-only, like the
 						// billing-details writes it overlaps with.
-						yield* requireAdmin(
+						yield* Policy.check(
 							tenant.roles,
-							() =>
+							"billing:manage",
+							(denial) =>
 								new BillingForbiddenError({
-									message: "Only org admins can open the billing portal",
+									message: denial.message,
 								}),
 						)
 						const customerId = yield* billingCustomers.requireOwnBilling(tenant.orgId)
@@ -454,6 +489,7 @@ export const HttpBillingLive = HttpApiBuilder.group(MapleInternalApi, "billing",
 							name: payload.name,
 							address: payload.address,
 						})
+						yield* failIfCustomerMissing(result)
 						// Caller input: Stripe's rejection (a bad country code, say) is about
 						// what THEY sent, so the classified 4xx survives to the client.
 						yield* classifyAutumn(result)
@@ -471,6 +507,7 @@ export const HttpBillingLive = HttpApiBuilder.group(MapleInternalApi, "billing",
 							type: payload.type,
 							value: payload.value,
 						})
+						yield* failIfCustomerMissing(result)
 						// `tax_id_invalid` lands here with Stripe's own wording, which is the
 						// only place the format expectation is spelled out.
 						yield* classifyAutumn(result)
@@ -512,15 +549,17 @@ export const HttpBillingLive = HttpApiBuilder.group(MapleInternalApi, "billing",
 							customerId,
 							autumn.getOrCreateCustomer(customerId, { expand: ["subscriptions.plan"] }),
 						)
-						const customer = yield* decodeUpstream(BillingCustomer, yield* ensureOk(result))
-						const cycle = resolveCycleWindow(customer, yield* Clock.currentTimeMillis)
+						const okCustomer = yield* ensureOk(result)
+						const customer = yield* decodeUpstream(BillingCustomer, okCustomer)
+						const now = yield* Clock.currentTimeMillis
+						const cycle = resolveCycleWindow(customer, now)
 						const members = yield* billingOrgs.members(tenant.orgId)
 						yield* Effect.annotateCurrentSpan({
 							orgId: tenant.orgId,
 							"maple.billing.member_count": members.length,
 						})
 						const orgs = yield* Effect.forEach(
-							[tenant, ...members.map((member) => systemTenant(member.orgId))],
+							[tenant, ...Arr.map(members, (member) => systemTenant(member.orgId))],
 							(orgTenant) =>
 								dailySpend
 									.get(orgTenant, cycle)

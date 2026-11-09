@@ -1,4 +1,5 @@
 import type { Ecosystem } from "./types.ts"
+import { Option, Array as Arr, String as Str } from "effect"
 
 interface SemVer {
 	readonly major: string
@@ -19,8 +20,8 @@ const isNumeric = (id: string): boolean => /^\d+$/.test(id)
 
 /** Numeric strings of any length, compared without overflow. */
 const compareNumeric = (a: string, b: string): number => {
-	const x = a.replace(/^0+(?=\d)/, "")
-	const y = b.replace(/^0+(?=\d)/, "")
+	const x = Str.replace(/^0+(?=\d)/, "")(a)
+	const y = Str.replace(/^0+(?=\d)/, "")(b)
 	return x.length !== y.length ? x.length - y.length : x < y ? -1 : x > y ? 1 : 0
 }
 
@@ -35,30 +36,38 @@ const compareIdentifier = (a: string, b: string): number => {
 
 const comparePrerelease = (a: ReadonlyArray<string>, b: ReadonlyArray<string>): number => {
 	if (a.length === 0 || b.length === 0) return b.length - a.length
-	const differing = a.findIndex((id, i) => i < b.length && compareIdentifier(id, b[i] ?? "") !== 0)
-	return differing === -1 ? a.length - b.length : compareIdentifier(a[differing] ?? "", b[differing] ?? "")
+	return Option.match(
+		Arr.findFirstIndex(a, (id, i) => i < b.length && compareIdentifier(id, b[i] ?? "") !== 0),
+		{
+			onNone: () => a.length - b.length,
+			onSome: (differing) => compareIdentifier(a[differing] ?? "", b[differing] ?? ""),
+		},
+	)
 }
 
-const compareParsed = (a: SemVer, b: SemVer): number =>
-	compareNumeric(a.major, b.major) ||
-	compareNumeric(a.minor, b.minor) ||
-	compareNumeric(a.patch, b.patch) ||
-	comparePrerelease(a.prerelease, b.prerelease)
+const compareParsed = (a: SemVer, b: SemVer): number => {
+	const byMajor = compareNumeric(a.major, b.major)
+	if (byMajor !== 0) return byMajor
+	const byMinor = compareNumeric(a.minor, b.minor)
+	if (byMinor !== 0) return byMinor
+	const byPatch = compareNumeric(a.patch, b.patch)
+	return byPatch !== 0 ? byPatch : comparePrerelease(a.prerelease, b.prerelease)
+}
 
 const toSemVer = (m: RegExpExecArray): SemVer => ({
 	major: m[1] ?? "0",
 	minor: m[2] ?? "0",
 	patch: m[3] ?? "0",
-	prerelease: m[4] === undefined ? [] : m[4].split("."),
+	prerelease: m[4] === undefined ? [] : Str.split(".")(m[4]),
 })
 
 const parseSemVer = (version: string): SemVer | undefined => {
-	const m = SEMVER.exec(version.trim().replace(/^=?\s*v?/, ""))
+	const m = SEMVER.exec(Str.replace(/^=?\s*v?/, "")(Str.trim(version)))
 	return m === null ? undefined : toSemVer(m)
 }
 
 const parseGo = (version: string): SemVer | undefined => {
-	const m = GO_SEMVER.exec(version.trim())
+	const m = GO_SEMVER.exec(Str.trim(version))
 	return m === null ? undefined : toSemVer(m)
 }
 

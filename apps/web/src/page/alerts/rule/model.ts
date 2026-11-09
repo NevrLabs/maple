@@ -6,15 +6,19 @@ import {
 	AlertRuleStateRowSchema,
 } from "@maple/web-data/collections/alerts"
 import { Schema } from "effect"
-import * as Chart from "../../../charts/chart"
-import { ChartRuntime } from "../../../charts/chart-runtime"
-import { ThemeColors } from "../../../charts/theme-colors"
-import { KeyedSchema } from "../../../data/keyed"
-import { LoadFailure } from "../../../data/load-failure"
+import * as Policy from "@maple/domain/policy"
+import * as Chart from "@maple/views/charts/chart"
+import { ChartRuntime } from "@maple/views/charts/chart-runtime"
+import { ThemeColors } from "@maple/views/charts/theme-colors"
+import { KeyedSchema } from "@maple/views/data/keyed"
+import { LoadFailure } from "@maple/views/data/load-failure"
 import { TimeWindow } from "../../../data/time-range"
 import { AlertRuleSearch } from "../../../route/search"
-import * as Menu from "../../../ui/menu"
+import { V2AlertSilence } from "@maple/domain/http/v2"
+import * as SilenceDialog from "../silence-dialog/dialog"
+import * as Menu from "@maple/views/ui/menu"
 import * as TimeRangePicker from "../../kit/time-range-picker"
+import { CheckSummary } from "../shared/check-summary"
 import { PreviewSlot } from "../shared/preview"
 
 // `/alerts/$ruleId`.
@@ -26,31 +30,7 @@ export const ChecksResponse = Schema.Struct({
 	checks: Schema.Array(AlertCheckDocument),
 	hasMore: Schema.Boolean,
 	nextCursor: Schema.NullOr(Schema.String),
-	summary: Schema.Struct({
-		bucketSeconds: Schema.Number,
-		totals: Schema.Struct({
-			total: Schema.Number,
-			breached: Schema.Number,
-			healthy: Schema.Number,
-			skipped: Schema.Number,
-			error: Schema.Number,
-			transitions: Schema.Number,
-		}),
-		points: Schema.Array(
-			Schema.Struct({
-				bucket: Schema.String,
-				groupKey: Schema.String,
-				totalCount: Schema.Number,
-				breachedCount: Schema.Number,
-				healthyCount: Schema.Number,
-				skippedCount: Schema.Number,
-				errorCount: Schema.Number,
-				transitionCount: Schema.Number,
-				observedValue: Schema.NullOr(Schema.Number),
-				threshold: Schema.Number,
-			}),
-		),
-	}),
+	summary: CheckSummary,
 })
 export type ChecksResponse = typeof ChecksResponse.Type
 
@@ -61,7 +41,11 @@ export type CheckStatusFilter = typeof CheckStatusFilter.Type
 export const SignalSource = Schema.Literals(["preview", "checks"])
 export type SignalSource = typeof SignalSource.Type
 
-export const SelectedBucket = Schema.Struct({ index: Schema.Number, start: Schema.Number, end: Schema.Number })
+export const SelectedBucket = Schema.Struct({
+	index: Schema.Number,
+	start: Schema.Number,
+	end: Schema.Number,
+})
 
 export const Model = Schema.Struct({
 	ruleId: AlertRuleId,
@@ -107,5 +91,10 @@ export const Model = Schema.Struct({
 	chart: Chart.Model,
 	chartRuntime: ChartRuntime,
 	themeColors: Schema.NullOr(ThemeColors),
+	/** `alertSilences.list`: which silence, if any, holds back this rule's notifications. */
+	silences: KeyedSchema(Schema.Array(V2AlertSilence), LoadFailure),
+	silenceDialog: SilenceDialog.Model,
+	/** What the session may do (`Policy.grantsOf`); none until it answers, so Silence stays hidden. */
+	grants: Schema.Array(Policy.PermissionName),
 })
 export type Model = typeof Model.Type

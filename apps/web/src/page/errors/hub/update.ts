@@ -1,20 +1,20 @@
 import { HUB_SORTS, HUB_VIEWS, SEVERITY_FILTERS } from "../../../lib/errors/hub-params"
 import type { IssueKind } from "@maple/domain/http"
 import { sparkFingerprintHashes } from "../../../lib/models/error-signal"
-import { Option } from "effect"
+import { Option, Schema, Array as Arr, String as Str } from "effect"
 import { AsyncData, Command } from "foldkit"
-import * as Keyed from "../../../data/keyed"
-import { requestKey } from "../../../data/request-key"
+import * as Keyed from "@maple/views/data/keyed"
+import { requestKey } from "@maple/views/data/request-key"
 import type { TimeWindow } from "../../../data/time-range"
 import type { Resources } from "../../../platform/resources"
 import { AppRoute, hrefOf } from "../../../route"
-import * as FilterSections from "../../../ui/filters/filter-sections"
-import * as ContextMenu from "../../../ui/context-menu"
-import * as Menu from "../../../ui/menu"
-import * as Select from "../../../ui/select"
-import * as Tabs from "../../../ui/tabs"
+import * as FilterSections from "@maple/views/ui/filters/filter-sections"
+import * as ContextMenu from "@maple/views/ui/context-menu"
+import * as Menu from "@maple/views/ui/menu"
+import * as Select from "@maple/views/ui/select"
+import * as Tabs from "@maple/views/ui/tabs"
 import { type PageContext, PageOutMessage, type PageReturn } from "../../contract"
-import { SignalPresenceData } from "../../kit/signal-presence"
+import { SignalPresenceData } from "@maple/views/data/signal-presence"
 import {
 	FetchEnvironments,
 	FetchInvestigations,
@@ -57,7 +57,9 @@ import {
 } from "./selection"
 import { SOURCES } from "../kit/source"
 import type { IssuePage, Model, PageSlot } from "./model"
-import type { LoadFailure } from "../../../data/load-failure"
+import type { LoadFailure } from "@maple/views/data/load-failure"
+
+const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown))
 
 export type Return = PageReturn<Model, Message>
 type Cmd = Command.Command<Message, never, Resources>
@@ -87,12 +89,13 @@ const keyed = <A, E>(
 
 /** Applies steps in order, each seeing the Model the previous one left. */
 const applySteps = (model: Model, steps: ReadonlyArray<(model: Model) => Step>): Return =>
-	steps.reduce<{ model: Model; commands: ReadonlyArray<Cmd> }>(
+	Arr.reduce<(typeof steps)[number], { model: Model; commands: ReadonlyArray<Cmd> }>(
+		steps,
+		{ model, commands: [] },
 		(acc, step) => {
 			const next = step(acc.model)
 			return { model: { ...acc.model, ...next.patch }, commands: [...acc.commands, ...next.commands] }
 		},
-		{ model, commands: [] },
 	)
 
 // REQUESTS
@@ -161,7 +164,7 @@ const rankingStep =
 
 /** The ranking's filters without its window: a new window alone keeps the ranked rows usable. */
 const rankingFiltersOf = (search: Model["search"]): string =>
-	JSON.stringify([search.service ? search.service : null, search.env ? search.env : null])
+	encodeJson([search.service ? search.service : null, search.env ? search.env : null])
 
 /** The ranked hashes the list waits for: `Some(null)` when not ranking, `None` until ready. */
 const rankedHashes = (model: Model): Option.Option<ReadonlyArray<string> | null> => {
@@ -183,7 +186,7 @@ const listStep =
 				model.listKey === null ? NO_STEP : { patch: { listKey: null, pages: [] }, commands: [] },
 			onSome: (hashes) => {
 				const query = listQueryOf(model.search, hashes)
-				const listKey = JSON.stringify(query)
+				const listKey = encodeJson(query)
 				if (listKey === model.listKey) return NO_STEP
 				// A new query is a new page atom: Initial, so the rows give way to the skeleton.
 				const first = Keyed.idle<IssuePage, LoadFailure>()
@@ -277,7 +280,7 @@ export const loadMore = (model: Model, context: PageContext): Return => {
 		onNone: () => ({ model }),
 		onSome: ({ hasMore, nextCursor }) => {
 			if (!hasMore || nextCursor === null) return { model }
-			if (model.pages.some((slot) => slot.cursor === nextCursor)) return { model }
+			if (Arr.some(model.pages, (slot) => slot.cursor === nextCursor)) return { model }
 			const query = pageQuery(model, nextCursor)
 			const key = requestKey(context.orgId, "errorIssues.list", query)
 			const slot: PageSlot = { cursor: nextCursor, page: { key, data: AsyncData.Loading() } }
@@ -306,25 +309,25 @@ export const navigate = (model: Model, patch: Partial<Search>): Return => ({
 	}),
 })
 
-const asView = (value: string) => HUB_VIEWS.find((view) => view === value)
-const asSort = (value: string) => HUB_SORTS.find((sort) => sort === value)
-const asSeverity = (value: string) => SEVERITY_FILTERS.find((severity) => severity === value)
+const asView = (value: string) => Arr.findFirst(HUB_VIEWS, (view) => view === value)
+const asSort = (value: string) => Arr.findFirst(HUB_SORTS, (sort) => sort === value)
+const asSeverity = (value: string) => Arr.findFirst(SEVERITY_FILTERS, (severity) => severity === value)
 
 /** The toolbar's controls: the default value of each leaves the URL. */
 export const navigateView = (model: Model, value: string): Return =>
-	Option.match(Option.fromNullishOr(asView(value)), {
+	Option.match(asView(value), {
 		onNone: () => ({ model }),
 		onSome: (view) => navigate(model, { view: view === "open" ? undefined : view }),
 	})
 
 export const navigateSort = (model: Model, value: string): Return =>
-	Option.match(Option.fromNullishOr(asSort(value)), {
+	Option.match(asSort(value), {
 		onNone: () => ({ model }),
 		onSome: (sort) => navigate(model, { sort: sort === "last_seen" ? undefined : sort }),
 	})
 
 export const navigateSeverity = (model: Model, value: string): Return =>
-	Option.match(Option.fromNullishOr(asSeverity(value)), {
+	Option.match(asSeverity(value), {
 		onNone: () => ({ model }),
 		onSome: (severity) => navigate(model, { severity: severity === "all" ? undefined : severity }),
 	})
@@ -335,7 +338,7 @@ const sortIndex = (search: Search) => HUB_SORTS.indexOf(sortOf(search))
 const severityIndex = (search: Search) => SEVERITY_FILTERS.indexOf(severityOf(search))
 
 /** The search the toolbar search would send for its draft (trimmed, empty leaves the URL). */
-const draftQuery = (draft: string): string | undefined => draft.trim() || undefined
+const draftQuery = (draft: string): string | undefined => Str.trim(draft) || undefined
 
 export const init = (route: { readonly search: Search }, context: PageContext): Return => {
 	const search = route.search
@@ -360,6 +363,7 @@ export const init = (route: { readonly search: Search }, context: PageContext): 
 		focusedId: null,
 		bulkSeverityMenu: Menu.init("errors-bulk-severity"),
 		bulkMoveMenu: Menu.init("errors-bulk-move"),
+		bulkMergeMenu: Menu.init("errors-bulk-merge"),
 		writingIds: [],
 		rowMenu: ContextMenu.init("errors-row-menu"),
 		rowMenuTarget: null,
@@ -419,7 +423,7 @@ export const contextChanged = (model: Model, context: PageContext): Return =>
 
 // EVENTS
 
-const isIssueKind = (value: string): value is IssueKind => SOURCES.some((kind) => kind === value)
+const isIssueKind = (value: string): value is IssueKind => Arr.some(SOURCES, (kind) => kind === value)
 
 /** Checkbox lists are single-select: the newest tick replaces the current one, re-ticking clears. */
 const toggledFilter = (model: Model, param: FilterParam, name: string): Partial<Search> => {
@@ -444,8 +448,8 @@ export const CLEARED_ERROR_FILTERS = {
 
 /** The header checkbox: every visible row, or none once they all are. */
 const toggledAllRows = (model: Model): Partial<Model> => {
-	const ids = signalsOf(model).map((signal) => signal.id)
-	const isAll = ids.length > 0 && ids.every((id) => model.selectedIds.includes(id))
+	const ids = Arr.map(signalsOf(model), (signal) => signal.id)
+	const isAll = ids.length > 0 && Arr.every(ids, (id) => model.selectedIds.includes(id))
 	return isAll
 		? { selectedIds: [], selectionAnchor: null }
 		: { selectedIds: [...new Set([...model.selectedIds, ...ids])], selectionAnchor: null }
@@ -535,7 +539,7 @@ export const update = (model: Model, message: Message, context: PageContext): Re
 			follow(
 				{
 					...model,
-					pages: model.pages.map((slot) =>
+					pages: Arr.map(model.pages, (slot) =>
 						slot.page.key === key
 							? { ...slot, page: Keyed.accept(slot.page, key, result) }
 							: slot,
@@ -619,6 +623,7 @@ export const update = (model: Model, message: Message, context: PageContext): Re
 		ClickedClearSelection: () => ({ model: { ...model, selectedIds: [], selectionAnchor: null } }),
 		GotBulkSeverityMenuMessage: ({ message: inner }) => bulkMenuStep(model, "bulkSeverityMenu", inner),
 		GotBulkMoveMenuMessage: ({ message: inner }) => bulkMenuStep(model, "bulkMoveMenu", inner),
+		GotBulkMergeMenuMessage: ({ message: inner }) => bulkMenuStep(model, "bulkMergeMenu", inner),
 		CompletedHubWrite: ({ ids, write, isBulk, outcome }) =>
 			completedHubWrite(model, context, ids, write, isBulk, outcome, pageQuery),
 		ToggledAllRows: () => ({ model: { ...model, ...toggledAllRows(model) } }),

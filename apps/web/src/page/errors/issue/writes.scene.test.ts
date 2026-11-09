@@ -1,8 +1,8 @@
 import { OrgId } from "@maple/domain"
-import { ErrorIssueEventsResponse, ErrorIssueId } from "@maple/domain/http"
-import { Result, Schema } from "effect"
+import { ErrorIssueEventsResponse, ErrorIssueId, ErrorIssueTransitionError } from "@maple/domain/http"
+import { Result, Schema, Array as Arr, Option } from "effect"
 import { describe, expect, test } from "vitest"
-import { toLoadFailure } from "../../../data/load-failure"
+import { toLoadFailure } from "@maple/views/data/load-failure"
 import type { PageContext } from "../../contract"
 import { Message } from "./message"
 import type { Model } from "./model"
@@ -16,7 +16,7 @@ const window = { startTime: "2026-10-01 00:00:00", endTime: "2026-10-01 12:00:00
 
 const pageUpdate = (model: Model, message: Message) => update(model, message, context)
 const names = (commands: ReadonlyArray<{ readonly name: string }> | undefined) =>
-	(commands ?? []).map(({ name }) => name)
+	Arr.map(commands ?? [], ({ name }) => name)
 const windowed = (): Model =>
 	pageUpdate(
 		init({ issueId, search: {} }, context).model,
@@ -50,6 +50,7 @@ describe("error issue writes", () => {
 		expect(names(done.commands)).toEqual(
 			expect.arrayContaining([
 				"FetchErrorIssueDetail",
+				"FetchErrorIssueAffectedUsers",
 				"FetchErrorIssueEvents",
 				"FetchErrorIssueEscalations",
 				"FetchErrorIssuePullRequests",
@@ -64,10 +65,16 @@ describe("error issue writes", () => {
 		const claiming = pageUpdate(model, Message.ClickedClaim()).model
 		const done = pageUpdate(
 			claiming,
-			Message.CompletedIssueWrite({ write: { _tag: "Claim" }, result: Result.succeed({ severity: null }) }),
+			Message.CompletedIssueWrite({
+				write: { _tag: "Claim" },
+				result: Result.succeed({ severity: null }),
+			}),
 		).model
 		expect(done.detail.key).not.toBe(staleKey)
-		const late = pageUpdate(done, Message.CompletedFetchDetail({ key: staleKey, result: Result.fail(toLoadFailure("old")) }))
+		const late = pageUpdate(
+			done,
+			Message.CompletedFetchDetail({ key: staleKey, result: Result.fail(toLoadFailure("old")) }),
+		)
 		expect(late.model.detail).toEqual(done.detail)
 	})
 
@@ -82,13 +89,20 @@ describe("error issue writes", () => {
 			}),
 		)
 		const confirmed = pageUpdate(routed.model, Message.ClickedConfirmSeverity())
-		expect(confirmed.commands?.find(({ name }) => name === "RunErrorIssueWrite")).toMatchObject({
+		expect(
+			Option.getOrUndefined(
+				Arr.findFirst(confirmed.commands ?? [], ({ name }) => name === "RunErrorIssueWrite"),
+			),
+		).toMatchObject({
 			args: { write: { _tag: "SetSeverity", severity: "high" } },
 		})
 		expect(confirmed.model.busy).toEqual(["claim", "severity"])
 		const claimed = pageUpdate(
 			confirmed.model,
-			Message.CompletedIssueWrite({ write: { _tag: "Claim" }, result: Result.succeed({ severity: null }) }),
+			Message.CompletedIssueWrite({
+				write: { _tag: "Claim" },
+				result: Result.succeed({ severity: null }),
+			}),
 		)
 		expect(claimed.model.busy).toEqual(["severity"])
 	})
@@ -103,6 +117,32 @@ describe("error issue writes", () => {
 		)
 		expect(done.outMessage).toMatchObject({ type: "error", title: "Couldn't release issue" })
 		expect(done.commands ?? []).toEqual([])
+	})
+
+	test("a 409 from a stale tab toasts the server's message and re-reads the issue", () => {
+		const message =
+			"This issue is now 'in_review', not 'triage'. Another change landed first; refresh and retry."
+		// Decoded as the internal client decodes the 409 body.
+		const conflict = Schema.decodeSync(ErrorIssueTransitionError)({
+			_tag: "@maple/http/errors/ErrorIssueTransitionError",
+			message,
+			issueId,
+			fromState: "in_review",
+			toState: "in_progress",
+		})
+		const done = pageUpdate(
+			windowed(),
+			Message.CompletedIssueWrite({
+				write: { _tag: "Transition", fromState: "triage", toState: "in_progress" },
+				result: Result.fail(toLoadFailure(conflict)),
+			}),
+		)
+		expect(done.outMessage).toMatchObject({
+			type: "error",
+			title: "Couldn't change state",
+			description: message,
+		})
+		expect(names(done.commands)).toEqual(expect.arrayContaining(["FetchErrorIssueDetail"]))
 	})
 
 	test("a routed severity raise waits on the confirmation, then writes", () => {

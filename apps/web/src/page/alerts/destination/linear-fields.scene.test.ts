@@ -1,27 +1,31 @@
+import * as Policy from "@maple/domain/policy"
 import { defaultDestinationForm } from "@maple/web-data/alerts/form-utils"
-import { Result } from "effect"
+import { Result, Array as Arr } from "effect"
 import { Submodel } from "foldkit"
 import { expect as expectView, given, role, scene, text, withViewInputs } from "foldkit/scene"
 import { describe, expect, test } from "vitest"
-import { toLoadFailure } from "../../../data/load-failure"
-import * as Select from "../../../ui/select"
+import { toLoadFailure } from "@maple/views/data/load-failure"
+import * as Select from "@maple/views/ui/select"
 import { isFormReady } from "./dialog"
 import type { DestinationForm } from "./form"
 import { init, type LinearStatus, Message, type Model, reset, update } from "./linear-fields"
 import { linearFields } from "./linear-fields-view"
 
+const ENGINEER = Policy.grantsOf(["org:engineer"])
+const MEMBER = Policy.grantsOf(["org:member"])
+
 const names = (step: { readonly commands: ReadonlyArray<{ readonly name: string }> }) =>
-	step.commands.map(({ name }) => name)
+	Arr.map(step.commands, ({ name }) => name)
 const form = defaultDestinationForm("linear")
 const team = { id: "team_eng", key: "ENG", name: "Engineering" }
 const CONNECTED: LinearStatus = { connected: true, revoked: false, workspaceName: "Acme" }
 
 const NOT_CONNECTED: LinearStatus = { connected: false, revoked: false, workspaceName: null }
 
-const withStatus = (status: LinearStatus, current: DestinationForm = form, isAdmin = true) => {
+const withStatus = (status: LinearStatus, current: DestinationForm = form, canConnect = true) => {
 	const mounted = update(
 		reset(init(), current).model,
-		Message.CompletedFetchIsAdmin({ isAdmin }),
+		Message.CompletedFetchGrants({ grants: canConnect ? ENGINEER : MEMBER }),
 		current,
 	).model
 	return update(
@@ -57,7 +61,7 @@ const shows = (model: Model, ...lines: ReadonlyArray<string>) =>
 			view: render(),
 		},
 		given(model),
-		...lines.map((line) => expectView(text(line)).toExist()),
+		...Arr.map(lines, (line) => expectView(text(line)).toExist()),
 	)
 
 describe("linear destination fields", () => {
@@ -118,7 +122,10 @@ describe("linear destination fields", () => {
 		).model
 		const stale = update(
 			closed,
-			Message.CompletedFetchStatus({ key: closed.status.key ?? "", result: Result.succeed(NOT_CONNECTED) }),
+			Message.CompletedFetchStatus({
+				key: closed.status.key ?? "",
+				result: Result.succeed(NOT_CONNECTED),
+			}),
 			form,
 		).model
 		expect(names(update(stale, Message.ReturnedConnect(), form))).toEqual(["FetchAlertLinearStatus"])
@@ -154,7 +161,7 @@ describe("linear destination fields", () => {
 		shows(blocked.model, "Allow pop-ups for Maple, then try again.")
 	})
 
-	test("a member is asked to find an admin, and can check again once one connected", () => {
+	test("a member is asked to find an admin or engineer, and can check again once one connected", () => {
 		const model = withStatus(NOT_CONNECTED, form, false).model
 		scene(
 			{
@@ -165,7 +172,9 @@ describe("linear destination fields", () => {
 			},
 			given(model),
 			expectView(
-				text("Ask an org admin to connect Linear on the Integrations page, then check again."),
+				text(
+					"Ask an org admin or engineer to connect Linear on the Integrations page, then check again.",
+				),
 			).toExist(),
 			expectView(role("button", { name: "Connect Linear" })).toBeAbsent(),
 		)

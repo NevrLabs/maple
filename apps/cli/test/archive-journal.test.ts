@@ -27,9 +27,10 @@ import {
 	readActiveOperation,
 	writeInitialIntent,
 	type ArchiveOperationIntent,
-} from "../src/server/archives/journal"
-import { reconcileArchiveGeneration } from "../src/server/archives/generation"
-import { checkpointPinsRoot } from "../src/server/checkpoints"
+} from "@maple/local-server/archives/journal"
+import { reconcileArchiveGeneration } from "@maple/local-server/archives/generation"
+import { checkpointPinsRoot } from "@maple/local-server/checkpoints"
+import { String as Str } from "effect"
 
 // Filesystem-level tests for the archive operation journal (Gate 3). These are
 // the fast in-process checks of the journal's fail-closed parsing, phase
@@ -111,7 +112,7 @@ describe("archive operation journal", () => {
 		await withArchive(async (archiveDir) => {
 			const op = randomUUID()
 			await writeInitialIntent({ ...baseIntent({ operationId: op }), archiveDir })
-			await advancePhase(archiveDir, op, "manifest-written", "a".repeat(64))
+			await advancePhase(archiveDir, op, "manifest-written", Str.repeat(64)("a"))
 			await advancePhase(archiveDir, op, "aborted")
 			const active = readActiveOperation(archiveDir)
 			ok(active !== null && active.intent.kind === "create")
@@ -541,8 +542,8 @@ describe("archive operation journal v2 → v3 migration (Gate 3b)", () => {
 			// Now the on-disk record parses cleanly as v3.
 			const active = readActiveOperation(archiveDir)
 			ok(active !== null)
-			strictEqual(active!.intent.kind, "create")
-			strictEqual(active!.intent.formatVersion, 3)
+			strictEqual(active.intent.kind, "create")
+			strictEqual(active.intent.formatVersion, 3)
 			// A second migration is a no-op (already v3).
 			const migrated2 = await migrateActiveIntentIfLegacy(archiveDir)
 			strictEqual(migrated2, false, "already-v3 intent is not re-migrated")
@@ -563,9 +564,9 @@ describe("archive gc journal phase/cursor strictness (Gate 3b repair)", () => {
 		rangeStart: "2026-06-01",
 		generationId,
 		createdAt: "2026-06-02T00:00:00.000Z",
-		manifestSha256: "a".repeat(64),
+		manifestSha256: Str.repeat(64)("a"),
 		bytes: 100,
-		shards: [{ name: "00.parquet", bytes: 100, sha256: "b".repeat(64) }],
+		shards: [{ name: "00.parquet", bytes: 100, sha256: Str.repeat(64)("b") }],
 		recordedActiveGenerationId: randomUUID(),
 	})
 	const gcIntentBase = (overrides: Record<string, unknown> = {}) => ({

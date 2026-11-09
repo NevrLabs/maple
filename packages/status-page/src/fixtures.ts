@@ -1,4 +1,4 @@
-import { Schema } from "effect"
+import { Schema, Array as Arr } from "effect"
 import {
 	DEFAULT_STATUS_PAGE_THEME,
 	lastDays,
@@ -43,7 +43,7 @@ export const makeDays = (
 	overrides: Readonly<Record<number, StatusPageDayState>> = {},
 	count: number = STATUS_PAGE_WINDOW_DAYS,
 ): ReadonlyArray<EncodedDay> =>
-	lastDays(nowMs, count).map((day, index) => ({
+	Arr.map(lastDays(nowMs, count), (day, index) => ({
 		day,
 		...DAY_COUNTS[overrides[index] ?? "ok"],
 	}))
@@ -79,7 +79,7 @@ export const makeIncident = (id: string, fields: Partial<EncodedIncident> = {}):
 })
 
 export const makeSnapshot = (fields: Partial<Encoded> = {}): StatusPageSnapshot =>
-	Schema.decodeUnknownSync(StatusPageSnapshot)({
+	Schema.decodeSync(StatusPageSnapshot)({
 		schemaVersion: 1,
 		pageId: FIXTURE_PAGE_ID,
 		revision: 1,

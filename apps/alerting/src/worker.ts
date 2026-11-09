@@ -38,12 +38,12 @@ import { bindChatSessions } from "@maple/backend/platform/chat-sessions"
 import { bindEmailSender } from "@maple/backend/platform/email-sender"
 import { chatConnectorOutboundConfigKeys } from "@maple/chat-platform"
 import * as Cloudflare from "@alchemy.run/cloudflare"
-import { RuntimeContext } from "alchemy/RuntimeContext"
-import { Cause, Config, Effect, Layer, Option, Ref } from "effect"
+import { dischargeRuntimeContext } from "@maple/backend/platform/alchemy-runtime"
+import { Cause, Config, Effect, Option, Ref, Array as Arr } from "effect"
 import { FetchHttpClient, HttpClient, HttpServerResponse } from "effect/http"
 import { ALERTING_CRONS, scheduleFor } from "./schedule.ts"
 import { authorizeTickRequest, dispatchTick, SELF_BINDING } from "./tick-dispatch.ts"
-import { lookupColo } from "./worker-colo.ts"
+import { isolateColoCache, lookupColo } from "./worker-colo.ts"
 import { CHAT_ANTICIPATED_ERROR_IDENTIFIERS } from "@maple/chat-platform/anticipated"
 
 /**
@@ -51,11 +51,6 @@ import { CHAT_ANTICIPATED_ERROR_IDENTIFIERS } from "@maple/chat-platform/anticip
  * read through the ConfigProvider (`workerEnvLayer`), never off `env`.
  */
 export type AlertingWorkerEnv = Record<string, unknown>
-
-/** Discharge alchemy's phantom color, the way alchemy's own runtime helpers do. */
-const runtime = <A, E>(effect: Effect.Effect<A, E, RuntimeContext>): Effect.Effect<A, E> =>
-	// oxlint-disable-next-line effecttsgo/strict-effect-provide
-	Effect.provide(effect, RuntimeContext.phantom)
 
 /** Config-sourced env; largely shared with api via `@maple/infra/env`. */
 const configuredEnv = (stage: MapleStage, region: MapleRegion, domains: MapleDomains) =>
@@ -88,7 +83,7 @@ const configuredEnv = (stage: MapleStage, region: MapleRegion, domains: MapleDom
 		// Ticks post pull-request replies through the GitHub App; without it each one fails.
 		githubAppSourceEnv,
 		// Outbound config for `chat` destinations' connectors.
-		...chatConnectorOutboundConfigKeys.map((key) =>
+		...Arr.map(chatConnectorOutboundConfigKeys, (key) =>
 			key.secret ? optionalSecret(key.name) : optionalPlain(key.name),
 		),
 	)
@@ -164,21 +159,18 @@ export default class Alerting extends Cloudflare.Worker<Alerting>()(
 		const statusBucket = yield* Cloudflare.R2.ReadWriteBucket(StatusSnapshotsBucket)
 		// Once per isolate, not once per fire.
 		const loggedNonProdSkip = yield* Ref.make(false)
-		// Once per isolate too: an isolate never changes data center. A failed lookup stays
-		// "unknown" for the isolate rather than costing every fire another timeout.
+		// Once per isolate too: an isolate never changes data center.
 		const http = yield* HttpClient.HttpClient
-		const isolateColo = yield* Effect.cached(
-			lookupColo().pipe(
-				Effect.provideService(HttpClient.HttpClient, http),
-				Effect.tapError((error) => Effect.logWarning("Alerting colo lookup failed", error)),
-				Effect.orElseSucceed(() => "unknown"),
-			),
+		const isolateColo = yield* isolateColoCache(
+			lookupColo().pipe(Effect.provideService(HttpClient.HttpClient, http)),
 		)
 
 		const runTick = (cron: string, lane: string, env: Record<string, unknown>) =>
 			Effect.gen(function* () {
 				const { runScheduled } = yield* scheduled
-				const [kv, bucket] = yield* runtime(Effect.all([statusKv.raw, statusBucket.raw]))
+				const [kv, bucket] = yield* dischargeRuntimeContext(
+					Effect.all([statusKv.raw, statusBucket.raw]),
+				)
 				yield* runScheduled(cron, lane, env, email, chatSessions, Option.some({ kv, bucket }))
 			}).pipe(
 				// Interrupts are isolate teardown, not a failed run.
@@ -291,20 +283,17 @@ export default class Alerting extends Cloudflare.Worker<Alerting>()(
 		return { fetch }
 	}).pipe(
 		// The init is the entry point: the cron source needs the host Worker.
-		// oxlint-disable-next-line effecttsgo/strict-effect-provide
-		Effect.provide(
-			Layer.mergeAll(
-				Cloudflare.Hyperdrive.ConnectBinding,
-				Cloudflare.Email.SendBinding,
-				Cloudflare.KV.ReadWriteNamespaceBinding,
-				Cloudflare.R2.ReadWriteBucketBinding,
-				Cloudflare.Workers.CronEventSourceLive,
-				FetchHttpClient.layer,
-				WorkerTelemetry({
-					serviceName: "alerting",
-					anticipatedErrorIdentifiers: CHAT_ANTICIPATED_ERROR_IDENTIFIERS,
-				}),
-			),
-		),
+		Effect.provide([
+			Cloudflare.Hyperdrive.ConnectBinding,
+			Cloudflare.Email.SendBinding,
+			Cloudflare.KV.ReadWriteNamespaceBinding,
+			Cloudflare.R2.ReadWriteBucketBinding,
+			Cloudflare.Workers.CronEventSourceLive,
+			FetchHttpClient.layer,
+			WorkerTelemetry({
+				serviceName: "alerting",
+				anticipatedErrorIdentifiers: CHAT_ANTICIPATED_ERROR_IDENTIFIERS,
+			}),
+		]),
 	),
 ) {}

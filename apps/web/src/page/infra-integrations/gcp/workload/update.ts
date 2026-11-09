@@ -3,15 +3,15 @@ import { GCP_CLOUD_SQL_INVENTORY_QUERY, gcpResourceQuery } from "../../../../com
 import { gcpMatchStatements, gcpStatements } from "../../../../components/infra/gcp/cloud-sql-signals"
 import { gcpWorkloadKeys } from "../../../../components/infra/gcp/tabs"
 import { Command } from "foldkit"
-import * as Chart from "../../../../charts/chart"
-import { LoadChartRuntime } from "../../../../charts/chart-runtime"
-import { chartBucketSeconds } from "../../../../charts/infra-metric-series"
-import * as Keyed from "../../../../data/keyed"
-import { requestKey } from "../../../../data/request-key"
+import * as Chart from "@maple/views/charts/chart"
+import { LoadChartRuntime } from "@maple/views/charts/chart-runtime"
+import { chartBucketSeconds } from "@maple/views/charts/infra-metric-series"
+import * as Keyed from "@maple/views/data/keyed"
+import { requestKey } from "@maple/views/data/request-key"
 import type { Resources } from "../../../../platform/resources"
 import { AppRoute, hrefOf } from "../../../../route"
-import * as CopyButton from "../../../../ui/copy-button"
-import * as Dialog from "../../../../ui/dialog"
+import * as CopyButton from "@maple/views/ui/copy-button"
+import * as Dialog from "@maple/views/ui/dialog"
 import { type PageContext, PageOutMessage, type PageReturn } from "../../../contract"
 import { routeWindowStep, snapModeOf } from "../../../kit/route-window"
 import * as TimeRangePicker from "../../../kit/time-range-picker"
@@ -34,6 +34,7 @@ import {
 } from "./command"
 import { Message, type Model, type RequestMode } from "./model"
 import { type QueryPeek, resolveQueryPeek, statementSpansInput } from "./peek"
+import { Option, Array as Arr } from "effect"
 
 type Return = PageReturn<Model, Message>
 type Search = Model["search"]
@@ -217,7 +218,7 @@ const requestAll = (model: Model, context: PageContext, mode: Keyed.RequestMode)
 }
 
 const serviceOf = (service: string): GcpInfraServiceId | undefined =>
-	GCP_INFRA_SERVICE_IDS.find((candidate) => candidate === service)
+	Option.getOrUndefined(Arr.findFirst(GCP_INFRA_SERVICE_IDS, (candidate) => candidate === service))
 
 export const init = (route: Route, context: PageContext): Return => {
 	const service = serviceOf(route.service)

@@ -2,7 +2,8 @@
 // BOUNDARY: Test doubles preserve opaque values so the consuming boundary can be exercised.
 import { AlertValidationError } from "@maple/domain/http"
 import { afterEach, assert, describe, it } from "@effect/vitest"
-import { Clock, Duration, Effect, Schema } from "effect"
+import { Clock, Duration, Effect, Schema, Array as Arr } from "effect"
+import * as SecureRandom from "effect/crypto/SecureRandom"
 import { TestClock } from "effect/testing"
 import { type AlertDestinationId, AlertRuleUpsertRequest, OrgId } from "@maple/domain/http"
 import { AlertsService } from "./AlertsService"
@@ -32,6 +33,10 @@ import {
 	adminRoles,
 	createWebhookDestination,
 } from "./alerts-service-test-support"
+
+/** Fetch bodies arrive as a string or, from the Effect HTTP client, as bytes. */
+const requestBodyText = (body: RequestInit["body"]): string =>
+	body instanceof Uint8Array ? new TextDecoder().decode(body) : typeof body === "string" ? body : ""
 
 const trackedDbs: TestDb[] = []
 
@@ -65,8 +70,8 @@ const seedUptimeMonitor = (
 	Effect.gen(function* () {
 		const database = yield* Database
 		const now = yield* Clock.currentTimeMillis
-		const ruleId = AlertRuleIdSchema.make(crypto.randomUUID())
-		const monitorId = UptimeMonitorIdSchema.make(crypto.randomUUID())
+		const ruleId = AlertRuleIdSchema.make(SecureRandom.uuidV4Unsafe())
+		const monitorId = UptimeMonitorIdSchema.make(SecureRandom.uuidV4Unsafe())
 		const enabled = input.enabled ?? true
 		yield* database.execute((db) =>
 			db.transaction(
@@ -94,7 +99,8 @@ const seedUptimeMonitor = (
 							failuresToDown: 1,
 							serviceName: input.serviceName,
 							alertRuleId: ruleId,
-							heartbeatToken: input.config._tag === "heartbeat" ? crypto.randomUUID() : null,
+							heartbeatToken:
+								input.config._tag === "heartbeat" ? SecureRandom.uuidV4Unsafe() : null,
 							enabled,
 							tier: input.tier ?? "core",
 							createdBy: asUserId("user_uptime"),
@@ -154,7 +160,7 @@ describe("AlertsService uptime rules", () => {
 		const testDb = createTestDb(trackedDbs)
 		const bodies: Array<string> = []
 		const fetchImpl = (async (_input: RequestInfo | URL, init?: RequestInit) => {
-			bodies.push(String(init?.body ?? ""))
+			bodies.push(requestBodyText(init?.body))
 			return new Response("ok", { status: 200 })
 		}) as typeof fetch
 
@@ -181,7 +187,7 @@ describe("AlertsService uptime rules", () => {
 			assert.strictEqual(opened[0]?.groupKey, "checkout-api")
 			assert.strictEqual(opened[0]?.signalType, "uptime")
 			assert.strictEqual(opened[0]?.severity, "critical")
-			const trigger = Schema.decodeUnknownSync(
+			const trigger = Schema.decodeSync(
 				Schema.fromJsonString(
 					Schema.Struct({
 						eventType: Schema.String,
@@ -201,7 +207,7 @@ describe("AlertsService uptime rules", () => {
 			assert.strictEqual(resolved[0]?.status, "resolved")
 			const events = yield* alerts.listDeliveryEvents(orgId)
 			assert.sameMembers(
-				events.events.map((event) => event.eventType),
+				Arr.map(events.events, (event) => event.eventType),
 				["trigger", "resolve"],
 			)
 		}).pipe(Effect.provide(makeLayer(testDb, makeWarehouseStub({}), { fetch: fetchImpl })))
@@ -222,9 +228,9 @@ describe("AlertsService uptime rules", () => {
 				status: "down",
 			})
 			const pages = [
-				{ id: crypto.randomUUID(), slug: "published-page", autoIncidents: "publish" },
-				{ id: crypto.randomUUID(), slug: "draft-page", autoIncidents: "draft" },
-				{ id: crypto.randomUUID(), slug: "off-page", autoIncidents: "off" },
+				{ id: SecureRandom.uuidV4Unsafe(), slug: "published-page", autoIncidents: "publish" },
+				{ id: SecureRandom.uuidV4Unsafe(), slug: "draft-page", autoIncidents: "draft" },
+				{ id: SecureRandom.uuidV4Unsafe(), slug: "off-page", autoIncidents: "off" },
 			]
 			yield* Effect.forEach(pages, (page) =>
 				Effect.promise(() =>
@@ -284,7 +290,7 @@ describe("AlertsService uptime rules", () => {
 			yield* TestClock.adjust(Duration.minutes(1))
 			yield* alerts.runSchedulerTick()
 			assert.deepStrictEqual(
-				(yield* pageIncidents()).map((row) => [row.slug, row.status, row.updates]),
+				Arr.map(yield* pageIncidents(), (row) => [row.slug, row.status, row.updates]),
 				[
 					["draft-page", "resolved", 2],
 					["published-page", "resolved", 2],
@@ -417,7 +423,7 @@ describe("AlertsService uptime rules", () => {
 			assert.strictEqual((yield* ruleCount)?.n, 1)
 			const opened = (yield* alerts.listIncidents(orgId)).incidents
 			assert.deepStrictEqual(
-				opened.map((incident) => [incident.ruleName, incident.status]),
+				Arr.map(opened, (incident) => [incident.ruleName, incident.status]),
 				[["Legacy check", "open"]],
 			)
 		}).pipe(Effect.provide(makeLayer(testDb, makeWarehouseStub({}))))
@@ -494,7 +500,7 @@ describe("AlertsService uptime rules", () => {
 			yield* alerts.runSchedulerTick()
 			const opened = (yield* alerts.listIncidents(orgId)).incidents
 			assert.deepStrictEqual(
-				opened.map((incident) => [incident.ruleName, incident.groupKey, incident.status]),
+				Arr.map(opened, (incident) => [incident.ruleName, incident.groupKey, incident.status]),
 				[["Live check", "__total__", "open"]],
 			)
 
@@ -507,7 +513,7 @@ describe("AlertsService uptime rules", () => {
 			yield* alerts.runSchedulerTick()
 			const after = (yield* alerts.listIncidents(orgId)).incidents
 			assert.deepStrictEqual(
-				after.map((incident) => [incident.ruleName, incident.status]),
+				Arr.map(after, (incident) => [incident.ruleName, incident.status]),
 				[["Live check", "resolved"]],
 			)
 		}).pipe(Effect.provide(makeLayer(testDb, makeWarehouseStub({}))))
@@ -544,7 +550,7 @@ describe("AlertsService uptime rules", () => {
 			assert.lengthOf(yield* tickAt(6), 0)
 			const overdue = yield* tickAt(7)
 			assert.deepStrictEqual(
-				overdue.map((incident) => [incident.groupKey, incident.status]),
+				Arr.map(overdue, (incident) => [incident.groupKey, incident.status]),
 				[["backup-job", "open"]],
 			)
 			const state = yield* Effect.promise(() =>

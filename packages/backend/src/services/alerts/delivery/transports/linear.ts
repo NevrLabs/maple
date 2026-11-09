@@ -4,9 +4,9 @@
  */
 import { createHash } from "node:crypto"
 import { type AlertDeliveryFailure, AlertDeliveryTargetMissingError } from "@maple/domain/http"
-import { Clock, Effect, Schema } from "effect"
+import { Clock, Effect, Order, Schema, Array as Arr, String as Str } from "effect"
 import { buildSummaryLine } from "../../AlertDeliveryDispatch"
-import { displayGroupKey, formatAlertHeadline, formatSeverityLabel, truncate } from "../../alert-formatting"
+import { displayGroup, formatAlertHeadline, formatSeverityLabel, truncate } from "../../alert-formatting"
 import { timestampMs } from "@maple/backend/platform/time"
 import type { DispatchResult } from "../context"
 import { makeDeliveryError } from "../runTransport"
@@ -33,9 +33,9 @@ const SEND_TIMEOUT = "25 seconds"
 
 /** A UUID v4-shaped id (Linear requires v4) derived from `parts`, so the same event always maps to it. */
 export const linearEntityId = (...parts: ReadonlyArray<string>): string => {
-	const hex = createHash("sha256").update(parts.join("\u0000")).digest("hex")
-	const variant = ((Number.parseInt(hex.charAt(16), 16) & 0x3) | 0x8).toString(16)
-	return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-${variant}${hex.slice(17, 20)}-${hex.slice(20, 32)}`
+	const hex = createHash("sha256").update(Arr.join(parts, "\u0000")).digest("hex")
+	const variant = ((Number.parseInt(Str.slice(16, 17)(hex), 16) & 0x3) | 0x8).toString(16)
+	return `${Str.slice(0, 8)(hex)}-${Str.slice(8, 12)(hex)}-4${Str.slice(13, 16)(hex)}-${variant}${Str.slice(17, 20)(hex)}-${Str.slice(20, 32)(hex)}`
 }
 
 export const linearThreadKey = (input: Input): string =>
@@ -49,7 +49,7 @@ export const linearIssueTitle = (input: Input): string =>
 
 export const linearIssueDescription = (input: Input): string => {
 	const { context } = input
-	const group = displayGroupKey(context.groupKey)
+	const group = displayGroup(context)
 	const lines = [
 		input.templated?.body ?? buildSummaryLine(context, (value) => `**${value}**`),
 		"",
@@ -59,7 +59,7 @@ export const linearIssueDescription = (input: Input): string => {
 		"",
 		`[Open in Maple](${input.linkUrl})`,
 	]
-	return truncate(lines.join("\n"), MAX_BODY_CHARS)
+	return truncate(Arr.join(lines, "\n"), MAX_BODY_CHARS)
 }
 
 /** What a comment on an existing issue says about this event. */
@@ -75,7 +75,7 @@ export const linearCommentBody = (input: Input, thread: LinearThread | null): st
 			: !sameIncident
 				? "Fired again"
 				: context.ruleSeverities !== undefined
-					? `Severity changed to ${formatSeverityLabel(context.severity).toLowerCase()}`
+					? `Severity changed to ${Str.toLowerCase(formatSeverityLabel(context.severity))}`
 					: "Updated"
 	return `**${heading}.** ${summary}\n\n[Open in Maple](${input.linkUrl})`
 }
@@ -313,7 +313,10 @@ const reopen = Effect.fn("LinearTransport.reopen")(function* (
 	const team = yield* fetchTeam(port, input)
 	const stateId =
 		(team.triageEnabled ? team.triageIssueState?.id : undefined) ??
-		team.states.nodes.toSorted((a, b) => a.position - b.position)[0]?.id
+		Arr.sort(
+			team.states.nodes,
+			Order.mapInput(Order.Number, (state: (typeof team.states.nodes)[number]) => state.position),
+		)[0]?.id
 	if (stateId === undefined) return false
 	yield* port.request(
 		input.context.destination.orgId,
@@ -440,8 +443,8 @@ export const linearTransport: EffectTransport<Config> = {
 	type: "linear",
 	peerService: "linear",
 	providerLabel: "Linear",
-	send: (input, deps) =>
-		Effect.gen(function* () {
+	send: Effect.fn("LinearTransport.send")(
+		function* (input, deps) {
 			yield* Effect.annotateCurrentSpan({
 				"maple.linear.event_type": input.context.eventType,
 				"maple.linear.team_key": input.config.teamKey,
@@ -450,6 +453,12 @@ export const linearTransport: EffectTransport<Config> = {
 				case "renotify":
 					return {
 						providerMessage: "Skipped: Linear issues are not sent reminders",
+						providerReference: null,
+						responseCode: null,
+					} satisfies DispatchResult
+				case "acknowledge":
+					return {
+						providerMessage: "Skipped: acknowledgements are only sent to PagerDuty",
 						providerReference: null,
 						responseCode: null,
 					} satisfies DispatchResult
@@ -470,11 +479,10 @@ export const linearTransport: EffectTransport<Config> = {
 						input.context.sentAtMs ?? (yield* Clock.currentTimeMillis),
 					)
 			}
-		}).pipe(
-			Effect.timeoutOrElse({
-				duration: SEND_TIMEOUT,
-				orElse: () => Effect.fail(makeDeliveryError("Linear delivery timed out", "linear")),
-			}),
-			Effect.withSpan("LinearTransport.send"),
-		),
+		},
+		Effect.timeoutOrElse({
+			duration: SEND_TIMEOUT,
+			orElse: () => Effect.fail(makeDeliveryError("Linear delivery timed out", "linear")),
+		}),
+	),
 }

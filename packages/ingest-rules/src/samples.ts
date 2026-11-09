@@ -1,4 +1,5 @@
 import type { AttrMap, RuleRecord } from "./engine"
+import { String as Str } from "effect"
 
 // Warehouse rows to rule records, for previews over recent data. Stored attributes are
 // strings, so a preview cannot tell `3` from `"3"`; conditions compare strings anyway.
@@ -28,7 +29,8 @@ const withService = (resource: Readonly<Record<string, string>>, serviceName: st
 	"service.name" in resource || serviceName === "" ? resource : { ...resource, "service.name": serviceName }
 
 /** `Server`, `SPAN_KIND_SERVER` and `server` all mean the same kind. */
-const spanKindName = (raw: string | undefined) => raw?.toLowerCase().replace(/^span_kind_/, "")
+const spanKindName = (raw: string | undefined) =>
+	raw === undefined ? undefined : Str.replace(/^span_kind_/, "")(Str.toLowerCase(raw))
 
 export const logSampleToRecord = (row: LogSample): RuleRecord => ({
 	signal: "logs",
@@ -46,7 +48,7 @@ export const spanSampleToRecord = (row: SpanSample): RuleRecord => ({
 	attributes: row.spanAttributes,
 	name: row.spanName,
 	spanKind: spanKindName(row.spanKind),
-	spanStatus: row.statusCode.toLowerCase(),
+	spanStatus: Str.toLowerCase(row.statusCode),
 	statusMessage: row.statusMessage,
 	traceId: row.traceId,
 })

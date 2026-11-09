@@ -1,7 +1,8 @@
-// BOUNDARY: This module owns unparsed external values and narrows them before domain use.
+// BOUNDARY-FILE: This module owns unparsed external values and narrows them before domain use.
 import { McpToolNotFoundError } from "@maple/domain/mcp-tool-contract"
+import { scopeAllows } from "@maple/domain/http/v2"
 import type { McpToolSurface } from "@maple/domain/mcp-manifest"
-import { Effect, Schema, type SchemaAST } from "effect"
+import { Clock, Effect, Schema, type SchemaAST, Array as Arr, Record as Rec, String as Str } from "effect"
 import { registerAddDashboardWidgetTool } from "./add-dashboard-widget"
 import { registerDescribeWarehouseTablesTool } from "./describe-warehouse-tables"
 import { registerComparePeriodsTool } from "./compare-periods"
@@ -9,6 +10,24 @@ import { registerCreateAlertRuleTool } from "./create-alert-rule"
 import { registerPreviewAlertRuleTool } from "./preview-alert-rule"
 import { registerUpdateAlertRuleTool } from "./update-alert-rule"
 import { registerDeleteAlertRuleTool } from "./delete-alert-rule"
+import { registerListMaintenanceWindowsTool } from "./list-maintenance-windows"
+import { registerCreateMaintenanceWindowTool } from "./create-maintenance-window"
+import { registerDeleteMaintenanceWindowTool } from "./delete-maintenance-window"
+import { registerListAlertSilencesTool } from "./list-alert-silences"
+import { registerCreateAlertSilenceTool } from "./create-alert-silence"
+import { registerEndAlertSilenceTool } from "./end-alert-silence"
+import { registerAcknowledgeAlertIncidentTool } from "./acknowledge-alert-incident"
+import { registerListEscalationChainsTool } from "./list-escalation-chains"
+import { registerCreateEscalationChainTool } from "./create-escalation-chain"
+import { registerUpdateEscalationChainTool } from "./update-escalation-chain"
+import { registerDeleteEscalationChainTool } from "./delete-escalation-chain"
+import { registerListOnCallSchedulesTool } from "./list-oncall-schedules"
+import { registerWhoIsOnCallTool } from "./who-is-on-call"
+import { registerCreateOnCallScheduleTool } from "./create-oncall-schedule"
+import { registerUpdateOnCallScheduleTool } from "./update-oncall-schedule"
+import { registerDeleteOnCallScheduleTool } from "./delete-oncall-schedule"
+import { registerCreateOnCallOverrideTool } from "./create-oncall-override"
+import { registerDeleteOnCallOverrideTool } from "./delete-oncall-override"
 import { registerCreateDashboardTool } from "./create-dashboard"
 import { registerDescribeDashboardSchemaTool } from "./describe-dashboard-schema"
 import { registerDiagnoseServiceTool } from "./diagnose-service"
@@ -21,11 +40,16 @@ import { registerGetDashboardTool } from "./get-dashboard"
 import { registerGetIncidentTimelineTool } from "./get-incident-timeline"
 import { registerAuditSetupTool } from "./audit-setup"
 import { registerListIntegrationsTool } from "./list-integrations"
+import { registerListSecurityFindingsTool } from "./list-security-findings"
+import { registerInspectSecurityFindingTool } from "./inspect-security-finding"
+import { registerListSecurityAuditRunsTool } from "./list-security-audit-runs"
+import { registerInspectSecurityAuditRunTool } from "./inspect-security-audit-run"
 import { registerListSourcesTool } from "./list-sources"
 import { registerCiRunsTool } from "./ci-runs"
 import { registerCompareCommitsTool } from "./compare-commits"
 import { registerIntegrationWriteTools } from "./integration-writes"
 import { registerUptimeMonitorTools } from "./uptime-monitors"
+import { registerSloTools } from "./slos"
 import { registerIngestRuleTools } from "./ingest-rules"
 import { registerStatusPageTools } from "./status-pages"
 import { registerGetInstrumentationRecommendationsTool } from "./get-instrumentation-recommendations"
@@ -53,8 +77,10 @@ import { registerLinkPullRequestTool } from "./link-pull-request"
 import { registerProposeFixTool } from "./propose-fix"
 import { registerRegisterAgentTool } from "./register-agent"
 import { registerSendMapleFeedbackTool } from "./send-maple-feedback"
+import { registerListMapleFeedbackTool } from "./list-maple-feedback"
 import { registerReleaseErrorIssueTool } from "./release-error-issue"
 import { registerSetIssueSeverityTool } from "./set-issue-severity"
+import { registerMergeErrorIssuesTool } from "./merge-error-issues"
 import { registerTransitionErrorIssueTool } from "./transition-error-issue"
 import { registerTransitionErrorIssuesTool } from "./transition-error-issues"
 import { registerUpdateErrorNotificationPolicyTool } from "./update-error-notification-policy"
@@ -76,6 +102,8 @@ import { registerListProductEventsTool } from "./list-product-events"
 import { registerGetSessionTranscriptTool } from "./get-session-transcript"
 import { registerGetSessionTracesTool } from "./get-session-traces"
 import { registerListAgentSessionsTool } from "./list-agent-sessions"
+import { registerListUsersTool } from "./list-users"
+import { registerInspectUserTool } from "./inspect-user"
 import { registerGetAgentSessionTool } from "./get-agent-session"
 import { registerGetAgentSessionTranscriptTool } from "./get-agent-session-transcript"
 import { registerGetAgentToolsOverviewTool } from "./get-agent-tools-overview"
@@ -84,15 +112,19 @@ import { registerServiceMapTool } from "./service-map"
 import { registerSourceCodeTools } from "./source-code"
 import { registerSandboxTools } from "./sandbox"
 import { registerPullRequestTools } from "./pull-request"
+import { CurrentMcpTenant } from "../lib/query-warehouse"
 import {
 	audienceAdmits,
+	McpAuthInvalidError,
 	type McpToolAudience,
 	type McpToolError,
 	type McpToolHints,
 	type McpToolPhrases,
 	type McpToolRegistrar,
 	type McpToolResult,
+	refusesReadOnlyCredential,
 } from "./types"
+import { unknownToolMessage } from "../lib/tool-suggestions"
 import {
 	argumentWarnings,
 	enumValues,
@@ -101,6 +133,7 @@ import {
 	type NormalizedArguments,
 } from "../lib/decode-issues"
 import { filterNextCalls, nextCallsOf, type NextCall, type ToolDoc } from "../lib/tool-doc"
+import { stringifyJson } from "../lib/json"
 import { renderToolDocWithinBudget } from "./tool-output"
 import { CurrentWindowNotes, WindowNotes } from "../lib/window-notes"
 import type { McpToolRequirements } from "./runtime-requirements"
@@ -124,10 +157,12 @@ export interface MapleToolCatalogEntry {
 	readonly schema: Schema.Codec<unknown, unknown, never, unknown>
 	/** How arguments decode; `rejectUnknownKeys` tools refuse nested keys the schema lacks. */
 	readonly parseOptions: SchemaAST.ParseOptions
-	readonly outputSchema: Schema.Codec<unknown, unknown, never, never>
+	readonly outputSchema: Schema.Codec<unknown, unknown>
 	readonly hints: McpToolHints
 	readonly aliases: Readonly<Record<string, string>>
+	readonly valueAliases: Readonly<Record<string, Readonly<Record<string, string>>>>
 	readonly audience: McpToolAudience
+	readonly scopeFamily?: string
 	readonly phrases: McpToolPhrases
 }
 
@@ -142,12 +177,12 @@ class McpDecodeError extends Schema.TaggedError<McpDecodeError>()("@maple/mcp/er
 export const toOutputSchema = (schema: Schema.Top): Record<string, unknown> => {
 	const document = Schema.toJsonSchemaDocument(schema)
 	const base: Record<string, unknown> =
-		Object.keys(document.definitions).length > 0
+		Rec.keys(document.definitions).length > 0
 			? { ...document.schema, $defs: document.definitions }
 			: document.schema
 	if (base.type !== "object" && !("$ref" in base)) {
 		throw new Error(
-			`MCP tool output schemas must have an object root; got ${JSON.stringify(base).slice(0, 200)}. Wrap the output in a Schema.Struct.`,
+			`MCP tool output schemas must have an object root; got ${Str.slice(0, 200)(String(stringifyJson(base)))}. Wrap the output in a Schema.Struct.`,
 		)
 	}
 	return base
@@ -163,17 +198,17 @@ const isEmptyStructSchema = (base: Record<string, unknown>): boolean => {
 	if ("type" in base || "properties" in base) return false
 	const not = base.not
 	if (typeof not === "object" && not !== null) {
-		const keys = Object.keys(base).filter((key) => key !== "$defs")
+		const keys = Arr.filter(Rec.keys(base), (key) => key !== "$defs")
 		if (keys.length === 1 && (not as { type?: unknown }).type === "null") {
-			return Object.keys(not).length === 1
+			return Rec.keys(not).length === 1
 		}
 	}
 	const anyOf = base.anyOf
-	if (!Array.isArray(anyOf) || anyOf.length === 0) return false
-	return anyOf.every((member) => {
+	if (!Arr.isArray(anyOf) || anyOf.length === 0) return false
+	return Arr.every(anyOf, (member) => {
 		if (typeof member !== "object" || member === null) return false
 		const type = (member as { type?: unknown }).type
-		return Object.keys(member).length === 1 && (type === "object" || type === "array")
+		return Rec.keys(member).length === 1 && (type === "object" || type === "array")
 	})
 }
 
@@ -197,13 +232,13 @@ const isEmptyStructSchema = (base: Record<string, unknown>): boolean => {
  * The one exception, `P.optionalNullableNumberOneOf`, is optional and names null in its description.
  */
 const collapseNullableUnions = (node: unknown): unknown => {
-	if (Array.isArray(node)) return node.map(collapseNullableUnions)
+	if (Arr.isArray(node)) return Arr.map(node, collapseNullableUnions)
 	if (node === null || typeof node !== "object") return node
 	const obj = node as Record<string, unknown>
 	const anyOf = obj.anyOf
-	if (Array.isArray(anyOf)) {
+	if (Arr.isArray(anyOf)) {
 		// Nested unions arrive flattened: `optional(Union([A, B]))` is `anyOf: [A, B, null]`.
-		const kept = anyOf.filter((member) => !isJsonObject(member) || member.type !== "null")
+		const kept = Arr.filter(anyOf, (member) => !isJsonObject(member) || member.type !== "null")
 		if (kept.length > 0 && kept.length < anyOf.length) {
 			const { anyOf: _replaced, ...siblings } = obj
 			// Siblings last: a `description` on the property outranks one on the branch.
@@ -214,11 +249,13 @@ const collapseNullableUnions = (node: unknown): unknown => {
 			)
 		}
 	}
-	return Object.fromEntries(Object.entries(obj).map(([key, value]) => [key, collapseNullableUnions(value)]))
+	return Rec.fromEntries(
+		Arr.map(Rec.toEntries(obj), ([key, value]) => [key, collapseNullableUnions(value)]),
+	)
 }
 
 const isJsonObject = (value: unknown): value is Record<string, unknown> =>
-	typeof value === "object" && value !== null && !Array.isArray(value)
+	typeof value === "object" && value !== null && !Arr.isArray(value)
 
 const DEFS_PREFIX = "#/$defs/"
 
@@ -232,11 +269,14 @@ const inlineDefinitions = (root: Record<string, unknown>): Record<string, unknow
 	const defs = isJsonObject(root.$defs) ? root.$defs : {}
 	const kept = new Set<string>()
 	const visit = (node: unknown, trail: ReadonlySet<string>): unknown => {
-		if (Array.isArray(node)) return node.map((item) => visit(item, trail))
+		if (Arr.isArray(node)) return Arr.map(node, (item) => visit(item, trail))
 		if (!isJsonObject(node)) return node
 		const ref = node.$ref
-		if (typeof ref === "string" && ref.startsWith(DEFS_PREFIX)) {
-			const name = ref.slice(DEFS_PREFIX.length).replaceAll("~1", "/").replaceAll("~0", "~")
+		if (typeof ref === "string" && Str.startsWith(DEFS_PREFIX)(ref)) {
+			const name = Str.replaceAll(
+				"~0",
+				"~",
+			)(Str.replaceAll("~1", "/")(Str.slice(DEFS_PREFIX.length)(ref)))
 			const definition = defs[name]
 			const expanded =
 				isJsonObject(definition) && !trail.has(name)
@@ -249,8 +289,8 @@ const inlineDefinitions = (root: Record<string, unknown>): Record<string, unknow
 			kept.add(name)
 			return node
 		}
-		return Object.fromEntries(
-			Object.entries(node).flatMap(([key, value]) =>
+		return Rec.fromEntries(
+			Arr.flatMap(Rec.toEntries(node), ([key, value]) =>
 				key === "$defs" ? [] : [[key, visit(value, trail)]],
 			),
 		)
@@ -259,7 +299,7 @@ const inlineDefinitions = (root: Record<string, unknown>): Record<string, unknow
 	const inlined = isJsonObject(visited) ? visited : root
 	return kept.size === 0
 		? inlined
-		: { ...inlined, $defs: Object.fromEntries([...kept].map((name) => [name, defs[name]])) }
+		: { ...inlined, $defs: Rec.fromEntries(Arr.map([...kept], (name) => [name, defs[name]])) }
 }
 
 const CANONICAL_TYPES: ReadonlySet<unknown> = new Set(["number", "boolean", "array"])
@@ -277,16 +317,16 @@ const canonicalBranch = (branches: ReadonlyArray<unknown>): unknown => {
 	if (jsonText !== undefined || branches.length !== 2) return jsonText
 	const isString = (branch: unknown) => isJsonObject(branch) && branch.type === "string"
 	const other = branches.find((branch) => !isString(branch))
-	return branches.some(isString) && isJsonObject(other) && CANONICAL_TYPES.has(other.type)
+	return Arr.some(branches, isString) && isJsonObject(other) && CANONICAL_TYPES.has(other.type)
 		? other
 		: undefined
 }
 
 const publishCanonical = (node: unknown): unknown => {
-	if (Array.isArray(node)) return node.map(publishCanonical)
+	if (Arr.isArray(node)) return Arr.map(node, publishCanonical)
 	if (!isJsonObject(node)) return node
 	const anyOf = node.anyOf
-	if (Array.isArray(anyOf)) {
+	if (Arr.isArray(anyOf)) {
 		const canonical = canonicalBranch(anyOf)
 		if (isJsonObject(canonical)) {
 			const { anyOf: _anyOf, ...siblings } = node
@@ -296,7 +336,9 @@ const publishCanonical = (node: unknown): unknown => {
 	// `format: "uuid"` says what the UUID regex says, in a word instead of ~200 characters.
 	const { pattern: _pattern, ...unpatterned } = node
 	const published = node.format === "uuid" ? unpatterned : node
-	return Object.fromEntries(Object.entries(published).map(([key, value]) => [key, publishCanonical(value)]))
+	return Rec.fromEntries(
+		Arr.map(Rec.toEntries(published), ([key, value]) => [key, publishCanonical(value)]),
+	)
 }
 
 export const toInputSchema = (schema: Schema.Top): Record<string, unknown> => {
@@ -306,7 +348,7 @@ export const toInputSchema = (schema: Schema.Top): Record<string, unknown> => {
 	// schema all 57 public MCP tools advertise.
 	const document = Schema.toJsonSchemaDocument(schema, { onExcessProperty: "error" })
 	const rawBase =
-		Object.keys(document.definitions).length > 0
+		Rec.keys(document.definitions).length > 0
 			? { ...document.schema, $defs: document.definitions }
 			: document.schema
 	const base = publishCanonical(collapseNullableUnions(inlineDefinitions(rawBase))) as typeof rawBase
@@ -330,7 +372,7 @@ export const toInputSchema = (schema: Schema.Top): Record<string, unknown> => {
 	// module init, so it surfaces in tests and at worker boot rather than in the wire.
 	if (record.type !== "object" && !("$ref" in record)) {
 		throw new Error(
-			`MCP tool input schemas must have an object root; got ${JSON.stringify(record).slice(0, 200)}. Wrap the tool input in a Schema.Struct.`,
+			`MCP tool input schemas must have an object root; got ${Str.slice(0, 200)(String(stringifyJson(record)))}. Wrap the tool input in a Schema.Struct.`,
 		)
 	}
 	return base
@@ -349,11 +391,13 @@ const collectMapleToolDefinitions = (): ReadonlyArray<MapleToolDefinition> => {
 			outputSchema: spec.output,
 			hints: spec.hints,
 			aliases: spec.aliases ?? {},
+			valueAliases: spec.valueAliases ?? {},
 			audience: spec.audience ?? "public",
+			...(spec.scopeFamily === undefined ? undefined : { scopeFamily: spec.scopeFamily }),
 			phrases: spec.phrases,
 			run: (params) =>
 				Effect.gen(function* () {
-					const output = yield* spec.handler(params as typeof spec.parameters.Type)
+					const output = yield* spec.handler(params)
 					// A result that does not match its own schema is a bug, but the text is still right:
 					// the model gets its answer and the UI falls back to the text.
 					const structured = yield* encode(output).pipe(
@@ -385,6 +429,8 @@ const collectMapleToolDefinitions = (): ReadonlyArray<MapleToolDefinition> => {
 	registerListProductEventsTool(registrar)
 	registerGetSessionTranscriptTool(registrar)
 	registerGetSessionTracesTool(registrar)
+	registerListUsersTool(registrar)
+	registerInspectUserTool(registrar)
 	registerListAgentSessionsTool(registrar)
 	registerGetAgentSessionTool(registrar)
 	registerGetAgentSessionTranscriptTool(registrar)
@@ -407,6 +453,24 @@ const collectMapleToolDefinitions = (): ReadonlyArray<MapleToolDefinition> => {
 	registerCreateAlertRuleTool(registrar)
 	registerUpdateAlertRuleTool(registrar)
 	registerDeleteAlertRuleTool(registrar)
+	registerListMaintenanceWindowsTool(registrar)
+	registerCreateMaintenanceWindowTool(registrar)
+	registerDeleteMaintenanceWindowTool(registrar)
+	registerListAlertSilencesTool(registrar)
+	registerCreateAlertSilenceTool(registrar)
+	registerEndAlertSilenceTool(registrar)
+	registerAcknowledgeAlertIncidentTool(registrar)
+	registerListEscalationChainsTool(registrar)
+	registerCreateEscalationChainTool(registrar)
+	registerUpdateEscalationChainTool(registrar)
+	registerDeleteEscalationChainTool(registrar)
+	registerListOnCallSchedulesTool(registrar)
+	registerWhoIsOnCallTool(registrar)
+	registerCreateOnCallScheduleTool(registrar)
+	registerUpdateOnCallScheduleTool(registrar)
+	registerDeleteOnCallScheduleTool(registrar)
+	registerCreateOnCallOverrideTool(registrar)
+	registerDeleteOnCallOverrideTool(registrar)
 	registerDescribeDashboardSchemaTool(registrar)
 	registerListDashboardsTool(registrar)
 	registerGetDashboardTool(registrar)
@@ -433,11 +497,16 @@ const collectMapleToolDefinitions = (): ReadonlyArray<MapleToolDefinition> => {
 	registerGetInstrumentationRecommendationsTool(registrar)
 	registerAuditSetupTool(registrar)
 	registerListIntegrationsTool(registrar)
+	registerListSecurityFindingsTool(registrar)
+	registerInspectSecurityFindingTool(registrar)
+	registerListSecurityAuditRunsTool(registrar)
+	registerInspectSecurityAuditRunTool(registrar)
 	registerListSourcesTool(registrar)
 	registerCiRunsTool(registrar)
 	registerCompareCommitsTool(registrar)
 	registerIntegrationWriteTools(registrar)
 	registerUptimeMonitorTools(registrar)
+	registerSloTools(registrar)
 	registerIngestRuleTools(registrar)
 	registerStatusPageTools(registrar)
 	registerSourceCodeTools(registrar)
@@ -447,6 +516,7 @@ const collectMapleToolDefinitions = (): ReadonlyArray<MapleToolDefinition> => {
 	registerTransitionErrorIssueTool(registrar)
 	registerTransitionErrorIssuesTool(registrar)
 	registerSetIssueSeverityTool(registrar)
+	registerMergeErrorIssuesTool(registrar)
 	registerClaimErrorIssueTool(registrar)
 	registerReleaseErrorIssueTool(registrar)
 	registerCommentOnErrorIssueTool(registrar)
@@ -455,6 +525,7 @@ const collectMapleToolDefinitions = (): ReadonlyArray<MapleToolDefinition> => {
 	registerListErrorIssueEventsTool(registrar)
 	registerRegisterAgentTool(registrar)
 	registerSendMapleFeedbackTool(registrar)
+	registerListMapleFeedbackTool(registrar)
 	registerListErrorIncidentsTool(registrar)
 	registerGetErrorNotificationPolicyTool(registrar)
 	registerUpdateErrorNotificationPolicyTool(registrar)
@@ -465,7 +536,8 @@ const collectMapleToolDefinitions = (): ReadonlyArray<MapleToolDefinition> => {
 const mapleToolDefinitions = collectMapleToolDefinitions()
 
 /** Handler-free registry view for schemas, permissions, MCP discovery, and tests. */
-export const mapleToolCatalog: ReadonlyArray<MapleToolCatalogEntry> = mapleToolDefinitions.map(
+export const mapleToolCatalog: ReadonlyArray<MapleToolCatalogEntry> = Arr.map(
+	mapleToolDefinitions,
 	({ run: _run, ...entry }) => entry,
 )
 
@@ -483,15 +555,41 @@ export const inputSchemaOf = (entry: MapleToolCatalogEntry): Record<string, unkn
 
 const parameterNames = (entry: MapleToolCatalogEntry): ReadonlyArray<string> => {
 	const properties = inputSchemaOf(entry).properties
-	return typeof properties === "object" && properties !== null ? Object.keys(properties) : []
+	return typeof properties === "object" && properties !== null ? Rec.keys(properties) : []
 }
 
-/** How a call's arguments are read before decoding: aliases applied, enum case fixed, unknowns dropped. */
-const normalizeFor = (entry: MapleToolCatalogEntry, input: unknown) =>
-	normalizeArguments(input, parameterNames(entry), entry.aliases, enumValues(inputSchemaOf(entry)))
+const enumSpelling = (value: string): string => Str.replace(/[\s-]+/g, "_")(Str.toLowerCase(Str.trim(value)))
+
+/**
+ * An enum value as the model spelled it, read as the published one it means: `Feature Request`
+ * and `feature-request` are `feature_request`, a declared value alias is its target. Anything
+ * else is left for the decoder to reject with the allowed values.
+ */
+const canonicalEnumArguments = (entry: MapleToolCatalogEntry, input: unknown): unknown => {
+	if (!isArgumentRecord(input)) return input
+	const enums = enumValues(inputSchemaOf(entry))
+	return Rec.map(input, (value, key) => {
+		const allowed = enums.get(key)
+		if (typeof value !== "string" || allowed === undefined || allowed.includes(value)) return value
+		const spelled = enumSpelling(value)
+		if (allowed.includes(spelled)) return spelled
+		const target = entry.valueAliases[key]?.[spelled]
+		return target !== undefined && allowed.includes(target) ? target : value
+	})
+}
+
+/** How a call's arguments are read before decoding: aliases applied, enum spellings fixed, unknowns dropped. */
+const normalizeFor = (entry: MapleToolCatalogEntry, input: unknown, nowMs?: number) =>
+	normalizeArguments(
+		canonicalEnumArguments(entry, input),
+		parameterNames(entry),
+		entry.aliases,
+		enumValues(inputSchemaOf(entry)),
+		nowMs,
+	)
 
 const isArgumentRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
-	typeof value === "object" && value !== null && !Array.isArray(value)
+	typeof value === "object" && value !== null && !Arr.isArray(value)
 
 /**
  * A call read the way the dispatcher reads it, without running it: aliases applied, enum case
@@ -513,14 +611,14 @@ export const readToolCall = (
 	const normalized = normalizeFor(definition, input ?? {})
 	return {
 		args: isArgumentRecord(normalized.args) ? normalized.args : {},
-		unknown: normalized.unknown.map((entry) => entry.key),
+		unknown: Arr.map(normalized.unknown, (entry) => entry.key),
 		decodes:
 			Schema.decodeUnknownOption(definition.schema)(normalized.args, definition.parseOptions)._tag ===
 			"Some",
 	}
 }
 
-const phrasesByName = new Map(mapleToolDefinitions.map(({ name, phrases }) => [name, phrases]))
+const phrasesByName = new Map(Arr.map(mapleToolDefinitions, ({ name, phrases }) => [name, phrases]))
 
 /**
  * One of a tool's {@link McpToolPhrases}, at random, or undefined for a name outside the
@@ -534,7 +632,7 @@ export const mapleToolPhrase = (name: string): string | undefined => {
 
 /** The catalog as one surface sees it. What a surface cannot see, it cannot call either. */
 export const mapleToolCatalogFor = (surface: McpToolSurface): ReadonlyArray<MapleToolCatalogEntry> =>
-	mapleToolCatalog.filter((definition) => audienceAdmits(definition.audience, surface))
+	Arr.filter(mapleToolCatalog, (definition) => audienceAdmits(definition.audience, surface))
 
 const toDecodeErrorMessage = (
 	definition: MapleToolDefinition,
@@ -571,13 +669,16 @@ const finish = Effect.fnUntraced(function* (
 	warnings: ReadonlyArray<string>,
 	surface: McpToolSurface,
 ) {
-	const invalid = nextCallsOf(run.doc).filter((call) => !isValidNextCall(call, surface))
-	const undecodable = invalid.filter((call) => !isHiddenOn(call.tool, surface))
+	const invalid = Arr.filter(nextCallsOf(run.doc), (call) => !isValidNextCall(call, surface))
+	const undecodable = Arr.filter(invalid, (call) => !isHiddenOn(call.tool, surface))
 	if (undecodable.length > 0) {
 		yield* Effect.logWarning("MCP tool suggested a call that does not decode").pipe(
 			Effect.annotateLogs({
 				"maple.mcp.tool": definition.name,
-				"maple.mcp.next_calls": undecodable.map((call) => call.tool).join(","),
+				"maple.mcp.next_calls": Arr.join(
+					Arr.map(undecodable, (call) => call.tool),
+					",",
+				),
 			}),
 		)
 	}
@@ -613,23 +714,59 @@ export const executeRegisteredMcpToolUnscoped = Effect.fn("McpToolRegistry.execu
 			)
 		}
 		return yield* new McpToolNotFoundError({
-			name,
-			message: `Unknown MCP tool: ${name}`,
+			toolName: name,
+			message: unknownToolMessage(
+				name,
+				Arr.map(mapleToolCatalogFor(surface), (entry) => entry.name),
+			),
 		})
 	}
 
-	const normalized = normalizeFor(definition, input ?? {})
+	if (refusesReadOnlyCredential(definition.name, definition.hints.readOnly)) {
+		const tenant = yield* CurrentMcpTenant
+		if (tenant.readOnly === true) {
+			return yield* new McpAuthInvalidError({
+				message: `\`${definition.name}\` changes data, and this API key is read-only. Use a key with write access, or connect with OAuth.`,
+				reason: "insufficient_scope",
+			})
+		}
+	}
+
+	if (definition.scopeFamily !== undefined) {
+		const access = definition.hints.readOnly ? "read" : "write"
+		const tenant = yield* CurrentMcpTenant
+		if (!scopeAllows(tenant.scopes, { family: definition.scopeFamily, access })) {
+			return yield* new McpAuthInvalidError({
+				message: `\`${definition.name}\` needs the \`${definition.scopeFamily}:${access}\` scope, which this API key lacks. Add it to the key, or use a full-access key.`,
+				reason: "insufficient_scope",
+			})
+		}
+	}
+
+	const nowMs = yield* Clock.currentTimeMillis
+	const normalized = normalizeFor(definition, input ?? {}, nowMs)
 	yield* Effect.annotateCurrentSpan({
 		"maple.mcp.tool": definition.name,
-		"maple.mcp.tool.arguments": Object.keys(typeof input === "object" && input !== null ? input : {})
-			.sort()
-			.join(","),
+		"maple.mcp.tool.arguments": Arr.join(
+			Object.keys(typeof input === "object" && input !== null ? input : {}).sort(),
+			",",
+		),
 		...(normalized.unknown.length === 0
 			? undefined
-			: { "maple.mcp.tool.unknown_arguments": normalized.unknown.map(({ key }) => key).join(",") }),
+			: {
+					"maple.mcp.tool.unknown_arguments": Arr.join(
+						Arr.map(normalized.unknown, ({ key }) => key),
+						",",
+					),
+				}),
 		...(normalized.renamed.length === 0
 			? undefined
-			: { "maple.mcp.tool.aliased_arguments": normalized.renamed.map(([from]) => from).join(",") }),
+			: {
+					"maple.mcp.tool.aliased_arguments": Arr.join(
+						Arr.map(normalized.renamed, ([from]) => from),
+						",",
+					),
+				}),
 	})
 	const decoded = yield* Schema.decodeUnknownEffect(definition.schema)(
 		normalized.args,

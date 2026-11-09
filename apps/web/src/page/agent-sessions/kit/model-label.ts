@@ -1,9 +1,11 @@
 import { cn } from "@maple/ui/lib/utils"
 import type { Html, HtmlBuilder } from "foldkit/html"
-import { icon, iconColor } from "../../../ui/icon"
+import { icon, iconColor } from "@maple/views/ui/icon"
 import { type DetectedModel, modelTitle } from "./detected-models"
 import { modelVendorColor, modelVendorIcon } from "./vendor"
 import { moreChip } from "./more-chip"
+import { hstackClass } from "@maple/views/ui/stack"
+import { typography } from "@maple/views/ui/typography"
 
 /** The vendor's mark and the model's name. */
 export const modelLabel = <M>(
@@ -22,7 +24,7 @@ export const modelLabel = <M>(
 	const moreCount = options.moreCount ?? 0
 	return h.span(
 		[
-			h.Class(cn("flex min-w-0 items-center gap-1.5", options.className)),
+			h.Class(cn(hstackClass({ gap: "1.5", shrink: true }), options.className)),
 			...(title === null ? [] : [h.Title(title)]),
 		],
 		[
@@ -32,7 +34,7 @@ export const modelLabel = <M>(
 				...iconColor(color),
 				attributes: [h.AriaHidden(true)],
 			}),
-			h.span([h.Class("min-w-0 truncate")], [options.detected.displayName]),
+			typography(h, { truncate: true, className: "min-w-0" }, [options.detected.displayName]),
 			...(moreCount > 0 ? [moreChip(h, { count: moreCount })] : []),
 		],
 	)

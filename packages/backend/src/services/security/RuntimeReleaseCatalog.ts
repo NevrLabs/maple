@@ -1,6 +1,6 @@
 import { EdgeCacheService } from "@maple/cache"
 import { RUNTIME_PRODUCTS, type RuntimeProduct, type RuntimeRelease } from "@maple/domain/runtime-posture"
-import { Context, Effect, Layer, Option, Schema } from "effect"
+import { Context, Effect, Layer, Option, Schema, Record as Rec, Array as Arr } from "effect"
 import { FetchHttpClient, HttpClient, HttpClientResponse } from "effect/http"
 
 // Release cycles for the Security Center's Runtimes tab, read from endoflife.date. One read per
@@ -63,22 +63,21 @@ export class RuntimeReleaseCatalog extends Context.Service<RuntimeReleaseCatalog
 					.pipe(
 						Effect.flatMap(HttpClientResponse.schemaBodyJson(EndoflifeProduct)),
 						Effect.timeout(REQUEST_TIMEOUT),
-						Effect.map((body): ReadonlyArray<RuntimeRelease> =>
-							body.result.releases.map((release) => ({
-								cycle: release.name,
-								isEol: release.isEol === true,
-								eolFrom: release.eolFrom,
-								latest: release.latest?.name ?? null,
-							})),
-						),
-						Effect.mapError(
-							(cause) =>
+						Effect.mapBoth({
+							onSuccess: (body): ReadonlyArray<RuntimeRelease> =>
+								Arr.map(body.result.releases, (release) => ({
+									cycle: release.name,
+									isEol: release.isEol === true,
+									eolFrom: release.eolFrom,
+									latest: release.latest?.name ?? null,
+								})),
+							onFailure: (cause) =>
 								new RuntimeReleaseCatalogError({
 									message: `endoflife.date read failed for ${product}`,
 									product,
 									cause,
 								}),
-						),
+						}),
 						Effect.withSpan("endoflife.request", {
 							kind: "client",
 							attributes: {
@@ -111,20 +110,13 @@ export class RuntimeReleaseCatalog extends Context.Service<RuntimeReleaseCatalog
 								? Option.none()
 								: Option.some([product, result.value] as const),
 						),
-						// A cache error falls back to the read; only a failed read leaves the product out.
-						Effect.catch(() =>
-							fetchReleases(product).pipe(
-								Effect.map((value) => Option.some([product, value] as const)),
-								Effect.orElseSucceed(() => Option.none()),
-							),
-						),
 					)
 
 			const releases = Effect.fn("RuntimeReleaseCatalog.releases")(function* (
 				products: ReadonlyArray<RuntimeProduct>,
 			) {
 				const read = yield* Effect.forEach(new Set(products), releasesFor, { concurrency: 4 })
-				return Object.fromEntries(read.flatMap(Option.toArray))
+				return Rec.fromEntries(Arr.getSomes(read))
 			})
 
 			return { releases } satisfies RuntimeReleaseCatalogApi

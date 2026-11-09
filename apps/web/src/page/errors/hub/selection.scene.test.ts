@@ -1,8 +1,9 @@
 import { OrgId } from "@maple/domain"
+import { ErrorIssueTransitionError } from "@maple/domain/http"
 import { V2ErrorIssue } from "@maple/domain/http/v2"
-import { Result, Schema } from "effect"
+import { Result, Schema, Array as Arr } from "effect"
 import { describe, expect, test } from "vitest"
-import { toLoadFailure } from "../../../data/load-failure"
+import { toLoadFailure } from "@maple/views/data/load-failure"
 import type { PageContext } from "../../contract"
 import { Message } from "./message"
 import type { Model } from "./model"
@@ -14,11 +15,11 @@ const window = { startTime: "2026-09-30 12:00:00", endTime: "2026-10-01 12:00:00
 
 const pageUpdate = (model: Model, message: Message) => update(model, message, context)
 const names = (commands: ReadonlyArray<{ readonly name: string }> | undefined) =>
-	(commands ?? []).map(({ name }) => name)
+	Arr.map(commands ?? [], ({ name }) => name)
 
 const ids = ["iss_YoxMYDoXSr3tsBZyBLmNMv", "iss_YoxMYDoXSr3tsBZyBLmNMw", "iss_YoxMYDoXSr3tsBZyBLmNMx"]
 const issue = (id: string, lastSeen: string) =>
-	Schema.decodeUnknownSync(V2ErrorIssue)({
+	Schema.decodeSync(V2ErrorIssue)({
 		id,
 		object: "error_issue",
 		kind: "error",
@@ -61,7 +62,7 @@ const loaded = (): Model => {
 		entered,
 		Message.CompletedResolveWindow({ window, nowMs: 0, mode: "Load" }),
 	).model
-	const data = ids.map((id, index) => issue(id, `2026-10-01T11:4${5 - index}:00.000Z`))
+	const data = Arr.map(ids, (id, index) => issue(id, `2026-10-01T11:4${5 - index}:00.000Z`))
 	return pageUpdate(
 		model,
 		Message.CompletedFetchPage({
@@ -132,8 +133,53 @@ describe("errors hub selection", () => {
 		expect(done.model.writingIds).toEqual([])
 	})
 
+	test("a write carries each row's shown state; a 409 toasts the server's message and re-reads", () => {
+		const selected = pageUpdate(
+			pageUpdate(loaded(), Message.PressedListKey({ key: "j", isShift: false })).model,
+			Message.PressedListKey({ key: "x", isShift: false }),
+		).model
+		const writing = pageUpdate(selected, Message.ClickedBulkClaim())
+		expect(writing.commands?.[0]).toMatchObject({
+			args: { expectedStates: { [selected.focusedId ?? ""]: "triage" } },
+		})
+		// A second write on a row whose first is still out expects nothing: its state may be moving.
+		const again = pageUpdate(
+			pageUpdate(writing.model, Message.PressedListKey({ key: "x", isShift: false })).model,
+			Message.ClickedBulkClaim(),
+		)
+		expect(again.commands).toEqual([
+			expect.objectContaining({ args: expect.objectContaining({ expectedStates: {} }) }),
+		])
+		const message =
+			"This issue is now 'done', not 'triage'. Another change landed first; refresh and retry."
+		// Decoded as the internal client decodes the 409 body.
+		const conflict = Schema.decodeSync(ErrorIssueTransitionError)({
+			_tag: "@maple/http/errors/ErrorIssueTransitionError",
+			message,
+			issueId: "0199a004-0000-7000-8000-000000000001",
+			fromState: "done",
+			toState: "in_progress",
+		})
+		const done = pageUpdate(
+			writing.model,
+			Message.CompletedHubWrite({
+				ids: [ids[0] ?? ""],
+				write: { _tag: "Transition", toState: "in_progress" },
+				isBulk: false,
+				outcome: { succeeded: 0, failed: 1, firstFailure: toLoadFailure(conflict) },
+			}),
+		)
+		expect(done.outMessage).toMatchObject({
+			type: "error",
+			title: "State change failed",
+			description: message,
+		})
+		expect(names(done.commands)).toContain("FetchErrorIssuesPage")
+	})
+
 	test("a row still being written is written again: the newest pick is sent, not dropped", () => {
-		const press = (model: Model, key: string) => pageUpdate(model, Message.PressedListKey({ key, isShift: false })).model
+		const press = (model: Model, key: string) =>
+			pageUpdate(model, Message.PressedListKey({ key, isShift: false })).model
 		const selected = press(press(loaded(), "j"), "x")
 		const first = pageUpdate(selected, Message.ClickedBulkClaim()).model
 		const again = pageUpdate(press(first, "x"), Message.ClickedBulkClaim())
@@ -151,7 +197,8 @@ describe("errors hub selection", () => {
 	})
 
 	test("a single row's write keeps the selection: only the bulk bar clears it", () => {
-		const press = (model: Model, key: string) => pageUpdate(model, Message.PressedListKey({ key, isShift: false })).model
+		const press = (model: Model, key: string) =>
+			pageUpdate(model, Message.PressedListKey({ key, isShift: false })).model
 		const selected = press(press(press(press(loaded(), "j"), "x"), "j"), "x")
 		expect(selected.selectedIds).toHaveLength(2)
 		const done = pageUpdate(
@@ -183,7 +230,10 @@ describe("errors hub selection", () => {
 		expect(names(second.commands)).toContain("FetchErrorIssuesPage")
 		const firstKey = first.model.pages[0]?.page.key ?? ""
 		expect(second.model.pages[0]?.page.key).not.toBe(firstKey)
-		const late = pageUpdate(second.model, Message.CompletedFetchPage({ key: firstKey, result: Result.fail(toLoadFailure("old")) }))
+		const late = pageUpdate(
+			second.model,
+			Message.CompletedFetchPage({ key: firstKey, result: Result.fail(toLoadFailure("old")) }),
+		)
 		expect(late.model.pages).toEqual(second.model.pages)
 	})
 })

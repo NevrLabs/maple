@@ -1,8 +1,15 @@
 import { afterEach, assert, describe, it } from "@effect/vitest"
-import { ConfigProvider, Effect, Layer, Schema } from "effect"
+import { ConfigProvider, Effect, Layer, Schema, Array as Arr } from "effect"
 import { TestClock } from "effect/testing"
 import { FetchHttpClient } from "effect/http"
-import { CreateScrapeTargetRequest, OrgId, ScrapeTargetId, UserId } from "@maple/domain/http"
+import {
+	CreateScrapeTargetRequest,
+	OrgId,
+	ScrapeTargetId,
+	UserId,
+	SupabaseProjectUpdateRequest,
+	UpdateScrapeTargetRequest,
+} from "@maple/domain/http"
 import { SupabaseProjectRef } from "@maple/domain/primitives"
 import { Env } from "@maple/backend/platform/Env"
 import { cleanupTestDbs, createTestDb, queryFirstRow, type TestDb } from "@maple/backend/platform/test-pglite"
@@ -48,8 +55,8 @@ const makeLayer = (testDb: TestDb, fake: Fake) =>
 		Layer.merge(Layer.succeed(FetchHttpClient.Fetch, fake.fetch)),
 	)
 
-const ORG = Schema.decodeUnknownSync(OrgId)("org_a")
-const USER = Schema.decodeUnknownSync(UserId)("user_a")
+const ORG = Schema.decodeSync(OrgId)("org_a")
+const USER = Schema.decodeSync(UserId)("user_a")
 const asRef = Schema.decodeUnknownSync(SupabaseProjectRef)
 const asTargetId = Schema.decodeUnknownSync(ScrapeTargetId)
 
@@ -61,17 +68,13 @@ const REF_C = "cdefghijklmnopqrstuv"
 const finalize = (fake: Fake) =>
 	Effect.gen(function* () {
 		const oauth = yield* SupabaseOAuthService
-		const { redirectUrl, state } = yield* oauth.startConnect(
-			ORG,
-			Schema.decodeUnknownSync(UserId)("user_a"),
-			{
-				callbackUrl: "https://api.example.com/api/integrations/supabase/callback",
-			},
-		)
+		const { redirectUrl, state } = yield* oauth.startConnect(ORG, Schema.decodeSync(UserId)("user_a"), {
+			callbackUrl: "https://api.example.com/api/integrations/supabase/callback",
+		})
 		fake.state.codeChallenge = new URL(redirectUrl).searchParams.get("code_challenge")
 		const granted = yield* oauth.completeConnect("code", state, {
 			orgId: ORG,
-			userId: Schema.decodeUnknownSync(UserId)("user_a"),
+			userId: Schema.decodeSync(UserId)("user_a"),
 		})
 		return yield* (yield* SupabaseConnectionService).finalizeConnect(
 			granted.orgId,
@@ -187,11 +190,21 @@ describe("Supabase managed scrape targets", () => {
 			const service = yield* SupabaseConnectionService
 			yield* connect(fake)
 			const created = yield* targetOf(testDb, REF_A)
-			yield* service.updateProject(ORG, USER, asRef(REF_A), { metricsEnabled: false })
+			yield* service.updateProject(
+				ORG,
+				USER,
+				asRef(REF_A),
+				new SupabaseProjectUpdateRequest({ metricsEnabled: false }),
+			)
 			const disabled = yield* targetOf(testDb, REF_A)
 			assert.strictEqual(disabled?.id, created?.id)
 			assert.isFalse(disabled?.enabled ?? true)
-			yield* service.updateProject(ORG, USER, asRef(REF_A), { metricsEnabled: true })
+			yield* service.updateProject(
+				ORG,
+				USER,
+				asRef(REF_A),
+				new SupabaseProjectUpdateRequest({ metricsEnabled: true }),
+			)
 			assert.isTrue((yield* targetOf(testDb, REF_A))?.enabled ?? false)
 			assert.strictEqual(yield* targetCount(testDb), 1)
 		}).pipe(Effect.provide(makeLayer(testDb, fake)))
@@ -243,7 +256,7 @@ describe("Supabase managed scrape targets", () => {
 			yield* finalize(fake)
 			assert.strictEqual(yield* targetCount(testDb), 0)
 			yield* TestClock.adjust("1 hour")
-			yield* (yield* SupabaseConnectionService).discoverAllOrgs()
+			yield* (yield* SupabaseConnectionService).discoverAllOrgs
 			assert.isTrue((yield* targetOf(testDb, REF_A))?.enabled ?? false)
 		}).pipe(Effect.provide(makeLayer(testDb, fake)))
 	})
@@ -254,7 +267,12 @@ describe("Supabase managed scrape targets", () => {
 		return Effect.gen(function* () {
 			const service = yield* SupabaseConnectionService
 			yield* connect(fake)
-			yield* service.updateProject(ORG, USER, asRef(REF_A), { metricsEnabled: false })
+			yield* service.updateProject(
+				ORG,
+				USER,
+				asRef(REF_A),
+				new SupabaseProjectUpdateRequest({ metricsEnabled: false }),
+			)
 			yield* TestClock.adjust("1 hour")
 			yield* service.discoverOrg(ORG)
 			assert.isFalse((yield* targetOf(testDb, REF_A))?.enabled ?? true)
@@ -295,7 +313,8 @@ describe("Supabase managed scrape targets", () => {
 			return Effect.gen(function* () {
 				const scrapeTargets = yield* ScrapeTargetsService
 				yield* connect(fake)
-				const [row] = (yield* scrapeTargets.listAllEnabled()).filter(
+				const [row] = Arr.filter(
+					yield* scrapeTargets.listAllEnabled(),
 					(target) => target.targetType === "supabase",
 				)
 				assert.isDefined(row)
@@ -341,7 +360,9 @@ describe("Supabase managed scrape targets", () => {
 				yield* connect(fake)
 				const managed = yield* targetOf(testDb, REF_A)
 				const targetId = asTargetId(managed?.id ?? "")
-				const edit = yield* scrapeTargets.update(ORG, targetId, { enabled: false }).pipe(Effect.flip)
+				const edit = yield* scrapeTargets
+					.update(ORG, targetId, new UpdateScrapeTargetRequest({ enabled: false }))
+					.pipe(Effect.flip)
 				assert.strictEqual(edit._tag, "@maple/http/errors/ScrapeTargetValidationError")
 				const removal = yield* scrapeTargets.delete(ORG, targetId).pipe(Effect.flip)
 				assert.strictEqual(removal._tag, "@maple/http/errors/ScrapeTargetValidationError")

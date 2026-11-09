@@ -5,7 +5,7 @@ import { toMcpQueryError } from "../lib/map-warehouse-error"
 import * as P from "../lib/params"
 import { doc, type DocBlock } from "../lib/tool-doc"
 import { bucketLabels, PARTIAL_BUCKET_NOTE } from "../lib/format-query-result"
-import { Effect, Option, Schema } from "effect"
+import { Effect, Option, Schema, Array as Arr, Record as Rec, String as Str } from "effect"
 import { ErrorDetailOutput } from "@maple/domain/mcp-outputs"
 import { ErrorIssueId } from "@maple/domain/http"
 import { formatWarehouseDateTime, parseWarehouseDateTime } from "@maple/query-engine"
@@ -40,8 +40,21 @@ const notAWarehouseError = (value: string, kind: string, parameter: string): Mcp
 				parameter,
 			})
 
+/** A cut-down UUID (`0198a2b3`, `0198a2b3-4c5d`): the prefix the web UI or a chat message shows. */
+const isShortIssueId = (value: string): boolean =>
+	value.length < 36 && /^[0-9a-f]{8}(-[0-9a-f-]*)?$/i.test(value) && !/^\d+$/.test(value)
+
+const shortIssueId = (value: string, parameter: string): McpInvalidInputError =>
+	new McpInvalidInputError({
+		message: `'${value}' looks like the start of an issue id. Issue tools need the full 36-character UUID (or its REST id, iss_…): list_error_issues lists them; find_errors gives a decimal fingerprint you can pass as fingerprint instead.`,
+		parameter,
+		example: "list_error_issues",
+	})
+
 const rejectNonFingerprint = (rawFingerprint: string): McpInvalidInputError => {
-	if (rawFingerprint.startsWith("alert:")) return notAWarehouseError(rawFingerprint, "alert", "fingerprint")
+	if (isShortIssueId(rawFingerprint)) return shortIssueId(rawFingerprint, "fingerprint")
+	if (Str.startsWith("alert:")(rawFingerprint))
+		return notAWarehouseError(rawFingerprint, "alert", "fingerprint")
 	if (/^[a-z][a-z0-9_-]*:/i.test(rawFingerprint))
 		return notAWarehouseError(rawFingerprint, "integration", "fingerprint")
 	return new McpInvalidInputError({
@@ -64,6 +77,7 @@ const resolveTarget = Effect.fn("McpErrorDetail.resolveTarget")(function* (param
 	const rawIssue = params.issue_id?.trim() || (isUuid(rawFingerprint) ? rawFingerprint : "")
 	if (rawIssue !== "") {
 		const parameter = params.issue_id?.trim() ? "issue_id" : "fingerprint"
+		if (isShortIssueId(rawIssue)) return yield* shortIssueId(rawIssue, parameter)
 		const issueId = yield* decodeIssueId(
 			Option.getOrElse(P.internalIdOf("errorIssue", rawIssue), () => rawIssue),
 		).pipe(
@@ -95,7 +109,19 @@ const resolveTarget = Effect.fn("McpErrorDetail.resolveTarget")(function* (param
 				issue.kind === "error" ? "integration" : issue.kind,
 				parameter,
 			)
-		return { fingerprint: issue.fingerprintHash, issueId: rawIssue }
+		const owned = yield* workflow.fingerprintHashesOf(tenant.orgId, issue).pipe(
+			Effect.catchTags({
+				"@maple/http/errors/ErrorPersistenceError": persistenceFailed("error_detail"),
+			}),
+		)
+		return {
+			fingerprint: issue.fingerprintHash,
+			issueId: rawIssue,
+			otherFingerprints: Arr.filter(
+				owned,
+				(hash) => hash !== issue.fingerprintHash && isFingerprintHash(hash),
+			),
+		}
 	}
 	if (rawFingerprint === "")
 		return yield* new McpInvalidInputError({
@@ -105,7 +131,7 @@ const resolveTarget = Effect.fn("McpErrorDetail.resolveTarget")(function* (param
 			example: 'error_detail fingerprint="11640295108927840024"',
 		})
 	if (!isFingerprintHash(rawFingerprint)) return yield* rejectNonFingerprint(rawFingerprint)
-	return { fingerprint: rawFingerprint, issueId: undefined }
+	return { fingerprint: rawFingerprint, issueId: undefined, otherFingerprints: [] }
 })
 
 type Output = typeof ErrorDetailOutput.Type
@@ -128,16 +154,22 @@ const topRoutes = (traces: ReadonlyArray<Trace>): string => {
 		if (span === undefined) continue
 		const attrs = span.attributes
 		const route = attrs["http.route"] ?? span.name
-		const key = [attrs["http.request.method"], route, attrs["http.response.status_code"]]
-			.filter((part) => part !== undefined && part !== "")
-			.join(" ")
+		const key = Arr.join(
+			Arr.filter(
+				[attrs["http.request.method"], route, attrs["http.response.status_code"]],
+				(part): part is string => part !== undefined && part !== "",
+			),
+			" ",
+		)
 		if (key !== "") counts.set(key, (counts.get(key) ?? 0) + 1)
 	}
-	return [...counts.entries()]
-		.sort((a, b) => b[1] - a[1])
-		.slice(0, 3)
-		.map(([route, n]) => `${route} (${n})`)
-		.join(", ")
+	return Arr.join(
+		Arr.map(
+			[...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3),
+			([route, n]) => `${route} (${n})`,
+		),
+		", ",
+	)
 }
 
 const summaryBlock = (output: Output): DocBlock | undefined => {
@@ -153,7 +185,7 @@ const summaryBlock = (output: Output): DocBlock | undefined => {
 			"Services",
 			summary === undefined
 				? error?.serviceName || undefined
-				: `${summary.services.join(", ")}${extraServices > 0 ? ` (+${extraServices} more)` : ""}`,
+				: `${Arr.join(summary.services, ", ")}${extraServices > 0 ? ` (+${extraServices} more)` : ""}`,
 		],
 		[
 			"Occurrences",
@@ -184,7 +216,7 @@ const traceBlocks =
 				["Root span", trace.rootSpanName],
 				["Duration", formatDurationFromMs(trace.durationMs)],
 				["Spans", trace.spanCount],
-				["Services", trace.services.join(", ")],
+				["Services", Arr.join(trace.services, ", ")],
 				["Time", trace.startTime],
 				// The span this fingerprint's occurrence belongs to: a trace usually carries other
 				// failing spans (the callers the error propagated through), and those are not it.
@@ -195,24 +227,30 @@ const traceBlocks =
 				["Error", `"${truncate(message, 160)}"`],
 			]),
 		]
-		const attrs = Object.entries(span?.attributes ?? {})
+		const attrs = Rec.toEntries(span?.attributes ?? {})
 		if (attrs.length > 0) {
 			blocks.push(
 				doc.text(
-					`Error span attributes: {${attrs.map(([k, v]) => `${k}=${truncate(v, 60)}`).join(", ")}}`,
+					`Error span attributes: {${Arr.join(
+						Arr.map(attrs, ([k, v]) => `${k}=${truncate(v, 60)}`),
+						", ",
+					)}}`,
 				),
 			)
 		}
 		if (trace.logs.length > 0) {
 			blocks.push(
 				doc.text(
-					[
-						`Logs (${trace.logs.length}, error-level first):`,
-						...trace.logs.map((log) => {
-							const time = log.timestamp.split(" ")[1] ?? log.timestamp
-							return `  ${time} [${log.severityText.padEnd(5)}] ${truncate(log.body, 90)}`
-						}),
-					].join("\n"),
+					Arr.join(
+						[
+							`Logs (${trace.logs.length}, error-level first):`,
+							...Arr.map(trace.logs, (log) => {
+								const time = Str.split(" ")(log.timestamp)[1] ?? log.timestamp
+								return `  ${time} [${Str.padEnd(5)(log.severityText)}] ${truncate(log.body, 90)}`
+							}),
+						],
+						"\n",
+					),
 				),
 			)
 		}
@@ -229,7 +267,7 @@ const relatedBlocks = (output: Output): Array<DocBlock> => {
 		),
 		doc.table(
 			["Fingerprint", "Error", "Service", "Traces"],
-			related.map((r) => [
+			Arr.map(related, (r) => [
 				r.fingerprintHash,
 				truncate(r.label, 60),
 				r.serviceName,
@@ -244,7 +282,7 @@ export function registerErrorDetailTool(server: McpToolRegistrar) {
 		name: "error_detail",
 		title: "Error Detail",
 		description:
-			"One error: what it is (exception, message, services, count, first/last seen), sample traces with the failing span, and correlated logs. Takes a `fingerprint` (decimal UInt64 from find_errors) or an `issue_id` (UUID from list_error_issues). Without a window it reads around the error's last occurrence. Use inspect_trace on a trace_id for the full span tree.",
+			"Sample traces (failing span, correlated logs) and a summary for one error, by `fingerprint` (decimal UInt64 from find_errors) or `issue_id` (UUID from list_error_issues). Without start_time/end_time it counts the last 30 days and samples the 6 hours before the last occurrence. Use inspect_trace on a trace_id for the full span tree.",
 		parameters: Schema.Struct({
 			fingerprint: P.optionalText(
 				'The error FingerprintHash from find_errors or list_error_issues: a decimal UInt64 string, e.g. "11640295108927840024".',
@@ -253,13 +291,17 @@ export function registerErrorDetailTool(server: McpToolRegistrar) {
 				"An error issue id from list_error_issues (its UUID or its REST id, iss_…), instead of fingerprint.",
 			),
 			...WINDOW.fields,
+			start_time: WINDOW.fields.start_time.annotate({
+				description:
+					"Start of the window, UTC (YYYY-MM-DD HH:mm:ss or ISO 8601). Omit both bounds to anchor on the error's last occurrence in the past 30 days.",
+			}),
 			service: P.service(),
 			include_timeseries: P.optionalFlag(
 				"Include error count over time to see if the error is trending up or down",
 			),
 			limit: P.limit({ default: 5, max: 20, noun: "sample traces" }),
 		}),
-		aliases: P.SERVICE_ALIASES,
+		aliases: { ...P.SERVICE_ALIASES, fingerprint_hash: "fingerprint" },
 		output: ErrorDetailOutput,
 		hints: { readOnly: true },
 		phrases: ["Reading error details", "Looking into an error"],
@@ -295,6 +337,9 @@ export function registerErrorDetailTool(server: McpToolRegistrar) {
 				timeRange: { start: result.timeRange.startTime, end: result.timeRange.endTime },
 				fingerprintHash: target.fingerprint,
 				...(target.issueId === undefined ? undefined : { issueId: target.issueId }),
+				...(target.otherFingerprints.length === 0
+					? undefined
+					: { otherFingerprints: target.otherFingerprints }),
 				...(result.error === undefined ? undefined : { error: result.error }),
 				...(summary === undefined
 					? undefined
@@ -316,7 +361,7 @@ export function registerErrorDetailTool(server: McpToolRegistrar) {
 				...(result.related === undefined || result.related.length === 0
 					? undefined
 					: { related: result.related }),
-				traces: result.traces.map((t) => ({
+				traces: Arr.map(result.traces, (t) => ({
 					traceId: t.traceId,
 					rootSpanName: t.rootSpanName,
 					durationMs: t.durationMs,
@@ -343,6 +388,19 @@ export function registerErrorDetailTool(server: McpToolRegistrar) {
 				["Service", output.service],
 			]
 			const title = `Error Detail: fingerprint ${output.fingerprintHash}`
+			// The issue's other fingerprints are not in this read; say so, and how to read them.
+			const others = output.otherFingerprints ?? []
+			const otherNote =
+				others.length === 0
+					? []
+					: [
+							doc.text(
+								`This issue also owns ${others.length} other fingerprint${others.length === 1 ? "" : "s"} (merged in, or re-keyed by a fingerprint version bump: ${Arr.join(others, ", ")}) that this read does not cover; read each with error_detail fingerprint=<hash>.`,
+							),
+						]
+			const otherNext = Arr.map(others.slice(0, 3), (fingerprint) =>
+				doc.next("error_detail", { fingerprint }, "another fingerprint this issue owns"),
+			)
 			const summary = summaryBlock(output)
 			// The service the error belongs to, so the log search is not an org-wide `service=""`.
 			const logService =
@@ -371,6 +429,11 @@ export function registerErrorDetailTool(server: McpToolRegistrar) {
 							hints: [
 								"A fingerprint changes when the error's type, top frames or message shape change. Run find_errors (or list_error_issues) for current fingerprints.",
 								"Widen start_time/end_time, or drop the service filter.",
+								...(others.length === 0
+									? []
+									: [
+											`This issue also owns other fingerprints: ${Arr.join(others, ", ")}. Read them with error_detail fingerprint=<hash>.`,
+										]),
 							],
 						},
 					}
@@ -380,16 +443,17 @@ export function registerErrorDetailTool(server: McpToolRegistrar) {
 					scope,
 					blocks: [
 						summary,
+						...otherNote,
 						doc.text(
 							`No sample traces in ${window}: the spans behind these occurrences are no longer in trace storage, or fell outside this window. Pass start_time/end_time around the last-seen time to sample a specific period.`,
 						),
 					],
-					next: [logSearch],
+					next: [...otherNext, logSearch],
 				}
 			}
 			const trend = output.timeseries ?? []
 			const trendLabels = bucketLabels(
-				trend.map((point) => point.bucket),
+				Arr.map(trend, (point) => point.bucket),
 				output.timeRange.end,
 			)
 			return {
@@ -397,49 +461,49 @@ export function registerErrorDetailTool(server: McpToolRegistrar) {
 				scope,
 				blocks: [
 					...(summary === undefined ? [] : [summary]),
+					...otherNote,
 					doc.text(`Sample traces: ${output.traces.length}`),
-					...output.traces.flatMap(traceBlocks(output.error?.message ?? "")),
+					...Arr.flatMap(output.traces, traceBlocks(output.error?.message ?? "")),
 					...relatedBlocks(output),
 					...(trend.length === 0
 						? []
 						: [
 								doc.heading("Error Trend"),
 								doc.text(
-									trend
-										.map(
+									Arr.join(
+										Arr.map(
+											trend,
 											(point, i) =>
 												`${trendLabels.labels[i] ?? point.bucket}: ${point.count} errors`,
-										)
-										.join("\n"),
+										),
+										"\n",
+									),
 								),
 								...(trendLabels.lastIsPartial ? [doc.text(PARTIAL_BUCKET_NOTE)] : []),
 							]),
 				],
 				next: [
-					...output.traces
-						.slice(0, 3)
-						.map((t) =>
-							t.errorSpan === undefined
-								? doc.next(
-										"inspect_trace",
-										{ trace_id: t.traceId, errors_only: true },
-										"the failing spans only",
-									)
-								: doc.next(
-										"inspect_span",
-										{ trace_id: t.traceId, span_id: t.errorSpan.spanId },
-										"the failing span's full attributes",
-									),
+					...Arr.map(output.traces.slice(0, 3), (t) =>
+						t.errorSpan === undefined
+							? doc.next(
+									"inspect_trace",
+									{ trace_id: t.traceId, errors_only: true },
+									"the failing spans only",
+								)
+							: doc.next(
+									"inspect_span",
+									{ trace_id: t.traceId, span_id: t.errorSpan.spanId },
+									"the failing span's full attributes",
+								),
+					),
+					...Arr.map((output.related ?? []).slice(0, 1), (r) =>
+						doc.next(
+							"error_detail",
+							{ fingerprint: r.fingerprintHash },
+							`the other error in these traces ("${truncate(r.label, 40)}")`,
 						),
-					...(output.related ?? [])
-						.slice(0, 1)
-						.map((r) =>
-							doc.next(
-								"error_detail",
-								{ fingerprint: r.fingerprintHash },
-								`the other error in these traces ("${truncate(r.label, 40)}")`,
-							),
-						),
+					),
+					...otherNext,
 					logSearch,
 				],
 			}

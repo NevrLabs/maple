@@ -23,7 +23,7 @@ import {
 import * as Orm from "@maple-dev/effect-orm/database"
 import { msToSqlTimestamp } from "@maple/backend/platform/time"
 import { isInformationalGroup } from "@maple/domain/status-page"
-import { Effect, Schema } from "effect"
+import { Effect, Schema, Array as Arr } from "effect"
 import { bumpPage } from "./outbox"
 
 // Status page incidents opened and resolved by an uptime monitor's alert incident, on every
@@ -59,13 +59,13 @@ const groupByPage = (
 		readonly groupName: string | null
 	}>,
 ): ReadonlyArray<PageComponents> =>
-	[...new Set(rows.map((row) => row.pageId))].map((pageId) => {
-		const forPage = rows.filter((row) => row.pageId === pageId)
+	Arr.map([...new Set(Arr.map(rows, (row) => row.pageId))], (pageId) => {
+		const forPage = Arr.filter(rows, (row) => row.pageId === pageId)
 		return {
 			pageId,
 			publish: forPage[0]?.autoIncidents === "publish",
-			components: forPage.map((row) => ({ id: row.componentId, name: row.componentName })),
-			informational: forPage.every((row) => isInformationalGroup(row.groupName)),
+			components: Arr.map(forPage, (row) => ({ id: row.componentId, name: row.componentName })),
+			informational: Arr.every(forPage, (row) => isInformationalGroup(row.groupName)),
 		}
 	})
 
@@ -102,7 +102,7 @@ export const openForAlertIncident = (db: MapleDb, input: OpenForAlertIncidentInp
 				.select(($) => ({ pageId: $.pageId }))
 				.where(($) => [$.orgId.eq(input.orgId), $.alertIncidentId.eq(input.alertIncidentId)]),
 		)
-		const toOpen = pages.filter((page) => !existing.some((row) => row.pageId === page.pageId))
+		const toOpen = Arr.filter(pages, (page) => !Arr.some(existing, (row) => row.pageId === page.pageId))
 		yield* Effect.forEach(
 			toOpen,
 			(page) =>
@@ -133,7 +133,7 @@ export const openForAlertIncident = (db: MapleDb, input: OpenForAlertIncidentInp
 					yield* db.run(
 						PG.insertInto(StatusPageIncidentComponents)
 							.values(
-								page.components.map((component) => ({
+								Arr.map(page.components, (component) => ({
 									incidentId: id,
 									componentId: component.id,
 									orgId: input.orgId,
@@ -254,7 +254,7 @@ export const repairMissingAutoIncidents = (db: MapleDb, at: number) =>
 				}),
 			),
 		)
-		return counts.reduce((sum, n) => sum + n, 0)
+		return Arr.reduce(counts, 0, (sum, n) => sum + n)
 	})
 
 /** Auto incidents one repair pass resolves at most. */
@@ -297,5 +297,5 @@ export const repairOrphanedAutoIncidents = (db: MapleDb, at: number) =>
 				}),
 			),
 		)
-		return counts.reduce((sum, n) => sum + n, 0)
+		return Arr.reduce(counts, 0, (sum, n) => sum + n)
 	})

@@ -1,3 +1,6 @@
+import * as Cloudflare from "@alchemy.run/cloudflare"
+import { AfterResponse } from "@maple/backend/platform/after-response"
+import type { RuntimeContext } from "alchemy/RuntimeContext"
 import { IsolateAge } from "@maple/infra/isolate-age"
 import { WorkerPlatformLive, forIsolate, bridgeHandler } from "@maple/infra/worker-http"
 /**
@@ -6,10 +9,8 @@ import { WorkerPlatformLive, forIsolate, bridgeHandler } from "@maple/infra/work
  */
 import { cachedRecoverable } from "@maple/infra/cached-recoverable"
 import type { HttpEffect } from "alchemy/Http"
-import { Cause, Config, Context, Effect, Exit, Layer, Option, Scope } from "effect"
+import { Cause, Config, Context, Effect, Exit, Layer, Option, Scope, String as Str } from "effect"
 import { FetchHttpClient, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http"
-import * as Etag from "effect/http/Etag"
-import * as HttpPlatform from "effect/http/HttpPlatform"
 import {
 	API_CORS_RESPONSE_HEADERS,
 	API_TIMING_ALLOW_ORIGIN,
@@ -55,13 +56,14 @@ export const buildIsolateHandler = <ROut, E>(
 					// HttpRouter.toHttpEffect erases the same phantom markers internally.
 					// A fresh router is essential: only services may be shared across these graphs.
 					const context = yield* Layer.buildWithMemoMap(
+						// oxlint-disable-next-line effecttsgo/unsafe-effect-type-assertion -- phantom request markers, see above
 						(routes as Layer.Layer<ROut, E, HttpRouter.HttpRouter>).pipe(
 							Layer.provideMerge(Layer.fresh(HttpRouter.layer)),
 						),
 						memoMap,
 						scope,
 					)
-					// oxlint-disable-next-line effecttsgo/return-effect-in-gen -- Return the handler for later requests, never execute it during the build.
+					// oxlint-disable-next-line effecttsgo/return-effect-in-gen, effecttsgo/any-unknown-in-error-context -- Return the handler for later requests, never run it during the build. HttpRouter types its error as unknown; bridgeHandler discharges it.
 					return Context.get(context, HttpRouter.HttpRouter).asHttpEffect()
 				}),
 	).pipe(Effect.map(bridgeHandler))
@@ -118,6 +120,7 @@ export const makeAppGraphs = (isolate: Context.Context<never>, ports: ApiPortsLa
 				Effect.suspend(() => {
 					const previous = tail
 					let release!: () => void
+					// @effect-diagnostics-next-line newPromise:off -- a native Promise hands the waiter back to its own Workers I/O context
 					tail = new Promise<void>((resolve) => {
 						release = resolve
 					})
@@ -135,12 +138,24 @@ export const makeAppGraphs = (isolate: Context.Context<never>, ports: ApiPortsLa
 		}
 	})
 
+/**
+ * The event's `waitUntil`, as the request's after-response runner. Read per event: the isolate
+ * context omits the execution context, so a captured one could never bind another request.
+ */
+const afterResponseOfEvent = Effect.gen(function* () {
+	const execution = yield* Cloudflare.WorkerExecutionContext
+	const runtime = yield* Effect.context<RuntimeContext>()
+	return (work: Effect.Effect<void>) => execution.waitUntil(work).pipe(Effect.provideContext(runtime))
+})
+
 const pathOf = (url: string): string => {
-	const query = url.indexOf("?")
-	return query === -1 ? url : url.slice(0, query)
+	return Option.match(Str.indexOf("?")(url), {
+		onNone: () => url,
+		onSome: (query) => Str.slice(0, query)(url),
+	})
 }
 
-const isV2Path = (path: string): boolean => path === "/v2" || path.startsWith("/v2/")
+const isV2Path = (path: string): boolean => path === "/v2" || Str.startsWith("/v2/")(path)
 
 /** The route graph could not finish bootstrapping: the canonical v2 fallback, or a plain 504 for the rest. */
 const unavailableResponse = (path: string) =>
@@ -176,15 +191,21 @@ const recordEscapedCause = (method: string, path: string, cause: Cause.Cause<unk
  * when an unrelated binding is unavailable. Everything else runs the router
  * under one Postgres connection for the request.
  */
-export const makeFetch = (
-	app: Effect.Effect<HttpEffect, unknown>,
+export const makeFetch = <E>(
+	app: Effect.Effect<HttpEffect, E>,
 	ports: Layer.Layer<MapleDbConnection | AiWorkerFetcher>,
-	queryApp: Effect.Effect<HttpEffect, unknown> = app,
+	queryApp: Effect.Effect<HttpEffect, E> = app,
 	vcsSyncBatch?: Effect.Effect<
 		HttpServerResponse.HttpServerResponse,
 		never,
 		HttpServerRequest.HttpServerRequest
 	>,
+	/** How this event defers work past its response; tests pass a recorder. */
+	afterResponseRunner: Effect.Effect<
+		(work: Effect.Effect<void>) => Effect.Effect<void>,
+		never,
+		RuntimeContext
+	> = afterResponseOfEvent,
 ) =>
 	IsolateAge.useSync((isolateAge) => {
 		const serve = Effect.gen(function* () {
@@ -233,7 +254,7 @@ export const makeFetch = (
 			}
 
 			const selectedApp =
-				path === "/internal/query-engine" || path.startsWith("/internal/query-engine/")
+				path === "/internal/query-engine" || Str.startsWith("/internal/query-engine/")(path)
 					? queryApp
 					: app
 			const built = yield* Effect.exit(selectedApp)
@@ -244,8 +265,10 @@ export const makeFetch = (
 				return unavailableResponse(path)
 			}
 
+			const afterResponse = yield* afterResponseRunner
 			const response = yield* withPgConnectionScope(built.value).pipe(
 				Effect.tapCause((cause) => recordEscapedCause(request.method, path, cause)),
+				Effect.provideService(AfterResponse, afterResponse),
 			)
 
 			return response

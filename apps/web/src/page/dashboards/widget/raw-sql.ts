@@ -1,7 +1,9 @@
 import { rawSqlDisplayTypeFor, widgetTypeByVisualization } from "@maple/domain/http"
+import { rawSqlIssue } from "@maple/domain/raw-sql"
 import { RAW_SQL_TEMPLATES } from "../../../lib/raw-sql/templates"
 import { dataSourceRawSql, dataSourceTransform, makeRawSqlDataSource } from "@maple/widgets/dashboard"
-import { Schema } from "effect"
+import { Array as Arr, Schema, String as Str, Record as Rec } from "effect"
+import { toSeriesFieldOptions } from "./drafts"
 import type { EditorState } from "./editor-state"
 import type { Widget } from "./lowering"
 
@@ -33,7 +35,10 @@ export const draftOf = (widget: Widget): RawSqlDraft => {
 	const rawSql = dataSourceRawSql(widget.dataSource)
 	return rawSql !== null && rawSql.sql.length > 0
 		? { sql: rawSql.sql, granularitySeconds: rawSql.granularitySeconds ?? null }
-		: { sql: RAW_SQL_TEMPLATES[rawSqlDisplayTypeFor(widget.visualization, widget.display.chartId)], granularitySeconds: null }
+		: {
+				sql: RAW_SQL_TEMPLATES[rawSqlDisplayTypeFor(widget.visualization, widget.display.chartId)],
+				granularitySeconds: null,
+			}
 }
 
 export const initRawSql = (widget: Widget): RawSqlState => {
@@ -45,29 +50,71 @@ export const initRawSql = (widget: Widget): RawSqlState => {
 export const reseedForType = (rawSql: RawSqlState, before: TypePair, after: TypePair): RawSqlState => {
 	const previous = displayTypeOf(before)
 	const next = displayTypeOf(after)
-	if (previous === next || rawSql.draft.sql.trim() !== RAW_SQL_TEMPLATES[previous].trim()) return rawSql
+	if (previous === next || Str.trim(rawSql.draft.sql) !== Str.trim(RAW_SQL_TEMPLATES[previous]))
+		return rawSql
 	const reseeded = { ...rawSql.draft, sql: RAW_SQL_TEMPLATES[next] }
 	return { ...rawSql, draft: reseeded, staged: reseeded }
 }
 
-/** `buildRawSqlDataSource`: a stat or gauge without a reduction reads the first row's `value`. */
-export const rawSqlDataSourceOf = (widget: Widget, draft: RawSqlDraft, state: TypePair): Widget["dataSource"] => {
-	const existing = dataSourceTransform(widget.dataSource)
-	const needsScalar = widgetTypeByVisualization(state.visualization)?.isScalar === true
-	const transform =
-		needsScalar && existing?.reduceToValue === undefined
-			? { ...existing, reduceToValue: { field: "value", aggregate: "first" as const } }
-			: existing
+/** The column a SQL stat or gauge reduces while none is typed: the templates' `value`. */
+export const SQL_VALUE_FIELD = "value"
+
+type FieldState = Pick<EditorState, "statValueField" | "queries" | "formulas">
+
+/** The SQL value column: the typed field, never a Builder series name (that pick stays for the Builder). */
+export const sqlValueFieldOf = (state: FieldState): string => {
+	const field = Str.trim(state.statValueField)
+	const builderNames = new Set([
+		...toSeriesFieldOptions(state),
+		...Arr.map(state.queries, (query) => query.name),
+		...Arr.map(state.formulas, (formula) => formula.name),
+	])
+	return builderNames.has(field) ? "" : field
+}
+
+/** `buildRawSqlDataSource`: the transform follows the picked type, so only a stat or gauge reduces. */
+export const rawSqlDataSourceOf = (
+	widget: Widget,
+	draft: RawSqlDraft,
+	state: Pick<EditorState, "visualization" | "chartId" | "statAggregate"> & FieldState,
+): Widget["dataSource"] => {
+	// A builder or endpoint transform (field maps, hidden series) does not describe SQL rows.
+	const stored =
+		dataSourceRawSql(widget.dataSource) === null ? undefined : dataSourceTransform(widget.dataSource)
+	const { reduceToValue: _previous, ...kept } = stored ?? {}
+	const isScalar = widgetTypeByVisualization(state.visualization)?.isScalar === true
+	const field = sqlValueFieldOf(state)
+	const transform = isScalar
+		? {
+				...kept,
+				reduceToValue: {
+					field: field === "" ? SQL_VALUE_FIELD : field,
+					aggregate: state.statAggregate,
+				},
+			}
+		: kept
 	return makeRawSqlDataSource({
 		sql: draft.sql,
 		displayType: displayTypeOf(state),
 		...(draft.granularitySeconds === null ? undefined : { granularitySeconds: draft.granularitySeconds }),
-		...(transform === undefined ? undefined : { transform }),
+		...(Rec.keys<string, unknown>(transform).length === 0 ? undefined : { transform }),
 	})
 }
 
 /** Raw SQL must reference `$__orgFilter`: every query is tenant-scoped through that macro. */
 export const rawSqlErrorOf = (draft: RawSqlDraft): string | null =>
-	draft.sql.includes("$__orgFilter")
+	Str.includes("$__orgFilter")(draft.sql)
 		? null
 		: "SQL must include $__orgFilter so the query is scoped to your organization"
+
+/**
+ * The warehouse's own checks, org filter included. Edited SQL must also bound its
+ * time range; SQL the widget was saved with before that rule is held to the old checks.
+ */
+export const rawSqlIssueOf = (rawSql: RawSqlState) =>
+	rawSqlIssue(rawSql.draft.sql, {
+		workload: rawSql.draft.sql === rawSql.initial.sql ? "interactive" : "dashboard",
+	})
+
+/** What blocks both Run preview and Apply. */
+export const isRunnableSql = (rawSql: RawSqlState): boolean => rawSqlIssueOf(rawSql) === null

@@ -1,30 +1,31 @@
 import { countLabel, formatErrorRate, formatThroughput, pluralize } from "@maple/ui/lib/format"
+import { formatRelativeTimeOrDate } from "@maple/ui/lib/time-format"
 import { shortId } from "@maple/ui/lib/ids"
 import { refreshingClass } from "@maple/ui/lib/refreshing"
-import { formatRelativeTimeOrDate } from "@maple/ui/lib/time-format"
+import { relativeTime } from "../../kit/relative-time"
 import { TONE_COLOR } from "@maple/ui/lib/tone"
 import { cn } from "@maple/ui/lib/utils"
-import { statusDot } from "../../../ui/status-dot"
-import { tableCellStyles as tableCellClass, tableRowStyles } from "@maple/ui/styles/ui/table"
+import { statusDot } from "@maple/views/ui/status-dot"
 import { HEALTH_TONE } from "../../../components/dashboard/service-health"
-import { Option } from "effect"
+import { Option, Array as Arr, Record as Rec, String as Str } from "effect"
 import { AsyncData as FoldkitAsyncData } from "foldkit"
 import type { Html, HtmlBuilder } from "foldkit/html"
-import * as Chart from "../../../charts/chart"
+import * as Chart from "@maple/views/charts/chart"
 import { AppRoute, hrefOf } from "../../../route"
-import * as Sparkline from "../../../charts/sparkline"
-import { resolveColor, type ThemeColors } from "../../../charts/theme-colors"
-import { badge } from "../../../ui/display"
-import { eyebrow } from "../../../ui/eyebrow"
-import { meter } from "../../../ui/meter"
-import { middleTruncate } from "../../../ui/middle-truncate"
-import { segmentedSelect } from "../../../ui/segmented-select"
-import { skeleton } from "../../../ui/skeleton"
-import { table, tableBody, tableCell, tableHead, tableHeader, tableRow } from "../../../ui/table"
-import { tableSkeleton } from "../../../ui/table-skeleton"
-import { errorRateValue, latencyValue, serviceDot } from "../../../ui/values"
+import * as Sparkline from "@maple/views/charts/sparkline"
+import { resolveColor, type ThemeColors } from "@maple/views/charts/theme-colors"
+import { badge } from "@maple/views/ui/display"
+import { eyebrow } from "@maple/views/ui/eyebrow"
+import { meter } from "@maple/views/ui/meter"
+import { middleTruncate } from "@maple/views/ui/middle-truncate"
+import { pressable } from "@maple/views/ui/pressable"
+import { segmentedSelect } from "@maple/views/ui/segmented-select"
+import { skeleton } from "@maple/views/ui/skeleton"
+import { table, tableBody, tableCell, tableHead, tableHeader, tableRow } from "@maple/views/ui/table"
+import { tableSkeleton } from "@maple/views/ui/table-skeleton"
+import { errorRateValue, latencyValue, serviceDot } from "@maple/views/ui/values"
 import { signalEmptyState } from "../../kit/signal-empty-state"
-import { presenceOf } from "../../kit/signal-presence"
+import { presenceOf } from "@maple/views/data/signal-presence"
 import {
 	baselineDelta,
 	baselineKey,
@@ -45,8 +46,12 @@ import { Message } from "./message"
 import type { Model, ServiceRow } from "./model"
 import { isUnnamedService, type Overlays, rowIdOf, unnamedServiceHint, withOverlays } from "./view-overlays"
 import { countDead, type Liveness, stateOf } from "./liveness"
+import { typography, typographyClass } from "@maple/views/ui/typography"
+import { hstack, hstackClass, vstack } from "@maple/views/ui/stack"
+import { textLink } from "@maple/views/ui/text-link"
+import { selectableRow } from "@maple/views/ui/selectable-row"
+import { stripClass } from "@maple/views/ui/rule"
 
-export const ERROR_RATE_COLOR = TONE_COLOR.crit
 /** The Throughput chart's colour, so every calls sparkline across the service pages matches. */
 export const THROUGHPUT_COLOR = "--chart-throughput"
 const CHART_MODEL = Chart.init()
@@ -103,11 +108,11 @@ const livenessBadge = (h: HtmlBuilder<Message>, ctx: TableContext, service: Serv
 
 const environmentBadge = (h: HtmlBuilder<Message>, environment: string): Html => {
 	const tint =
-		environment.toLowerCase() === "production"
+		Str.toLowerCase(environment) === "production"
 			? "bg-severity-warn-a2 text-severity-warn"
-			: environment.toLowerCase() === "staging"
+			: Str.toLowerCase(environment) === "staging"
 				? "bg-chart-p50/15 text-chart-p50"
-				: environment.toLowerCase() === "development"
+				: Str.toLowerCase(environment) === "development"
 					? "bg-severity-debug-a2 text-severity-debug"
 					: ""
 	return badge(h, { variant: "secondary", className: tint }, [environment])
@@ -144,30 +149,40 @@ const sparkline = (
 /** The deploy cell's lines: commit subject (once resolved) over `sha · age`, or the state line. */
 const deployCell = (h: HtmlBuilder<Message>, ctx: TableContext, service: ServiceRow): Html => {
 	const info = deployInfo(service.commits)
-	if (info === undefined) return h.span([h.Class("text-xs text-muted-foreground")], ["N/A"])
+	if (info === undefined) return typography(h, { size: "xs", tone: "muted" }, ["N/A"])
 	const age =
-		info.firstSeen !== "" ? formatRelativeTimeOrDate(info.firstSeen, ctx.model.nowMs, ctx.timeZone) : ""
+		info.firstSeen !== ""
+			? relativeTime(h, {
+					value: info.firstSeen,
+					nowMs: ctx.model.nowMs,
+					timeZone: ctx.timeZone,
+					variant: "orDate",
+				})
+			: null
 	const messages: Readonly<Record<string, string>> = Option.getOrElse(
 		FoldkitAsyncData.getData(ctx.model.commitMessages.data),
 		() => ({}),
 	)
 	const message = isResolvableSha(info.sha) ? (messages[info.sha] ?? "") : ""
 	const shortSha = truncateCommitSha(info.sha)
-	const metaText = message !== "" ? [shortSha, age].filter(Boolean).join(" · ") : age
+	const meta: ReadonlyArray<Html | string> =
+		age === null ? (message !== "" ? [shortSha] : []) : message !== "" ? [shortSha, " · ", age] : [age]
 	const stateLine: Html | null = info.errorsSince
-		? h.span(
-				[h.Class("truncate text-3xs text-severity-error")],
-				[...(age !== "" ? [`${age} · `] : []), "errors ↑ since"],
-			)
+		? typography(h, { size: "3xs", tone: "error", truncate: true }, [
+				...(age !== null ? [age, " · "] : []),
+				"errors ↑ since",
+			])
 		: info.rollout !== undefined
-			? h.button(
-					[
-						h.Class("flex cursor-default items-center gap-1.5"),
-						h.DataAttribute("base-ui-tooltip-trigger", ""),
-						h.DataAttribute("slot", "tooltip-trigger"),
-						h.Type("button"),
-						...(ctx.overlays?.tooltip("rollout", rowIdOf(service)) ?? []),
-					],
+			? pressable(
+					h,
+					{
+						className: "flex cursor-default items-center gap-1.5",
+						attributes: [
+							h.DataAttribute("base-ui-tooltip-trigger", ""),
+							h.DataAttribute("slot", "tooltip-trigger"),
+							...(ctx.overlays?.tooltip("rollout", rowIdOf(service)) ?? []),
+						],
+					},
 					[
 						meter(h, {
 							value: info.rollout.percentage,
@@ -175,10 +190,11 @@ const deployCell = (h: HtmlBuilder<Message>, ctx: TableContext, service: Service
 							className: "h-[3px] w-10 shrink-0 bg-muted",
 							fillClassName: "bg-primary",
 						}),
-						h.span(
-							[h.Class("font-mono text-3xs text-primary")],
-							[String(info.rollout.percentage), "% · +", String(info.rollout.others.length)],
-						),
+						typography(h, { size: "3xs", tone: "primary", mono: true }, [
+							String(info.rollout.percentage),
+							"% · +",
+							String(info.rollout.others.length),
+						]),
 					],
 				)
 			: null
@@ -192,16 +208,13 @@ const deployCell = (h: HtmlBuilder<Message>, ctx: TableContext, service: Service
 				[message !== "" ? message : shortSha],
 			)
 		: h.span([h.Class("min-w-0 max-w-full truncate text-xs text-foreground")], [shortSha])
-	return h.div(
-		[h.Class("flex min-w-0 flex-col gap-0.5")],
-		[
-			trigger,
-			stateLine ??
-				(metaText === ""
-					? null
-					: h.span([h.Class("truncate font-mono text-3xs text-muted-foreground")], [metaText])),
-		],
-	)
+	return vstack(h, { gap: "0.5", shrink: true }, [
+		trigger,
+		stateLine ??
+			(meta.length === 0
+				? null
+				: typography(h, { size: "3xs", tone: "muted", mono: true, truncate: true }, meta)),
+	])
 }
 
 const serviceRow = (
@@ -215,9 +228,7 @@ const serviceRow = (
 	const health = healthOf(ctx.summary, service)
 	const series = FoldkitAsyncData.getData(ctx.model.sparklines.data).pipe(
 		Option.flatMap((map) =>
-			Option.fromNullishOr(
-				Object.hasOwn(map, service.serviceName) ? map[service.serviceName] : undefined,
-			),
+			Option.fromNullishOr(Rec.has(map, service.serviceName) ? map[service.serviceName] : undefined),
 		),
 	)
 	const throughput = Option.match(series, { onNone: () => [], onSome: (s) => s.throughput })
@@ -234,40 +245,21 @@ const serviceRow = (
 	})
 	const throughputText = formatThroughput(service.throughput, "/s")
 	const liveBadge = livenessBadge(h, ctx, service)
-	const isDead = stateOf(livenessOfModel(ctx.model), service, ctx.model.nowMs) === "dead"
-	return h.tr(
-		[
-			h.Key(rowKey),
-			h.Attribute(
-				"class",
-				cn(
-					tableRowStyles,
-					"cursor-pointer border-l-2 border-l-transparent hover:bg-surface-sunken active:bg-surface-sunken focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset",
-					health === "unhealthy" && "border-l-severity-error",
-					isDead && "opacity-60",
-				),
-			),
-			h.DataAttribute("slot", "table-row"),
-			h.DataAttribute("service-row", service.serviceName),
-			h.Tabindex(0),
-			h.OnClick(open),
-			h.OnKeyDownPreventDefault((key) =>
-				key === "Enter" || key === " " ? Option.some(open) : Option.none(),
-			),
-		],
+	return tableRow(
+		h,
 		[
 			tableCell(h, [
-				h.a(
-					[
-						h.Class(
-							"flex max-w-full items-center gap-1.5 font-medium text-foreground hover:underline active:underline",
-						),
-						h.Href(serviceHref(ctx.model, service)),
-						h.Title(service.serviceName),
-					],
+				textLink(
+					h,
+					{
+						href: serviceHref(ctx.model, service),
+						tone: "inherit",
+						className: "flex max-w-full gap-1.5 font-medium text-foreground",
+						attributes: [h.Title(service.serviceName)],
+					},
 					[
 						serviceDot(h, { serviceName: service.serviceName }),
-						h.span([h.Class("min-w-0 truncate")], [service.serviceName]),
+						typography(h, { truncate: true, className: "min-w-0" }, [service.serviceName]),
 						isUnnamedService(service.serviceName)
 							? unnamedServiceHint(h, ctx.overlays?.tooltip("unnamed", rowIdOf(service)) ?? [])
 							: null,
@@ -276,7 +268,7 @@ const serviceRow = (
 				),
 				...(liveBadge === null ? [] : [h.div([h.Class("mt-0.5")], [liveBadge])]),
 				...(subtitle !== ""
-					? [h.div([h.Class("truncate text-xs text-muted-foreground")], [subtitle])]
+					? [typography(h, { size: "xs", tone: "muted", truncate: true, as: "div" }, [subtitle])]
 					: []),
 			]),
 			tableCell(
@@ -307,69 +299,86 @@ const serviceRow = (
 						h.AriaLabel(`Error rate: ${formatErrorRate(service.errorRate)}`),
 					],
 					[
-						sparkline(h, ctx, `err-${rowKey}`, errorRates, ERROR_RATE_COLOR),
-						h.div(
-							[h.Class("absolute inset-0 flex items-center justify-center")],
-							[
-								h.span(
-									[h.Class(cn("font-mono text-xs font-semibold", TEXT_HALO))],
-									[formatErrorRate(service.errorRate)],
-								),
-							],
+						sparkline(
+							h,
+							ctx,
+							`err-${rowKey}`,
+							errorRates,
+							// Red for any error in the window, so a spike under a low average still reads.
+							service.errorRate > 0 || Arr.some(errorRates, (rate) => rate > 0)
+								? TONE_COLOR.crit
+								: TONE_COLOR.neutral,
 						),
+						hstack(h, { align: "center", justify: "center", className: "absolute inset-0" }, [
+							errorRateValue(h, {
+								rate: service.errorRate,
+								className: cn("text-xs font-semibold", TEXT_HALO),
+							}),
+						]),
 					],
 				),
 			]),
 			tableCell(
 				h,
 				[
-					h.button(
-						[
-							h.AriaLabel(`Throughput: ${throughputText}`),
-							h.Class("relative block h-8 w-full max-w-[120px]"),
-							h.DataAttribute("base-ui-tooltip-trigger", ""),
-							h.DataAttribute("slot", "tooltip-trigger"),
-							h.Type("button"),
-							...(service.hasSampling
-								? (ctx.overlays?.tooltip("sampling", rowIdOf(service)) ?? [])
-								: []),
-						],
+					pressable(
+						h,
+						{
+							label: `Throughput: ${throughputText}`,
+							className: "relative block h-8 w-full max-w-[120px] cursor-default",
+							attributes: [
+								h.DataAttribute("base-ui-tooltip-trigger", ""),
+								h.DataAttribute("slot", "tooltip-trigger"),
+								...(service.hasSampling
+									? (ctx.overlays?.tooltip("sampling", rowIdOf(service)) ?? [])
+									: []),
+							],
+						},
 						[
 							sparkline(h, ctx, `thr-${rowKey}`, throughput, THROUGHPUT_COLOR),
-							h.div(
-								[h.Class("absolute inset-0 flex flex-col items-center justify-center")],
-								[
-									h.span(
-										[h.Class(cn("font-mono text-xs font-semibold", TEXT_HALO))],
-										[...(service.hasSampling ? ["~"] : []), throughputText],
-									),
-									...(service.hasSampling
-										? [
-												h.span(
-													[
-														h.Class(
-															cn(
-																"font-mono text-4xs text-muted-foreground",
-																TEXT_HALO,
-															),
+							vstack(h, { align: "center", justify: "center", className: "absolute inset-0" }, [
+								h.span(
+									[h.Class(cn("font-mono text-xs font-semibold", TEXT_HALO))],
+									[...(service.hasSampling ? ["~"] : []), throughputText],
+								),
+								...(service.hasSampling
+									? [
+											h.span(
+												[
+													h.Class(
+														cn(
+															"font-mono text-4xs text-muted-foreground",
+															TEXT_HALO,
 														),
-													],
-													[
-														"~",
-														formatThroughput(service.tracedThroughput, "/s"),
-														" traced",
-													],
-												),
-											]
-										: []),
-								],
-							),
+													),
+												],
+												[
+													"~",
+													formatThroughput(service.tracedThroughput, "/s"),
+													" traced",
+												],
+											),
+										]
+									: []),
+							]),
 						],
 					),
 				],
 				"hidden md:table-cell",
 			),
 			tableCell(h, [deployCell(h, ctx, service)], "hidden lg:table-cell"),
+		],
+		cn(
+			"cursor-pointer border-l-2 border-l-transparent hover:bg-surface-sunken active:bg-surface-sunken focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset",
+			health === "unhealthy" && "border-l-severity-error",
+		),
+		[
+			h.Key(rowKey),
+			h.Tabindex(0),
+			h.OnClick(open),
+			h.OnKeyDownPreventDefault((key) =>
+				key === "Enter" || key === " " ? Option.some(open) : Option.none(),
+			),
 		],
 	)
 }
@@ -405,18 +414,15 @@ const groupHeaderRow = (
 	children: ReadonlyArray<Html>,
 	className?: string,
 ): Html =>
-	h.tr(
-		[h.Key(key), h.Attribute("class", cn(tableRowStyles, tint)), h.DataAttribute("slot", "table-row")],
+	tableRow(
+		h,
 		[
-			h.td(
-				[
-					h.Attribute("class", cn(tableCellClass, "py-2")),
-					h.Attribute("colspan", "7"),
-					h.DataAttribute("slot", "table-cell"),
-				],
-				[h.div([h.Class(cn("flex items-center gap-2", className))], children)],
-			),
+			tableCell(h, [h.div([h.Class(cn(hstackClass({ gap: "2" }), className))], children)], "py-2", [
+				h.Attribute("colspan", "7"),
+			]),
 		],
+		tint,
+		[h.Key(key)],
 	)
 
 const emptyState = (h: HtmlBuilder<Message>, ctx: TableContext) => {
@@ -430,6 +436,7 @@ const emptyStateBody = (h: HtmlBuilder<Message>, ctx: TableContext, isFiltered: 
 		noun: "services",
 		presence: presenceOf(ctx.model.presence, "traces"),
 		nowMs: ctx.model.nowMs,
+		timeZone: ctx.timeZone,
 		isFiltered,
 		onClearFilters: isFiltered ? Message.ClickedClearServiceFilters() : undefined,
 	})
@@ -447,50 +454,46 @@ const desktopTable = (
 	const subtitleFor = (service: ServiceRow) => (mode === "namespace" ? "" : service.serviceNamespace)
 	const body =
 		services.length === 0
-			? [
-					tableRow(h, [
-						h.td(
-							[
-								h.Attribute("class", cn(tableCellClass, "p-0")),
-								h.Attribute("colspan", "7"),
-								h.DataAttribute("slot", "table-cell"),
-							],
-							[emptyState(h, ctx)],
-						),
-					]),
-				]
-			: groupServices(services, mode).flatMap(([namespace, envGroups]) => [
+			? [tableRow(h, [tableCell(h, [emptyState(h, ctx)], "p-0", [h.Attribute("colspan", "7")])])]
+			: Arr.flatMap(groupServices(services, mode), ([namespace, envGroups]) => [
 					...(mode === "namespace"
 						? [
-								groupHeaderRow(h, `ns-${namespace}`, "bg-surface-sunken hover:bg-surface-strong active:bg-surface-strong", [
-									namespaceLabel(h, namespace),
-									h.span(
-										[h.Class("text-xs text-muted-foreground")],
-										[
+								groupHeaderRow(
+									h,
+									`ns-${namespace}`,
+									"bg-surface-sunken hover:bg-surface-strong active:bg-surface-strong",
+									[
+										namespaceLabel(h, namespace),
+										typography(h, { size: "xs", tone: "muted" }, [
 											countLabel(
-												envGroups.reduce((sum, [, rows]) => sum + rows.length, 0),
+												Arr.reduce(
+													envGroups,
+													0,
+													(sum, [, rows]) => sum + rows.length,
+												),
 												"service",
 											),
-										],
-									),
-								]),
+										]),
+									],
+								),
 							]
 						: []),
-					...envGroups.flatMap(([environment, rows]) => [
+					...Arr.flatMap(envGroups, ([environment, rows]) => [
 						groupHeaderRow(
 							h,
 							`env-${namespace}-${environment}`,
 							"bg-surface-sunken hover:bg-surface-strong active:bg-surface-strong",
 							[
 								environmentBadge(h, environment),
-								h.span(
-									[h.Class("text-xs text-muted-foreground")],
-									[String(rows.length), " ", pluralize(rows.length, "service")],
-								),
+								typography(h, { size: "xs", tone: "muted" }, [
+									String(rows.length),
+									" ",
+									pluralize(rows.length, "service"),
+								]),
 							],
 							mode === "namespace" ? "pl-4" : undefined,
 						),
-						...rows.map((service) =>
+						...Arr.map(rows, (service) =>
 							serviceRow(
 								h,
 								ctx,
@@ -509,7 +512,7 @@ const desktopTable = (
 				tableHeader(h, [
 					tableRow(
 						h,
-						COLUMNS.map(([label, className]) => tableHead(h, [label], className)),
+						Arr.map(COLUMNS, ([label, className]) => tableHead(h, [label], className)),
 					),
 				]),
 				tableBody(h, body),
@@ -529,37 +532,36 @@ const mobileList = (
 		[h.Class("overflow-hidden rounded-md border md:hidden")],
 		services.length === 0
 			? [emptyState(h, ctx)]
-			: groupServices(services, mode).map(([namespace, envGroups]) =>
+			: Arr.map(groupServices(services, mode), ([namespace, envGroups]) =>
 					h.div(
 						[h.Key(`m-${namespace}`)],
 						[
 							...(mode === "namespace"
 								? [
-										h.div(
-											[
-												h.Class(
-													"flex items-center gap-2 border-b bg-surface-sunken px-3 py-2",
-												),
-											],
+										hstack(
+											h,
+											{
+												gap: "2",
+												align: "center",
+												className: stripClass("bar"),
+											},
 											[
 												namespaceLabel(h, namespace),
-												h.span(
-													[h.Class("text-xs text-muted-foreground")],
-													[
-														countLabel(
-															envGroups.reduce(
-																(sum, [, rows]) => sum + rows.length,
-																0,
-															),
-															"service",
+												typography(h, { size: "xs", tone: "muted" }, [
+													countLabel(
+														Arr.reduce(
+															envGroups,
+															0,
+															(sum, [, rows]) => sum + rows.length,
 														),
-													],
-												),
+														"service",
+													),
+												]),
 											],
 										),
 									]
 								: []),
-							...envGroups.map(([environment, rows]) =>
+							...Arr.map(envGroups, ([environment, rows]) =>
 								h.div(
 									[h.Key(`m-${namespace}-${environment}`)],
 									[
@@ -574,33 +576,37 @@ const mobileList = (
 											],
 											[
 												environmentBadge(h, environment),
-												h.span(
-													[h.Class("text-xs text-muted-foreground")],
-													[countLabel(rows.length, "service")],
-												),
+												typography(h, { size: "xs", tone: "muted" }, [
+													countLabel(rows.length, "service"),
+												]),
 											],
 										),
-										...rows.map((service) =>
-											h.a(
-												[
-													h.Key(
-														`m-${service.serviceName}-${service.serviceNamespace}-${service.environment}`,
-													),
-													h.Href(serviceHref(ctx.model, service)),
-													h.Class(
+										...Arr.map(rows, (service) =>
+											selectableRow(
+												h,
+												{
+													isSelected: false,
+													href: serviceHref(ctx.model, service),
+													className:
 														"flex min-h-11 items-center justify-between gap-3 border-b px-3 py-2.5 last:border-b-0 hover:bg-surface-sunken active:bg-surface-sunken focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring",
-													),
-												],
+													attributes: [
+														h.Key(
+															`m-${service.serviceName}-${service.serviceNamespace}-${service.environment}`,
+														),
+													],
+												},
 												[
 													h.div(
 														[h.Class("min-w-0 flex-1")],
 														[
-															h.div(
-																[
-																	h.Class(
-																		"flex items-center gap-1.5 text-sm font-medium text-foreground",
-																	),
-																],
+															hstack(
+																h,
+																{
+																	gap: "1.5",
+																	align: "center",
+																	className:
+																		"text-sm font-medium text-foreground",
+																},
 																[
 																	serviceDot(h, {
 																		serviceName: service.serviceName,
@@ -627,33 +633,36 @@ const mobileList = (
 															...(mode === "environment" &&
 															service.serviceNamespace !== ""
 																? [
-																		h.div(
-																			[
-																				h.Class(
-																					"truncate text-xs text-muted-foreground",
-																				),
-																			],
+																		typography(
+																			h,
+																			{
+																				size: "xs",
+																				tone: "muted",
+																				truncate: true,
+																				as: "div",
+																			},
 																			[service.serviceNamespace],
 																		),
 																	]
 																: []),
-															h.div(
-																[
-																	h.Class(
-																		"flex items-center gap-3 font-mono text-xs tabular-nums",
-																	),
-																],
-																// `MobileStat`'s `{label} `: the label and its space are two text nodes.
+															hstack(
+																h,
+																{
+																	gap: "3",
+																	align: "center",
+																	className: typographyClass({
+																		mono: true,
+																		size: "xs",
+																		numeric: true,
+																	}),
+																},
 																[
 																	h.span(
 																		[],
 																		[
-																			h.span(
-																				[
-																					h.Class(
-																						"text-foreground-subtle",
-																					),
-																				],
+																			typography(
+																				h,
+																				{ tone: "subtle" },
 																				["P99", " "],
 																			),
 																			latencyValue(h, {
@@ -665,16 +674,14 @@ const mobileList = (
 																	h.span(
 																		[],
 																		[
-																			h.span(
-																				[
-																					h.Class(
-																						"text-foreground-subtle",
-																					),
-																				],
+																			typography(
+																				h,
+																				{ tone: "subtle" },
 																				["Thru", " "],
 																			),
-																			h.span(
-																				[h.Class("text-foreground")],
+																			typography(
+																				h,
+																				{ tone: "foreground" },
 																				[
 																					...(service.hasSampling
 																						? ["~"]
@@ -696,7 +703,11 @@ const mobileList = (
 														[
 															errorRateValue(h, {
 																rate: service.errorRate,
-																className: "block text-sm font-semibold",
+																className: typographyClass({
+																	size: "sm",
+																	weight: "semibold",
+																	className: "block",
+																}),
 															}),
 															eyebrow(h, { as: "div" }, ["err"]),
 														],
@@ -740,12 +751,14 @@ export const loadingState = (h: HtmlBuilder<Message>): Html =>
 					h.DataAttribute("slot", "skeleton-list"),
 				],
 				Array.from({ length: 5 }, () =>
-					h.div(
-						[
-							h.Class(
-								"flex items-center justify-between gap-3 border-b px-3 py-2.5 last:border-b-0",
-							),
-						],
+					hstack(
+						h,
+						{
+							gap: "3",
+							align: "center",
+							justify: "between",
+							className: "border-b px-3 py-2.5 last:border-b-0",
+						},
 						[
 							h.div(
 								[h.Class("min-w-0 flex-1 space-y-1.5")],
@@ -796,8 +809,8 @@ export const servicesTable = (
 	)
 	const hasNamespaces = services.some((service) => service.serviceNamespace !== "")
 	const mode = resolveGroupBy(ctx.model.search.groupBy, services, ctx.isNamespacePinned)
-	const unhealthy = services.filter((s) => healthOf(ctx.summary, s) === "unhealthy").length
-	const degraded = services.filter((s) => healthOf(ctx.summary, s) === "degraded").length
+	const unhealthy = Arr.filter(services, (s) => healthOf(ctx.summary, s) === "unhealthy").length
+	const degraded = Arr.filter(services, (s) => healthOf(ctx.summary, s) === "degraded").length
 	const healthFilter = ctx.model.search.health
 	return withOverlays(
 		h,
@@ -842,50 +855,53 @@ const body = (
 ): ReadonlyArray<Html> => [
 	...(hasNamespaces || deadCount > 0 || ctx.model.search.dead === true
 		? [
-				h.div(
-					[h.Class("flex items-center justify-end gap-3")],
-					[
-						deadToggle(h, ctx, deadCount),
-						segmentedSelect(h, {
-							options: [
-								{ value: "namespace", label: "Namespace" },
-								{ value: "environment", label: "Environment" },
-							],
-							value: mode,
-							onChange: (groupBy) => Message.ClickedGroupBy({ groupBy }),
-							size: "sm",
-							ariaLabel: "Group services by",
-							className: cn("shrink-0", !hasNamespaces && "hidden"),
-						}),
-					],
-				),
+				hstack(h, { align: "center", justify: "end", gap: "3" }, [
+					deadToggle(h, ctx, deadCount),
+					segmentedSelect(h, {
+						options: [
+							{ value: "namespace", label: "Namespace" },
+							{ value: "environment", label: "Environment" },
+						],
+						value: mode,
+						onChange: (groupBy) => Message.ClickedGroupBy({ groupBy }),
+						size: "sm",
+						ariaLabel: "Group services by",
+						className: cn("shrink-0", !hasNamespaces && "hidden"),
+					}),
+				]),
 			]
 		: []),
 	desktopTable(h, ctx, services, mode),
 	mobileList(h, ctx, services, mode),
-	h.div(
-		[h.Class("flex items-center justify-between text-sm text-muted-foreground")],
+	hstack(
+		h,
+		{ align: "center", justify: "between", className: typographyClass({ size: "sm", tone: "muted" }) },
 		[
 			h.span(
 				[],
 				[
 					overview.length >= SERVICE_OVERVIEW_ROW_CAP
 						? `Showing first ${SERVICE_OVERVIEW_ROW_CAP} services`
-						: `Showing ${[String(services.length), healthFilter, pluralize(services.length, "service")].filter(Boolean).join(" ")}${
-								deadCount > 0 && ctx.model.search.dead !== true ? ` · ${deadCount} dead hidden` : ""
-							}`,
+						: `Showing ${Arr.join(
+								Arr.filter(
+									[
+										String(services.length),
+										healthFilter,
+										pluralize(services.length, "service"),
+									],
+									(part): part is string => part !== undefined && part !== "",
+								),
+								" ",
+							)}${deadCount > 0 && ctx.model.search.dead !== true ? ` · ${deadCount} dead hidden` : ""}`,
 				],
 			),
 			...(unhealthy > 0 || degraded > 0
 				? [
-						h.span(
-							[h.Class("text-xs")],
-							[
-								...(unhealthy > 0 ? [`${unhealthy} unhealthy`] : []),
-								...(unhealthy > 0 && degraded > 0 ? [" · "] : []),
-								...(degraded > 0 ? [`${degraded} degraded`] : []),
-							],
-						),
+						typography(h, { size: "xs" }, [
+							...(unhealthy > 0 ? [`${unhealthy} unhealthy`] : []),
+							...(unhealthy > 0 && degraded > 0 ? [" · "] : []),
+							...(degraded > 0 ? [`${degraded} degraded`] : []),
+						]),
 					]
 				: []),
 		],

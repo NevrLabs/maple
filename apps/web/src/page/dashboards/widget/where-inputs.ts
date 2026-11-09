@@ -1,6 +1,6 @@
 import { QUERY_BUILDER_METRIC_TYPES } from "@maple/query-model"
 import type { WhereClauseAutocompleteValues } from "../../../lib/query-builder/where-clause-autocomplete"
-import { Option } from "effect"
+import { Option, Array as Arr } from "effect"
 import { AsyncData } from "foldkit"
 import type { PageContext } from "../../contract"
 import { type AutocompleteLookup, lookupField, type LookupNames } from "../../kit/autocomplete-lookups"
@@ -54,7 +54,7 @@ export const providerValuesOf = (
 
 /** `autocompleteValues[query.dataSource]`, with a picked metric's own keys (`useMetricScopedAutocomplete`). */
 export const baseValuesOf = (model: Model, query: QueryDraft): WhereClauseAutocompleteValues => {
-	const variables = (model.document?.variables ?? []).map((variable) => variable.name)
+	const variables = Arr.map(model.document?.variables ?? [], (variable) => variable.name)
 	switch (query.dataSource) {
 		case "traces":
 		case "logs":
@@ -65,7 +65,7 @@ export const baseValuesOf = (model: Model, query: QueryDraft): WhereClauseAutoco
 			return {
 				metricTypes: [...QUERY_BUILDER_METRIC_TYPES],
 				attributeKeys: isScoped
-					? [...(model.metricKeys[`${query.metricName}::${query.metricType}`] ?? [])]
+					? [...(model.metricKeys[`${query.metricName}::${query.metricType}`]?.attributes ?? [])]
 					: field(model, "metricAttributeKeys", "keys"),
 				services: [...(model.metricOptions?.services ?? [])],
 				variables,
@@ -75,7 +75,8 @@ export const baseValuesOf = (model: Model, query: QueryDraft): WhereClauseAutoco
 }
 
 export const panelInputsOf = (model: Model, context: PageContext): PanelInputs => ({
-	queryOf: (queryId) => model.state?.queries.find((query) => query.id === queryId),
+	queryOf: (queryId) =>
+		Option.getOrUndefined(Arr.findFirst(model.state?.queries ?? [], (query) => query.id === queryId)),
 	baseValuesOf: (query) => baseValuesOf(model, query),
 	orgId: context.orgId,
 	window: autocompleteWindowOf(model, context),

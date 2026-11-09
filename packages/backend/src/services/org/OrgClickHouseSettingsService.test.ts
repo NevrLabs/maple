@@ -1,5 +1,5 @@
 import { OrgClickHouseSettingsEncryptionError } from "@maple/domain/http"
-// BOUNDARY: Test doubles preserve opaque values so the consuming boundary can be exercised.
+// BOUNDARY-FILE: Test doubles preserve opaque values so the consuming boundary can be exercised.
 import { afterEach, describe, expect, it, layer } from "@effect/vitest"
 import {
 	OrgClickHouseSettingsPersistenceError,
@@ -17,7 +17,17 @@ import {
 	makeEdgeCacheService,
 	MemoryCacheBackendLive,
 } from "@maple/cache"
-import { Cause, ConfigProvider, Effect, Exit, Layer, Option, Schema } from "effect"
+import {
+	Cause,
+	ConfigProvider,
+	Effect,
+	Exit,
+	Layer,
+	Option,
+	Schema,
+	Array as Arr,
+	String as Str,
+} from "effect"
 import { TestClock } from "effect/testing"
 import { FetchHttpClient } from "effect/http"
 import type { TableDiffEntry } from "@maple/domain/clickhouse"
@@ -197,7 +207,7 @@ describe("isRetryableUpstream", () => {
 layer(FetchHttpClient.layer, { excludeTestServices: true })("execClickHouse", (it) => {
 	it.effect("uses manual redirects and rejects every 3xx without following it", () =>
 		Effect.gen(function* () {
-			let redirectMode: RequestRedirect | undefined
+			let redirectMode: RequestInit["redirect"]
 			let calls = 0
 			const fetchImpl = (async (_input: RequestInfo | URL, init?: RequestInit) => {
 				calls += 1
@@ -253,7 +263,7 @@ layer(FetchHttpClient.layer, { excludeTestServices: true })("execClickHouse", (i
 	it.effect("rejects an endless response body without retrying instead of buffering it", () =>
 		Effect.gen(function* () {
 			const pulled = { count: 0 }
-			const chunk = new TextEncoder().encode("x".repeat(64 * 1024))
+			const chunk = new TextEncoder().encode(Str.repeat(64 * 1024)("x"))
 			const { state, fetchImpl } = makeFetch(() =>
 				Promise.resolve(
 					new Response(
@@ -284,7 +294,9 @@ layer(FetchHttpClient.layer, { excludeTestServices: true })("execClickHouse", (i
 					new Response(
 						new ReadableStream<Uint8Array>({
 							start: (controller) => {
-								parts.forEach((part) => controller.enqueue(new TextEncoder().encode(part)))
+								Arr.forEach(parts, (part) =>
+									controller.enqueue(new TextEncoder().encode(part)),
+								)
 								controller.close()
 							},
 						}),
@@ -292,7 +304,7 @@ layer(FetchHttpClient.layer, { excludeTestServices: true })("execClickHouse", (i
 					),
 				),
 			)
-			expect(yield* run("SELECT name", fetchImpl)).toBe(parts.join(""))
+			expect(yield* run("SELECT name", fetchImpl)).toBe(Arr.join(parts, ""))
 		}),
 	)
 
@@ -369,7 +381,7 @@ describe("resolveRuntimeConfig caching", () => {
 	// (it is a required dependency) while making its backend a deliberate miss.
 	const missOnlyBackend: EdgeCacheBackend = {
 		name: "memory",
-		get: () => Effect.succeed(undefined),
+		get: () => Effect.undefined,
 		put: () => Effect.void,
 		delete: () => Effect.void,
 	}
@@ -478,7 +490,7 @@ describe("resolveRuntimeConfig caching", () => {
 			const exit = yield* service.resolveRuntimeConfig(asOrgId(orgId)).pipe(Effect.exit)
 			const error = getError(exit)
 			expect(error).toBeInstanceOf(OrgClickHouseSettingsStoredConfigInvalidError)
-			if (!(error instanceof OrgClickHouseSettingsStoredConfigInvalidError)) return
+			if (!Schema.is(OrgClickHouseSettingsStoredConfigInvalidError)(error)) return
 			expect(error.cause).toBeInstanceOf(OrgClickHouseSettingsValidationError)
 		}).pipe(Effect.provide(buildLayer(testDb)))
 	})
@@ -990,7 +1002,7 @@ describe("resolveRuntimeConfig caching", () => {
 			const exit = yield* service.resolveRuntimeConfig(asOrgId(orgId)).pipe(Effect.exit)
 			const error = getError(exit)
 			expect(error).toBeInstanceOf(OrgClickHouseSettingsStoredConfigInvalidError)
-			if (!(error instanceof OrgClickHouseSettingsStoredConfigInvalidError)) return
+			if (!Schema.is(OrgClickHouseSettingsStoredConfigInvalidError)(error)) return
 			expect(error.cause).toBeInstanceOf(OrgClickHouseSettingsValidationError)
 		}).pipe(Effect.provide(buildLayer(testDb)))
 	})
@@ -1005,6 +1017,23 @@ describe("resolveRuntimeConfig caching", () => {
 				.collectorConfig(asOrgId(orgId), [asRole("org:admin")])
 				.pipe(Effect.exit)
 			expect(getError(exit)).toBeInstanceOf(OrgClickHouseSettingsValidationError)
+		}).pipe(Effect.provide(buildLayer(testDb)))
+	})
+
+	it.effect("escapes every quote and backslash in the collector config's quoted values", () => {
+		const testDb = createTestDb(cacheTrackedDbs)
+		const orgId = "org_ch_collector_escaping"
+		return Effect.gen(function* () {
+			const service = yield* OrgClickHouseSettingsService
+			yield* Effect.promise(() => seedRow(testDb, orgId, "https://clickhouse.example.test"))
+			yield* Effect.promise(() =>
+				executeSql(testDb, "UPDATE org_clickhouse_settings SET ch_user = $2 WHERE org_id = $1", [
+					orgId,
+					'we"ird\\user"\\',
+				]),
+			)
+			const config = yield* service.collectorConfig(asOrgId(orgId), [asRole("org:admin")])
+			expect(config.yaml).toContain('    username: "we\\"ird\\\\user\\"\\\\"')
 		}).pipe(Effect.provide(buildLayer(testDb)))
 	})
 
@@ -1055,7 +1084,7 @@ describe("applySchema claim lifecycle", () => {
 
 	const missBackend: EdgeCacheBackend = {
 		name: "memory",
-		get: () => Effect.succeed(undefined),
+		get: () => Effect.undefined,
 		put: () => Effect.void,
 		delete: () => Effect.void,
 	}

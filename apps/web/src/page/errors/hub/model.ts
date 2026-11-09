@@ -1,16 +1,16 @@
 import { V2ErrorIssue, V2ErrorIssueServiceCount, V2Investigation } from "@maple/domain/http/v2"
 import { Schema } from "effect"
-import { KeyedSchema } from "../../../data/keyed"
-import { LoadFailure } from "../../../data/load-failure"
+import { KeyedSchema } from "@maple/views/data/keyed"
+import { LoadFailure } from "@maple/views/data/load-failure"
 import { TimeWindow } from "../../../data/time-range"
 import { ErrorsSearch } from "../../../route/search"
-import * as FilterSections from "../../../ui/filters/filter-sections"
-import * as ContextMenu from "../../../ui/context-menu"
-import * as Menu from "../../../ui/menu"
+import * as FilterSections from "@maple/views/ui/filters/filter-sections"
+import * as ContextMenu from "@maple/views/ui/context-menu"
+import * as Menu from "@maple/views/ui/menu"
 import * as QuickPick from "../kit/quick-pick"
-import * as Select from "../../../ui/select"
-import * as Tabs from "../../../ui/tabs"
-import { SignalPresenceData } from "../../kit/signal-presence"
+import * as Select from "@maple/views/ui/select"
+import * as Tabs from "@maple/views/ui/tabs"
+import { SignalPresenceData } from "@maple/views/data/signal-presence"
 
 // The errors list.
 
@@ -83,6 +83,7 @@ export const Model = Schema.Struct({
 	focusedId: Schema.NullOr(Schema.String),
 	bulkSeverityMenu: Menu.Model,
 	bulkMoveMenu: Menu.Model,
+	bulkMergeMenu: Menu.Model,
 	/** Rows with a write in flight; another write on them waits. */
 	writingIds: Schema.Array(Schema.String),
 	/** The right-click menu, on the row last pressed. */

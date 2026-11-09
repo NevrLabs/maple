@@ -160,9 +160,12 @@ export function startSessionLifecycle(
 	const rebaseCounts = (record: SessionRecord): void => {
 		clickCountBase = record.clickCount ?? 0
 		errorCountBase = record.errorCount ?? 0
+		// A sink still under the rotated-out id is replaced on its next emit and the
+		// new one starts at zero; baselining against the old tallies would hide that many.
 		const sink = getActiveSink()
-		sinkClickCountAtStart = sink?.getClickCount() ?? 0
-		sinkErrorCountAtStart = sink?.getErrorCount() ?? 0
+		const own = sink !== undefined && sink.sessionId === record.id
+		sinkClickCountAtStart = own ? sink.getClickCount() : 0
+		sinkErrorCountAtStart = own ? sink.getErrorCount() : 0
 	}
 
 	const countsFor = (record: SessionRecord): SessionCounts => {
@@ -269,7 +272,7 @@ export function startSessionLifecycle(
 			// Effect SDK's standalone mode, by spans), and none of those writes reach
 			// the captured object.
 			if (isSessionExpired(liveRecord())) {
-				endRun({ flush: true, keepalive: false })
+				void endRun({ flush: true, keepalive: false })
 				return
 			}
 			post("active", false)
@@ -314,7 +317,7 @@ export function startSessionLifecycle(
 		if (stopped || previous.id !== current.id) return
 		// Not keepalive: rotation is discovered by activity in a live tab, never on
 		// the way out, and the keepalive budget is shared with the unload writes.
-		endRun({ flush: true, keepalive: false })
+		void endRun({ flush: true, keepalive: false })
 		current = next
 		hooks.onSessionChange?.(next.id)
 		// The replacement record is written by the rotating caller immediately

@@ -9,7 +9,7 @@ import {
 } from "@maple/domain/status-page"
 import { renderPage } from "@maple/status-page"
 import { cn } from "@maple/ui/lib/utils"
-import { Option, Schema, Stream } from "effect"
+import { Option, Schema, Stream, Array as Arr, String as Str } from "effect"
 import type { Html, HtmlBuilder } from "foldkit/html"
 import { isoMs } from "../../alerts/shared/time"
 
@@ -28,7 +28,7 @@ export type PreviewHistory = typeof PreviewHistory.Type
 
 /** The preview answers one component per one sent, in order: pair them back up by monitor. */
 export const historyFrom = (sent: StatusPagePreviewParams, snapshot: StatusPageSnapshot): PreviewHistory =>
-	sent.components.flatMap((component, index) => {
+	Arr.flatMap(sent.components, (component, index) => {
 		const days = snapshot.components[index]?.days ?? []
 		return component.monitor_id === null || component.monitor_id === undefined || days.length === 0
 			? []
@@ -36,7 +36,14 @@ export const historyFrom = (sent: StatusPagePreviewParams, snapshot: StatusPageS
 	})
 
 export const daysOf = (history: PreviewHistory, monitorId: UptimeMonitorId | null) =>
-	monitorId === null ? undefined : history.find((entry) => entry.monitorId === monitorId)?.days
+	monitorId === null
+		? undefined
+		: Option.getOrUndefined(
+				Option.map(
+					Arr.findFirst(history, (entry) => entry.monitorId === monitorId),
+					(entry) => entry.days,
+				),
+			)
 
 /** Auto pages preview in the picked scheme, with the overrides Auto ignores left out. */
 export const previewTheme = (theme: StatusPageTheme, scheme: PreviewScheme): StatusPageTheme =>
@@ -71,16 +78,14 @@ export const toSnapshotIncident = (incident: V2StatusPageIncident): StatusPageSn
 	scheduledEnd: msOrNull(incident.scheduled_end),
 	componentIds: incident.component_ids,
 	openedByOverlayEntryId: null,
-	updates: incident.updates
-		.map((update) => ({
-			id: update.id,
-			status: update.status,
-			body: update.body,
-			at: isoMs(update.created_at),
-			source: update.source,
-			overlayEntryId: null,
-		}))
-		.sort((a, b) => b.at - a.at),
+	updates: Arr.map(incident.updates, (update) => ({
+		id: update.id,
+		status: update.status,
+		body: update.body,
+		at: isoMs(update.created_at),
+		source: update.source,
+		overlayEntryId: null,
+	})).sort((a, b) => b.at - a.at),
 })
 
 // SELECTION
@@ -109,25 +114,30 @@ const isSafeId = (id: string) => /^[A-Za-z0-9_-]{1,64}$/u.test(id)
 const SELECT_SCRIPT = `(function(){var q="[data-component-id],[data-incident-id]";document.addEventListener("click",function(e){var t=e.target&&e.target.closest?e.target.closest(q):null;if(!t)return;e.preventDefault();var c=t.getAttribute("data-component-id");parent.postMessage(c?{type:"select",kind:"component",id:c}:{type:"select",kind:"incident",id:t.getAttribute("data-incident-id")},"*")});var s=document.querySelector("[data-sp-first]");if(s)window.scrollTo(0,Math.max(0,s.getBoundingClientRect().top+window.scrollY-window.innerHeight/3))})();`
 
 const selectionStyles = (selectedIds: ReadonlyArray<string>): string => {
-	const ids = selectedIds.filter(isSafeId)
-	const selected = ids
-		.flatMap((id) => [`[data-component-id="${id}"]`, `[data-incident-id="${id}"]`])
-		.join(",")
-	return [
-		`[data-component-id],[data-incident-id]{cursor:pointer;border-radius:6px;transition:outline-color .12s}`,
-		`[data-component-id]:hover,[data-incident-id]:hover{outline:1px dashed color-mix(in srgb,currentColor 35%,transparent);outline-offset:3px}`,
-		selected === "" ? "" : `${selected}{outline:2px solid #3b82f6;outline-offset:3px}`,
-	].join("")
+	const ids = Arr.filter(selectedIds, isSafeId)
+	const selected = Arr.join(
+		Arr.flatMap(ids, (id) => [`[data-component-id="${id}"]`, `[data-incident-id="${id}"]`]),
+		",",
+	)
+	return Arr.join(
+		[
+			`[data-component-id],[data-incident-id]{cursor:pointer;border-radius:6px;transition:outline-color .12s}`,
+			`[data-component-id]:hover,[data-incident-id]:hover{outline:1px dashed color-mix(in srgb,currentColor 35%,transparent);outline-offset:3px}`,
+			selected === "" ? "" : `${selected}{outline:2px solid #3b82f6;outline-offset:3px}`,
+		],
+		"",
+	)
 }
 
 /** Marks the first selected element so the frame scrolls its own view to it after a reload. */
 const markFirst = (html: string, selectedIds: ReadonlyArray<string>): string => {
-	const first = selectedIds.find(isSafeId)
-	if (first === undefined) return html
-	const attr = html.includes(`data-component-id="${first}"`)
+	const found = Arr.findFirst(selectedIds, isSafeId)
+	if (Option.isNone(found)) return html
+	const first = found.value
+	const attr = Str.includes(`data-component-id="${first}"`)(html)
 		? `data-component-id="${first}"`
 		: `data-incident-id="${first}"`
-	return html.replace(attr, `${attr} data-sp-first`)
+	return Str.replace(attr, `${attr} data-sp-first`)(html)
 }
 
 export type PreviewDocumentOptions = Readonly<{
@@ -145,13 +155,16 @@ export const previewDocument = (options: PreviewDocumentOptions): string => {
 	})
 	if (!options.isSelectable) return html
 	const extra = `<style>${selectionStyles(options.selectedIds)}</style><script>${SELECT_SCRIPT}</script>`
-	return markFirst(html, options.selectedIds).replace("</body>", `${extra}</body>`)
+	return Str.replace("</body>", `${extra}</body>`)(markFirst(html, options.selectedIds))
 }
 
 export const PREVIEW_FRAME_ID = "status-page-preview-frame"
 
-/** The selections the editor's preview frame posts; other windows and shapes are dropped. */
-export const previewSelections = (): Stream.Stream<PreviewSelection> =>
+/**
+ * The selections the editor's preview frame posts; other windows and shapes are dropped.
+ * Suspended so importing this module never touches `window` (scene tests run in node).
+ */
+export const previewSelections: Stream.Stream<PreviewSelection> = Stream.suspend(() =>
 	Stream.fromEventListener<MessageEvent>(window, "message").pipe(
 		Stream.filter((event) => {
 			const frame = document.getElementById(PREVIEW_FRAME_ID)
@@ -168,7 +181,8 @@ export const previewSelections = (): Stream.Stream<PreviewSelection> =>
 				onSome: (selection) => Stream.make(selection),
 			}),
 		),
-	)
+	),
+)
 
 /** The sandboxed frame: scripts run so the page pages its bars, but it can reach nothing of ours. */
 export const previewFrame = <M>(

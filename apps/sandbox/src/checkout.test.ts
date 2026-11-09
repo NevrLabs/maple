@@ -9,7 +9,7 @@ import {
 	shellCommand,
 	shellQuote,
 } from "@maple/domain/sandbox"
-import { Effect, Option } from "effect"
+import { Effect, Option, Array as Arr, Record as Rec, String as Str } from "effect"
 import {
 	CLONE_TOKEN_ENV,
 	SandboxCallError,
@@ -28,8 +28,12 @@ import {
 	type SandboxContainer,
 } from "./checkout"
 
-const SHA = "a".repeat(40)
+const SHA = Str.repeat(40)("a")
 const TOKEN = "ghs_secret_token"
+
+/** Whether `first` and then `second` both appear in `text`, in that order. */
+const appearsBefore = (text: string, first: string, second: string): boolean =>
+	Option.exists(Option.all([Str.indexOf(first)(text), Str.indexOf(second)(text)]), ([a, b]) => a < b)
 
 const checkout = {
 	repository: "octo/shop",
@@ -89,8 +93,8 @@ const fakeContainer = (options: FakeOptions, seen: string[] = []): SandboxContai
 			}),
 		spawn: (command, env) =>
 			Effect.suspend(() => {
-				seen.push(`spawn:${Object.keys(env).join(",")}`)
-				if (command.includes(TOKEN)) seen.push("TOKEN-IN-COMMAND")
+				seen.push(`spawn:${Arr.join(Rec.keys(env), ",")}`)
+				if (Str.includes(TOKEN)(command)) seen.push("TOKEN-IN-COMMAND")
 				return options.failSpawn
 					? Effect.fail(new SandboxCallError({ message: options.failSpawn }))
 					: Effect.void
@@ -114,7 +118,7 @@ describe("wrapCommand", () => {
 		assert.include(wrapped, "runuser -u maple-agent --")
 		// The probe decides `ns` first, and the command runs only when it is `isolated`,
 		// so a container that cannot isolate never runs it with egress.
-		assert.isTrue(wrapped.indexOf("unshare -n true") < wrapped.indexOf('if [ "$ns" = isolated ]'))
+		assert.isTrue(appearsBefore(wrapped, "unshare -n true", 'if [ "$ns" = isolated ]'))
 		assert.include(wrapped, "ns=unavailable")
 	})
 
@@ -135,11 +139,14 @@ describe("wrapCommand", () => {
 describe("wrapCommand's environment", () => {
 	// Stand-ins for the container's privilege and namespace tools, so the program's own
 	// environment handling runs as written on any host.
-	const stubs = [
-		'unshare() { if [ "$1" = -n ]; then shift; fi; "$@"; }',
-		'runuser() { shift 3; "$@"; }',
-		"chown() { :; }",
-	].join("\n")
+	const stubs = Arr.join(
+		[
+			'unshare() { if [ "$1" = -n ]; then shift; fi; "$@"; }',
+			'runuser() { shift 3; "$@"; }',
+			"chown() { :; }",
+		],
+		"\n",
+	)
 	const run = (command: string, args: ReadonlyArray<string> = []) => {
 		const wrapped = wrapCommand(request({ command, args }))
 		const result = spawnSync("bash", ["-c", `${stubs}\n${wrapped}`], { encoding: "utf8" })
@@ -147,10 +154,12 @@ describe("wrapCommand's environment", () => {
 	}
 	const envOf = (body: string) =>
 		new Map(
-			body
-				.split("\n")
-				.filter((line) => line.includes("="))
-				.map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)]),
+			Arr.flatMap(Str.split("\n")(body), (line): ReadonlyArray<readonly [string, string]> =>
+				Option.match(Str.indexOf("=")(line), {
+					onNone: () => [],
+					onSome: (at) => [[Str.slice(0, at)(line), Str.slice(at + 1)(line)]],
+				}),
+			),
 		)
 
 	it("gives each command its own empty HOME, removed afterwards, and no global git config", () => {
@@ -159,7 +168,7 @@ describe("wrapCommand's environment", () => {
 		const firstHome = first.get("HOME")
 		assert.isDefined(firstHome)
 		assert.notStrictEqual(firstHome, second.get("HOME"))
-		assert.isFalse(existsSync(firstHome!))
+		assert.isFalse(existsSync(firstHome))
 		assert.strictEqual(first.get("GIT_CONFIG_GLOBAL"), "/dev/null")
 		assert.strictEqual(first.get("GIT_CONFIG_NOSYSTEM"), undefined)
 		assert.deepStrictEqual([...first.keys()].sort(), SANDBOX_COMMAND_ENV_NAMES)
@@ -167,7 +176,7 @@ describe("wrapCommand's environment", () => {
 
 	it("starts each HOME empty, whatever the previous command left in its own", () => {
 		run("sh", ["-c", 'echo "[user] name = left" > "$HOME/.gitconfig"'])
-		assert.strictEqual(run("sh", ["-c", 'ls -A "$HOME" | wc -l | tr -d " "']).trim(), "0")
+		assert.strictEqual(Str.trim(run("sh", ["-c", 'ls -A "$HOME" | wc -l | tr -d " "'])), "0")
 	})
 })
 
@@ -211,14 +220,14 @@ describe("cloneScript", () => {
 		assert.notInclude(script, TOKEN)
 		assert.include(script, `password=$${CLONE_TOKEN_ENV}`)
 		// Dropped once the fetch that needs it is done.
-		assert.isTrue(script.indexOf("fetch --quiet") < script.indexOf(`unset ${CLONE_TOKEN_ENV}`))
+		assert.isTrue(appearsBefore(script, "fetch --quiet", `unset ${CLONE_TOKEN_ENV}`))
 		assert.include(script, "chmod -R a+rX,go-w")
 	})
 
 	it("checks symlinks out as plain files, before the checkout, so none can be followed", () => {
 		const script = cloneScript(checkout)
 		assert.include(script, `config core.symlinks false`)
-		assert.isTrue(script.indexOf("core.symlinks false") < script.indexOf("checkout --quiet --detach"))
+		assert.isTrue(appearsBefore(script, "core.symlinks false", "checkout --quiet --detach"))
 	})
 
 	it("never evicts a checkout or another clone's scratch directory still in use", () => {
@@ -247,12 +256,12 @@ describe("cloneScript's mirror", () => {
 		assert.include(script, `+${SHA}:refs/maple/${SHA}`)
 		assert.include(script, "clone --quiet --shared --no-checkout")
 		// The lock is released before the checkout, which is local work another commit need not wait on.
-		assert.isTrue(script.indexOf("exec 9>&-") < script.indexOf("checkout --quiet --detach"))
+		assert.isTrue(appearsBefore(script, "exec 9>&-", "checkout --quiet --detach"))
 	})
 
 	it("keeps the mirror and its lock out of the agent account's reach", () => {
 		const script = cloneScript(checkout)
-		assert.isTrue(script.indexOf("umask 022") < script.indexOf("fetch --quiet"))
+		assert.isTrue(appearsBefore(script, "umask 022", "fetch --quiet"))
 		assert.include(script, "chmod 600 '/workspace/maple-mirror.lock'")
 	})
 
@@ -266,19 +275,19 @@ describe("cloneScript's mirror", () => {
 	it("fetches with the credential helper, never a token in the URL", () => {
 		const script = cloneScript(checkout)
 		assert.notInclude(script, TOKEN)
-		assert.isTrue(script.indexOf("credential.helper") < script.indexOf("fetch --quiet"))
+		assert.isTrue(appearsBefore(script, "credential.helper", "fetch --quiet"))
 	})
 })
 
 describe("checkoutStatusScript", () => {
 	const script = checkoutStatusScript(SHA)
 	it("answers ready before it looks at any clone state", () => {
-		assert.isTrue(script.indexOf(`${checkoutDir(SHA)}'/.git`) < script.indexOf("exit-code"))
+		assert.isTrue(appearsBefore(script, `${checkoutDir(SHA)}'/.git`, "exit-code"))
 	})
 
 	it("marks a ready checkout as used, so eviction keeps it", () => {
 		assert.include(script, `touch -c '${checkoutDir(SHA)}'`)
-		assert.isTrue(script.indexOf("touch -c") < script.indexOf("echo ready"))
+		assert.isTrue(appearsBefore(script, "touch -c", "echo ready"))
 	})
 
 	it("claims with a mkdir that fails when another caller got there first", () => {
@@ -287,7 +296,7 @@ describe("checkoutStatusScript", () => {
 
 	it("forgets a failed or lost clone as it reports it, so the next call clones again", () => {
 		assert.match(script, /echo "failed \$code".*rm -rf/)
-		assert.match(script, /echo lost; rm -rf/)
+		assert.match(script, /echo lost;.*rm -rf/)
 	})
 })
 
@@ -374,7 +383,20 @@ describe("ensureCheckout", () => {
 			)
 			assert.isTrue(Option.isSome(result))
 			if (Option.isSome(result)) assert.strictEqual(result.value._tag, "SandboxRunCheckoutPending")
-			assert.notInclude(seen.join(" "), "spawn:")
+			assert.notInclude(Arr.join(seen, " "), "spawn:")
+		}),
+	)
+
+	it.effect("says the disk is full when a clone died with little space left", () =>
+		Effect.gen(function* () {
+			const full = yield* ensureCheckout(fakeContainer({ execs: [status("lost\n51200")] }), checkout)
+			assert.isTrue(
+				Option.isSome(full) && Str.includes("disk is nearly full (50 MB free)")(full.value.message),
+			)
+			const roomy = yield* ensureCheckout(fakeContainer({ execs: [status("lost\n9000000")] }), checkout)
+			assert.isTrue(Option.isSome(roomy) && !Str.includes("disk")(roomy.value.message))
+			const unknown = yield* ensureCheckout(fakeContainer({ execs: [status("lost")] }), checkout)
+			assert.isTrue(Option.isSome(unknown) && !Str.includes("disk")(unknown.value.message))
 		}),
 	)
 
@@ -420,7 +442,7 @@ describe("runExec", () => {
 				assert.strictEqual(response.stdout, "src/a.ts:1:x")
 				assert.isFalse(response.stdoutTruncated)
 			}
-			assert.include(seen[1]!, `@${checkoutDir(SHA)}`)
+			assert.include(seen[1], `@${checkoutDir(SHA)}`)
 		}),
 	)
 
@@ -435,6 +457,38 @@ describe("runExec", () => {
 				assert.isTrue(response.stdoutTruncated)
 				assert.strictEqual(response.stdoutBytes, 99_999)
 			}
+		}),
+	)
+
+	it.effect("marks a cut binary stream, whose lossy text re-encodes past its byte count", () =>
+		Effect.gen(function* () {
+			// 1024 invalid bytes kept of 2000: decoded, 1024 U+FFFD that re-encode to 3072 bytes.
+			const response = yield* runExec(
+				fakeContainer({
+					execs: [
+						status("ready"),
+						{ stdout: `${Str.repeat(1024)("\uFFFD")}${trailer(0, 2000, 0)}` },
+					],
+				}),
+				request({ maxOutputBytes: 1024 }),
+			)
+			assert.strictEqual(response._tag, "SandboxRunExited")
+			if (response._tag === "SandboxRunExited") {
+				assert.isTrue(response.stdoutTruncated)
+				assert.isFalse(response.stderrTruncated)
+			}
+		}),
+	)
+
+	it.effect("reports a stream of exactly the bound as whole", () =>
+		Effect.gen(function* () {
+			const response = yield* runExec(
+				fakeContainer({
+					execs: [status("ready"), { stdout: `${Str.repeat(1024)("a")}${trailer(0, 1024, 0)}` }],
+				}),
+				request({ maxOutputBytes: 1024 }),
+			)
+			assert.isTrue(response._tag === "SandboxRunExited" && !response.stdoutTruncated)
 		}),
 	)
 

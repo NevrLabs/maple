@@ -102,18 +102,37 @@ Tools that take an alert rule, alert destination, dashboard or error issue ID ac
 
 ### Alerting
 
-| Tool                      | Access | What it does                                                                             |
-| ------------------------- | ------ | ---------------------------------------------------------------------------------------- |
-| `list_alert_rules`        | read   | Alert rules with severity, signal type and condition                                     |
-| `get_alert_rule`          | read   | One rule's full configuration: thresholds, filters, evaluation settings and destinations |
-| `list_alert_destinations` | read   | Notification destinations with id, type and delivery health                              |
-| `list_alert_incidents`    | read   | Triggered alert incidents, open and resolved, with the last observed value               |
-| `get_incident_timeline`   | read   | Trigger, notification and resolution times for one rule's incidents, or all rules'       |
-| `list_alert_checks`       | read   | A rule's recent evaluations with observed value, threshold and sample count              |
-| `preview_alert_rule`      | read   | Replay a saved or draft rule over past data: each window's verdict and skip reason       |
-| `create_alert_rule`       | write  | Create an alert rule from a template or from signal type, comparator and threshold       |
-| `update_alert_rule`       | write  | Change the fields you pass on an alert rule                                              |
-| `delete_alert_rule`       | write  | Delete an alert rule and its incident history. Requires `confirm=true`                   |
+| Tool                        | Access | What it does                                                                             |
+| --------------------------- | ------ | ---------------------------------------------------------------------------------------- |
+| `list_alert_rules`          | read   | Alert rules with severity, signal type and condition                                     |
+| `get_alert_rule`            | read   | One rule's full configuration: thresholds, filters, evaluation settings and destinations |
+| `list_alert_destinations`   | read   | Notification destinations with id, type and delivery health                              |
+| `list_alert_incidents`      | read   | Triggered alert incidents, open and resolved, with the last observed value               |
+| `get_incident_timeline`     | read   | Trigger, notification and resolution times for one rule's incidents, or all rules'       |
+| `list_alert_checks`         | read   | A rule's recent evaluations with observed value, threshold and sample count              |
+| `preview_alert_rule`        | read   | Replay a saved or draft rule over past data: each window's verdict and skip reason       |
+| `create_alert_rule`         | write  | Create an alert rule from a template or from signal type, comparator and threshold       |
+| `update_alert_rule`         | write  | Change the fields you pass on an alert rule                                              |
+| `delete_alert_rule`         | write  | Delete an alert rule and its incident history. Requires `confirm=true`                   |
+| `list_escalation_chains`    | read   | Escalation chains with their steps, repeats and the rules using them                     |
+| `create_escalation_chain`   | write  | Page destinations step by step, waiting for an acknowledgement between steps             |
+| `update_escalation_chain`   | write  | Change a chain's name, steps, repeats or description                                     |
+| `delete_escalation_chain`   | write  | Delete a chain no rule uses                                                              |
+| `list_maintenance_windows`  | read   | One-off and weekly maintenance windows with their schedule, matchers and next occurrence |
+| `create_maintenance_window` | write  | Silence matching rules once or every week; can keep those hours out of anomaly baselines |
+| `delete_maintenance_window` | write  | Delete a maintenance window and end an occurrence in progress. Requires `confirm=true`   |
+| Tool                        | Access | What it does                                                                             |
+| -------------------------   | ------ | ---------------------------------------------------------------------------------------- |
+| `list_oncall_schedules`     | read   | On-call schedules with their layers and who is on call now                               |
+| `who_is_on_call`            | read   | Who is on call for a schedule at an instant, why, and who is next                        |
+| `create_oncall_schedule`    | write  | Rotate workspace members daily, weekly or every N hours, in layers                       |
+| `update_oncall_schedule`    | write  | Change a schedule's name, time zone, layers or description                               |
+| `delete_oncall_schedule`    | write  | Delete a schedule and its overrides                                                      |
+| `create_oncall_override`    | write  | Put one member on call for a window, over every layer                                    |
+| `delete_oncall_override`    | write  | Delete an override so the layers decide again                                            |
+| `list_alert_silences`       | read   | Active and scheduled alert silences, or ended ones, with their matchers and window       |
+| `create_alert_silence`      | write  | Hold back notifications for matching rules for a duration or until a time                |
+| `end_alert_silence`         | write  | End a silence now so notifications resume; cancels a scheduled one                       |
 
 ### Dashboards
 
@@ -133,13 +152,15 @@ Tools that take an alert rule, alert destination, dashboard or error issue ID ac
 
 ### Session replays and product events
 
-| Tool                     | Access | What it does                                                                              |
-| ------------------------ | ------ | ----------------------------------------------------------------------------------------- |
-| `search_sessions`        | read   | Find browser session replays by user, client, errors, duration or what happened in them   |
-| `get_session_transcript` | read   | A session replay as a text transcript of navigation, clicks, console, network and errors  |
-| `get_session_traces`     | read   | The backend traces a browser session produced                                             |
-| `list_product_events`    | read   | Product event names with how often each fired and how many sessions and people it reached |
-| `query_funnel`           | read   | Conversion funnel over product events, with step counts, conversion and drop-off          |
+| Tool                     | Access | What it does                                                                                |
+| ------------------------ | ------ | ------------------------------------------------------------------------------------------- |
+| `search_sessions`        | read   | Find browser session replays by user, client, errors, duration or what happened in them     |
+| `get_session_transcript` | read   | A session replay as a text transcript of navigation, clicks, console, network and errors    |
+| `get_session_traces`     | read   | The backend traces a browser session produced                                               |
+| `list_product_events`    | read   | Product event names with how often each fired and how many sessions and people it reached   |
+| `query_funnel`           | read   | Conversion funnel over product events, with step counts, conversion and drop-off            |
+| `list_users`             | read   | The end users your apps identified, with sessions, requests, errors and their busiest route |
+| `inspect_user`           | read   | One end user: sessions, MCP sessions, the issues they hit and their failed requests         |
 
 ### Agent sessions
 
@@ -168,6 +189,13 @@ Tools that take an alert rule, alert destination, dashboard or error issue ID ac
 | --------------- | ------ | ---------------------------------------------------------------------------------------- |
 | `list_infra`    | read   | Hosts, Kubernetes, Docker containers and integration resources, closest to a limit first |
 | `inspect_infra` | read   | One host, pod, node, workload, container or integration resource in depth                |
+
+### Security
+
+| Tool                       | Access | What it does                                                                                                                        |
+| -------------------------- | ------ | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `list_security_findings`   | read   | Code audit findings, vulnerable dependencies, scanner probes that got a 2xx and outdated runtimes, worst first, or one area in full |
+| `inspect_security_finding` | read   | One finding in full, or whether an advisory (CVE, GHSA) affects any repository or service                                           |
 
 ### Integrations
 

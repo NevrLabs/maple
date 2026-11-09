@@ -1,11 +1,14 @@
 import { describe, expect, it } from "vitest"
 import {
 	MAX_LOCKFILES,
+	MAX_MANIFEST_BYTES,
+	MAX_MANIFEST_TOTAL_BYTES,
 	manifestsFor,
 	type SelectedLockfile,
 	sameLockfiles,
 	selectLockfiles,
 } from "./lockfile-selection"
+import { Array as Arr } from "effect"
 
 const file = (path: string, sha = `sha-${path}`) => ({ path, sha, size: 100 })
 
@@ -22,7 +25,7 @@ describe("selectLockfiles", () => {
 			file("test/fixtures/yarn.lock"),
 			file("vendor/github.com/x/go.mod"),
 		])
-		expect(selected.map((lockfile) => [lockfile.file.path, lockfile.kind])).toEqual([
+		expect(Arr.map(selected, (lockfile) => [lockfile.file.path, lockfile.kind])).toEqual([
 			["package-lock.json", "package-lock"],
 			["tools/go.sum", "go-sum"],
 			["crates/core/Cargo.lock", "cargo-lock"],
@@ -37,7 +40,7 @@ describe("selectLockfiles", () => {
 		expect(selected).toHaveLength(MAX_LOCKFILES)
 		expect(skipped).toHaveLength(3)
 		// Every lockfile is either read or recorded as skipped, never dropped.
-		expect(new Set([...selected, ...skipped].map((lockfile) => lockfile.file.path)).size).toBe(
+		expect(new Set(Arr.map([...selected, ...skipped], (lockfile) => lockfile.file.path)).size).toBe(
 			many.length,
 		)
 	})
@@ -57,10 +60,27 @@ describe("manifestsFor", () => {
 	})
 
 	it("hands a yarn lockfile the package.json files under its directory, relative to it", () => {
-		expect(manifestsFor(lockfile("web/yarn.lock", "yarn-v1"), tree).map((m) => m.relativePath)).toEqual([
-			"package.json",
-			"packages/ui/package.json",
+		expect(
+			Arr.map(manifestsFor(lockfile("web/yarn.lock", "yarn-v1"), tree), (m) => m.relativePath),
+		).toEqual(["package.json", "packages/ui/package.json"])
+	})
+
+	it("skips oversized manifests and stops at the total byte budget", () => {
+		const sized = (path: string, size: number) => ({ ...file(path), size })
+		const nearCap = MAX_MANIFEST_BYTES - 1
+		const many = Arr.makeBy(8, (i) => sized(`web/packages/p${i}/package.json`, nearCap))
+		const picked = manifestsFor(lockfile("web/yarn.lock", "yarn-v1"), [
+			sized("web/package.json", 100),
+			sized("web/packages/huge/package.json", MAX_MANIFEST_BYTES + 1),
+			...many,
 		])
+		const paths = Arr.map(picked, (m) => m.relativePath)
+		expect(paths[0]).toBe("package.json")
+		expect(paths).not.toContain("packages/huge/package.json")
+		expect(Arr.reduce(picked, 0, (total, m) => total + m.file.size)).toBeLessThanOrEqual(
+			MAX_MANIFEST_TOTAL_BYTES,
+		)
+		expect(paths.length).toBe(1 + Math.floor((MAX_MANIFEST_TOTAL_BYTES - 100) / nearCap))
 	})
 
 	it("reads no manifests for formats that record direct and dev dependencies themselves", () => {

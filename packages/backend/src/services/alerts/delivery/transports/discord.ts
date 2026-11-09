@@ -1,6 +1,9 @@
+import { Schema } from "effect"
 import { buildDiscordEmbeds, buildDiscordEmbedsFromTemplate } from "../../AlertDeliveryDispatch"
-import { formatAlertHeadline, formatEventTypeLabel } from "../../alert-formatting"
+import { formatAlertHeadline, formatEventTypeLabel, hasSignalHeadline } from "../../alert-formatting"
 import type { HttpTransport, RenderInput, SecretConfigOf } from "../Transport"
+
+const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown))
 
 type Config = SecretConfigOf<"discord">
 
@@ -21,11 +24,11 @@ export const discordTransport: HttpTransport<Config> = {
 			// is both SSRF-guarded and excluded from the span's url attributes.
 			guarded: true,
 			sensitivePath: true,
-			body: JSON.stringify({
+			body: encodeJson({
 				username: "Maple Alerts",
 				content:
 					templated?.title ??
-					(context.signalType === "uptime"
+					(hasSignalHeadline(context.signalType)
 						? `**${formatAlertHeadline(context)}**`
 						: `**${context.ruleName}**: ${formatEventTypeLabel(context.eventType)}`),
 				embeds,

@@ -1,3 +1,4 @@
+import * as Policy from "@maple/domain/policy"
 import { createClerkClient } from "@clerk/backend"
 import { FetchHttpClient, HttpClient } from "effect/http"
 import { UPTIME_MONITORS_FEATURE_ID } from "@maple/domain/billing"
@@ -29,13 +30,21 @@ import {
 	Actors,
 	AgentFeedback,
 	AlertDeliveryEvents,
+	AlertEscalationRuns,
+	AlertMemberNotifications,
+	AlertIncidentEvents,
 	AlertDestinations,
 	AlertIncidents,
 	AlertLinearIssues,
 	AlertRuleStates,
 	AlertRules,
+	AlertSilences,
+	AlertMaintenanceWindows,
 	ApiKeys,
 	CancellationReviews,
+	EscalationChains,
+	OnCallOverrides,
+	OnCallSchedules,
 	ChatIdentities,
 	ChatWorkspaces,
 	CliDeviceAuthorizations,
@@ -50,6 +59,7 @@ import {
 	DigestSubscriptions,
 	ErrorIncidents,
 	ErrorIssueEvents,
+	ErrorIssueFingerprints,
 	ErrorIssueStates,
 	ErrorIssues,
 	ErrorNotificationPolicies,
@@ -81,6 +91,7 @@ import {
 	StatusPages,
 	UptimeMonitorDaily,
 	UptimeMonitorStates,
+	Slos,
 	UptimeMonitors,
 	SupabaseProjectInsights,
 	SupabaseProjects,
@@ -103,10 +114,11 @@ import {
 	SecurityAuditRuns,
 	SecurityAuditTargets,
 	SecurityAuditUnits,
+	ServiceMapWorldEntities,
 	VcsInstallations,
 	VcsRepositories,
 } from "@maple/db/tables"
-import { Clock, Context, Effect, Layer, Option, Redacted, Schema } from "effect"
+import { Clock, Context, Effect, Layer, Option, Redacted, Schema, String as Str } from "effect"
 import { Database } from "@maple/backend/platform/DatabaseLive"
 import { makeDbExecute } from "@maple/backend/platform/db-execute"
 import { Env } from "@maple/backend/platform/Env"
@@ -114,12 +126,6 @@ import { clerkRequest } from "@maple/backend/services/auth/clerk-request"
 import { AutumnClient } from "@maple/backend/services/billing/autumn-http"
 import { responseHasPlanHistory } from "@maple/backend/services/billing/autumn-client"
 import { OrganizationRegionService } from "@maple/backend/services/org/OrganizationRegionService"
-
-const ROOT_ROLE = Schema.decodeSync(RoleName)("root")
-const ORG_ADMIN_ROLE = Schema.decodeSync(RoleName)("org:admin")
-
-const isOrgAdmin = (roles: ReadonlyArray<RoleName>) =>
-	roles.includes(ROOT_ROLE) || roles.includes(ORG_ADMIN_ROLE)
 
 const toPersistenceError = (error: unknown) =>
 	new OrganizationPersistenceError({
@@ -143,9 +149,19 @@ const ORG_SCOPED_TABLES: ReadonlyArray<OrgScopedTable> = [
 	DashboardVersions,
 	Dashboards,
 	AlertDeliveryEvents,
+	// Before its incident: an event row references it.
+	AlertIncidentEvents,
+	AlertEscalationRuns,
+	AlertMemberNotifications,
 	AlertIncidents,
+	EscalationChains,
+	// Before its schedule: an override row references it.
+	OnCallOverrides,
+	OnCallSchedules,
 	AlertRuleStates,
 	AlertRules,
+	AlertSilences,
+	AlertMaintenanceWindows,
 	// Before its destination: a thread row references it.
 	AlertLinearIssues,
 	AlertDestinations,
@@ -167,6 +183,8 @@ const ORG_SCOPED_TABLES: ReadonlyArray<OrgScopedTable> = [
 	UptimeMonitorDaily,
 	UptimeMonitorStates,
 	UptimeMonitors,
+	// An SLO points at its burn-rate rule, which goes with the org's alert rules.
+	Slos,
 	OAuthConnections,
 	OAuthAuthStates,
 	// The binding that makes a chat workspace's members act as the org. Deleting
@@ -186,6 +204,8 @@ const ORG_SCOPED_TABLES: ReadonlyArray<OrgScopedTable> = [
 	ErrorIssueEvents,
 	ErrorIssueStates,
 	ErrorIncidents,
+	// The aliases go with the issues they point at.
+	ErrorIssueFingerprints,
 	ErrorIssues,
 	ErrorNotificationPolicies,
 	Actors,
@@ -246,6 +266,8 @@ const ORG_SCOPED_TABLES: ReadonlyArray<OrgScopedTable> = [
 	SecurityAuditUnits,
 	SecurityAuditRuns,
 	SecurityAuditTargets,
+	// The team's hand-built service map world: a recreated org starts from an empty map.
+	ServiceMapWorldEntities,
 	// Which of the org's dependencies are vulnerable, per repository and commit.
 	DependencyScans,
 	DependencyScanMatches,
@@ -370,11 +392,13 @@ export class OrganizationService extends Context.Service<OrganizationService, Or
 				roles: ReadonlyArray<RoleName>,
 				action: string,
 			) {
-				if (isOrgAdmin(roles)) return
-				return yield* Effect.fail(
-					new OrganizationForbiddenError({
-						message: `Only org admins can ${action}`,
-					}),
+				return yield* Policy.check(
+					roles,
+					"organization:manage",
+					(denial) =>
+						new OrganizationForbiddenError({
+							message: `Only ${Policy.holdersPhrase(denial.required)} can ${action}.`,
+						}),
 				)
 			})
 
@@ -401,7 +425,7 @@ export class OrganizationService extends Context.Service<OrganizationService, Or
 
 			/** The Clerk backend client, or `None` when not running in Clerk auth mode. */
 			const clerkClient = () =>
-				env.MAPLE_AUTH_MODE.toLowerCase() === "clerk" && Option.isSome(env.CLERK_SECRET_KEY)
+				Str.toLowerCase(env.MAPLE_AUTH_MODE) === "clerk" && Option.isSome(env.CLERK_SECRET_KEY)
 					? Option.some(
 							createClerkClient({ secretKey: Redacted.value(env.CLERK_SECRET_KEY.value) }),
 						)
@@ -467,7 +491,7 @@ export class OrganizationService extends Context.Service<OrganizationService, Or
 						publicMetadata: organizationRegionMetadata(region),
 					}),
 				).pipe(Effect.mapError((error) => toProviderError(error.cause)))
-				const orgId = yield* Schema.decodeUnknownEffect(OrgId)(org.id).pipe(
+				const orgId = yield* Schema.decodeEffect(OrgId)(org.id).pipe(
 					Effect.mapError(
 						() =>
 							new OrganizationProviderError({
@@ -505,9 +529,8 @@ export class OrganizationService extends Context.Service<OrganizationService, Or
 					})
 				}
 				// An organization that predates regions has data on US already, plan or not.
-				if (
-					!organizationRegionOpen(org.publicMetadata, org.createdAt, yield* Clock.currentTimeMillis)
-				) {
+				const nowMs = yield* Clock.currentTimeMillis
+				if (!organizationRegionOpen(org.publicMetadata, org.createdAt, nowMs)) {
 					return yield* new OrganizationRegionLockedError({
 						message: "Only a new organization can choose its data region.",
 					})
@@ -612,6 +635,8 @@ export class OrganizationService extends Context.Service<OrganizationService, Or
 				}
 				yield* purgeOrgScopedRows(orgId)
 				yield* deleteClerkOrganization(orgId)
+				// A cached "served here" would outlive the organization by up to an hour.
+				yield* regions.forget(orgId)
 				return new DeleteOrganizationResponse({ deleted: true })
 			})
 

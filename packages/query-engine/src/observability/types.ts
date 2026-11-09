@@ -66,6 +66,8 @@ export interface SearchTracesOutput {
 		readonly limit: number
 		readonly hasMore: boolean
 	}
+	/** Set when the window before this time did not finish: only `[coveredFrom, end]` was read. */
+	readonly coveredFrom?: string
 }
 
 export interface SpanNode {
@@ -207,6 +209,8 @@ export interface ServiceHealthOutput {
 		rootSpanName: string
 		durationMs: number
 		hasError: boolean
+		/** Root span start (UTC), for an `inspect_trace` timestamp. */
+		startTime?: string
 	}>
 	readonly recentLogs: ReadonlyArray<LogEntry>
 }

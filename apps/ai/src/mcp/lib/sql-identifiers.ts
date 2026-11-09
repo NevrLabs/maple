@@ -4,13 +4,15 @@ import {
 	listWarehouseTables,
 	type TableInfo,
 } from "@maple/backend/services/warehouse/warehouse-catalog"
+import { Array as Arr, Option, String as Str } from "effect"
+import { matchAllIndexed, replaceWith } from "@maple/strings"
 
 /** The column an unknown-identifier error names, as written. */
 export const unknownIdentifierName = (message: string): string | undefined => {
-	const match = message.match(
+	const match = Str.match(
 		/identifier [`']([^`']+)[`']|Missing columns: '([^']+)'|no column [`']([^`']+)[`']/i,
-	)
-	return match?.[1] ?? match?.[2] ?? match?.[3]
+	)(message)
+	return Option.match(match, { onNone: () => undefined, onSome: (m) => m[1] ?? m[2] ?? m[3] })
 }
 
 // String literals (with '' and \' escapes), `--`/`#`/`/* */` comments, and quoted identifiers.
@@ -22,51 +24,83 @@ const SQL_TOKEN =
  * position, so `FROM \`traces\`` reads as a table while `'traces'` does not.
  */
 export const identifierText = (sql: string): string =>
-	sql.replace(SQL_TOKEN, (token) => {
-		if (token[0] !== "`" && token[0] !== '"') return token.replace(/[^\n]/g, " ")
-		const closed = token.length > 1 && token.endsWith(token[0])
-		return ` ${token.slice(1, closed ? -1 : undefined)}${closed ? " " : ""}`
+	replaceWith(sql, SQL_TOKEN, (token) => {
+		if (token[0] !== "`" && token[0] !== '"') return Str.replace(/[^\n]/g, " ")(token)
+		const closed = token.length > 1 && Str.endsWith(token[0])(token)
+		return ` ${Str.slice(1, closed ? -1 : undefined)(token)}${closed ? " " : ""}`
 	})
 
 /** Names of the catalog tables the SQL reads (after FROM, JOIN or a comma), in first-mention order. */
 export const referencedTableNames = (sql: string): ReadonlyArray<string> => {
 	const text = identifierText(sql)
-	return listWarehouseTables()
-		.map((t) => ({
-			name: t.name,
-			at: text.search(
-				new RegExp(`(?:\\bFROM\\s+|\\bJOIN\\s+|,\\s*)(?:[A-Za-z_]\\w*\\.)?${t.name}\\b`, "i"),
+	return Arr.map(
+		Arr.flatMap(listWarehouseTables(), (t) =>
+			Option.match(
+				Str.search(
+					new RegExp(`(?:\\bFROM\\s+|\\bJOIN\\s+|,\\s*)(?:[A-Za-z_]\\w*\\.)?${t.name}\\b`, "i"),
+				)(text),
+				{ onNone: () => [], onSome: (at) => [{ name: t.name, at }] },
 			),
-		}))
-		.filter((t) => t.at >= 0)
-		.sort((a, b) => a.at - b.at)
-		.map((t) => t.name)
+		).sort((a, b) => a.at - b.at),
+		(t) => t.name,
+	)
 }
 
 /** The catalog tables the SQL reads, with their columns, in first-mention order. */
 export const referencedTables = (sql: string): ReadonlyArray<TableInfo> =>
-	referencedTableNames(sql).flatMap((name) => {
+	Arr.flatMap(referencedTableNames(sql), (name) => {
 		const info = describeWarehouseTable(name)
 		return info === null ? [] : [info]
 	})
 
 /** `service.name`, `trace_id` and `TRACEID` all fold to `traceid`-style keys. */
-const fold = (name: string) => name.replace(/[._]/g, "").toLowerCase()
+const fold = (name: string) => Str.toLowerCase(Str.replace(/[._]/g, "")(name))
 
-/** Names agents write for a column or map key that have only one meaning, by folded name. */
-const KNOWN_ALIASES: ReadonlyMap<string, { readonly column: string; readonly expr: string }> = new Map([
-	["service", { column: "ServiceName", expr: "ServiceName" }],
-	["logbody", { column: "Body", expr: "Body" }],
-	["spanstatusmessage", { column: "StatusMessage", expr: "StatusMessage" }],
-	["statusdescription", { column: "StatusMessage", expr: "StatusMessage" }],
-	["serviceversion", { column: "ResourceAttributes", expr: "ResourceAttributes['service.version']" }],
-	["servicenamespace", { column: "ResourceAttributes", expr: "ResourceAttributes['service.namespace']" }],
+interface AliasTarget {
+	readonly column: string
+	readonly expr: string
+}
+
+const plain = (column: string): AliasTarget => ({ column, expr: column })
+
+const DEPLOYMENT_ENV: AliasTarget = {
+	column: "ResourceAttributes",
+	// The expression the rollups' `DeploymentEnv` is materialized from.
+	expr: "coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment'])",
+}
+
+/**
+ * Names agents write for a column or map key, by folded name, with what each means in order of
+ * preference. The first target whose column is on exactly one table the query reads is used.
+ */
+const KNOWN_ALIASES: ReadonlyMap<string, ReadonlyArray<AliasTarget>> = new Map([
+	["service", [plain("ServiceName")]],
+	["logbody", [plain("Body")]],
+	["spanstatusmessage", [plain("StatusMessage")]],
+	["statusdescription", [plain("StatusMessage")]],
+	["stacktrace", [plain("ExceptionStacktrace")]],
+	["count", [plain("SpanCount"), plain("UsageCount")]],
+	["calls", [plain("SpanCount")]],
+	["requestcount", [plain("SpanCount")]],
+	["requests", [plain("SpanCount")]],
+	["httproute", [{ column: "SpanAttributes", expr: "SpanAttributes['http.route']" }]],
+	["httpmethod", [{ column: "SpanAttributes", expr: "SpanAttributes['http.request.method']" }]],
+	["httpstatuscode", [{ column: "SpanAttributes", expr: "SpanAttributes['http.response.status_code']" }]],
+	["deploymentenv", [DEPLOYMENT_ENV]],
+	["deploymentenvironment", [plain("DeploymentEnv"), DEPLOYMENT_ENV]],
+	["environment", [plain("DeploymentEnv"), DEPLOYMENT_ENV]],
+	["commitsha", [{ column: "ResourceAttributes", expr: "ResourceAttributes['vcs.ref.head.revision']" }]],
+	["serviceversion", [{ column: "ResourceAttributes", expr: "ResourceAttributes['service.version']" }]],
+	["servicenamespace", [{ column: "ResourceAttributes", expr: "ResourceAttributes['service.namespace']" }]],
 	[
 		"serviceinstanceid",
-		{ column: "ResourceAttributes", expr: "ResourceAttributes['service.instance.id']" },
+		[{ column: "ResourceAttributes", expr: "ResourceAttributes['service.instance.id']" }],
 	],
-	["errortype", { column: "SpanAttributes", expr: "SpanAttributes['error.type']" }],
+	["errortype", [{ column: "SpanAttributes", expr: "SpanAttributes['error.type']" }]],
 ])
+
+/** A time column name read on a table whose time column is another one (`Minute` on an hourly rollup). */
+const TIME_NAMES = new Set(["timestamp", "hour", "minute", "timeunix"])
 
 /**
  * The real expression an unknown identifier was meant to be, only when exactly one fits
@@ -79,27 +113,41 @@ const identifierFix = (
 	tables: ReadonlyArray<TableInfo>,
 	qualifiers: ReadonlyMap<string, string>,
 ): string | undefined => {
-	const owners = (column: string) => tables.filter((t) => t.columns.some((c) => c.name === column)).length
+	const owners = (column: string) =>
+		Arr.filter(tables, (t) => Arr.some(t.columns, (c) => c.name === column)).length
 	if (owners(written) > 0) return undefined
 	const byFold = (name: string, unqualified: boolean) => {
-		const columns = new Set(tables.flatMap((t) => t.columns.map((c) => c.name)))
-		const hits = [...columns].filter((c) => fold(c) === fold(name))
-		return hits.length === 1 && (!unqualified || owners(hits[0]) === 1) ? hits[0] : undefined
+		const columns = new Set(Arr.flatMap(tables, (t) => Arr.map(t.columns, (c) => c.name)))
+		const [only, ...others] = Arr.filter([...columns], (c) => fold(c) === fold(name))
+		return only !== undefined && others.length === 0 && (!unqualified || owners(only) === 1)
+			? only
+			: undefined
 	}
 	const whole = byFold(written, true)
 	if (whole !== undefined) return whole
-	const alias = KNOWN_ALIASES.get(fold(written))
-	if (alias !== undefined && owners(alias.column) === 1) return alias.expr
+	const alias = Arr.findFirst(
+		KNOWN_ALIASES.get(fold(written)) ?? [],
+		(target) => owners(target.column) === 1,
+	)
+	if (Option.isSome(alias)) return alias.value.expr
+	// Rollups keep time in `Hour`/`Minute`, metrics in `TimeUnix`: one table read, one time column.
+	if (tables.length === 1 && TIME_NAMES.has(fold(written))) return tables[0]?.timeColumn
 	// `t.trace_id`: keep the qualifier and fix the column from the table it names.
-	const dot = written.lastIndexOf(".")
-	const qualified =
-		dot <= 0 ? undefined : tables.find((t) => t.name === qualifiers.get(written.slice(0, dot)))
-	if (qualified === undefined) return undefined
-	const hits = qualified.columns.filter((c) => fold(c.name) === fold(written.slice(dot + 1)))
-	return hits.length === 1 ? `${written.slice(0, dot + 1)}${hits[0].name}` : undefined
+	const lastDot = Option.filter(Str.lastIndexOf(".")(written), (at) => at > 0)
+	if (Option.isNone(lastDot)) return undefined
+	const dot = lastDot.value
+	const qualified = Arr.findFirst(tables, (t) => t.name === qualifiers.get(Str.slice(0, dot)(written)))
+	if (Option.isNone(qualified)) return undefined
+	const [only, ...others] = Arr.filter(
+		qualified.value.columns,
+		(c) => fold(c.name) === fold(Str.slice(dot + 1)(written)),
+	)
+	return only !== undefined && others.length === 0
+		? `${Str.slice(0, dot + 1)(written)}${only.name}`
+		: undefined
 }
 
-const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+const escapeRegExp = (text: string) => Str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")(text)
 
 /**
  * Every use of `written` as an identifier, bare or quoted, replaced by `replacement`.
@@ -107,37 +155,40 @@ const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&
  */
 const replaceIdentifier = (sql: string, written: string, replacement: string): string => {
 	const pattern = new RegExp(`(?<![\\w.])${escapeRegExp(written)}(?![\\w.(])`, "g")
-	const spans = [...identifierText(sql).matchAll(pattern)].map((m) => {
+	const spans = Arr.map(matchAllIndexed(identifierText(sql), pattern), (m) => {
 		const quote = sql[m.index - 1]
 		const quoted = (quote === "`" || quote === '"') && sql[m.index + written.length] === quote
 		return quoted
 			? { start: m.index - 1, end: m.index + written.length + 1 }
 			: { start: m.index, end: m.index + written.length }
 	})
-	return spans.reduceRight(
-		(text, { start, end }) => `${text.slice(0, start)}${replacement}${text.slice(end)}`,
+	return Arr.reduceRight(
+		spans,
 		sql,
+		(text, { start, end }) => `${Str.slice(0, start)(text)}${replacement}${Str.slice(end)(text)}`,
 	)
 }
 
 /** SQL words that are never an alias, wherever an alias could stand. */
 const KEYWORDS = new Set(
-	(
+	Str.split(" ")(
 		"and or not in is like ilike between as on using where prewhere having qualify group order limit " +
-		"offset by asc desc nulls first last union except intersect settings format window over final " +
-		"sample array join left right inner outer full cross semi anti any all asof global then else end " +
-		"when from with into values interval"
-	).split(" "),
+			"offset by asc desc nulls first last union except intersect settings format window over final " +
+			"sample array join left right inner outer full cross semi anti any all asof global then else end " +
+			"when from with into values interval",
+	),
 )
 
 /** A relation after FROM, JOIN or a comma, and its alias unless that word is a keyword. */
 const RELATION = new RegExp(
-	`(?:\\bFROM\\s+|\\bJOIN\\s+|,\\s*)([A-Za-z_][\\w.]*)(?:\\s+(?:AS\\s+)?(?!(?:${[...KEYWORDS].join("|")})\\b)([A-Za-z_][\\w.]*))?`,
+	`(?:\\bFROM\\s+|\\bJOIN\\s+|,\\s*)([A-Za-z_][\\w.]*)(?:\\s+(?:AS\\s+)?(?!(?:${Arr.join([...KEYWORDS], "|")})\\b)([A-Za-z_][\\w.]*))?`,
 	"gi",
 )
 
 const relations = (sql: string) =>
-	[...identifierText(sql).matchAll(RELATION)].map((m) => ({ name: m[1], alias: m[2] }))
+	Arr.flatMap(Arr.fromIterable(Str.matchAll(RELATION)(identifierText(sql))), (m) =>
+		m[1] === undefined ? [] : [{ name: m[1], alias: m[2] }],
+	)
 
 /**
  * Names the SQL defines itself, which are never column typos: `AS x`, `x AS (`, a relation's
@@ -146,24 +197,31 @@ const relations = (sql: string) =>
 export const definedNames = (sql: string): ReadonlySet<string> => {
 	const text = identifierText(sql)
 	return new Set([
-		...[...text.matchAll(/\bAS\s+([A-Za-z_][\w.]*)|\b([A-Za-z_]\w*)\s+AS\s*\(/gi)].map(
-			(m) => m[1] ?? m[2],
+		...Arr.flatMap(
+			Arr.fromIterable(Str.matchAll(/\bAS\s+([A-Za-z_][\w.]*)|\b([A-Za-z_]\w*)\s+AS\s*\(/gi)(text)),
+			(m) => {
+				const name = m[1] ?? m[2]
+				return name === undefined ? [] : [name]
+			},
 		),
-		...[...text.matchAll(/\)\s*([A-Za-z_][\w.]*)/g)]
-			.map((m) => m[1])
-			.filter((name) => !KEYWORDS.has(name.toLowerCase())),
-		...relations(sql).flatMap((r) => (r.alias === undefined ? [] : [r.alias])),
+		...Arr.filter(
+			Arr.flatMap(Arr.fromIterable(Str.matchAll(/\)\s*([A-Za-z_][\w.]*)/g)(text)), (m) =>
+				m[1] === undefined ? [] : [m[1]],
+			),
+			(name) => !KEYWORDS.has(Str.toLowerCase(name)),
+		),
+		...Arr.flatMap(relations(sql), (r) => (r.alias === undefined ? [] : [r.alias])),
 	])
 }
 
 /** The catalog table each qualifier names: `FROM traces t`, `JOIN logs AS l`, `FROM a, b`. */
 const tableQualifiers = (sql: string): ReadonlyMap<string, string> => {
-	const catalog = new Set(listWarehouseTables().map((t) => t.name))
+	const catalog = new Set(Arr.map(listWarehouseTables(), (t) => t.name))
 	return new Map(
-		relations(sql).flatMap(({ name, alias }) => {
-			const table = name.split(".").at(-1) ?? name
+		Arr.flatMap(relations(sql), ({ name, alias }) => {
+			const table = Str.split(".")(name).at(-1) ?? name
 			if (!catalog.has(table)) return []
-			return [name, table, ...(alias === undefined ? [] : [alias])].map((q) => [q, table] as const)
+			return Arr.map([name, table, ...(alias === undefined ? [] : [alias])], (q) => [q, table] as const)
 		}),
 	)
 }
@@ -173,13 +231,14 @@ const tableQualifiers = (sql: string): ReadonlyMap<string, string> => {
  * another), so a rewrite of every `q.col` would also change the scope where it was valid.
  */
 const qualifierReused = (sql: string, written: string): boolean => {
-	const dot = written.lastIndexOf(".")
-	if (dot <= 0) return false
-	const qualifier = written.slice(0, dot).toLowerCase()
-	const binds = relations(sql).filter(
+	const dot = Option.filter(Str.lastIndexOf(".")(written), (at) => at > 0)
+	if (Option.isNone(dot)) return false
+	const qualifier = Str.toLowerCase(Str.slice(0, dot.value)(written))
+	const binds = Arr.filter(
+		relations(sql),
 		({ name, alias }) =>
-			alias?.toLowerCase() === qualifier ||
-			(name.split(".").at(-1) ?? name).toLowerCase() === qualifier,
+			(alias !== undefined && Str.toLowerCase(alias) === qualifier) ||
+			Str.toLowerCase(Str.split(".")(name).at(-1) ?? name) === qualifier,
 	)
 	return binds.length > 1
 }

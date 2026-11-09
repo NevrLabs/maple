@@ -65,7 +65,7 @@ MAPLE_LOCAL_ADVERTISE_HOST=maple.home.arpa \
 # Equivalent: maple start --host 0.0.0.0 --advertise-host maple.home.arpa --offline
 ```
 
-Off loopback, set two secrets (`apps/cli/src/server/remote-auth.ts`), each at
+Off loopback, set two secrets (`packages/local-server/src/remote-auth.ts`), each at
 least 16 characters:
 
 - `MAPLE_LOCAL_INGEST_KEY` guards `/v1/*` (`Authorization: Bearer` or
@@ -74,8 +74,10 @@ least 16 characters:
   exchanges it for a stateless HMAC session cookie (30 days, keyed by the
   token, so rotating it signs everyone out); scripts and the CLI send it as a
   Bearer token. The server's own maintenance token still opens `/local/*` and
-  the event-consumer token still opens claims and acks. Failed sign-ins are
-  throttled globally (10 a minute).
+  the event-consumer token still opens claims and acks. Failed sign-ins and
+  wrong Bearer tokens are throttled per client address (10 a minute, 429 with
+  `Retry-After`) under a server-wide ceiling of 100 a minute. Behind a proxy
+  every client shares the proxy's address.
 
 With an access token, a browser request is same-origin when its `Origin` host
 matches the request's `Host`, so a platform hostname works without
@@ -163,16 +165,19 @@ or remove the old PATH symlink so your shell resolves Homebrew's `maple`.
 
 There is a single binary, `maple`, compiled from **`apps/cli`** (package
 `@maple/cli`, Effect + Bun) with `bun build --compile`. It is both the CLI and
-the server. It talks to the embedded ClickHouse engine **directly via
-`bun:ffi`**, with no subprocess and no second language in front:
+the server; the server, store and archive code lives in the private workspace
+package **`packages/local-server`** (`@maple/local-server`), which the CLI and
+the `@maple-dev/alchemy` local sidecar both build on. It talks to the embedded
+ClickHouse engine **directly via `bun:ffi`**, with no subprocess and no second
+language in front:
 
-| Concern              | Where                            | How                                                                                                                                                                                                                                                                                                                                                                  |
-| -------------------- | -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| CLI commands         | `apps/cli/src/commands`          | `maple services`, `traces`, `errors`, … run against **either** the local server **or** a remote workspace. `apps/cli/src/core/operations.ts` picks the path per [mode](#local-vs-remote-mode).                                                                                                                                                                       |
-| `maple start` server | `apps/cli/src/server/serve.ts`   | A `Bun.serve` hosting OTLP/HTTP ingest (`POST /v1/{traces,logs,metrics}`), the query API (`POST /local/query`), and the bundled SPA, all on one port.                                                                                                                                                                                                                |
-| Embedded ClickHouse  | `apps/cli/src/server/chdb.ts`    | `dlopen`s `libchdb` via `bun:ffi` (the `chdb_*` accessor C API) and holds a single connection for the process.                                                                                                                                                                                                                                                       |
-| OTLP → rows          | `apps/cli/src/server/otlp/`      | Decodes OTLP protobuf/JSON (protobufjs) and encodes each signal to per-table NDJSON, matching the generated `local-inserts.json` schema exactly. Ported from the production Rust encoders so row shapes can't diverge.                                                                                                                                               |
-| UI (SPA)             | `apps/local-ui` (Vite + Foldkit) | Pages compile queries with `CH.compile(...)` and POST to `/local/query`. The same build is deployed to `local.maple.dev` (the default) **and** inlined into the binary as the `--offline` fallback (see [release bundle](#release-bundle)); it picks its query base URL from `window.location` at runtime (see [Where the UI comes from](#where-the-ui-comes-from)). |
+| Concern              | Where                                | How                                                                                                                                                                                                                                                                                                                                                                  |
+| -------------------- | ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| CLI commands         | `apps/cli/src/commands`              | `maple services`, `traces`, `errors`, … run against **either** the local server **or** a remote workspace. `apps/cli/src/core/operations.ts` picks the path per [mode](#local-vs-remote-mode).                                                                                                                                                                       |
+| `maple start` server | `packages/local-server/src/serve.ts` | A `Bun.serve` hosting OTLP/HTTP ingest (`POST /v1/{traces,logs,metrics}`), the query API (`POST /local/query`), and the bundled SPA, all on one port.                                                                                                                                                                                                                |
+| Embedded ClickHouse  | `packages/local-server/src/chdb.ts`  | `dlopen`s `libchdb` via `bun:ffi` (the `chdb_*` accessor C API) and holds a single connection for the process.                                                                                                                                                                                                                                                       |
+| OTLP → rows          | `packages/local-server/src/otlp/`    | Decodes OTLP protobuf/JSON (protobufjs) and encodes each signal to per-table NDJSON, matching the generated `local-inserts.json` schema exactly. Ported from the production Rust encoders so row shapes can't diverge.                                                                                                                                               |
+| UI (SPA)             | `apps/local-ui` (Vite + Foldkit)     | Pages compile queries with `CH.compile(...)` and POST to `/local/query`. The same build is deployed to `local.maple.dev` (the default) **and** inlined into the binary as the `--offline` fallback (see [release bundle](#release-bundle)); it picks its query base URL from `window.location` at runtime (see [Where the UI comes from](#where-the-ui-comes-from)). |
 
 chDB allows exactly one connection per process and isn't safe to call
 concurrently. The long-lived `maple start` process owns the connection, and
@@ -184,7 +189,7 @@ chDB's single-writer requirement.
 ### Store lifecycle & recovery
 
 The on-disk store at `~/.maple/data` is guarded by two sentinels beside it
-(`apps/cli/src/server/store-version.ts`). Every per-store file lives beside the
+(`packages/local-server/src/store-version.ts`). Every per-store file lives beside the
 data directory and is named by `dataDirSidecarPath`: a data directory named
 `data` keeps the plain names (`~/.maple/maple.pid`, `maple-store-open`, ...), and
 any other name gets a `<basename>.` prefix (`/var/lib/maple` uses
@@ -201,7 +206,10 @@ Stores created with a non-`data` name before this rule adopt their old files onc
   when losing its live telemetry is acceptable.
 - **`maple-store-open`**: a clean-shutdown sentinel (not a concurrency lock; the
   PID file already guards that). It is written right after chDB opens and removed
-  as the last step of a clean close. If `maple start` finds it over a populated
+  as the last step of a clean close. Shutdown interrupts queries and maintenance
+  before chDB closes (ingest, eventing writes and retirement are waited for); a
+  maintenance operation interrupted after its work began leaves the sentinel in
+  place. If `maple start` finds it over a populated
   store, the previous server died without closing cleanly and the store may be
   inconsistent. Reopening it could crash chDB natively, so `maple start` never
   reopens it. `--on-dirty-store` picks the recovery:
@@ -271,7 +279,7 @@ killed with `kill -9` leaves its temp directory behind, and the next
 `service_map_edges_hourly` has no materialized view: an edge needs a
 Client/Producer span joined to its child Server/Consumer span. In cloud a
 scheduled job fills it; locally `maple start` runs the same rollup in-process
-(`apps/cli/src/server/service-map-rollup.ts`), sharing its hour planning and
+(`packages/local-server/src/service-map-rollup.ts`), sharing its hour planning and
 queries with the cloud job. The first tick runs 60 seconds after start, then
 every 5 minutes. Each tick seals every completed hour of the trailing 6 hours
 not yet in the table, once the hour has been over for 2 minutes. On the first
@@ -314,7 +322,7 @@ inside the admission gate's exclusive section, so ingest, queries, the service
 map rollup and checkpoint backups wait for it.
 
 **Which tables.** Every table in the local schema is classified in
-`TABLE_DELETE_PLAN` (`apps/cli/src/server/scoped-delete.ts`). A table either is
+`TABLE_DELETE_PLAN` (`packages/local-server/src/scoped-delete.ts`). A table either is
 `excluded` or declares which of the three dimensions (service, namespace, env)
 it can filter exactly, plus how to recompute it when a request names one it
 lacks. `validateDeletePlan` checks the map against the bundled schema manifest
@@ -445,15 +453,16 @@ seam exercises a two-edge chain, a resumed verified edge, and one final
 promotion.
 
 Structural identities live in the append-only history at
-`apps/cli/src/server/local-schema-history.ts`. The schema gate checks the
+`packages/local-server/src/local-schema-history.ts`. The schema gate checks the
 current identity against the history tip, preserves the base branch's prior
 entries in CI, and requires every historical identity to reach the current one
 through registered migration edges. Changing a schema digest or manifest
 therefore requires a new versioned entry and an executable edge together.
 
 Everything that pairing demands except the DDL is derived from the new version
-number, so `bun run local-schema:bump <slug>` writes it: the retained snapshot,
-the version constant, the `schema-identity.ts` edit sites, the history entry's
+number, so `bun run local-schema:bump <slug>` writes it: the retained snapshot
+(kept with the migrations in `apps/cli/src/server/schema/`), the version
+constant, the `schema-snapshots.ts` and `schema-identity.ts` edit sites, the history entry's
 hashes, a new row in `steps.ts`, and the ids and identities pinned in
 `apps/cli/test/local-store-migrations.test.ts` and the native probe. It leaves
 the row's operations, plan line and dispositions to be written.
@@ -514,12 +523,14 @@ See [external projector modules](local-projector-modules.md) for the module cont
 
 Clients POST `{ "sql": "..." }` and get back a bare JSON array of rows.
 
-The endpoint is **read-only** (`apps/cli/src/server/query-guard.ts`). The
+The endpoint is **read-only** (`packages/local-server/src/query-guard.ts`). The
 engine's own parser canonicalizes the text and the canonical statement is what
 runs. A body must be exactly one `SELECT`, `WITH`, `SHOW`, `DESCRIBE` (of a plain
-table), `EXISTS` or `EXPLAIN` statement; `INTO OUTFILE`, the `file()` function
-and every table function that reaches the filesystem or network are refused, and
-the statement runs with `readonly = 1` plus caps (30s, 4 GB memory, 1M rows,
+table), `EXISTS` or `EXPLAIN` statement; `INTO OUTFILE` is refused, the only table
+functions are the in-memory `numbers` and `generateSeries`, and functions that
+read files, URLs, object stores or remote servers are refused in any position
+(the check is shared with hosted raw SQL, `packages/domain/src/raw-sql.ts`). The
+statement runs with `readonly = 1` plus caps (30s, 4 GB memory, 1M rows,
 256 MiB result). A refusal is HTTP 400 with a body starting
 `read-only query endpoint: `. Internal writes (ingest, checkpoints, archives)
 and scoped deletes use chDB directly; the native test probes write through `/local/query` with the
@@ -528,7 +539,8 @@ and scoped deletes use chDB directly; the native test probes write through `/loc
 The **server owns the output FORMAT**. `CH.compile(...)` appends
 `FORMAT JSON`; the guard peels any trailing `FORMAT`/`SETTINGS` clause, runs
 the statement as JSON rows, and keeps a client's own SETTINGS only where they
-lower the caps. Clients therefore POST `compiled.sql` verbatim.
+lower the caps. `SETTINGS` anywhere else (a subquery, a `UNION` branch) is
+refused. Clients therefore POST `compiled.sql` verbatim.
 
 `GET /local/status` returns `{service: "maple-local", pid, version, url,
 dataDir, lastIngestAtMs, lastDeleteAtMs}`, where `lastIngestAtMs` is when the
@@ -541,7 +553,9 @@ hosted UI origin (none with `--offline`), the local-ui Vite dev origin
 (`127.0.0.1`/`localhost`/`[::1]` on port 4319), and any origin listed in
 `MAPLE_LOCAL_ALLOWED_ORIGINS` (comma separated). `/v1/*` also accepts loopback
 pages so browser SDKs can export. The Host check against DNS rebinding applies
-to every route.
+to every route. A request with no `Origin` (the CLI, scripts, a page load) to
+anything but `/v1/*` and `/health` must name a loopback or advertised host in
+`Host` (any host once an access token is set), else 403.
 
 ## Where the UI comes from
 
@@ -571,7 +585,7 @@ The dashboard SPA is a single build served two ways, and it decides which
 
 Because the remote UI auto-updates independently of the binary, keep the
 `/local/query` contract and the local chDB schema
-([apps/cli/src/server/schema/local-schema.sql](../apps/cli/src/server/schema/local-schema.sql))
+([packages/local-server/src/schema/local-schema.sql](../packages/local-server/src/schema/local-schema.sql))
 backward compatible. A newer UI may run against an older binary.
 
 `MAPLE_LOCAL_UI_URL` overrides the default UI origin (e.g. point a binary at a
@@ -750,12 +764,12 @@ The build:
 
 1. builds the workspace packages consumed through gitignored `dist/` paths;
 2. builds the SPA;
-3. inlines `apps/local-ui/dist` into `apps/cli/src/server/ui-embed.gen.ts`, so
+3. inlines `apps/local-ui/dist` into `packages/local-server/src/ui-embed.gen.ts`, so
    `bun build --compile` bakes it into the binary as the `--offline` fallback
    (the default UI is served from `local.maple.dev`);
 4. compiles `apps/cli`;
-5. downloads the pinned `libchdb` (`LIBCHDB_VERSION`, checksum-verified) beside
-   the binary;
+5. downloads the pinned `libchdb` (`LIBCHDB_VERSION`, defaulting to the release in
+   `packages/local-server/libchdb.json`; sha256-verified against the same manifest) beside the binary;
 6. restores the committed `ui-embed.gen.ts` stub.
 
 At runtime `maple` `dlopen`s the sibling `libchdb`, resolved relative to its own

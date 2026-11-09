@@ -1,11 +1,16 @@
 import { TimeRangeSchema } from "@maple/domain/http"
-import { DashboardSectionSchema, WidgetDisplayConfigV3, WidgetLayoutSchema } from "@maple/widgets/dashboard"
+import {
+	DashboardSectionSchema,
+	SharedDataSource,
+	SharedWidgetDisplayV3,
+	WidgetLayoutSchema,
+} from "@maple/widgets/dashboard"
 import { Schema } from "effect"
-import * as Chart from "../../charts/chart"
-import { ChartRuntime } from "../../charts/chart-runtime"
-import { ThemeColors } from "../../charts/theme-colors"
+import * as Chart from "@maple/views/charts/chart"
+import { ChartRuntime } from "@maple/views/charts/chart-runtime"
+import { ThemeColors } from "@maple/views/charts/theme-colors"
 import { ShareSearch } from "../../route/search"
-import * as Menu from "../../ui/menu"
+import * as Menu from "@maple/views/ui/menu"
 import { TableSort } from "../dashboards/kit/tiles"
 
 // `/share/$token`.
@@ -14,16 +19,12 @@ import { TableSort } from "../dashboards/kit/tiles"
 export const ShareWidget = Schema.Struct({
 	id: Schema.String,
 	visualization: Schema.String,
-	display: WidgetDisplayConfigV3,
+	display: SharedWidgetDisplayV3,
 	layout: WidgetLayoutSchema,
 	sectionId: Schema.optionalKey(Schema.String),
 	tabId: Schema.optionalKey(Schema.String),
 	timeRange: Schema.optionalKey(TimeRangeSchema),
-	dataSource: Schema.Struct({
-		kind: Schema.String,
-		resultShape: Schema.optionalKey(Schema.String),
-		transform: Schema.optionalKey(Schema.Unknown),
-	}),
+	dataSource: SharedDataSource,
 })
 export type ShareWidget = typeof ShareWidget.Type
 
@@ -42,7 +43,6 @@ export const SharedDashboard = Schema.Struct({
 	}),
 })
 export type SharedDashboard = typeof SharedDashboard.Type
-
 
 /** `ShareResolveError`. */
 export const ShareError = Schema.Union([

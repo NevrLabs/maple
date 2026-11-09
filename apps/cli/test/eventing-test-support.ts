@@ -1,16 +1,16 @@
-import { Context, Effect, Exit, Metric, Scope } from "effect"
+import { Context, Effect, Exit, Metric, Scope, Array as Arr } from "effect"
 import type { ProjectorRegistry } from "@maple/eventing-core"
 import {
 	LocalEventingControlStore,
 	openControlStore,
 	type LocalEventingControlLimits,
 	type LocalEventingControlStoreApi,
-} from "../src/server/eventing/control-store"
+} from "@maple/local-server/eventing/control-store"
 import {
 	LocalEventingProjectors,
 	LocalEventingRuntime,
 	type LocalEventingRuntimeApi,
-} from "../src/server/eventing/runtime"
+} from "@maple/local-server/eventing/runtime"
 
 /** Runs a synchronous store or runtime step, throwing its typed failure like the old API did. */
 export const run = <A, E>(effect: Effect.Effect<A, E>): A => Effect.runSync(effect)
@@ -26,7 +26,7 @@ export const openStore = async (
 	dataDir: string,
 	limits?: LocalEventingControlLimits,
 ): Promise<OpenedStore> => {
-	const scope = Effect.runSync(Scope.make())
+	const scope = Scope.makeUnsafe()
 	const store = await Effect.runPromise(
 		openControlStore(dataDir, limits).pipe(
 			Scope.provide(scope),
@@ -57,7 +57,7 @@ export const metricRecorder = () => {
 			Effect.provideService(effect, Metric.MetricRegistry, registry),
 		/** `operation:outcome` pairs of every eventing counter with a non-zero count. */
 		operationOutcomes: (): string[] =>
-			Metric.snapshotUnsafe(context).flatMap((snapshot) =>
+			Arr.flatMap(Metric.snapshotUnsafe(context), (snapshot) =>
 				snapshot.id === "maple.eventing.operations_total" &&
 				snapshot.type === "Counter" &&
 				Number(snapshot.state.count) > 0
@@ -65,7 +65,7 @@ export const metricRecorder = () => {
 					: [],
 			),
 		attributes: (): string =>
-			JSON.stringify(Metric.snapshotUnsafe(context).map(({ attributes }) => attributes)),
+			JSON.stringify(Arr.map(Metric.snapshotUnsafe(context), ({ attributes }) => attributes)),
 	}
 }
 

@@ -1,12 +1,15 @@
 import { Submodel } from "foldkit"
 import type { Html, HtmlBuilder } from "foldkit/html"
-import { emptyMessage } from "../../../../ui/empty"
-import { eyebrow } from "../../../../ui/eyebrow"
+import { emptyMessage } from "@maple/views/ui/empty"
+import { eyebrow } from "@maple/views/ui/eyebrow"
 import { depthControls } from "../depth-controls"
 import { Message, type Model } from "./model"
 import { spanRow } from "./row"
-import { flattenTree } from "./tree"
+import { flatTreeOf } from "./tree"
 import { KEYS_ATTRIBUTE, SELECTED_ATTRIBUTE, VirtualizeWaterfall } from "./virtualize"
+import { Array as Arr } from "effect"
+import { hstack, vstack } from "@maple/views/ui/stack"
+import { typography } from "@maple/views/ui/typography"
 
 // `SpanHierarchy` (packages/ui/src/components/traces/span-hierarchy.tsx): the Waterfall tab's body.
 
@@ -14,51 +17,47 @@ import { KEYS_ATTRIBUTE, SELECTED_ATTRIBUTE, VirtualizeWaterfall } from "./virtu
 export type ViewInputs = Readonly<Record<string, never>>
 
 const header = (h: HtmlBuilder<Message>, shown: number, total: number): Html =>
-	h.div(
+	hstack(
+		h,
+		{
+			align: "center",
+			className:
+				"@container/row shrink-0 border-b bg-surface-sunken px-2 py-1.5 text-xs font-medium text-muted-foreground",
+		},
 		[
-			h.Class(
-				"@container/row flex shrink-0 items-center border-b bg-surface-sunken px-2 py-1.5 text-xs font-medium text-muted-foreground",
-			),
-		],
-		[
-			h.div(
-				[h.Class("flex items-center gap-2 flex-1 min-w-0 overflow-hidden")],
-				[
-					depthControls(h, {
-						onCollapseOneLevel: Message.ClickedCollapseOneLevel(),
-						onExpandOneLevel: Message.ClickedExpandOneLevel(),
-						onCollapseAll: Message.ClickedCollapseAll(),
-						onExpandAll: Message.ClickedExpandAll(),
-						triggerIds: [
-							"waterfall-depth-0",
-							"waterfall-depth-1",
-							"waterfall-depth-2",
-							"waterfall-depth-3",
-						],
-					}),
-					...(shown < total
-						? [
-								h.span(
-									[h.Class("shrink-0 font-normal tabular-nums text-3xs")],
-									[
-										String(shown),
-										" of ",
-										String(total),
-										h.span([h.Class("hidden @min-[420px]/row:inline")], [" spans"]),
-									],
-								),
-							]
-						: []),
-				],
-			),
-			h.div(
-				[h.Class("flex items-center gap-2 shrink-0 ml-2")],
-				[
-					eyebrow(h, { className: "hidden w-48 @min-[560px]/row:block" }, ["Timeline"]),
-					eyebrow(h, { className: "w-16 text-right" }, ["Duration"]),
-					eyebrow(h, { className: "w-14 text-center" }, ["Status"]),
-				],
-			),
+			hstack(h, { gap: "2", align: "center", shrink: true, grow: true, className: "overflow-hidden" }, [
+				depthControls(h, {
+					onCollapseOneLevel: Message.ClickedCollapseOneLevel(),
+					onExpandOneLevel: Message.ClickedExpandOneLevel(),
+					onCollapseAll: Message.ClickedCollapseAll(),
+					onExpandAll: Message.ClickedExpandAll(),
+					triggerIds: [
+						"waterfall-depth-0",
+						"waterfall-depth-1",
+						"waterfall-depth-2",
+						"waterfall-depth-3",
+					],
+				}),
+				...(shown < total
+					? [
+							typography(
+								h,
+								{ size: "3xs", weight: "normal", numeric: true, className: "shrink-0" },
+								[
+									String(shown),
+									" of ",
+									String(total),
+									h.span([h.Class("hidden @min-[420px]/row:inline")], [" spans"]),
+								],
+							),
+						]
+					: []),
+			]),
+			hstack(h, { gap: "2", align: "center", className: "shrink-0 ml-2" }, [
+				eyebrow(h, { className: "hidden w-48 @min-[560px]/row:block" }, ["Timeline"]),
+				eyebrow(h, { className: "w-16 text-right" }, ["Duration"]),
+				eyebrow(h, { className: "w-14 text-center" }, ["Status"]),
+			]),
 		],
 	)
 
@@ -68,53 +67,49 @@ export const view = Submodel.defineView<Model, Message, ViewInputs>((model, _inp
 			"No spans found for this trace",
 		])
 	}
-	const expanded = new Set(model.expanded)
-	const flat = flattenTree(model.rootSpans, expanded)
-	return h.div(
-		[h.Class("flex h-full flex-col overflow-hidden rounded-md border")],
-		[
-			header(h, flat.length, model.totalSpanCount),
-			h.div(
-				[
-					h.Class("flex-1 min-h-0 overflow-auto"),
-					h.DataAttribute(KEYS_ATTRIBUTE, flat.map((row) => row.node.spanId).join(" ")),
-					h.DataAttribute(SELECTED_ATTRIBUTE, model.selectedSpanId ?? ""),
-					h.OnMount(VirtualizeWaterfall()),
-				],
-				[
-					h.div(
-						[h.Style({ height: `${model.totalSize}px`, position: "relative", width: "100%" })],
-						model.virtualRows.flatMap((item) => {
-							const row = flat[item.index]
-							return row === undefined
-								? []
-								: [
-										h.div(
-											[
-												h.Key(row.node.spanId),
-												h.DataAttribute("index", String(item.index)),
-												h.Style({
-													position: "absolute",
-													top: "0px",
-													left: "0px",
-													width: "100%",
-													transform: `translateY(${item.start}px)`,
-												}),
-											],
-											[
-												spanRow(h, row, {
-													totalDurationMs: model.totalDurationMs,
-													traceStartTime: model.traceStartTime,
-													isExpanded: expanded.has(row.node.spanId),
-													isSelected: model.selectedSpanId === row.node.spanId,
-												}),
-											],
-										),
-									]
-						}),
-					),
-				],
-			),
-		],
-	)
+	const { rows: flat, expanded, keys } = flatTreeOf(model.rootSpans, model.expanded)
+	return vstack(h, { className: "h-full overflow-hidden rounded-md border" }, [
+		header(h, flat.length, model.totalSpanCount),
+		h.div(
+			[
+				h.Class("flex-1 min-h-0 overflow-auto"),
+				h.DataAttribute(KEYS_ATTRIBUTE, keys),
+				h.DataAttribute(SELECTED_ATTRIBUTE, model.selectedSpanId ?? ""),
+				h.OnMount(VirtualizeWaterfall()),
+			],
+			[
+				h.div(
+					[h.Style({ height: `${model.totalSize}px`, position: "relative", width: "100%" })],
+					Arr.flatMap(model.virtualRows, (item) => {
+						const row = flat[item.index]
+						return row === undefined
+							? []
+							: [
+									h.div(
+										[
+											h.Key(row.node.spanId),
+											h.DataAttribute("index", String(item.index)),
+											h.Style({
+												position: "absolute",
+												top: "0px",
+												left: "0px",
+												width: "100%",
+												transform: `translateY(${item.start}px)`,
+											}),
+										],
+										[
+											spanRow(h, row, {
+												totalDurationMs: model.totalDurationMs,
+												traceStartTime: model.traceStartTime,
+												isExpanded: expanded.has(row.node.spanId),
+												isSelected: model.selectedSpanId === row.node.spanId,
+											}),
+										],
+									),
+								]
+					}),
+				),
+			],
+		),
+	])
 })

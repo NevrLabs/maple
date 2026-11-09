@@ -16,7 +16,7 @@ import {
 } from "@maple/domain/http"
 import * as PG from "@maple-dev/effect-orm/postgres"
 import { OrgIngestAttributeMappings, type OrgIngestAttributeMappingRow } from "@maple/db/tables"
-import { Array, Clock, Context, Effect, Layer, Option, Schema } from "effect"
+import { Array, Clock, Context, Effect, Layer, Option, Schema, String as Str } from "effect"
 import { Database, DatabaseError } from "@maple/backend/platform/DatabaseLive"
 import { makeDbExecute } from "@maple/backend/platform/db-execute"
 
@@ -78,8 +78,8 @@ const validateRule = Effect.fnUntraced(function* (rule: {
 	sourceKey: string
 	targetKey: string
 }) {
-	const sourceKey = rule.sourceKey.trim()
-	const targetKey = rule.targetKey.trim()
+	const sourceKey = Str.trim(rule.sourceKey)
+	const targetKey = Str.trim(rule.targetKey)
 	if (sourceKey.length === 0) {
 		return yield* new IngestAttributeMappingValidationError({ message: "Source key must not be empty" })
 	}
@@ -176,10 +176,10 @@ export class IngestAttributeMappingService extends Context.Service<
 					PG.insertInto(OrgIngestAttributeMappings).values({
 						id,
 						orgId,
-						name: request.name.trim(),
+						name: Str.trim(request.name),
 						sourceContext: request.sourceContext,
-						sourceKey: request.sourceKey.trim(),
-						targetKey: request.targetKey.trim(),
+						sourceKey: Str.trim(request.sourceKey),
+						targetKey: Str.trim(request.targetKey),
 						operation: request.operation,
 						enabled: request.enabled ?? true,
 						createdAt: now,
@@ -222,10 +222,10 @@ export class IngestAttributeMappingService extends Context.Service<
 			const now = yield* Clock.currentTimeMillis
 			const updates = {
 				updatedAt: now,
-				name: request.name?.trim(),
+				name: request.name === undefined ? undefined : Str.trim(request.name),
 				sourceContext: request.sourceContext,
-				sourceKey: request.sourceKey?.trim(),
-				targetKey: request.targetKey?.trim(),
+				sourceKey: request.sourceKey === undefined ? undefined : Str.trim(request.sourceKey),
+				targetKey: request.targetKey === undefined ? undefined : Str.trim(request.targetKey),
 				operation: request.operation,
 				enabled: request.enabled,
 			}

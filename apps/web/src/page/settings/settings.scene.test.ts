@@ -1,9 +1,10 @@
+import * as Policy from "@maple/domain/policy"
 import { BillingCustomer } from "@maple/domain/http"
 import { BillingAccount, BillingAccountOrg } from "@maple/domain/http"
 import { OrgId } from "@maple/domain"
 import { V2McpConnection } from "@maple/domain/http/v2"
 import { NetworkErrorBody } from "@maple/web-data/lib/error-messages"
-import { Result, Schema } from "effect"
+import { Result, Schema, Array as Arr, Option } from "effect"
 import {
 	click,
 	expect as expectView,
@@ -16,7 +17,7 @@ import {
 	withViewInputs,
 } from "foldkit/scene"
 import { describe, expect, test } from "vitest"
-import * as Tabs from "../../ui/tabs"
+import * as Tabs from "@maple/views/ui/tabs"
 import { PageOutMessage, type PageContext } from "../contract"
 import { Message } from "./message"
 import * as Billing from "./billing/update"
@@ -36,7 +37,7 @@ const context: PageContext = {
 const pageUpdate = (model: Model, message: Message) => update(model, message, context)
 const view = withViewInputs(pageView, { context })()
 const names = (commands: ReadonlyArray<{ readonly name: string }> | undefined) =>
-	(commands ?? []).map(({ name }) => name)
+	Arr.map(commands ?? [], ({ name }) => name)
 
 const entered = (search: Model["search"] = {}) => init({ _tag: "Settings", search }, context)
 const mcp = (message: McpMessage.Message) => Message.GotMcpMessage({ message })
@@ -59,7 +60,7 @@ const tools = [
 		destructive: false,
 	},
 ]
-const connection = Schema.decodeUnknownSync(V2McpConnection)({
+const connection = Schema.decodeSync(V2McpConnection)({
 	id: "mcpc_p12S8T8agEHUkYc825nMz6",
 	object: "mcp_connection",
 	client_name: "Claude Code",
@@ -71,17 +72,25 @@ const connection = Schema.decodeUnknownSync(V2McpConnection)({
 	expires_at: "2026-12-29T12:00:00.000Z",
 })
 
-const mcpLoaded = (): Model =>
-	[
-		Message.CompletedFetchSession({
-			result: Result.succeed({ isAdmin: true, userId: null, hasAiAutoTriage: true }),
-		}),
-		Message.CompletedFetchCustomer({
-			result: Result.succeed(new BillingCustomer({ id: "org_acme", subscriptions: [] })),
-		}),
-		mcp(McpMessage.Message.CompletedFetchConnections({ result: Result.succeed([connection]) })),
-		mcp(McpMessage.Message.CompletedFetchTools({ result: Result.succeed(tools) })),
-	].reduce((model, message) => pageUpdate(model, message).model, entered({ tab: "mcp" }).model)
+const mcpLoaded = (catalog: typeof tools = tools): Model =>
+	Arr.reduce(
+		[
+			Message.CompletedFetchSession({
+				result: Result.succeed({
+					grants: Policy.allPermissions,
+					userId: null,
+					hasAiAutoTriage: true,
+				}),
+			}),
+			Message.CompletedFetchCustomer({
+				result: Result.succeed(new BillingCustomer({ id: "org_acme", subscriptions: [] })),
+			}),
+			mcp(McpMessage.Message.CompletedFetchConnections({ result: Result.succeed([connection]) })),
+			mcp(McpMessage.Message.CompletedFetchTools({ result: Result.succeed(catalog) })),
+		],
+		entered({ tab: "mcp" }).model,
+		(model, message) => pageUpdate(model, message).model,
+	)
 
 /** Scene lifts a Mount's result through every `toParentMessage`, so it takes the Tabs message. */
 const indicatorMeasured = () =>
@@ -188,11 +197,21 @@ describe("settings page", () => {
 			{ update: pageUpdate, view },
 			given(searched),
 			indicatorMeasured(),
-			expectView(text("No tools match “zzz”.")).toExist(),
+			expectView(text("No tools match these filters")).toExist(),
 			click(role("button", { name: "Audit log" })),
 			expectOutMessage(
 				PageOutMessage.RequestedNavigation({ url: "/settings?tab=audit-log", isReplace: false }),
 			),
+		)
+	})
+
+	test("an empty tool catalog says no tools are registered, not that a search missed", () => {
+		scene(
+			{ update: pageUpdate, view },
+			given(mcpLoaded([])),
+			indicatorMeasured(),
+			expectView(text("No tools are registered yet")).toExist(),
+			expectView(text("No tools match these filters")).toBeAbsent(),
 		)
 	})
 
@@ -230,7 +249,7 @@ describe("settings page", () => {
 	})
 
 	test("checkout polls re-read only the page's customer; the confirmed plan refreshes the app's once", () => {
-		const subscribed = Schema.decodeUnknownSync(BillingCustomer)({
+		const subscribed = Schema.decodeSync(BillingCustomer)({
 			id: "org_acme",
 			subscriptions: [
 				{
@@ -243,7 +262,7 @@ describe("settings page", () => {
 		})
 		const returning: Model = {
 			...mcpLoaded(),
-			tab: { _tag: "Billing", model: Billing.init(true, true, true).model },
+			tab: { _tag: "Billing", model: Billing.init(Policy.allPermissions, true, true).model },
 		}
 		const polled = pageUpdate(
 			returning,
@@ -269,7 +288,7 @@ describe("settings page", () => {
 
 	// Billing is Clerk-only, so the tab left while it confirmed a checkout return is placed in `kept`.
 	test("a checkout return settles even when the Billing tab was left while it waited", () => {
-		const subscribed = Schema.decodeUnknownSync(BillingCustomer)({
+		const subscribed = Schema.decodeSync(BillingCustomer)({
 			id: "org_acme",
 			subscriptions: [
 				{
@@ -282,13 +301,15 @@ describe("settings page", () => {
 		})
 		const away: Model = {
 			...mcpLoaded(),
-			kept: [{ _tag: "Billing", model: Billing.init(true, true, true).model }],
+			kept: [{ _tag: "Billing", model: Billing.init(Policy.allPermissions, true, true).model }],
 		}
 		const settled = pageUpdate(
 			away,
 			Message.CompletedFetchCustomer({ result: Result.succeed(subscribed) }),
 		)
-		const billing = settled.model.kept.find((tab) => tab._tag === "Billing")
+		const billing = Option.getOrUndefined(
+			Arr.findFirst(settled.model.kept, (tab) => tab._tag === "Billing"),
+		)
 		expect(billing?._tag === "Billing" && billing.model.checkoutReturn).toBe("Idle")
 		expect(settled.commands).toContainEqual(
 			expect.objectContaining({
@@ -298,14 +319,22 @@ describe("settings page", () => {
 	})
 
 	test("an api_keys shape that fails before answering shows the sync error, not a skeleton", () => {
-		const keys = [
-			Message.CompletedFetchSession({
-				result: Result.succeed({ isAdmin: true, userId: null, hasAiAutoTriage: true }),
-			}),
-			Message.CompletedFetchCustomer({
-				result: Result.succeed(new BillingCustomer({ id: "org_acme", subscriptions: [] })),
-			}),
-		].reduce((model, message) => pageUpdate(model, message).model, entered({ tab: "keys" }).model)
+		const keys = Arr.reduce(
+			[
+				Message.CompletedFetchSession({
+					result: Result.succeed({
+						grants: Policy.allPermissions,
+						userId: null,
+						hasAiAutoTriage: true,
+					}),
+				}),
+				Message.CompletedFetchCustomer({
+					result: Result.succeed(new BillingCustomer({ id: "org_acme", subscriptions: [] })),
+				}),
+			],
+			entered({ tab: "keys" }).model,
+			(model, message) => pageUpdate(model, message).model,
+		)
 		const watching = (model: Model) =>
 			subscriptions.apiKeysLoad.modelToDependencies({ model, context }).isWatching
 		expect(watching(keys)).toBe(true)
@@ -326,12 +355,20 @@ describe("settings page", () => {
 	})
 
 	test("a failed api_keys load gives Mobile devices its own error instead of dropping the section", () => {
-		const failed = [
-			Message.CompletedFetchSession({
-				result: Result.succeed({ isAdmin: true, userId: null, hasAiAutoTriage: true }),
-			}),
-			Message.FailedLoadApiKeys({ orgId: context.orgId }),
-		].reduce((model, message) => pageUpdate(model, message).model, entered({ tab: "keys" }).model)
+		const failed = Arr.reduce(
+			[
+				Message.CompletedFetchSession({
+					result: Result.succeed({
+						grants: Policy.allPermissions,
+						userId: null,
+						hasAiAutoTriage: true,
+					}),
+				}),
+				Message.FailedLoadApiKeys({ orgId: context.orgId }),
+			],
+			entered({ tab: "keys" }).model,
+			(model, message) => pageUpdate(model, message).model,
+		)
 		scene(
 			{ update: pageUpdate, view },
 			given(failed),
@@ -343,7 +380,7 @@ describe("settings page", () => {
 	test("usage that fails while the customer answers shows the account error with Try again, not skeletons", () => {
 		const billing: Model = {
 			...mcpLoaded(),
-			tab: { _tag: "Billing", model: Billing.init(true, false, true).model },
+			tab: { _tag: "Billing", model: Billing.init(Policy.allPermissions, false, true).model },
 		}
 		// The account settles first: an org that pays for itself.
 		const standalone = pageUpdate(
@@ -390,12 +427,20 @@ describe("settings page", () => {
 	})
 
 	test("retrying a failed api_keys load reconnects and watches again, keeping the error until it answers", () => {
-		const keys = [
-			Message.CompletedFetchSession({
-				result: Result.succeed({ isAdmin: true, userId: null, hasAiAutoTriage: true }),
-			}),
-			Message.FailedLoadApiKeys({ orgId: context.orgId }),
-		].reduce((model, message) => pageUpdate(model, message).model, entered({ tab: "keys" }).model)
+		const keys = Arr.reduce(
+			[
+				Message.CompletedFetchSession({
+					result: Result.succeed({
+						grants: Policy.allPermissions,
+						userId: null,
+						hasAiAutoTriage: true,
+					}),
+				}),
+				Message.FailedLoadApiKeys({ orgId: context.orgId }),
+			],
+			entered({ tab: "keys" }).model,
+			(model, message) => pageUpdate(model, message).model,
+		)
 		const watching = (model: Model) =>
 			subscriptions.apiKeysLoad.modelToDependencies({ model, context }).isWatching
 		scene(
@@ -416,7 +461,10 @@ describe("settings page", () => {
 		const customer = new BillingCustomer({ id: "org_acme", subscriptions: [] })
 		const editing: Model = {
 			...mcpLoaded(),
-			tab: { _tag: "Billing", model: { ...Billing.init(true, false, true).model, isSavingCap: true } },
+			tab: {
+				_tag: "Billing",
+				model: { ...Billing.init(Policy.allPermissions, false, true).model, isSavingCap: true },
+			},
 		}
 		const saved = pageUpdate(
 			editing,
@@ -439,7 +487,7 @@ describe("settings page", () => {
 	test("a customer re-read without a toast still re-reads the app's customer", () => {
 		const billing: Model = {
 			...mcpLoaded(),
-			tab: { _tag: "Billing", model: Billing.init(true, false, true).model },
+			tab: { _tag: "Billing", model: Billing.init(Policy.allPermissions, false, true).model },
 		}
 		const retried = pageUpdate(
 			billing,

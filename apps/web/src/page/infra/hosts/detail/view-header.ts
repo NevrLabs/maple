@@ -2,8 +2,8 @@ import { severityLevel } from "../../../../components/infra/format"
 import { formatLoad, formatPercent } from "@maple/ui/lib/format"
 import type { Html, HtmlBuilder } from "foldkit/html"
 import { AppRoute, hrefOf } from "../../../../route"
-import { button, linkButton } from "../../../../ui/button"
-import { skeleton } from "../../../../ui/skeleton"
+import { button, linkButton } from "@maple/views/ui/button"
+import { skeleton } from "@maple/views/ui/skeleton"
 import { heroChip } from "../../kit/hero-chip"
 import { platformLabel } from "../../kit/meta-line"
 import { pageHeroParts } from "../../kit/page-parts"
@@ -12,6 +12,7 @@ import { statRail, statRailItem, statRailLoading } from "../../../kit/stat-rail"
 import { hostStatusBadge } from "../../kit/status"
 import { Message } from "./message"
 import type { HostSummary } from "./model"
+import { typography, typographyClass } from "@maple/views/ui/typography"
 
 // `HostDetailHeader` / `HostDetailHeaderLoading` and `HeroChip`.
 
@@ -36,7 +37,7 @@ type HeaderInputs = Readonly<{
 
 const noData = (h: H, inputs: HeaderInputs): HostHeaderParts => ({
 	...pageHeroParts(h, {
-		title: h.span([h.Class("font-mono")], [inputs.hostName]),
+		title: typography(h, { mono: true }, [inputs.hostName]),
 		description:
 			"This host sent no metrics in the selected time window. It may have stopped reporting earlier: try a wider range, or go back to the hosts list.",
 	}),
@@ -73,7 +74,7 @@ export const hostDetailHeader = (h: H, inputs: HeaderInputs): HostHeaderParts =>
 			nowMs: inputs.nowMs,
 			timeZone: inputs.timeZone,
 			prefix: "last reported",
-			className: "text-2xs text-foreground-subtle",
+			className: typographyClass({ size: "2xs", tone: "subtle" }),
 		}),
 	]
 	const percentItem = (eyebrow: string, value: number) =>
@@ -85,7 +86,7 @@ export const hostDetailHeader = (h: H, inputs: HeaderInputs): HostHeaderParts =>
 			compact: true,
 		})
 	const hero = pageHeroParts(h, {
-		title: h.span([h.Class("font-mono")], [summary.hostName]),
+		title: typography(h, { mono: true }, [summary.hostName]),
 		meta,
 		trailing: [hostStatusBadge(h, { lastSeen: summary.lastSeen, referenceMs: inputs.nowMs })],
 	})

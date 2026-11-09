@@ -1,4 +1,4 @@
-import { Effect, Option, Ref } from "effect"
+import { Effect, Ref } from "effect"
 import { HttpClient, HttpClientError, HttpClientRequest, HttpClientResponse } from "effect/http"
 import { describe, it } from "@effect/vitest"
 import { expect } from "vitest"
@@ -8,6 +8,7 @@ import {
 	withMapleRetryPolicy,
 	withUnauthorizedResign,
 } from "./retry-policy"
+import { isResignedOnUnauthorized } from "./api-client-transform"
 
 const transportError = (request: HttpClientRequest.HttpClientRequest, cause?: unknown) =>
 	new HttpClientError.HttpClientError({
@@ -130,7 +131,7 @@ describe("withUnauthorizedResign", () => {
 				),
 				HttpClientRequest.bearerToken("stale"),
 			),
-			{ shouldRetry: () => shouldRetry, freshToken: Effect.succeed(Option.some("fresh")) },
+			{ shouldRetry: () => shouldRetry, freshToken: Effect.succeedSome("fresh") },
 		)
 
 	it.live("resends a 401 read signed with a freshly fetched token", () =>
@@ -155,15 +156,27 @@ describe("withUnauthorizedResign", () => {
 		}),
 	)
 
-	it.live("never replays a mutation", () =>
+	it.live("resends a 401 org creation, which the auth gate refused before writing", () =>
 		Effect.gen(function* () {
 			const sent = yield* Ref.make<ReadonlyArray<string | undefined>>([])
-			const result = yield* makeClient(sent, true).post(
-				"https://api.maple.dev/internal/billing/customer",
-			)
+			const result = yield* makeClient(sent, true).post("https://api.maple.dev/internal/organizations")
 
-			expect(result.status).toBe(401)
-			expect(yield* Ref.get(sent)).toEqual(["Bearer stale"])
+			expect(result.status).toBe(200)
+			expect(yield* Ref.get(sent)).toEqual(["Bearer stale", "Bearer fresh"])
 		}),
 	)
+})
+
+describe("isResignedOnUnauthorized", () => {
+	const at = (method: "GET" | "POST", url: string) =>
+		isResignedOnUnauthorized(method === "GET" ? HttpClientRequest.get(url) : HttpClientRequest.post(url))
+
+	it("resends billing reads and org creation, never other mutations", () => {
+		expect(at("GET", "https://api.maple.dev/internal/billing/customer")).toBe(true)
+		expect(at("POST", "https://api.maple.dev/internal/organizations")).toBe(true)
+		expect(at("POST", "https://api.maple.dev/internal/organizations/")).toBe(true)
+		expect(at("POST", "https://api.maple.dev/internal/billing/customer")).toBe(false)
+		expect(at("POST", "https://api.maple.dev/internal/organizations/region")).toBe(false)
+		expect(at("GET", "https://api.maple.dev/v1/services")).toBe(false)
+	})
 })

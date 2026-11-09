@@ -1,9 +1,10 @@
+import * as Policy from "@maple/domain/policy"
 import { V2IngestRule } from "@maple/domain/http/v2"
 import { IngestRuleId } from "@maple/domain"
 import { Schema } from "effect"
 import { AsyncData } from "foldkit"
-import { LoadFailure } from "../../../data/load-failure"
-import * as Combobox from "../../../ui/combobox"
+import { LoadFailure } from "@maple/views/data/load-failure"
+import * as Combobox from "@maple/views/ui/combobox"
 import { Draft } from "./form"
 import { PreviewSignal, Samples } from "./preview"
 
@@ -31,9 +32,13 @@ export const Model = Schema.Struct({
 	samples: SamplesData.schema,
 	/** The sample request in flight; an older answer is dropped. */
 	samplesKey: Schema.String,
-	isAdmin: Schema.Boolean,
+	grants: Schema.Array(Policy.PermissionName),
 	isSessionLoaded: Schema.Boolean,
 	isSaving: Schema.Boolean,
 	saveFailure: Schema.NullOr(LoadFailure),
 })
 export type Model = typeof Model.Type
+
+/** The viewer may change what this page edits (`ingest_rules:manage`). */
+export const canManage = (model: Pick<Model, "grants">): boolean =>
+	Policy.has(model.grants, "ingest_rules:manage")

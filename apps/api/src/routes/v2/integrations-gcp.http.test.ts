@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "@effect/vitest"
-import { ConfigProvider, Context, Effect, Layer, ManagedRuntime, Schema } from "effect"
+import { ConfigProvider, Context, Effect, Layer, ManagedRuntime, Schema, Record as Rec } from "effect"
 import { HttpRouter } from "effect/http"
 import { HttpApiBuilder } from "effect/http-api"
 import { OrgId, UserId } from "@maple/domain/http"
@@ -31,8 +31,8 @@ import {
 const createdDbs: TestDb[] = []
 afterEach(() => cleanupTestDbs(createdDbs))
 
-const ORG = Schema.decodeUnknownSync(OrgId)("org_gcp_e2e")
-const USER = Schema.decodeUnknownSync(UserId)("user_gcp_e2e")
+const ORG = Schema.decodeSync(OrgId)("org_gcp_e2e")
+const USER = Schema.decodeSync(UserId)("user_gcp_e2e")
 const BASE = "/v2/integrations/gcp"
 
 const testConfig = (metricsAvailable: boolean) =>
@@ -217,7 +217,7 @@ describe("v2 gcp integration over HTTP", () => {
 			application_logs: ["cloud_run", "cloud_functions", "app_engine", "gke"],
 		})
 		expect(both.status).toBe(200)
-		expect(Object.keys(both.body).sort()).toEqual([
+		expect(Rec.keys(both.body).sort()).toEqual([
 			"alchemy",
 			"cleanup_script",
 			"log_filter",

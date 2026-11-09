@@ -62,7 +62,7 @@ import {
 	themeContrastIssue,
 	STATUS_PAGE_MAX_URL_LENGTH,
 } from "@maple/domain/status-page"
-import { Clock, Context, Effect, Layer, Schema } from "effect"
+import { Clock, Context, Effect, Layer, Option, Schema, Array as Arr, String as Str } from "effect"
 import { Database, type DatabaseError } from "@maple/backend/platform/DatabaseLive"
 import { makeDbExecute } from "@maple/backend/platform/db-execute"
 import { postgresSqlState } from "@maple/backend/platform/postgres-errors"
@@ -303,7 +303,7 @@ const slugTaken = (slug: string) =>
 const isValidSlug = Schema.is(StatusPageSlug)
 
 const validateName = (raw: string, what: string) => {
-	const name = raw.trim()
+	const name = Str.trim(raw)
 	if (name.length === 0) return Effect.fail(invalid(`${what} is required`))
 	if (name.length > MAX_NAME_LENGTH)
 		return Effect.fail(invalid(`${what} must be at most ${MAX_NAME_LENGTH} characters`))
@@ -312,7 +312,7 @@ const validateName = (raw: string, what: string) => {
 
 /** Optional free text: blank becomes null. */
 const validateText = (raw: string | null, what: string) => {
-	const text = raw?.trim() ?? ""
+	const text = raw === null ? "" : Str.trim(raw)
 	if (text.length > MAX_TEXT_LENGTH)
 		return Effect.fail(invalid(`${what} must be at most ${MAX_TEXT_LENGTH} characters`))
 	return Effect.succeed(text.length === 0 ? null : text)
@@ -326,7 +326,7 @@ const validateSlug = (slug: string) =>
 			)
 
 const validateHttpsUrl = (raw: string | null, what: string) => {
-	const value = raw?.trim() ?? ""
+	const value = raw === null ? "" : Str.trim(raw)
 	if (value.length === 0) return Effect.succeed(null)
 	if (value.length > STATUS_PAGE_MAX_URL_LENGTH || !URL.canParse(value))
 		return Effect.fail(invalid(`${what} must be a valid URL`))
@@ -336,10 +336,10 @@ const validateHttpsUrl = (raw: string | null, what: string) => {
 
 /** Blank is no colour; anything else must be `#rrggbb`, stored lower-cased. */
 const validateHex = (raw: string | null, what: string) => {
-	const value = raw?.trim() ?? ""
+	const value = raw === null ? "" : Str.trim(raw)
 	if (value.length === 0) return Effect.succeed(null)
 	return STATUS_PAGE_HEX_COLOR_PATTERN.test(value)
-		? Effect.succeed(value.toLowerCase())
+		? Effect.succeed(Str.toLowerCase(value))
 		: Effect.fail(invalid(`${what} must be a hex color like #1a2b3c`))
 }
 
@@ -354,7 +354,7 @@ const validateTheme = Effect.fnUntraced(function* (theme: StatusPageTheme) {
 		border: yield* validateHex(theme.border, "Border color"),
 	}
 	const issue = themeContrastIssue(normalized)
-	if (issue !== null) return yield* Effect.fail(invalid(issue))
+	if (issue !== null) return yield* invalid(issue)
 	return normalized
 })
 
@@ -387,7 +387,7 @@ const validateWindow = (
 }
 
 const validateUpdateBody = (raw: string) => {
-	const body = raw.trim()
+	const body = Str.trim(raw)
 	if (body.length === 0) return Effect.fail(invalid("An update needs a message"))
 	if (body.length > MAX_TEXT_LENGTH)
 		return Effect.fail(invalid(`An update must be at most ${MAX_TEXT_LENGTH} characters`))
@@ -447,7 +447,7 @@ const loadIncidents = Effect.fnUntraced(function* (
 	orgId: OrgId,
 	rows: ReadonlyArray<StatusPageIncidentRow>,
 ) {
-	const [first, ...rest] = rows.map((row) => row.id)
+	const [first, ...rest] = Arr.map(rows, (row) => row.id)
 	if (first === undefined) return []
 	const links = yield* db.run(
 		PG.from(StatusPageIncidentComponents)
@@ -460,7 +460,7 @@ const loadIncidents = Effect.fnUntraced(function* (
 			.where(($) => [$.orgId.eq(orgId), $.incidentId.in_(first, ...rest)])
 			.orderBy(["createdAt", "desc"], ["id", "desc"]),
 	)
-	return rows.map((row): StatusPageIncidentRecord => ({
+	return Arr.map(rows, (row): StatusPageIncidentRecord => ({
 		id: row.id,
 		pageId: row.pageId,
 		kind: row.kind,
@@ -472,8 +472,14 @@ const loadIncidents = Effect.fnUntraced(function* (
 		scheduledEnd: row.scheduledEnd,
 		startedAt: row.startedAt,
 		resolvedAt: row.resolvedAt,
-		componentIds: links.filter((link) => link.incidentId === row.id).map((link) => link.componentId),
-		updates: updates.filter((update) => update.incidentId === row.id).map(toUpdateRecord),
+		componentIds: Arr.map(
+			Arr.filter(links, (link) => link.incidentId === row.id),
+			(link) => link.componentId,
+		),
+		updates: Arr.map(
+			Arr.filter(updates, (update) => update.incidentId === row.id),
+			toUpdateRecord,
+		),
 		createdBy: row.createdBy,
 		createdAt: row.createdAt,
 		updatedAt: row.updatedAt,
@@ -594,9 +600,9 @@ const ensureComponentsOnPage = Effect.fnUntraced(function* (
 			.select("id")
 			.where(($) => [$.orgId.eq(orgId), $.pageId.eq(pageId), $.id.in_(first, ...rest)]),
 	)
-	const known = new Set(found.map((row) => row.id))
-	const missing = componentIds.find((id) => !known.has(id))
-	if (missing !== undefined) return yield* invalid(`Component ${missing} is not on this page`)
+	const known = new Set(Arr.map(found, (row) => row.id))
+	const missing = Arr.findFirst(componentIds, (id) => !known.has(id))
+	if (Option.isSome(missing)) return yield* invalid(`Component ${missing.value} is not on this page`)
 })
 
 const replaceIncidentComponents = Effect.fnUntraced(function* (
@@ -614,7 +620,7 @@ const replaceIncidentComponents = Effect.fnUntraced(function* (
 	if (componentIds.length === 0) return
 	yield* db.run(
 		PG.insertInto(StatusPageIncidentComponents).values(
-			componentIds.map((componentId) => ({ incidentId, componentId, orgId })),
+			Arr.map(componentIds, (componentId) => ({ incidentId, componentId, orgId })),
 		),
 	)
 })
@@ -635,7 +641,7 @@ const contentOf = (
 	show_powered_by: page.showPoweredBy,
 	auto_incidents: page.autoIncidents,
 	theme: page.theme,
-	components: components.map((component) => ({
+	components: Arr.map(components, (component) => ({
 		id: component.id,
 		name: component.name,
 		description: component.description,
@@ -715,7 +721,7 @@ export class StatusPagesService extends Context.Service<StatusPagesService, Stat
 							.orderBy(["createdAt", "asc"], ["id", "asc"]),
 					),
 				)
-				return rows.map(toPageRecord)
+				return Arr.map(rows, toPageRecord)
 			})
 
 			const get = Effect.fn("StatusPagesService.get")(function* (orgId: OrgId, pageId: StatusPageId) {
@@ -740,7 +746,7 @@ export class StatusPagesService extends Context.Service<StatusPagesService, Stat
 				if (draftComponents.length > MAX_STATUS_PAGE_COMPONENTS) return yield* tooManyComponents()
 				const components = yield* Effect.forEach(draftComponents, validateConfigComponent)
 				const monitorIds = [
-					...new Set(components.flatMap((c) => (c.monitorId === null ? [] : [c.monitorId]))),
+					...new Set(Arr.flatMap(components, (c) => (c.monitorId === null ? [] : [c.monitorId]))),
 				]
 				const now = yield* Clock.currentTimeMillis
 				const id = StatusPageId.make(randomUUID())
@@ -774,7 +780,7 @@ export class StatusPagesService extends Context.Service<StatusPagesService, Stat
 									updatedAt: now,
 								}),
 							)
-							const rows = components.map((component, position) => ({
+							const rows = Arr.map(components, (component, position) => ({
 								id: StatusPageComponentId.make(randomUUID()),
 								orgId,
 								pageId: id,
@@ -935,7 +941,7 @@ export class StatusPagesService extends Context.Service<StatusPagesService, Stat
 								PG.update(StatusPages)
 									.set({
 										breakGlassTokenSha256: hash,
-										breakGlassTokenSuffix: token.slice(-6),
+										breakGlassTokenSuffix: Str.slice(-6)(token),
 										updatedAt: now,
 									})
 									.where(($) => [$.orgId.eq(orgId), $.id.eq(pageId)]),
@@ -989,7 +995,7 @@ export class StatusPagesService extends Context.Service<StatusPagesService, Stat
 				const rows = yield* dbExecute((db) =>
 					findPage(db, orgId, pageId).pipe(Effect.andThen(selectComponents(db, orgId, pageId))),
 				)
-				return rows.map(toComponentRecord)
+				return Arr.map(rows, toComponentRecord)
 			})
 
 			const createComponent = Effect.fn("StatusPagesService.createComponent")(function* (
@@ -1022,9 +1028,8 @@ export class StatusPagesService extends Context.Service<StatusPagesService, Stat
 										description,
 										groupName,
 										// After the highest, not at the count: deletes leave gaps, so the count can be taken.
-										position: existing.reduce(
-											(top, row) => Math.max(top, row.position + 1),
-											0,
+										position: Arr.reduce(existing, 0, (top, row) =>
+											Math.max(top, row.position + 1),
 										),
 										monitorId,
 										manualStatus: input.manualStatus ?? null,
@@ -1138,7 +1143,7 @@ export class StatusPagesService extends Context.Service<StatusPagesService, Stat
 							const sameSet =
 								requested.size === componentIds.length &&
 								requested.size === existing.length &&
-								existing.every((row) => requested.has(row.id))
+								Arr.every(existing, (row) => requested.has(row.id))
 							if (!sameSet)
 								return yield* invalid(
 									"componentIds must list every component of the page exactly once",
@@ -1162,7 +1167,7 @@ export class StatusPagesService extends Context.Service<StatusPagesService, Stat
 						}),
 					),
 				)
-				return rows.map(toComponentRecord)
+				return Arr.map(rows, toComponentRecord)
 			})
 
 			const listIncidents = Effect.fn("StatusPagesService.listIncidents")(function* (
@@ -1440,7 +1445,8 @@ export class StatusPagesService extends Context.Service<StatusPagesService, Stat
 				return yield* dbExecute((db) =>
 					Effect.gen(function* () {
 						const page = yield* findPage(db, orgId, pageId)
-						return toConfig(page, yield* selectComponents(db, orgId, pageId))
+						const pageComponents = yield* selectComponents(db, orgId, pageId)
+						return toConfig(page, pageComponents)
 					}),
 				)
 			})
@@ -1469,16 +1475,18 @@ export class StatusPagesService extends Context.Service<StatusPagesService, Stat
 				const termsUrl = yield* validateHttpsUrl(input.terms_url, "Terms of service URL")
 				const theme = yield* validateTheme(input.theme)
 				const components = yield* Effect.forEach(input.components, validateConfigComponent)
-				const listedIds = components.flatMap((component) =>
+				const listedIds = Arr.flatMap(components, (component) =>
 					component.id === null ? [] : [component.id],
 				)
-				const duplicate = listedIds.find((id, index) => listedIds.indexOf(id) !== index)
+				const duplicate = Option.getOrUndefined(
+					Arr.findFirst(listedIds, (id, index) => listedIds.indexOf(id) !== index),
+				)
 				if (duplicate !== undefined)
 					return yield* invalid(
 						`Component ${encodeComponentId(duplicate)} is listed more than once`,
 					)
 				const monitorIds = [
-					...new Set(components.flatMap((c) => (c.monitorId === null ? [] : [c.monitorId]))),
+					...new Set(Arr.flatMap(components, (c) => (c.monitorId === null ? [] : [c.monitorId]))),
 				]
 				// The document as it will be stored; new components have no id yet.
 				const written: StatusPageConfig = {
@@ -1492,7 +1500,7 @@ export class StatusPagesService extends Context.Service<StatusPagesService, Stat
 					show_powered_by: input.show_powered_by,
 					auto_incidents: input.auto_incidents,
 					theme,
-					components: components.map((component) => ({
+					components: Arr.map(components, (component) => ({
 						...(component.id === null ? undefined : { id: component.id }),
 						name: component.name,
 						description: component.description,
@@ -1520,8 +1528,10 @@ export class StatusPagesService extends Context.Service<StatusPagesService, Stat
 									message:
 										"The page's config changed since it was read. Read the config again and redo the edit on it.",
 								})
-							const byId = new Map(existing.map((row) => [row.id, row]))
-							const foreign = listedIds.find((id) => !byId.has(id))
+							const byId = new Map(Arr.map(existing, (row) => [row.id, row]))
+							const foreign = Option.getOrUndefined(
+								Arr.findFirst(listedIds, (id) => !byId.has(id)),
+							)
 							if (foreign !== undefined)
 								return yield* invalid(
 									`Component ${encodeComponentId(foreign)} is not on this page`,
@@ -1553,9 +1563,10 @@ export class StatusPagesService extends Context.Service<StatusPagesService, Stat
 									.where(($) => [$.orgId.eq(orgId), $.id.eq(pageId)]),
 							)
 							const listed = new Set(listedIds)
-							const [firstRemoved, ...restRemoved] = existing
-								.filter((row) => !listed.has(row.id))
-								.map((row) => row.id)
+							const [firstRemoved, ...restRemoved] = Arr.map(
+								Arr.filter(existing, (row) => !listed.has(row.id)),
+								(row) => row.id,
+							)
 							if (firstRemoved !== undefined)
 								yield* db.run(
 									PG.deleteFrom(StatusPageComponents).where(($) => [
@@ -1615,9 +1626,10 @@ export class StatusPagesService extends Context.Service<StatusPagesService, Stat
 							if (hasStatusPageConfigChanges({ fields, created, updated, deleted, reordered }))
 								yield* bumpPage(db, orgId, pageId)
 							const page = yield* findPage(db, orgId, pageId)
+							const pageComponents = yield* selectComponents(db, orgId, pageId)
 							return {
 								previous,
-								config: toConfig(page, yield* selectComponents(db, orgId, pageId)),
+								config: toConfig(page, pageComponents),
 								changes: { fields, created, updated, deleted, reordered },
 							}
 						}),

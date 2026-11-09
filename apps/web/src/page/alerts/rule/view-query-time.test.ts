@@ -1,12 +1,12 @@
 import { AlertCheckDocument } from "@maple/domain/http"
-import { Schema } from "effect"
+import { Schema, Array as Arr } from "effect"
 import { describe, expect, it } from "vitest"
 import { checkTimesOf } from "./view-query-time"
 
 const NOW = Date.parse("2026-10-22T12:00:00.000Z")
 
 const check = (minutesAgo: number, durationMs: number) =>
-	Schema.decodeUnknownSync(AlertCheckDocument)({
+	Schema.decodeSync(AlertCheckDocument)({
 		timestamp: new Date(NOW - minutesAgo * 60_000).toISOString(),
 		groupKey: "__total__",
 		status: "healthy",
@@ -38,6 +38,6 @@ describe("checkTimesOf", () => {
 			check(100, 2_000),
 			check(101, 3_000),
 		]
-		expect(checkTimesOf(checks).map((time) => time.durationMs)).toEqual([3_000, 2_000])
+		expect(Arr.map(checkTimesOf(checks), (time) => time.durationMs)).toEqual([3_000, 2_000])
 	})
 })

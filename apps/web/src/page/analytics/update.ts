@@ -1,19 +1,20 @@
 import { toggleFilterValue, toggleTraffic } from "../../components/analytics/filters"
-import { Option, Result, Schema } from "effect"
+import { Option, Result, Schema, Array as Arr, Record as Rec } from "effect"
 import { AsyncData, Command } from "foldkit"
-import * as Chart from "../../charts/chart"
-import { LoadChartRuntime } from "../../charts/chart-runtime"
-import * as Keyed from "../../data/keyed"
-import { type LoadFailure, toLoadFailure } from "../../data/load-failure"
+import * as Chart from "@maple/views/charts/chart"
+import { LoadChartRuntime } from "@maple/views/charts/chart-runtime"
+import * as Keyed from "@maple/views/data/keyed"
+import { type LoadFailure, toLoadFailure } from "@maple/views/data/load-failure"
 import type { Resources } from "../../platform/resources"
 import { AppRoute, hrefOf } from "../../route"
-import * as Dialog from "../../ui/dialog"
-import * as FilterSections from "../../ui/filters/filter-sections"
+import * as Dialog from "@maple/views/ui/dialog"
+import * as FilterSections from "@maple/views/ui/filters/filter-sections"
 import { type PageContext, PageOutMessage, type PageReturn } from "../contract"
-import { SignalPresenceData } from "../kit/signal-presence"
+import { SignalPresenceData } from "@maple/views/data/signal-presence"
 import { nextSort } from "../kit/table-sort"
 import { routeWindowStep, snapModeOf } from "../kit/route-window"
 import * as TimeRangePicker from "../kit/time-range-picker"
+import type { PresetValue } from "../kit/time-controls"
 import { CompleteReloadSpin, LoadSignalPresence, ResolveWindow } from "./command"
 import { type FilterKey, Message, type RequestMode, type SlotName } from "./message"
 import {
@@ -36,7 +37,7 @@ import { filtersOf, requestSlots, showsOverviewContent, tabOf } from "./requests
 type Return = PageReturn<Model, Message>
 type Cmd = Command.Command<Message, never, Resources>
 
-export const DEFAULT_PRESET = "7d"
+export const DEFAULT_PRESET: PresetValue = "1w"
 
 const SLOT_SCHEMAS = {
 	breakdowns: Breakdowns,
@@ -55,13 +56,13 @@ const SLOT_SCHEMAS = {
 	traceSamples: Schema.Array(TraceSample),
 } satisfies Record<SlotName, Schema.Top>
 
-const SLOTS = Object.keys(SLOT_SCHEMAS).filter((name): name is SlotName => name in SLOT_SCHEMAS)
+const SLOTS = Arr.filter(Rec.keys(SLOT_SCHEMAS), (name): name is SlotName => name in SLOT_SCHEMAS)
 
 const decodeFailure: LoadFailure = toLoadFailure("The response could not be read.")
 
 /** Folds an answer into every slot that asked under its key, decoded with that slot's schema. */
 const settleSlots = (model: Model, key: string, result: Result.Result<unknown, LoadFailure>): Model =>
-	SLOTS.reduce<Model>((next, name) => {
+	Arr.reduce(SLOTS, model, (next, name) => {
 		if (next[name].key !== key) return next
 		const decoded = Result.match(result, {
 			onFailure: (failure) => Result.fail(failure),
@@ -73,7 +74,7 @@ const settleSlots = (model: Model, key: string, result: Result.Result<unknown, L
 		})
 		const slot: Keyed.Keyed<unknown, LoadFailure> = next[name]
 		return { ...next, [name]: Keyed.accept(slot, key, decoded) }
-	}, model)
+	})
 
 const resolveCommand = (model: Model, context: PageContext, mode: RequestMode): Cmd =>
 	ResolveWindow({
@@ -125,12 +126,10 @@ const seedPanels = (model: Model): Model => {
 		["content", hasRows(model.pages)],
 		["events", hasRows(model.events)],
 	]
-	return seeds.reduce<Model>(
-		(next, [panel, hasViews]) =>
-			next.panels[panel] === undefined
-				? withPanel(next, panel, { sortKey: hasViews ? "views" : "count" })
-				: next,
-		model,
+	return Arr.reduce(seeds, model, (next, [panel, hasViews]) =>
+		next.panels[panel] === undefined
+			? withPanel(next, panel, { sortKey: hasViews ? "views" : "count" })
+			: next,
 	)
 }
 
@@ -237,6 +236,10 @@ const lift = <A>(
 const refreshOnly = (model: Model, context: PageContext, slots: ReadonlyArray<SlotName>): Return =>
 	model.window === null ? { model } : requestSlots(model, context, model.window, "Refresh", slots)
 
+/** A failure card's Try again: `Load` asks again only for the slots among `slots` that failed. */
+const retryFailed = (model: Model, context: PageContext, slots: ReadonlyArray<SlotName>): Return =>
+	model.window === null ? { model } : requestSlots(model, context, model.window, "Load", slots)
+
 /** `onClearFilters`: the window and the tab stay; the filters go. */
 const clearedFilters = (search: Search): Search => ({
 	startTime: search.startTime,
@@ -288,6 +291,8 @@ export const update = (model: Model, message: Message, context: PageContext): Re
 		ClickedRetrySummary: () => refreshOnly(model, context, ["summary"]),
 		ClickedRetryBreakdowns: () => refreshOnly(model, context, ["breakdowns"]),
 		ClickedRetrySummaryAndBreakdowns: () => refreshOnly(model, context, ["summary", "breakdowns"]),
+		ClickedRetryAiReferrals: () => retryFailed(model, context, ["aiReferrals", "previousAiReferrals"]),
+		ClickedRetryAiCrawlers: () => retryFailed(model, context, ["aiCrawlers"]),
 		ToggledFilter: ({ key, value }) => {
 			const filters = filtersOf(model.search)
 			return navigate(model, withFilter(model.search, key, toggleFilterValue(filters[key], value)))

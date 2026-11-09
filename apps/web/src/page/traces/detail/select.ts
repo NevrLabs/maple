@@ -1,7 +1,7 @@
-import { Option } from "effect"
+import { Option, String as Str, Array as Arr } from "effect"
 import { AsyncData } from "foldkit"
 import type { Model } from "./model"
-import type { SpanNodeData, TraceData } from "./trace-data"
+import type { SpanNodeData, TraceData } from "@maple/views/traces/trace-data"
 
 // What the page shows for a loaded hierarchy (`ResultPage`'s `select`) and its span lookup.
 
@@ -25,17 +25,22 @@ export const findSpan = (
 	rootSpans: ReadonlyArray<SpanNodeData>,
 	spanId: string,
 ): SpanNodeData | undefined => {
-	const searchId = spanId.startsWith("combined-")
-		? (spanId.slice("combined-".length).split("-")[0] ?? spanId)
+	const searchId = Str.startsWith("combined-")(spanId)
+		? (Str.split("-")(Str.slice("combined-".length)(spanId))[0] ?? spanId)
 		: spanId
 	const visit = (node: SpanNodeData): SpanNodeData | undefined =>
 		node.spanId === searchId
 			? node
-			: node.children.reduce<SpanNodeData | undefined>(
-					(found, child) => found ?? visit(child),
+			: Arr.reduce<SpanNodeData, SpanNodeData | undefined>(
+					node.children,
 					undefined,
+					(found, child) => found ?? visit(child),
 				)
-	return rootSpans.reduce<SpanNodeData | undefined>((found, root) => found ?? visit(root), undefined)
+	return Arr.reduce<SpanNodeData, SpanNodeData | undefined>(
+		rootSpans,
+		undefined,
+		(found, root) => found ?? visit(root),
+	)
 }
 
 export const selectedSpanOf = (model: Model): SpanNodeData | undefined => {

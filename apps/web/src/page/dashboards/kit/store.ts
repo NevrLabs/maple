@@ -1,7 +1,9 @@
 import { type DashboardDocument, IsoDateTimeString } from "@maple/domain/http"
-import { Clock, Effect, Option, Schema } from "effect"
+import { DateTime, Effect, Option, Schema, Semaphore, String as Str } from "effect"
 import { OrgCollections } from "../../../data/collections/org-collections"
 import { rowToDocument } from "../../../data/collections/dashboards"
+import type { DashboardRow } from "@maple/web-data/collections/dashboards"
+import type { Collection } from "@tanstack/db"
 import { PageOutMessage } from "../../contract"
 
 // The dashboard mutations over the org collection:
@@ -19,15 +21,24 @@ export class DashboardUnreadableError extends Schema.TaggedError<DashboardUnread
 	{ message: Schema.String, rawId: Schema.String },
 ) {}
 
+/** The save was refused twice because someone else's change landed first. */
+export class DashboardConflictError extends Schema.TaggedError<DashboardConflictError>()(
+	"@maple/web/dashboards/DashboardConflictError",
+	{ message: Schema.String, rawId: Schema.String },
+) {}
+
 /** A rejected write, with the cause the collection or API reported. */
 export class DashboardWriteError extends Schema.TaggedError<DashboardWriteError>()(
 	"@maple/web/dashboards/DashboardWriteError",
 	{ message: Schema.String, cause: Schema.Defect() },
 ) {}
 
+const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))
+const decodeJson = Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown))
+
 const messageField = (value: unknown): Option.Option<string> =>
 	typeof value === "object" && value !== null && "message" in value && typeof value.message === "string"
-		? Option.some(value.message).pipe(Option.filter((message) => message.trim().length > 0))
+		? Option.some(value.message).pipe(Option.filter((message) => Str.trim(message).length > 0))
 		: Option.none()
 
 /** The wrapped failure an error carries, if any. */
@@ -57,26 +68,28 @@ export const dashboardsOf = (orgId: string) =>
 		return set.dashboards
 	})
 
+/** What the write path needs of the org's dashboards collection; a local-only one in tests. */
+export type DashboardsWriter = Pick<Collection<DashboardRow>, "get" | "update" | "subscribeChanges">
+
+const readFrom = (collection: DashboardsWriter, id: string) =>
+	Effect.fromOption(
+		Option.flatMap(Option.fromNullishOr(collection.get(id)), rowToDocument),
+		() =>
+			new DashboardUnreadableError({
+				message: "This dashboard hasn’t finished loading. Try again in a moment",
+				rawId: id,
+			}),
+	)
+
 /** `readDashboard`: the decoded document the collection holds (optimistic state included). */
 export const readDocument = (orgId: string, id: string) =>
-	Effect.flatMap(dashboardsOf(orgId), (collection) =>
-		Option.match(Option.flatMap(Option.fromNullishOr(collection.get(id)), rowToDocument), {
-			onNone: () =>
-				Effect.fail(
-					new DashboardUnreadableError({
-						message: "This dashboard hasn’t finished loading. Try again in a moment",
-						rawId: id,
-					}),
-				),
-			onSome: Effect.succeed,
-		}),
-	)
+	Effect.flatMap(dashboardsOf(orgId), (collection) => readFrom(collection, id))
 
 /** `isTxidAwaitTimeout`: the write reached the server, only this tab's sync-back timed out. */
 const isTxidAwaitTimeout = (error: unknown, depth = 0): boolean => {
 	if (depth > 5 || typeof error !== "object" || error === null) return false
 	if ("name" in error && error.name === "TimeoutWaitingForTxIdError") return true
-	if (Option.exists(messageField(error), (message) => message.includes("Timeout waiting for txId")))
+	if (Option.exists(messageField(error), (message) => Str.includes("Timeout waiting for txId")(message)))
 		return true
 	return Option.exists(causeOf(error), (inner) => isTxidAwaitTimeout(inner, depth + 1))
 }
@@ -89,19 +102,19 @@ export type WriteSync = typeof WriteSync.Type
  * The toast `applyMutationError` raises for a txid timeout: the edit reached the server, but the
  * optimistic copy rolled back. "Reconnect" is the root's `retryOrgCollections`.
  */
-export const behindToast = () =>
-	PageOutMessage.RequestedToast({
-		type: "warning",
-		title: "Saved, but this tab is behind",
-		description:
-			"The change reached the server; this tab’s live sync didn’t catch up, so it isn’t shown yet.",
-		timeoutMs: 10000,
-		action: null,
-		rootAction: { label: "Reconnect", action: { _tag: "ReconnectOrgCollections" } },
-	})
+export const behindToastContent = {
+	type: "warning",
+	title: "Saved, but this tab is behind",
+	description:
+		"The change reached the server; this tab’s live sync didn’t catch up, so it isn’t shown yet.",
+	timeoutMs: 10000,
+	rootAction: { label: "Reconnect", action: { _tag: "ReconnectOrgCollections" } },
+} as const
+
+export const behindToast = () => PageOutMessage.RequestedToast({ ...behindToastContent, action: null })
 
 /** A transaction's settlement as an Effect; a rejection keeps its cause for the message. */
-const settled = <A>(promise: () => Promise<A>): Effect.Effect<WriteSync, DashboardWriteError> =>
+export const settled = <A>(promise: () => Promise<A>): Effect.Effect<WriteSync, DashboardWriteError> =>
 	Effect.tryPromise({
 		try: promise,
 		catch: (cause) => new DashboardWriteError({ message: errorMessageOf(cause), cause }),
@@ -113,30 +126,124 @@ const settled = <A>(promise: () => Promise<A>): Effect.Effect<WriteSync, Dashboa
 		),
 	)
 
-/**
- * `mutateDashboard`: apply `updater` to the current document and write it through the collection.
- * The document is JSON round-tripped first so no present-`undefined` key reaches the PATCH encode.
- */
-export const mutateDashboard = (
-	orgId: string,
+/** The API's 409: the PATCH was based on a version someone else's save has replaced. */
+/** The v2 client fails with the decoded public envelope, not the error class: match its stable code. */
+const isConflictEnvelope = Schema.is(
+	Schema.Struct({ error: Schema.Struct({ code: Schema.Literal("dashboard_concurrent_update") }) }),
+)
+
+const isVersionConflict = (error: unknown, depth = 0): boolean => {
+	if (depth > 5 || typeof error !== "object" || error === null) return false
+	if (isConflictEnvelope(error)) return true
+	if ("_tag" in error && error._tag === "@maple/http/errors/DashboardConcurrencyError") return true
+	return Option.exists(causeOf(error), (inner) => isVersionConflict(inner, depth + 1))
+}
+
+/** How long a conflicted save waits for the newer version to sync before giving up. */
+const CONFLICT_SYNC_WAIT = "3 seconds"
+
+const conflictError = (id: string) =>
+	new DashboardConflictError({
+		message:
+			"This dashboard changed before your edit was saved, in another tab or by someone else. Your change was not saved; try again.",
+		rawId: id,
+	})
+
+/** Resolves once the synced row's version differs from `from`. */
+const awaitVersionChange = (collection: DashboardsWriter, id: string, from: number | undefined) =>
+	Effect.callback<void>((resume) => {
+		const changed = () => collection.get(id)?.version !== from
+		if (changed()) return resume(Effect.void)
+		const subscription = collection.subscribeChanges(() => {
+			if (!changed()) return
+			subscription.unsubscribe()
+			resume(Effect.void)
+		})
+		return Effect.sync(() => subscription.unsubscribe())
+	})
+
+/** One optimistic write of `updater` over the document as the collection holds it now. */
+const writeOnce = (
+	collection: DashboardsWriter,
 	id: string,
 	updater: (document: DashboardDocument, nowIso: IsoDateTimeString) => DocumentFields,
 ) =>
 	Effect.gen(function* () {
-		const collection = yield* dashboardsOf(orgId)
-		const current = yield* readDocument(orgId, id)
+		const current = yield* readFrom(collection, id)
 		// The updaters' `updatedAt` timestamp.
-		const nowIso = IsoDateTimeString.make(new Date(yield* Clock.currentTimeMillis).toISOString())
+		const now = yield* DateTime.now
+		const nowIso = IsoDateTimeString.make(DateTime.formatIso(now))
 		const updated = updater(current, nowIso)
 		if (updated === current) return "Synced" satisfies WriteSync
-		const plain: unknown = JSON.parse(JSON.stringify(updated))
+		const plain = yield* encodeJson(updated).pipe(
+			Effect.flatMap(decodeJson),
+			Effect.mapError(
+				(cause) => new DashboardWriteError({ message: "Dashboard is not JSON-serializable", cause }),
+			),
+		)
 		const transaction = collection.update(id, (draft) => {
 			draft.payload_json = plain
 			draft.name = updated.name
 			draft.updated_at = updated.updatedAt
 		})
-		return yield* settled(() => transaction.isPersisted.promise)
+		return yield* settled(() => transaction.when("settled"))
 	})
+
+/**
+ * `mutateDocumentIn`: apply `updater` to the current document and write it through the collection.
+ * The document is JSON round-tripped first so no present-`undefined` key reaches the PATCH encode.
+ * A 409 (someone else saved first) waits for their version to sync, then re-applies `updater`
+ * on top of it once; a second conflict, or no sync in time, is a `DashboardConflictError`.
+ */
+export const mutateDocumentIn = (
+	collection: DashboardsWriter,
+	id: string,
+	updater: (document: DashboardDocument, nowIso: IsoDateTimeString) => DocumentFields,
+) =>
+	Effect.flatMap(laneOf(id), (lane) =>
+		lane.withPermit(Effect.suspend(() => writeWithRetry(collection, id, updater))),
+	)
+
+/**
+ * One save at a time per board in this tab: each waits for the previous to settle, so its
+ * expected version is the synced one and a tab never conflicts with its own saves.
+ */
+const writeLanes = new Map<string, Semaphore.Semaphore>()
+const laneOf = (id: string) =>
+	Effect.sync(() => {
+		const lane = writeLanes.get(id) ?? Semaphore.makeUnsafe(1)
+		writeLanes.set(id, lane)
+		return lane
+	})
+
+const writeWithRetry = (
+	collection: DashboardsWriter,
+	id: string,
+	updater: (document: DashboardDocument, nowIso: IsoDateTimeString) => DocumentFields,
+) => {
+	const baseVersion = collection.get(id)?.version
+	const conflicted = (error: unknown) =>
+		Schema.is(DashboardWriteError)(error) && isVersionConflict(error.cause)
+	return writeOnce(collection, id, updater).pipe(
+		Effect.catchIf(conflicted, () =>
+			awaitVersionChange(collection, id, baseVersion).pipe(
+				Effect.timeoutOrElse({
+					duration: CONFLICT_SYNC_WAIT,
+					orElse: () => Effect.fail(conflictError(id)),
+				}),
+				Effect.andThen(writeOnce(collection, id, updater)),
+				Effect.catchIf(conflicted, () => Effect.fail(conflictError(id))),
+			),
+		),
+	)
+}
+
+/** `mutateDocumentIn` over the org's dashboards collection. */
+export const mutateDashboard = (
+	orgId: string,
+	id: string,
+	updater: (document: DashboardDocument, nowIso: IsoDateTimeString) => DocumentFields,
+) => Effect.flatMap(dashboardsOf(orgId), (collection) => mutateDocumentIn(collection, id, updater))
 
 /** `deleteDashboard`: the collection's optimistic delete. */
 export const deleteDashboard = (orgId: string, id: string) =>
@@ -144,7 +251,7 @@ export const deleteDashboard = (orgId: string, id: string) =>
 		const collection = yield* dashboardsOf(orgId)
 		if (collection.get(id) === undefined) return "Synced" satisfies WriteSync
 		const transaction = collection.delete(id)
-		return yield* settled(() => transaction.isPersisted.promise)
+		return yield* settled(() => transaction.when("settled"))
 	})
 
 /** `collection.utils.awaitTxId(txid).catch(() => undefined)` after a create. */
@@ -152,5 +259,11 @@ export const awaitTxid = (orgId: string, txid: string | undefined) =>
 	txid === undefined
 		? Effect.void
 		: Effect.flatMap(dashboardsOf(orgId), (collection) =>
-				Effect.ignore(Effect.tryPromise(() => collection.utils.awaitTxId(Number(txid)))),
+				Effect.ignore(
+					Effect.tryPromise({
+						try: () => collection.utils.awaitTxId(Number(txid)),
+						catch: (cause) =>
+							new DashboardWriteError({ message: "Dashboard sync was not confirmed", cause }),
+					}),
+				),
 			)

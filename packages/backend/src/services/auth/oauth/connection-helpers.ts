@@ -106,7 +106,7 @@ export interface OAuthTokenEndpointConfig {
 	readonly tokenUrl: string
 	readonly clientId: string
 	/** null for a public (PKCE-only) client. Stays Redacted until the token POST body. */
-	readonly clientSecret: Redacted.Redacted<string> | null
+	readonly clientSecret: Redacted.Redacted | null
 	/** How a confidential client authenticates (RFC 6749 s2.3.1); defaults to the POST body. */
 	readonly clientAuthentication?: "client_secret_post" | "client_secret_basic"
 	/** A non-RFC status the provider answers for an unknown or rotated-away refresh token (Supabase: 404). */
@@ -146,6 +146,12 @@ export interface MakeOAuthConnectionHelpersOptions {
 			sourceId: SourceId,
 		) => Effect.Effect<unknown, Effect.Error<ReturnType<MapleDb["run"]>>>
 	}
+	/** Provider state a new grant must reset, written in the same transaction as the grant. */
+	readonly onUpsert?: (
+		db: MapleDb,
+		orgId: OrgId,
+		currentTime: number,
+	) => Effect.Effect<unknown, Effect.Error<ReturnType<MapleDb["run"]>>>
 }
 
 /**
@@ -154,7 +160,7 @@ export interface MakeOAuthConnectionHelpersOptions {
  */
 export const makeOAuthConnectionHelpers = (options: MakeOAuthConnectionHelpersOptions) =>
 	Effect.gen(function* () {
-		const { provider, providerLabel, database, env, source } = options
+		const { provider, providerLabel, database, env, source, onUpsert } = options
 		const httpClient = yield* HttpClient.HttpClient
 
 		const encryptionKey = yield* parseBase64Aes256GcmKey(
@@ -244,12 +250,10 @@ export const makeOAuthConnectionHelpers = (options: MakeOAuthConnectionHelpersOp
 			orgId: OrgId,
 		) {
 			const row = yield* loadConnection(orgId)
-			if (!row) {
-				return yield* Effect.fail(
-					new IntegrationsNotConnectedError({
-						message: `${providerLabel} is not connected for this organization`,
-					}),
-				)
+			if (row == null) {
+				return yield* new IntegrationsNotConnectedError({
+					message: `${providerLabel} is not connected for this organization`,
+				})
 			}
 			return row satisfies OAuthConnectionRow
 		})
@@ -287,6 +291,7 @@ export const makeOAuthConnectionHelpers = (options: MakeOAuthConnectionHelpersOp
 								})
 								.returning("id", "sourceId", "externalAccountName"),
 						)
+						if (onUpsert !== undefined) yield* onUpsert(db, orgId, currentTime)
 						if (source === undefined || connection === undefined || connection.sourceId !== null)
 							return
 						const sourceId = yield* createIntegrationSource(
@@ -310,7 +315,7 @@ export const makeOAuthConnectionHelpers = (options: MakeOAuthConnectionHelpersOp
 		 * Pollers filter on `revokedAt IS NULL`, so a revoked grant stops being
 		 * retried every tick; `upsertConnection` (reconnect) clears the stamp.
 		 * With `unchangedSince`, the stamp is a no-op once the row was rewritten after that read.
-		 * Best-effort: bookkeeping must never mask the revocation error itself.
+		 * Best-effort: bookkeeping must never mask the revocation error itself. Reports whether it landed.
 		 */
 		const markConnectionRevoked = Effect.fn("OAuthConnectionHelpers.markConnectionRevoked")(function* (
 			orgId: OrgId,
@@ -320,7 +325,7 @@ export const makeOAuthConnectionHelpers = (options: MakeOAuthConnectionHelpersOp
 			// Before the write, not after: the memo must not outlive the decision to
 			// revoke even if the stamp itself fails (it is best-effort/ignored below).
 			yield* invalidateConnectionMemo(orgId)
-			yield* dbExecute((db) =>
+			return yield* dbExecute((db) =>
 				db.run(
 					PG.update(OAuthConnections)
 						.set({ revokedAt: currentTime })
@@ -329,9 +334,13 @@ export const makeOAuthConnectionHelpers = (options: MakeOAuthConnectionHelpersOp
 							$.provider.eq(provider),
 							$.revokedAt.isNull(),
 							...(unchangedSince === undefined ? [] : [$.updatedAt.eq(unchangedSince)]),
-						]),
+						])
+						.returning("id"),
 				),
-			).pipe(Effect.ignore)
+			).pipe(
+				Effect.map((stamped) => stamped.length > 0),
+				Effect.orElseSucceed(() => false),
+			)
 		})
 
 		/** Drop the org's connection row and its source; reports whether anything was removed. */
@@ -417,9 +426,7 @@ export const makeOAuthConnectionHelpers = (options: MakeOAuthConnectionHelpersOp
 					credentials.headers,
 				)
 				if (status < 200 || status >= 300) {
-					return yield* Effect.fail(
-						toUpstreamError(`Token exchange failed: ${text || status}`, status),
-					)
+					return yield* toUpstreamError(`Token exchange failed: ${text || status}`, status)
 				}
 				return yield* parseTokenPayload(text)
 			},
@@ -443,35 +450,29 @@ export const makeOAuthConnectionHelpers = (options: MakeOAuthConnectionHelpersOp
 				credentials.headers,
 			)
 			if (status === config.deadRefreshTokenStatus) {
-				return yield* Effect.fail(
-					new IntegrationsRevokedError({
-						message: `${providerLabel} connection is no longer authorized; reconnect required`,
-					}),
-				)
+				return yield* new IntegrationsRevokedError({
+					message: `${providerLabel} connection is no longer authorized; reconnect required`,
+				})
 			}
 			if (status === 400 || status === 401) {
 				const errorCode = oauthErrorCodeOf(text)
 				// Only a decoded `invalid_grant` means revoked: a None (bodyless or
 				// undecodable 400/401) stays a transient upstream failure below.
 				if (Option.contains(errorCode, "invalid_grant")) {
-					return yield* Effect.fail(
-						new IntegrationsRevokedError({
-							message: `${providerLabel} connection is no longer authorized; reconnect required`,
-						}),
-					)
+					return yield* new IntegrationsRevokedError({
+						message: `${providerLabel} connection is no longer authorized; reconnect required`,
+					})
 				}
-				return yield* Effect.fail(
-					toUpstreamError(
-						`Token refresh failed with ${status}${Option.match(errorCode, {
-							onNone: () => "",
-							onSome: (code) => ` (${code})`,
-						})}`,
-						status,
-					),
+				return yield* toUpstreamError(
+					`Token refresh failed with ${status}${Option.match(errorCode, {
+						onNone: () => "",
+						onSome: (code) => ` (${code})`,
+					})}`,
+					status,
 				)
 			}
 			if (status < 200 || status >= 300) {
-				return yield* Effect.fail(toUpstreamError(`Token refresh failed with ${status}`, status))
+				return yield* toUpstreamError(`Token refresh failed with ${status}`, status)
 			}
 			return yield* parseTokenPayload(text)
 		})
@@ -533,11 +534,9 @@ export const makeOAuthConnectionHelpers = (options: MakeOAuthConnectionHelpersOp
 			Effect.gen(function* () {
 				if (!row.refreshTokenCiphertext || !row.refreshTokenIv || !row.refreshTokenTag) {
 					yield* markConnectionRevoked(orgId)
-					return yield* Effect.fail(
-						new IntegrationsRevokedError({
-							message: `${providerLabel} access token expired and no refresh token is stored — reconnect required`,
-						}),
-					)
+					return yield* new IntegrationsRevokedError({
+						message: `${providerLabel} access token expired and no refresh token is stored — reconnect required`,
+					})
 				}
 
 				const refreshToken = yield* decryptValue({
@@ -559,13 +558,14 @@ export const makeOAuthConnectionHelpers = (options: MakeOAuthConnectionHelpersOp
 						Effect.gen(function* () {
 							const latest = yield* requireConnection(orgId)
 							const advanced = latest.updatedAt > row.updatedAt
-							if (advanced && rowIsValid(latest, yield* Clock.currentTimeMillis)) {
-								return yield* accessTokenFromRow(latest)
+							if (advanced) {
+								const now = yield* Clock.currentTimeMillis
+								if (rowIsValid(latest, now)) return yield* accessTokenFromRow(latest)
 							}
 							// Only while the row is still the one we read: a racing isolate may persist
 							// fresh tokens between our re-read and this stamp.
 							yield* markConnectionRevoked(orgId, row.updatedAt)
-							return yield* Effect.fail(error)
+							return yield* error
 						}),
 					),
 				)
@@ -576,7 +576,8 @@ export const makeOAuthConnectionHelpers = (options: MakeOAuthConnectionHelpersOp
 				Effect.gen(function* () {
 					// Double-checked: another local fiber may have refreshed while we waited.
 					const row = yield* requireConnection(orgId)
-					if (rowIsValid(row, yield* Clock.currentTimeMillis)) {
+					const now = yield* Clock.currentTimeMillis
+					if (rowIsValid(row, now)) {
 						return yield* accessTokenFromRow(row)
 					}
 					return yield* refreshRow(config, orgId, row)

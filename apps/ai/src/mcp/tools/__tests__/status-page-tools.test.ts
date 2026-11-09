@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
-import { Schema } from "effect"
+import { Schema, Array as Arr, String as Str } from "effect"
 import { RoleName } from "@maple/domain/http"
 import {
 	ApplyStatusPageConfigOutput,
@@ -40,8 +40,8 @@ afterAll(async () => {
 	await rt.dispose()
 })
 
-const decode = <S extends Schema.Codec<unknown, unknown, never, never>>(schema: S, result: McpToolResult) =>
-	Schema.decodeUnknownSync(schema)(result.structuredContent)
+const decode = <S extends Schema.Codec<unknown, unknown>>(schema: S, result: McpToolResult) =>
+	Schema.decodeSync(schema)(result.structuredContent)
 
 describe("status page tools", () => {
 	it("lists the org's pages with their REST ids", async () => {
@@ -76,7 +76,7 @@ describe("status page tools", () => {
 			await runToolDirect(rt, "get_status_page", { page: "acme-status" }),
 		)
 		expect(page.components).toMatchObject([{ name: "API", status: "operational" }])
-		expect(page.activeIncidents.map((i) => i.id)).toContain(created.incident.id)
+		expect(Arr.map(page.activeIncidents, (i) => i.id)).toContain(created.incident.id)
 		expect(page.freshness.publishPending).toBe(true)
 
 		// Publishing with the next update puts it on the page.
@@ -245,7 +245,7 @@ describe("status page tools", () => {
 			rt.testDb,
 			`INSERT INTO uptime_monitor_daily (monitor_id, day, org_id, checks, failures, down_checks, last_check_at)
 			 VALUES ($1, $2, $3, 1, 0, 0, to_timestamp($4 / 1000.0))`,
-			[monitorId, new Date(now).toISOString().slice(0, 10), rt.tenant.orgId, now - 30_000],
+			[monitorId, Str.slice(0, 10)(new Date(now).toISOString()), rt.tenant.orgId, now - 30_000],
 		)
 		expect((await freshness()).state).toBe("live")
 	})
@@ -254,7 +254,7 @@ describe("status page tools", () => {
 		const PAGE = "7f0b7d0e-0b6a-4f55-9a0e-2a4b9a0c1e01"
 		const admin = () => ({
 			...rt,
-			tenant: { ...rt.tenant, roles: [Schema.decodeUnknownSync(RoleName)("org:admin")] },
+			tenant: { ...rt.tenant, roles: [Schema.decodeSync(RoleName)("org:admin")] },
 		})
 		beforeAll(async () => {
 			const now = Date.now()
@@ -312,7 +312,7 @@ describe("status page tools", () => {
 				deleted: ["Docs"],
 				reordered: false,
 			})
-			expect(output.config.components.map((c) => c.name)).toEqual(["API", "Web"])
+			expect(Arr.map(output.config.components, (c) => c.name)).toEqual(["API", "Web"])
 			const text = markdown(result)
 			expect(text).toContain("Components created")
 			expect(text).toContain("Docs")

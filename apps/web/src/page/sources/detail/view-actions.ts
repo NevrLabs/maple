@@ -1,14 +1,17 @@
 import type { V2Source } from "@maple/domain/http/v2"
 import type { Html, HtmlBuilder } from "foldkit/html"
-import { button } from "../../../ui/button"
-import { type ConfirmDialogOptions, confirmDialog } from "../../../ui/confirm-dialog"
-import { icon } from "../../../ui/icon"
-import * as MenuView from "../../../ui/menu-view"
+import { button } from "@maple/views/ui/button"
+import { type ConfirmDialogOptions, confirmDialog } from "@maple/views/ui/confirm-dialog"
+import { icon } from "@maple/views/ui/icon"
+import * as MenuView from "@maple/views/ui/menu-view"
 import { deleteConsequences } from "../kit/integration"
 import { integrationPlatformOf } from "../kit/shared"
 import { Message } from "./message"
 import type { Model } from "./model"
 import { PAUSE_CHOICES, PAUSE_MENU_ID } from "./update"
+import { typography } from "@maple/views/ui/typography"
+import { Array as Arr } from "effect"
+import { vstack } from "@maple/views/ui/stack"
 
 // `SourceActions`, `IntegrationActions` and `PauseMenu`.
 
@@ -34,9 +37,10 @@ const pauseMenu = (h: H, model: Model, source: V2Source): Html =>
 					content: h.div(
 						[h.Class("space-y-1 px-2 pt-1.5 pb-2")],
 						[
-							h.p([h.Class("text-xs font-medium")], ["Pause ingestion"]),
-							h.p(
-								[h.Class("text-muted-foreground text-xs leading-relaxed")],
+							typography(h, { size: "xs", weight: "medium", as: "p" }, ["Pause ingestion"]),
+							typography(
+								h,
+								{ size: "xs", tone: "muted", as: "p", className: "leading-relaxed" },
 								[
 									isIntegration(source)
 										? "Maple keeps collecting, but what it collects is dropped, not stored or billed."
@@ -49,7 +53,7 @@ const pauseMenu = (h: H, model: Model, source: V2Source): Html =>
 				{ _tag: "Separator" },
 				{
 					_tag: "Group",
-					entries: PAUSE_CHOICES.map((choice): MenuView.MenuItemEntry => ({
+					entries: Arr.map(PAUSE_CHOICES, (choice): MenuView.MenuItemEntry => ({
 						_tag: "Item",
 						value: choice.value,
 						label: choice.label,
@@ -76,7 +80,8 @@ const pauseMenu = (h: H, model: Model, source: V2Source): Html =>
 		},
 	})
 
-const name = (h: H, source: V2Source) => h.span([h.Class("text-foreground font-medium")], [source.name])
+const name = (h: H, source: V2Source) =>
+	typography(h, { tone: "foreground", weight: "medium" }, [source.name])
 
 /** Resume while paused, the pause menu otherwise. Every source but the default one pauses. */
 export const pauseControl = (h: H, model: Model, source: V2Source): Html =>
@@ -117,7 +122,7 @@ const tokenDeleteDialog = (h: H, model: Model, source: V2Source): Html =>
 			name(h, source),
 			" are rejected within a minute. This cannot be undone.",
 		],
-		confirmLabel: "Delete",
+		confirmLabel: "Delete source",
 		onConfirm: Message.ConfirmedDelete(),
 		isPending: model.busy === "delete",
 	})
@@ -131,9 +136,10 @@ const integrationDeleteDialog = (h: H, model: Model, source: V2Source): Html => 
 		title: ["Delete ", name(h, source), "?"],
 		description: "This disconnects the integration. To stop it for a while instead, pause it.",
 		children: [
-			h.ul(
-				[h.Class("bg-muted flex flex-col gap-1.5 rounded-lg p-3 text-xs")],
-				deleteConsequences(source).map((line) => h.keyed("li")(line, [], [line])),
+			vstack(
+				h,
+				{ gap: "1.5", as: "ul", className: "bg-muted rounded-lg p-3 text-xs" },
+				Arr.map(deleteConsequences(source), (line) => h.keyed("li")(line, [], [line])),
 			),
 		],
 		confirmLabel: "Disconnect and delete",

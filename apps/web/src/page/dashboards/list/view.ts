@@ -2,12 +2,13 @@ import { TONE_TEXT } from "@maple/ui/lib/tone"
 import { isViewerSession } from "../../../platform/selfhost-session"
 import { Submodel } from "foldkit"
 import type { Html, HtmlBuilder } from "foldkit/html"
-import { alert, alertDescription } from "../../../ui/alert"
-import { button } from "../../../ui/button"
-import { errorState } from "../../../ui/error-state"
-import type { LoadFailure } from "../../../data/load-failure"
-import { icon } from "../../../ui/icon"
-import { pageTitle } from "../../../ui/page-layout"
+import { alert, alertDescription } from "@maple/views/ui/alert"
+import { button } from "@maple/views/ui/button"
+import { errorState } from "@maple/views/ui/error-state"
+import { fileInput } from "@maple/views/ui/file-input"
+import type { LoadFailure } from "@maple/views/data/load-failure"
+import { icon } from "@maple/views/ui/icon"
+import { pageTitle } from "@maple/views/ui/page-layout"
 import type { PageViewInputs } from "../../contract"
 import { dashboardPage } from "../../kit/dashboard-page"
 import { headerSummary } from "./derive"
@@ -15,6 +16,9 @@ import { Message } from "./message"
 import type { Model } from "./model"
 import { isDegraded, isLoadFailed, listedOf } from "./update"
 import { listBody, listSkeleton } from "./view-list"
+import { snapshotBanner } from "../kit/live-sync"
+import { String as Str } from "effect"
+import { hstack } from "@maple/views/ui/stack"
 
 // The dashboards list page: `PageShell` around the list.
 
@@ -22,14 +26,26 @@ type H = HtmlBuilder<Message>
 
 /** A disabled write control says why on hover: a disabled button gets no pointer events itself. */
 const withReason = (h: H, reason: string | null, child: Html): Html =>
-	reason === null ? child : h.span([h.Class("inline-flex cursor-not-allowed"), h.Title(reason)], [child])
+	reason === null
+		? child
+		: hstack(
+				h,
+				{
+					align: "stretch",
+					inline: true,
+					as: "span",
+					className: "cursor-not-allowed",
+					attributes: [h.Title(reason)],
+				},
+				[child],
+			)
 
 // Browsers word a dropped connection differently; any of these means the write never reached Maple.
 const UNREACHABLE = /failed to fetch|networkerror|load failed|network request failed/i
 
 /** A failed write's cause: "Couldn't reach Maple" for a dropped connection, else the stored reason. */
 const writeFailureCause = (error: string): string =>
-	UNREACHABLE.test(error) ? "Couldn't reach Maple" : error.replace(/[.\s]+$/, "")
+	UNREACHABLE.test(error) ? "Couldn't reach Maple" : Str.replace(/[.\s]+$/, "")(error)
 
 /** Said on the list's failure card and on the disabled buttons when both are down. */
 const LIST_FAILED_READ_ONLY = "Creating and importing are off until Maple reconnects."
@@ -48,61 +64,52 @@ const readOnlyReason = (model: Model): string | null =>
 
 /** Browse templates, Import (the hidden file input) and Create dashboard. */
 const actions = (h: H, reason: string | null): Html =>
-	h.div(
-		[h.Class("flex flex-wrap items-center gap-1")],
-		[
+	hstack(h, { gap: "1", align: "center", wrap: true }, [
+		button(
+			h,
+			{ variant: "outline", size: "sm", attributes: [h.OnClick(Message.ClickedBrowseTemplates())] },
+			[
+				icon(h, "GridIcon", { attributes: [h.DataAttribute("icon", "inline-start")] }),
+				"Browse templates",
+			],
+		),
+		withReason(
+			h,
+			reason,
 			button(
 				h,
-				{ variant: "outline", size: "sm", attributes: [h.OnClick(Message.ClickedBrowseTemplates())] },
+				{
+					variant: "outline",
+					size: "sm",
+					isDisabled: reason !== null,
+					attributes: [h.OnClick(Message.ClickedImport())],
+				},
+				[icon(h, "UploadIcon", { attributes: [h.DataAttribute("icon", "inline-start")] }), "Import"],
+			),
+		),
+		withReason(
+			h,
+			reason,
+			button(
+				h,
+				{
+					size: "sm",
+					isDisabled: reason !== null,
+					attributes: [h.OnClick(Message.ClickedCreate())],
+				},
 				[
-					icon(h, "GridIcon", { attributes: [h.DataAttribute("icon", "inline-start")] }),
-					"Browse templates",
+					icon(h, "PlusIcon", { attributes: [h.DataAttribute("icon", "inline-start")] }),
+					"Create dashboard",
 				],
 			),
-			withReason(
-				h,
-				reason,
-				button(
-					h,
-					{
-						variant: "outline",
-						size: "sm",
-						isDisabled: reason !== null,
-						attributes: [h.OnClick(Message.ClickedImport())],
-					},
-					[
-						icon(h, "UploadIcon", { attributes: [h.DataAttribute("icon", "inline-start")] }),
-						"Import",
-					],
-				),
-			),
-			withReason(
-				h,
-				reason,
-				button(
-					h,
-					{
-						size: "sm",
-						isDisabled: reason !== null,
-						attributes: [h.OnClick(Message.ClickedCreate())],
-					},
-					[
-						icon(h, "PlusIcon", { attributes: [h.DataAttribute("icon", "inline-start")] }),
-						"Create dashboard",
-					],
-				),
-			),
-			h.input([
-				h.Accept(".json"),
-				h.AriaLabel("Import dashboard JSON file"),
-				h.Class("hidden"),
-				h.Style({}),
-				h.Type("file"),
-				h.Id("dashboards-import-input"),
-				h.OnFileChange((files) => Message.ChoseImportFile({ files })),
-			]),
-		],
-	)
+		),
+		fileInput(h, {
+			id: "dashboards-import-input",
+			label: "Import dashboard JSON file",
+			accept: ".json",
+			onChange: (files) => Message.ChoseImportFile({ files }),
+		}),
+	])
 
 /** Pinned with the header: it explains the disabled buttons above it. When the list failed too,
  * its error state already explains the outage, so the banner is dropped. */
@@ -136,35 +143,6 @@ const listLoadError = (h: H, isReadOnly: boolean): Html =>
 		className: "min-h-64",
 	})
 
-/** `SyncDegradedBanner`: the rows are a frozen HTTP snapshot and writes are off. */
-const degradedBanner = (h: H): Html =>
-	h.div(
-		[
-			h.Class(
-				"mb-3 flex items-start gap-2 rounded-md border border-border bg-surface-sunken p-2.5 text-xs text-muted-foreground",
-			),
-		],
-		[
-			icon(h, "CircleWarningIcon", { size: 14, className: "mt-0.5 shrink-0" }),
-			h.span(
-				[h.Class("flex-1")],
-				[
-					"Live sync is unavailable, so this is a snapshot loaded over HTTP. It won’t update on its own and editing is disabled.",
-				],
-			),
-			button(
-				h,
-				{
-					size: "xs",
-					variant: "ghost",
-					className: "-my-1 shrink-0 hover:text-foreground active:text-foreground",
-					attributes: [h.OnClick(Message.ClickedRetrySync())],
-				},
-				["Retry sync"],
-			),
-		],
-	)
-
 export const view = Submodel.defineView<Model, Message, PageViewInputs>((model, inputs, h) => {
 	const listed = listedOf(model)
 	const isReady = listed !== null && model.nowMs !== null && model.isPrefsLoaded
@@ -173,7 +151,7 @@ export const view = Submodel.defineView<Model, Message, PageViewInputs>((model, 
 			? [
 					h.div(
 						[h.Class("text-muted-foreground mt-1 font-mono text-2xs")],
-						[headerSummary(listed, model.nowMs, inputs.context.timeZone, model.locale)],
+						headerSummary(h, listed, model.nowMs, inputs.context.timeZone, model.locale),
 					),
 				]
 			: []
@@ -190,7 +168,7 @@ export const view = Submodel.defineView<Model, Message, PageViewInputs>((model, 
 		isLoadFailed(model)
 			? [listLoadError(h, reason !== null)]
 			: [
-					...(isDegraded(model) ? [degradedBanner(h)] : []),
+					...(isDegraded(model) ? [snapshotBanner(h, "this", Message.ClickedRetrySync())] : []),
 					isReady && listed !== null && model.nowMs !== null
 						? listBody(h, model, listed, model.nowMs, inputs.context.timeZone)
 						: listSkeleton(h),

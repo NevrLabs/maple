@@ -1,16 +1,19 @@
 import { TONE_TEXT } from "@maple/ui/lib/tone"
 import { Submodel } from "foldkit"
 import type { Html, HtmlBuilder } from "foldkit/html"
-import { button } from "../../../../ui/button"
-import { formDialog } from "../../../../ui/form-dialog"
-import { icon, type IconName } from "../../../../ui/icon"
-import { iconButton } from "../../../../ui/icon-button"
-import { inlineCode } from "../../../../ui/inline-code"
-import { item, itemActions, itemContent, itemDescription, itemTitle } from "../../../../ui/item"
+import { button } from "@maple/views/ui/button"
+import { formDialog } from "@maple/views/ui/form-dialog"
+import { icon, type IconName } from "@maple/views/ui/icon"
+import { iconButton } from "@maple/views/ui/icon-button"
+import { inlineCode } from "@maple/views/ui/inline-code"
+import { item, itemActions, itemContent, itemDescription, itemTitle } from "@maple/views/ui/item"
 import { draftError, sourceSummary, TYPE_LABELS } from "./derive"
 import { Message, type Model, type Variable } from "./model"
 import { hasErrors } from "./update"
 import { variableForm } from "./view-form"
+import { Array as Arr } from "effect"
+import { vstack } from "@maple/views/ui/stack"
+import { typography } from "@maple/views/ui/typography"
 
 type H = HtmlBuilder<Message>
 
@@ -28,29 +31,23 @@ const intro = (h: H): Html =>
 					"A variable adds a selector to the toolbar; widgets that reference it re-query when the selection changes.",
 				],
 			),
-			h.ul(
-				[h.Class("mt-1.5 flex flex-col gap-0.5")],
-				[
-					h.li(
-						[],
-						[
-							h.span([h.Class("text-foreground")], ["Query"]),
-							": values from your telemetry (services, environments, attribute values).",
-						],
-					),
-					h.li(
-						[],
-						[h.span([h.Class("text-foreground")], ["Custom"]), ": a fixed list you define."],
-					),
-					h.li(
-						[],
-						[
-							h.span([h.Class("text-foreground")], ["Textbox"]),
-							": free text, e.g. a search needle.",
-						],
-					),
-				],
-			),
+			vstack(h, { gap: "0.5", as: "ul", className: "mt-1.5" }, [
+				h.li(
+					[],
+					[
+						typography(h, { tone: "foreground" }, ["Query"]),
+						": values from your telemetry (services, environments, attribute values).",
+					],
+				),
+				h.li([], [typography(h, { tone: "foreground" }, ["Custom"]), ": a fixed list you define."]),
+				h.li(
+					[],
+					[
+						typography(h, { tone: "foreground" }, ["Textbox"]),
+						": free text, e.g. a search needle.",
+					],
+				),
+			]),
 		],
 	)
 
@@ -140,7 +137,7 @@ export const view = Submodel.defineView<Model, Message, Readonly<{ slotId: strin
 		onSubmit: Message.SubmittedForm(),
 		fields: [
 			...(model.startedEmpty ? [intro(h)] : []),
-			...model.drafts.map((draft, index) => row(h, model, draft, index)),
+			...Arr.map(model.drafts, (draft, index) => row(h, model, draft, index)),
 			button(
 				h,
 				{

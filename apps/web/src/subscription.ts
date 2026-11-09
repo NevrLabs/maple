@@ -8,7 +8,8 @@ import { SELF_HOSTED_AUTH_EVENT } from "./platform/auth-api"
 import { readEffectiveTimeZone, TIME_ZONE_PREFERENCE_EVENT, TIMEZONE_STORAGE_KEY } from "./platform/time-zone"
 import { rendersShell } from "./page/chrome"
 import * as Preload from "./page/preload"
-import { pageSubscriptions } from "./page/registry"
+import * as TooltipHost from "@maple/views/ui/tooltip-host"
+import { isBlockingUnload, pageSubscriptions } from "./page/registry"
 import * as TimeRangePicker from "./page/kit/time-range-picker"
 import { onboardingInputsOf, pageContextOf } from "./update"
 import * as Onboarding from "./page/onboarding"
@@ -16,6 +17,7 @@ import { connectSubscriptions } from "./page/onboarding/quick-start-connect"
 import * as SourcesFlow from "./page/sources/new/embed"
 import { clerkSnapshots } from "./platform/clerk"
 import * as Shell from "./shell"
+import { staleBuildRecovery } from "./shell/version"
 import { pollTicks } from "./data/poll"
 import { collectionLoadFailed } from "./page/alerts/shared/collection-load"
 
@@ -29,6 +31,16 @@ const altClickExclude: Stream.Stream<Message> = Dom.streamFromEventFilterMap({
 		if (!event.altKey || !(exclude instanceof HTMLButtonElement)) return Option.none()
 		event.preventDefault()
 		exclude.click()
+		return Option.none()
+	},
+})
+
+/** Emits nothing: the browser's own leave prompt on reload or tab close, while subscribed. */
+const unloadPrompt: Stream.Stream<Message> = Dom.streamFromEventFilterMap({
+	target: () => window,
+	type: "beforeunload",
+	filterMapEvent: (event): Option.Option<Message> => {
+		event.preventDefault()
 		return Option.none()
 	},
 })
@@ -229,6 +241,23 @@ const root = Subscription.make<Model, Message, Resources>()((entry) => ({
 				),
 		},
 	),
+	/** A removed chunk or an unreadable synced row probes for a newer build and reloads onto it. */
+	shellStaleBuild: entry(
+		{ isWatching: Schema.Boolean, isBlocking: Schema.Boolean },
+		{
+			modelToDependencies: (model) => ({
+				isWatching: Shell.BUILT_COMMIT.length > 0,
+				isBlocking: isBlockingUnload(model.page),
+			}),
+			dependenciesToStream: ({ isWatching, isBlocking }) =>
+				Stream.when(
+					Stream.map(staleBuildRecovery(isBlocking), (message) =>
+						Message.GotShellMessage({ message }),
+					),
+					Effect.sync(() => isWatching),
+				),
+		},
+	),
 	/** `defaultPreload: "intent"`: link hover, focus and touch, while a shell page is open. */
 	linkIntent: entry(
 		{ isShellOpen: Schema.Boolean },
@@ -244,6 +273,39 @@ const root = Subscription.make<Model, Message, Resources>()((entry) => ({
 							: Message.EndedLinkIntent({ href: intent.href }),
 					),
 					Effect.sync(() => isShellOpen),
+				),
+		},
+	),
+	/** The app-wide tooltip: pointer, press and focus on any `tooltipTrigger`. */
+	tooltipTriggers: entry(
+		{},
+		{
+			modelToDependencies: () => ({}),
+			dependenciesToStream: () =>
+				Stream.map(TooltipHost.triggerEvents, (message) => Message.GotTooltipMessage({ message })),
+		},
+	),
+	/** Escape, live text and trigger removal while a tooltip is pending or open. */
+	tooltipWhileEngaged: entry(
+		{ isEngaged: Schema.Boolean },
+		{
+			modelToDependencies: (model) => ({ isEngaged: TooltipHost.isEngaged(model.tooltip) }),
+			dependenciesToStream: ({ isEngaged }) =>
+				Stream.when(
+					Stream.map(TooltipHost.whileEngaged, (message) => Message.GotTooltipMessage({ message })),
+					Effect.sync(() => isEngaged),
+				),
+		},
+	),
+	/** `useBlocker`'s reload half: a page with unsaved state asks before the tab unloads. */
+	unloadGuard: entry(
+		{ isBlocking: Schema.Boolean },
+		{
+			modelToDependencies: (model) => ({ isBlocking: isBlockingUnload(model.page) }),
+			dependenciesToStream: ({ isBlocking }) =>
+				Stream.when(
+					unloadPrompt,
+					Effect.sync(() => isBlocking),
 				),
 		},
 	),
