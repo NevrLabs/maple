@@ -5,7 +5,12 @@ name: Selfhost images (multi-arch)
 # by digest, then `merge` joins the digests into one manifest list per image.
 # Web is built per deployment because VITE_* flags are baked into the bundle: see `flavor`.
 
+# The fork has no workflow registered on its default branch, so `push` on this branch is what
+# registers (and runs) it; a push run uses the input defaults below.
 on:
+    push:
+        branches: [noovoleum-images]
+        paths: [".github/workflows/selfhost-images.yml"]
     workflow_dispatch:
         inputs:
             source:
@@ -24,7 +29,7 @@ permissions:
     contents: read
 
 concurrency:
-    group: selfhost-images-${{ inputs.source }}-${{ inputs.flavor }}
+    group: selfhost-images-${{ inputs.source || 'fd23f5f069e5ff3f4fa52f11c739075a5a649a54' }}-${{ inputs.flavor || 'noovoleum' }}
     cancel-in-progress: false
 
 jobs:
@@ -44,7 +49,7 @@ jobs:
             - name: Resolve source + image name
               id: meta
               env:
-                  SOURCE: ${{ inputs.source }}
+                  SOURCE: ${{ inputs.source || 'fd23f5f069e5ff3f4fa52f11c739075a5a649a54' }}
                   IMAGE: ${{ matrix.image }}
               run: |
                   set -euo pipefail
@@ -61,7 +66,7 @@ jobs:
 
             - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
               with:
-                  ref: ${{ inputs.source }}
+                  ref: ${{ inputs.source || 'fd23f5f069e5ff3f4fa52f11c739075a5a649a54' }}
                   persist-credentials: false
 
             - name: Toolchain and dependencies (bun)
@@ -103,7 +108,7 @@ jobs:
               if: matrix.image == 'web'
               env:
                   C: ${{ steps.meta.outputs.ctx }}
-                  FLAVOR: ${{ inputs.flavor }}
+                  FLAVOR: ${{ inputs.flavor || 'noovoleum' }}
                   SHA8: ${{ steps.meta.outputs.sha8 }}
               run: |
                   set -euo pipefail
@@ -198,7 +203,7 @@ jobs:
                   outputs: type=image,name=${{ steps.meta.outputs.name }},push-by-digest=true,name-canonical=true,push=true
                   labels: |
                       org.opencontainers.image.source=https://github.com/${{ github.repository }}
-                      org.opencontainers.image.revision=${{ inputs.source }}
+                      org.opencontainers.image.revision=${{ inputs.source || 'fd23f5f069e5ff3f4fa52f11c739075a5a649a54' }}
                   provenance: false
 
             - name: Export digest
@@ -231,8 +236,8 @@ jobs:
             - name: Resolve image name + tag
               id: meta
               env:
-                  SOURCE: ${{ inputs.source }}
-                  FLAVOR: ${{ inputs.flavor }}
+                  SOURCE: ${{ inputs.source || 'fd23f5f069e5ff3f4fa52f11c739075a5a649a54' }}
+                  FLAVOR: ${{ inputs.flavor || 'noovoleum' }}
                   IMAGE: ${{ matrix.image }}
               run: |
                   set -euo pipefail
