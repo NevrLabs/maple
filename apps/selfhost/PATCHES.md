@@ -406,6 +406,10 @@ reproduces build-images.sh's bundles, flags and Dockerfiles per image x arch on 
 (`ubuntu-24.04` / `ubuntu-24.04-arm`), pushes by digest, then joins each pair into a manifest list:
 `ghcr.io/nevrlabs/maple-selfhost:<sha8>`, `maple-ingest:<sha8>`, `maple-otel-collector-selfhost:<sha8>`,
 `maple-web:<sha8>-<flavor>`. Flavor `noovoleum` = OIDC "Noovoleum SSO", lab/replay/capture off, ingest
-`http://10.100.1.68:3474`; the web job fails if the bundle lacks the OIDC label/`oidc-start` or contains
-`192.168.`. Electric comes from the existing `publish-electric-image.yml` (`ghcr.io/nevrlabs/maple/electric`).
+`http://10.100.1.68:3474`; the web job fails if the bundle lacks the OIDC label/`oidc-start`/ingest URL or contains a
+`192.168.` URL. Electric: the `electric` job copies upstream's pinned `ghcr.io/mapletechlabs/maple/electric:1.7.12`
+digest (built by `publish-electric-image.yml`, arm64) to `ghcr.io/nevrlabs/maple/electric:1.7.12`; that
+dispatch-only workflow cannot run on the fork, which registers no workflow on its default branch. The
+`smoke` job pulls every image on `ubuntu-24.04-arm` and runs a trivial command.
+A push to this branch touching the workflow also runs it (that is how it got registered).
 **Verify:** `docker buildx imagetools inspect <image>:<tag>` lists linux/amd64 + linux/arm64.

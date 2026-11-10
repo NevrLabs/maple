@@ -84,10 +84,11 @@ jobs:
                   set -euo pipefail
                   EXT=(-e "cloudflare:*" -e vite -e "@vitejs/*" -e vitest -e "@cloudflare/vite-plugin" -e wrangler -e miniflare -e esbuild -e rolldown -e lightningcss -e "@rolldown/*" -e "@alchemy.run/frontend-frameworks/astro/config" -e react-devtools-core)
                   mkdir -p "$C/app/db/scripts" "$C/app/ch"
+                  # Workspace packages the bundles import through dist/ (already built on the homelab builder).
+                  ( cd packages/effect-sdk && bun run build ) && ( cd packages/alchemy-maple && bun run build )
                   bun build apps/selfhost/src/api.ts      --target=bun --outfile="$C/app/api.js"      "${EXT[@]}"
                   bun build apps/selfhost/src/alerting.ts --target=bun --outfile="$C/app/alerting.js" "${EXT[@]}"
                   bun build apps/selfhost/src/electric-sync.ts --target=bun --outfile="$C/app/electric-sync.js" "${EXT[@]}"
-                  ( cd packages/effect-sdk && bun run build )
                   bun build apps/scraper/src/main.ts      --target=bun --outfile="$C/app/scraper.js"  "${EXT[@]}"
                   bun build apps/selfhost/src/status.ts   --target=bun --outfile="$C/app/status.js"   "${EXT[@]}"
                   bun build packages/db/scripts/migrate.ts --target=bun --outfile="$C/app/db/scripts/migrate.js" "${EXT[@]}"
@@ -125,7 +126,9 @@ jobs:
                   # Fail before pushing a bundle without the flavor's sign-in button or with a homelab ingest URL.
                   grep -lq "$VITE_MAPLE_OIDC" apps/web/dist/assets/*.js || { echo "::error::OIDC label missing"; exit 1; }
                   grep -lq 'oidc-start' apps/web/dist/assets/*.js || { echo "::error::oidc-start missing"; exit 1; }
-                  if grep -l '192\.168\.' apps/web/dist/assets/*.js; then echo "::error::homelab address in bundle"; exit 1; fi
+                  # URL-shaped only: the Proxmox lab fixture carries a homelab IP inside a backup note.
+                  if grep -lE '//192\.168\.|192\.168\.[0-9.]+:[0-9]+' apps/web/dist/assets/*.js; then echo "::error::homelab URL in bundle"; exit 1; fi
+                  grep -lqF "$VITE_INGEST_URL" apps/web/dist/assets/*.js || { echo "::error::ingest URL missing"; exit 1; }
                   mkdir -p "$C"
                   cp -r apps/web/dist "$C/dist"; cp apps/web/nginx.conf "$C/"
                   cat > "$C/Dockerfile" <<'EOF'
@@ -279,3 +282,70 @@ jobs:
                     --annotation "index:org.opencontainers.image.source=https://github.com/$REPO" \
                     $(printf "$NAME@sha256:%s " *)
                   docker buildx imagetools inspect "$NAME:$TAG" | tee -a "$GITHUB_STEP_SUMMARY"
+
+    # G1 arm64 smoke: pull each published manifest list on a native arm64 runner and run a trivial command.
+    smoke:
+        name: smoke arm64
+        needs: [merge, electric]
+        runs-on: ubuntu-24.04-arm
+        timeout-minutes: 15
+        permissions:
+            contents: read
+            packages: read
+        steps:
+            - name: Log in to GHCR
+              uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+              with:
+                  registry: ghcr.io
+                  username: ${{ github.actor }}
+                  password: ${{ secrets.GITHUB_TOKEN }}
+
+            - name: Run images
+              env:
+                  SOURCE: ${{ inputs.source || 'fd23f5f069e5ff3f4fa52f11c739075a5a649a54' }}
+                  FLAVOR: ${{ inputs.flavor || 'noovoleum' }}
+              run: |
+                  set -euo pipefail
+                  t=${SOURCE:0:8}; r=ghcr.io/nevrlabs
+                  for i in maple-selfhost:$t maple-ingest:$t maple-otel-collector-selfhost:$t maple-web:$t-$FLAVOR; do
+                    docker pull -q --platform linux/arm64 "$r/$i"
+                    echo "$i $(docker image inspect -f '{{.Os}}/{{.Architecture}}' "$r/$i")" | tee -a "$GITHUB_STEP_SUMMARY"
+                  done
+                  docker run --rm "$r/maple-selfhost:$t" bun --version
+                  docker run --rm "$r/maple-selfhost:$t" ls /app /app/db /app/ch
+                  # No env -> "Configuration error", exit 1: proves the binary loads and runs on arm64.
+                  out=$(docker run --rm "$r/maple-ingest:$t" 2>&1 || true); echo "$out"
+                  grep -q 'Configuration error' <<<"$out"
+                  docker run --rm "$r/maple-otel-collector-selfhost:$t" components > components.txt; cat components.txt
+                  grep -q maple components.txt
+                  docker run --rm "$r/maple-web:$t-$FLAVOR" nginx -t
+                  docker run --rm "$r/maple-web:$t-$FLAVOR" sh -euc '
+                    cd /usr/share/nginx/html/assets
+                    grep -lF "Noovoleum SSO" ./*.js; grep -l oidc-start ./*.js
+                    if grep -lE "//192\.168\.|192\.168\.[0-9.]+:[0-9]+" ./*.js; then exit 1; fi
+                    grep -lF "http://10.100.1.68:3474" ./*.js'
+                  docker pull -q --platform linux/arm64 "$r/maple/electric:1.7.12"
+                  echo "maple/electric:1.7.12 $(docker image inspect -f '{{.Os}}/{{.Architecture}}' "$r/maple/electric:1.7.12")" | tee -a "$GITHUB_STEP_SUMMARY"
+                  echo "smoke ok" | tee -a "$GITHUB_STEP_SUMMARY"
+
+    # publish-electric-image.yml is dispatch-only and the fork registers no workflow on its default branch,
+    # so it cannot be dispatched. Carbon-copy the digest upstream pins (apps/electric/alchemy.run.ts),
+    # which that same workflow built (arm64, electric-sql@dc07a1e6).
+    electric:
+        runs-on: ubuntu-24.04
+        timeout-minutes: 10
+        permissions:
+            contents: read
+            packages: write
+        steps:
+            - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+            - name: Log in to GHCR
+              uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+              with:
+                  registry: ghcr.io
+                  username: ${{ github.actor }}
+                  password: ${{ secrets.GITHUB_TOKEN }}
+            - run: |
+                  docker buildx imagetools create -t ghcr.io/nevrlabs/maple/electric:1.7.12 \
+                    ghcr.io/mapletechlabs/maple/electric:1.7.12@sha256:d8a377eee0edeac0d4dbbd77c22b92c1ef601184722ea2b7da5b3381e3bb8e2c
+                  docker buildx imagetools inspect ghcr.io/nevrlabs/maple/electric:1.7.12 | tee -a "$GITHUB_STEP_SUMMARY"
