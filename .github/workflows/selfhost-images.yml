@@ -1,0 +1,276 @@
+name: Selfhost images (multi-arch)
+
+# Publishes the self-host images (the apps/selfhost/dev/build-images.sh recipe: same bundles,
+# flags and Dockerfiles) for linux/amd64 + linux/arm64. Each arch builds natively, pushes
+# by digest, then `merge` joins the digests into one manifest list per image.
+# Web is built per deployment because VITE_* flags are baked into the bundle: see `flavor`.
+
+on:
+    workflow_dispatch:
+        inputs:
+            source:
+                description: "Full commit SHA of the fork source to build"
+                required: true
+                default: "fd23f5f069e5ff3f4fa52f11c739075a5a649a54"
+                type: string
+            flavor:
+                description: "Web build flavor (VITE_* flag set)"
+                required: true
+                default: noovoleum
+                type: choice
+                options: [noovoleum]
+
+permissions:
+    contents: read
+
+concurrency:
+    group: selfhost-images-${{ inputs.source }}-${{ inputs.flavor }}
+    cancel-in-progress: false
+
+jobs:
+    build:
+        name: ${{ matrix.image }} (${{ matrix.arch }})
+        runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+        timeout-minutes: 60
+        permissions:
+            contents: read
+            packages: write
+        strategy:
+            fail-fast: false
+            matrix:
+                image: [selfhost, web, ingest, collector]
+                arch: [amd64, arm64]
+        steps:
+            - name: Resolve source + image name
+              id: meta
+              env:
+                  SOURCE: ${{ inputs.source }}
+                  IMAGE: ${{ matrix.image }}
+              run: |
+                  set -euo pipefail
+                  printf '%s' "$SOURCE" | grep -Eq '^[0-9a-f]{40}$' || { echo "::error::source must be a full 40-hex SHA"; exit 1; }
+                  case "$IMAGE" in
+                    selfhost) repo=maple-selfhost ;;
+                    web) repo=maple-web ;;
+                    ingest) repo=maple-ingest ;;
+                    collector) repo=maple-otel-collector-selfhost ;;
+                  esac
+                  echo "name=ghcr.io/nevrlabs/$repo" >> "$GITHUB_OUTPUT"
+                  echo "sha8=${SOURCE:0:8}" >> "$GITHUB_OUTPUT"
+                  echo "ctx=$RUNNER_TEMP/ctx" >> "$GITHUB_OUTPUT"
+
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+              with:
+                  ref: ${{ inputs.source }}
+                  persist-credentials: false
+
+            - name: Toolchain and dependencies (bun)
+              if: matrix.image == 'selfhost' || matrix.image == 'web'
+              uses: ./.github/actions/setup
+              with:
+                  turbo-cache: "false"
+
+            # build-images.sh build_selfhost
+            - name: Bundle selfhost
+              if: matrix.image == 'selfhost'
+              env:
+                  C: ${{ steps.meta.outputs.ctx }}
+              run: |
+                  set -euo pipefail
+                  EXT=(-e "cloudflare:*" -e vite -e "@vitejs/*" -e vitest -e "@cloudflare/vite-plugin" -e wrangler -e miniflare -e esbuild -e rolldown -e lightningcss -e "@rolldown/*" -e "@alchemy.run/frontend-frameworks/astro/config" -e react-devtools-core)
+                  mkdir -p "$C/app/db/scripts" "$C/app/ch"
+                  bun build apps/selfhost/src/api.ts      --target=bun --outfile="$C/app/api.js"      "${EXT[@]}"
+                  bun build apps/selfhost/src/alerting.ts --target=bun --outfile="$C/app/alerting.js" "${EXT[@]}"
+                  bun build apps/selfhost/src/electric-sync.ts --target=bun --outfile="$C/app/electric-sync.js" "${EXT[@]}"
+                  ( cd packages/effect-sdk && bun run build )
+                  bun build apps/scraper/src/main.ts      --target=bun --outfile="$C/app/scraper.js"  "${EXT[@]}"
+                  bun build apps/selfhost/src/status.ts   --target=bun --outfile="$C/app/status.js"   "${EXT[@]}"
+                  bun build packages/db/scripts/migrate.ts --target=bun --outfile="$C/app/db/scripts/migrate.js" "${EXT[@]}"
+                  cp -r packages/db/drizzle "$C/app/db/drizzle"
+                  bun build packages/clickhouse-cli/src/cli.ts --target=bun --outfile="$C/app/ch/cli.js" "${EXT[@]}"
+                  cat > "$C/Dockerfile" <<'EOF'
+                  FROM oven/bun:1.4.4-slim
+                  WORKDIR /app
+                  COPY app /app
+                  USER bun
+                  ENV NODE_ENV=production
+                  EXPOSE 3472 3475 3476 3478 3480
+                  CMD ["bun", "/app/api.js"]
+                  EOF
+
+            # build-images.sh build_web, with the flavor's flags instead of the homelab defaults.
+            - name: Build web
+              if: matrix.image == 'web'
+              env:
+                  C: ${{ steps.meta.outputs.ctx }}
+                  FLAVOR: ${{ inputs.flavor }}
+                  SHA8: ${{ steps.meta.outputs.sha8 }}
+              run: |
+                  set -euo pipefail
+                  case "$FLAVOR" in
+                    noovoleum)
+                      export VITE_MAPLE_LAB=off VITE_API_BASE_URL=/_api VITE_MAPLE_AUTH_MODE=self_hosted \
+                        VITE_MAPLE_OIDC="Noovoleum SSO" VITE_ELECTRIC_SYNC_URL=/_sync \
+                        VITE_INGEST_URL=http://10.100.1.68:3474 VITE_MAPLE_REPLAY=off VITE_MAPLE_CAPTURE=off ;;
+                    *) echo "::error::unknown flavor $FLAVOR"; exit 1 ;;
+                  esac
+                  export VITE_COMMIT_SHA="$SHA8"
+                  ( cd packages/effect-sdk && bun run build )
+                  bun run --cwd apps/web build
+                  # Fail before pushing a bundle without the flavor's sign-in button or with a homelab ingest URL.
+                  grep -lq "$VITE_MAPLE_OIDC" apps/web/dist/assets/*.js || { echo "::error::OIDC label missing"; exit 1; }
+                  grep -lq 'oidc-start' apps/web/dist/assets/*.js || { echo "::error::oidc-start missing"; exit 1; }
+                  if grep -l '192\.168\.' apps/web/dist/assets/*.js; then echo "::error::homelab address in bundle"; exit 1; fi
+                  mkdir -p "$C"
+                  cp -r apps/web/dist "$C/dist"; cp apps/web/nginx.conf "$C/"
+                  cat > "$C/Dockerfile" <<'EOF'
+                  FROM nginx:alpine
+                  COPY dist /usr/share/nginx/html
+                  COPY nginx.conf /etc/nginx/conf.d/default.conf
+                  EXPOSE 80
+                  EOF
+
+            # build-images.sh build_collector (ocb v0.151.0 in golang:1.26-alpine).
+            - name: Build collector
+              if: matrix.image == 'collector'
+              env:
+                  C: ${{ steps.meta.outputs.ctx }}
+              run: |
+                  set -euo pipefail
+                  mkdir -p "$C" "$RUNNER_TEMP/go"
+                  docker run --rm -u "$(id -u):$(id -g)" -e HOME=/go -e GOPATH=/go -e GOCACHE=/go/cache -e GOFLAGS=-buildvcs=false \
+                    -v "$PWD/otel:/work/otel:ro" -v "$PWD/packages/otel-collector-maple-exporter:/work/packages/otel-collector-maple-exporter:ro" \
+                    -v "$RUNNER_TEMP/go:/go" -v "$C:/out" -w /tmp golang:1.26-alpine sh -c '
+                      set -e; mkdir -p /tmp/b/packages && cp /work/otel/builder-config.yaml /tmp/b/ && cp -r /work/packages/otel-collector-maple-exporter /tmp/b/packages/
+                      cd /tmp/b
+                      CGO_ENABLED=0 go install go.opentelemetry.io/collector/cmd/builder@v0.151.0
+                      CGO_ENABLED=0 /go/bin/builder --config=builder-config.yaml >/tmp/ocb.log 2>&1 || { tail -40 /tmp/ocb.log; exit 1; }
+                      cp bin/otel-collector-maple /out/'
+                  cat > "$C/Dockerfile" <<'EOF'
+                  FROM alpine:3.20
+                  RUN apk add --no-cache ca-certificates
+                  COPY otel-collector-maple /usr/local/bin/otel-collector-maple
+                  EXPOSE 4317 4318 13133
+                  USER 65532:65532
+                  ENTRYPOINT ["/usr/local/bin/otel-collector-maple"]
+                  CMD ["--config", "/etc/otelcol/config.yaml"]
+                  EOF
+
+            # build-images.sh build_ingest. Compiled in rust:1.94-bookworm (as build-ingest-binary.yml does)
+            # so the binary links against the runtime image's glibc 2.36, not the runner's.
+            - name: Build ingest
+              if: matrix.image == 'ingest'
+              env:
+                  C: ${{ steps.meta.outputs.ctx }}
+              run: |
+                  set -euo pipefail
+                  mkdir -p "$C" "$RUNNER_TEMP/cargo" "$RUNNER_TEMP/target"
+                  docker run --rm --user "$(id -u):$(id -g)" -e CARGO_HOME=/cargo \
+                    -v "$RUNNER_TEMP/cargo:/cargo" -v "$PWD/apps/ingest:/app" -v "$RUNNER_TEMP/target:/target" -w /app \
+                    rust:1.94-bookworm@sha256:6ae102bdbf528294bc79ad6e1fae682f6f7c2a6e6621506ba959f9685b308a55 \
+                    cargo build --release --target-dir /target
+                  cp "$RUNNER_TEMP/target/release/maple-ingest" "$C/"
+                  file "$C/maple-ingest"
+                  cat > "$C/Dockerfile" <<'EOF'
+                  FROM debian:bookworm-slim
+                  RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+                  COPY maple-ingest /usr/local/bin/maple-ingest
+                  EXPOSE 3474
+                  USER 65532:65532
+                  CMD ["maple-ingest"]
+                  EOF
+
+            - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+            - name: Log in to GHCR
+              uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+              with:
+                  registry: ghcr.io
+                  username: ${{ github.actor }}
+                  password: ${{ secrets.GITHUB_TOKEN }}
+
+            - name: Build + push by digest
+              id: build
+              uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+              with:
+                  context: ${{ steps.meta.outputs.ctx }}
+                  platforms: linux/${{ matrix.arch }}
+                  outputs: type=image,name=${{ steps.meta.outputs.name }},push-by-digest=true,name-canonical=true,push=true
+                  labels: |
+                      org.opencontainers.image.source=https://github.com/${{ github.repository }}
+                      org.opencontainers.image.revision=${{ inputs.source }}
+                  provenance: false
+
+            - name: Export digest
+              env:
+                  DIGEST: ${{ steps.build.outputs.digest }}
+              run: |
+                  mkdir -p "$RUNNER_TEMP/digests"
+                  touch "$RUNNER_TEMP/digests/${DIGEST#sha256:}"
+
+            - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+              with:
+                  name: digests-${{ matrix.image }}-${{ matrix.arch }}
+                  path: ${{ runner.temp }}/digests/*
+                  if-no-files-found: error
+                  retention-days: 1
+
+    merge:
+        name: manifest ${{ matrix.image }}
+        needs: build
+        runs-on: ubuntu-24.04
+        timeout-minutes: 10
+        permissions:
+            contents: read
+            packages: write
+        strategy:
+            fail-fast: false
+            matrix:
+                image: [selfhost, web, ingest, collector]
+        steps:
+            - name: Resolve image name + tag
+              id: meta
+              env:
+                  SOURCE: ${{ inputs.source }}
+                  FLAVOR: ${{ inputs.flavor }}
+                  IMAGE: ${{ matrix.image }}
+              run: |
+                  set -euo pipefail
+                  tag=${SOURCE:0:8}
+                  case "$IMAGE" in
+                    selfhost) repo=maple-selfhost ;;
+                    web) repo=maple-web; tag="$tag-$FLAVOR" ;;
+                    ingest) repo=maple-ingest ;;
+                    collector) repo=maple-otel-collector-selfhost ;;
+                  esac
+                  echo "name=ghcr.io/nevrlabs/$repo" >> "$GITHUB_OUTPUT"
+                  echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+            - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+              with:
+                  pattern: digests-${{ matrix.image }}-*
+                  path: ${{ runner.temp }}/digests
+                  merge-multiple: true
+
+            - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+            - name: Log in to GHCR
+              uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+              with:
+                  registry: ghcr.io
+                  username: ${{ github.actor }}
+                  password: ${{ secrets.GITHUB_TOKEN }}
+
+            - name: Create manifest list
+              env:
+                  NAME: ${{ steps.meta.outputs.name }}
+                  TAG: ${{ steps.meta.outputs.tag }}
+                  REPO: ${{ github.repository }}
+              working-directory: ${{ runner.temp }}/digests
+              run: |
+                  set -euo pipefail
+                  [ "$(ls | wc -l)" -eq 2 ] || { echo "::error::expected 2 digests, got $(ls)"; exit 1; }
+                  docker buildx imagetools create -t "$NAME:$TAG" \
+                    --annotation "index:org.opencontainers.image.source=https://github.com/$REPO" \
+                    $(printf "$NAME@sha256:%s " *)
+                  docker buildx imagetools inspect "$NAME:$TAG" | tee -a "$GITHUB_STEP_SUMMARY"

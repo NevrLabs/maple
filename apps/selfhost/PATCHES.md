@@ -396,3 +396,16 @@ query-engine-integrations SQL baseline, `setup-audit.clickhouse.e2e.test.ts`, Ci
 dataset when Cloudflare allows it; stale errors cleared on a valid connection; CFG-INTEG-02 lists
 unavailable datasets while available datasets with real errors still fail. No plan-name checks.
 **Verify after rebase:** CloudflareAnalyticsService + SetupAuditService tests, domain CFG-INTEG-02 tests.
+
+## Noovoleum images
+
+**Why:** the Noovoleum host `clickhouse-monitoring-prod-1` is arm64; `apps/selfhost/dev/build-images.sh` builds
+amd64 only, on fxcompute. **Change:** branch `noovoleum-images` adds `.github/workflows/selfhost-images.yml`
+(no upstream file touched). `workflow_dispatch` inputs `source` (full SHA) and `flavor` (`noovoleum`). It
+reproduces build-images.sh's bundles, flags and Dockerfiles per image x arch on native hosted runners
+(`ubuntu-24.04` / `ubuntu-24.04-arm`), pushes by digest, then joins each pair into a manifest list:
+`ghcr.io/nevrlabs/maple-selfhost:<sha8>`, `maple-ingest:<sha8>`, `maple-otel-collector-selfhost:<sha8>`,
+`maple-web:<sha8>-<flavor>`. Flavor `noovoleum` = OIDC "Noovoleum SSO", lab/replay/capture off, ingest
+`http://10.100.1.68:3474`; the web job fails if the bundle lacks the OIDC label/`oidc-start` or contains
+`192.168.`. Electric comes from the existing `publish-electric-image.yml` (`ghcr.io/nevrlabs/maple/electric`).
+**Verify:** `docker buildx imagetools inspect <image>:<tag>` lists linux/amd64 + linux/arm64.
