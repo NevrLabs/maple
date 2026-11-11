@@ -9,7 +9,7 @@ import {
 	clickhouseE2eEnabled,
 	clickhouseExec,
 	uniqueDatabase,
-} from "./clickhouse-e2e-support"
+} from "../../testing/clickhouse-e2e-support"
 
 const database = uniqueDatabase("maple_audit_e2e")
 const orgId = OrgId.make("org_audit")
