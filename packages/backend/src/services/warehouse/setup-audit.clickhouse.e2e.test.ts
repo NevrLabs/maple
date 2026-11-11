@@ -2,7 +2,7 @@
 import { afterAll, assert, beforeAll, describe, it } from "@effect/vitest"
 import { compileUnsafe } from "@maple-dev/effect-orm/clickhouse"
 import { Effect } from "effect"
-import { OrgId } from "@maple/domain/primitives"
+import { OrgId } from "@maple/primitives"
 import { auditNativeSpanProfileByServiceQuery, auditOrphanSpansSQL } from "@maple/query-engine-integrations"
 import {
 	applyRealMigrations,
