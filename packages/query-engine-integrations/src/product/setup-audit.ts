@@ -7,9 +7,9 @@
 //     call order, and mixing Float64 quotients into otherwise-integer result sets is how UNION type
 //     unification breaks; returning counts sidesteps both, and `nan`/`ifNotFinite` handling with it.
 //  2. **Pre-aggregated MVs over raw scans.** Only `auditLogCorrelationQuery`,
-//     `auditRootlessTracesSQL`, `auditServiceResourceKeysQuery` and the follow-ups (key attribution,
-//     per-metric labels, inbound routes, uncorrelated log messages) touch a raw table, each reading a
-//     few narrow columns over a hard-clamped window; only the message follow-up reads a log `Body`. Attribute *values* are never scanned org-wide: a `Map` re-read at that
+//     `auditRootlessTracesSQL`, `auditOrphanSpansSQL` (parent identities), `auditServiceResourceKeysQuery`
+//     and the follow-ups (key attribution, per-metric labels, inbound routes, uncorrelated log messages)
+//     touch a raw table, each reading a few narrow columns over a hard-clamped window; only the message follow-up reads a log `Body`. Attribute *values* are never scanned org-wide: a `Map` re-read at that
 //     scale is what previously exhausted query memory.
 //
 // Every builder filters `OrgId` (enforced at execution) and every count/sum/uniq column needs
@@ -890,10 +890,8 @@ export function auditUncorrelatedLogMessagesQuery(serviceNames: Arr.NonEmptyRead
 		.format("JSON")
 }
 
-// The orphan join mirrors the service-map edge join, which is the same join over the same two tables
-// and the same window size that `ServiceMapRollupService` already runs once per org per hour in
-// production. The rootless join reads raw `traces` over the same two hours, narrow columns only, so
-// trace sampling bounds its hash side but not its scan. Do not widen either window, and never put
+// Both joins read raw `traces` for the trace side over the same two hours, narrow columns only, so
+// trace sampling bounds their hash side but not their scan. Do not widen either window, and never put
 // them on a dashboard-polled path.
 //
 // What they can and cannot say: the warehouse only ever sees what arrived, so neither query can
@@ -967,14 +965,15 @@ const rootIndex = (modulus: number) =>
 /**
  * Entry-point spans (Server/Consumer) whose parent span never arrived.
  *
- * `service_map_children` holds Server/Consumer spans that declare a parent; `service_map_spans` holds
- * Client/Producer/Server/Consumer spans. A LEFT JOIN — not ANTI — so one pass yields both the
+ * `service_map_children` holds Server/Consumer spans that declare a parent. Parent existence is a
+ * property of every span kind: an `Internal` parent is a real parent, and the trace renders whole, so
+ * the parent side reads raw `traces` rather than `service_map_spans` (which keeps only
+ * Client/Producer/Server/Consumer). `(TraceId, SpanId)` identities are deduplicated so a re-exported
+ * parent cannot multiply its children. A LEFT JOIN — not ANTI — so one pass yields both the
  * denominator and the numerator; with `join_use_nulls = 0` a miss surfaces as an empty `p.SpanId`.
  *
- * Two causes produce an orphan, and both are worth fixing: the caller's span genuinely never arrived
- * (dropped export or broken context propagation), or the caller modeled its outbound call as an
- * `Internal` span, which `service_map_spans` excludes — and which is separately why that call draws
- * no edge on the service map.
+ * An orphan therefore means the caller's span genuinely never arrived (dropped export or broken
+ * context propagation).
  *
  * `sampledOrphanCount` splits out orphans inside sampling-marked traces, where a dropped parent is
  * expected rather than a defect; the caller reports those as a sampling observation instead.
@@ -1003,7 +1002,7 @@ export function auditOrphanSpansSQL(
 			modulusFilter($.TraceId, modulus),
 		])
 
-	const parents = from(Datasources.serviceMapSpans)
+	const parents = from(Datasources.traces)
 		.select(($) => ({ TraceId: $.TraceId, SpanId: $.SpanId }))
 		.where(($) => [
 			$.OrgId.eq(orgIdParam),
@@ -1011,6 +1010,7 @@ export function auditOrphanSpansSQL(
 			$.Timestamp.lt(utcSecondsParam("childEnd")),
 			modulusFilter($.TraceId, modulus),
 		])
+		.groupBy("TraceId", "SpanId")
 
 	const query = fromQuery(children, "c")
 		.leftJoinQuery(parents, "p", (c, p) => c.TraceId.eq(p.TraceId).and(c.ParentSpanId.eq(p.SpanId)))
