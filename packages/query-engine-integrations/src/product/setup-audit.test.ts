@@ -335,7 +335,7 @@ describe("trace-completeness joins", () => {
 		expect(sql).toContain("FROM service_map_children")
 		// oxlint-disable-next-line test-slop/no-sql-text-pin -- an inner join would count no orphans
 		expect(sql).toContain("LEFT JOIN")
-		expect(sql).toContain("FROM service_map_spans")
+		expect(sql).toContain("FROM traces\n")
 		expect(sql).toContain("ON (c.TraceId = p.TraceId AND c.ParentSpanId = p.SpanId)")
 		// join_use_nulls = 0 makes a miss an empty string, not NULL.
 		expect(sql).toContain("countIf(p.SpanId = '')")

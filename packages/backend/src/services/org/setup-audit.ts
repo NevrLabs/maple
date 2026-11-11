@@ -2520,7 +2520,7 @@ const traceCompletenessChecks: ReadonlyArray<AuditCheck> = [
 		severity: "warn",
 		needsWarehouse: true,
 		fixHint:
-			"Either the caller's span never arrived (check its exporter and that `traceparent` survives the hop), or the caller modeled the outbound call as an `Internal` span — which also hides that call from the service map.",
+			"The caller's span never arrived: check its exporter, that it flushes before the process exits, and that `traceparent` survives the hop.",
 		evaluate: ({ warehouse }) => {
 			const traces = warehouse?.traceCompleteness
 			if (!traces) return PASS

@@ -4793,12 +4793,13 @@ SELECT
           AND service_map_children.Timestamp < '2026-01-03 14:15:00'
           AND service_map_children.ParentSpanId != '') AS c
         LEFT JOIN (SELECT
-          service_map_spans.TraceId AS TraceId,
-          service_map_spans.SpanId AS SpanId
-        FROM service_map_spans
-        WHERE service_map_spans.OrgId = 'org_sql_catalog'
-          AND service_map_spans.Timestamp >= '2026-01-01 08:30:00'
-          AND service_map_spans.Timestamp < '2026-01-03 14:15:00') AS p ON (c.TraceId = p.TraceId AND c.ParentSpanId = p.SpanId)
+          traces.TraceId AS TraceId,
+          traces.SpanId AS SpanId
+        FROM traces
+        WHERE traces.OrgId = 'org_sql_catalog'
+          AND traces.Timestamp >= '2026-01-01 08:30:00'
+          AND traces.Timestamp < '2026-01-03 14:15:00'
+        GROUP BY TraceId, SpanId) AS p ON (c.TraceId = p.TraceId AND c.ParentSpanId = p.SpanId)
         LEFT JOIN (SELECT
           trace_list_mv.TraceId AS TraceId
         FROM trace_list_mv
