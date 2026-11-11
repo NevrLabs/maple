@@ -393,15 +393,32 @@ const PASS: AuditEvaluation = { status: "pass" }
 // NevrLabs selfhost (PATCHES #16): the hourly shape rollup discards ScopeName, so all-span counts
 // mix synthetic uptime probes into application telemetry. The native shape (uptime scopes excluded)
 // is authoritative wherever a check reads span shape or entry points; a service whose spans are all
-// synthetic passes instead of failing.
-const nativeSpanProfiles = (warehouse: WarehouseAuditInputs) => {
+// synthetic passes instead of failing. The helpers take narrow structural inputs so upstream's
+// narrow-typed helpers (classifyLogCorrelation) can call them.
+const nativeSpanProfiles = (warehouse: Pick<WarehouseAuditInputs, "spanShape" | "nativeSpanShape">) => {
 	if (warehouse.nativeSpanShape === undefined) return warehouse.spanShape
 	const native = new Map(warehouse.nativeSpanShape.map((s) => [s.serviceName, s]))
-	return warehouse.spanShape.map((s) => native.get(s.serviceName) ?? s)
+	// Native counts replace the all-span counts; root-span name/kind notes keep the all-span row.
+	return warehouse.spanShape.map((s) => {
+		const n = native.get(s.serviceName)
+		return n === undefined
+			? s
+			: {
+					...s,
+					spanCount: n.spanCount,
+					errorCount: n.errorCount,
+					serverCount: n.serverCount,
+					consumerCount: n.consumerCount,
+				}
+	})
 }
-const hasNativeSpans = (warehouse: WarehouseAuditInputs, serviceName: string) =>
-	warehouse.nativeSpanShape?.find((s) => s.serviceName === serviceName)?.spanCount !== 0
-const nativeAuditPass = (warehouse: WarehouseAuditInputs): AuditEvaluation =>
+const hasNativeSpans = (
+	warehouse: { readonly nativeSpanShape?: WarehouseAuditInputs["nativeSpanShape"] },
+	serviceName: string,
+) => warehouse.nativeSpanShape?.find((s) => s.serviceName === serviceName)?.spanCount !== 0
+const nativeAuditPass = (
+	warehouse: { readonly nativeSpanShape?: WarehouseAuditInputs["nativeSpanShape"] },
+): AuditEvaluation =>
 	warehouse.nativeSpanShape?.some((s) => s.spanCount === 0)
 		? {
 				status: "pass",
