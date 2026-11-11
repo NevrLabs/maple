@@ -30,7 +30,7 @@ jobs:
             - name: Install (lockfile regenerating)
               run: bun install
 
-            - uses: actions/upload-artifact@ea165f8d65b73e78b56c8285be539f88c9a3bb32 # v4
+            - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
               if: always()
               with:
                   name: bun-lock
