@@ -296,6 +296,20 @@
         "vitest": "catalog:",
       },
     },
+    "apps/selfhost": {
+      "name": "@maple/selfhost",
+      "dependencies": {
+        "@alchemy.run/cloudflare": "catalog:alchemy",
+        "@maple/alerting": "workspace:*",
+        "@maple/api": "workspace:*",
+        "@maple/backend": "workspace:*",
+        "@maple/db": "workspace:*",
+        "@maple/domain": "workspace:*",
+        "@maple/infra": "workspace:*",
+        "alchemy": "catalog:alchemy",
+        "effect": "catalog:effect",
+      },
+    },
     "apps/status": {
       "name": "@maple/status",
       "dependencies": {
@@ -1626,6 +1640,8 @@
     "@maple/sdk-core": ["@maple/sdk-core@workspace:packages/sdk-core"],
 
     "@maple/security-audit": ["@maple/security-audit@workspace:packages/security-audit"],
+
+    "@maple/selfhost": ["@maple/selfhost@workspace:apps/selfhost"],
 
     "@maple/status": ["@maple/status@workspace:apps/status"],
 
