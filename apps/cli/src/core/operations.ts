@@ -11,7 +11,8 @@
 // renderers never learn which backend answered.
 
 import { Clock, DateTime, Effect, Option, References, Schema, Array as Arr, String as Str } from "effect"
-import { CH, computeBucketSecondsForRange, type TracesMetric } from "@maple/query-engine"
+import { CH, computeBucketSecondsForRange } from "@maple/query-engine"
+import { type TracesMetric } from "@maple/domain/query-engine"
 import { prepareRawSql } from "@maple/query-engine/runtime"
 import {
 	type SqlQueryOptions,
@@ -24,6 +25,7 @@ import {
 	diagnoseService as obsDiagnoseService,
 	searchLogs as obsSearchLogs,
 	mineLogPatterns as obsMineLogPatterns,
+	compareLogPatterns as obsCompareLogPatterns,
 	exploreAttributeKeys as obsAttributeKeys,
 	exploreAttributeValues as obsAttributeValues,
 	serviceMap as obsServiceMap,
@@ -36,7 +38,7 @@ import {
 } from "@maple/query-engine/observability"
 import { MetricType } from "@maple/domain"
 import type { WarehouseQueryName } from "@maple/domain/warehouse-queries"
-import type { ListMetricsOutput } from "@maple/domain/tinybird"
+import type { ListMetricsRow as ListMetricsOutput } from "@maple/query-engine/ch"
 import { executeLocalQuery } from "@maple/query-engine/local"
 import {
 	fingerprintSql,
@@ -403,6 +405,16 @@ export const mineLogPatterns = (p: {
 			p.environment === undefined ? RemoteMcp.mineLogPatterns(mcp, p) : Remote.mineLogPatterns(v2, p),
 		"list_logs",
 	)
+
+export const compareLogPatterns = (p: {
+	before: Range
+	after: Range
+	service?: string
+	severity?: string
+	search?: string
+	environment?: string
+	limit?: number
+}) => dispatch(obsCompareLogPatterns(p), ({ mcp }) => RemoteMcp.compareLogPatterns(mcp, p), "list_logs")
 
 export const findSlowTraces = (p: { range: Range; service?: string; environment?: string; limit?: number }) =>
 	dispatch(

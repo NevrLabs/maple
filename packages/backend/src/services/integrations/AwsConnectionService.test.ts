@@ -2,8 +2,8 @@ import { afterEach, assert, describe, it } from "@effect/vitest"
 import { ConfigProvider, Effect, Layer, Schema, Array as Arr, String as Str } from "effect"
 import { TestClock } from "effect/testing"
 import { HttpClient } from "effect/http"
-import { hashIngestKey } from "@maple/db"
-import { AwsAccountId, AwsRegion, OrgId, UserId } from "@maple/domain/primitives"
+import { hashIngestKey } from "../../platform/credential-tokens"
+import { AwsAccountId, AwsRegion, OrgId, UserId } from "@maple/primitives"
 import { Env } from "@maple/backend/platform/Env"
 import {
 	cleanupTestDbs,
@@ -11,7 +11,7 @@ import {
 	executeSql,
 	queryFirstRow,
 	type TestDb,
-} from "@maple/backend/platform/test-pglite"
+} from "@maple/backend/testing/test-pglite"
 import { AwsConnectionService } from "./AwsConnectionService"
 import { MAPLE_TEST_OIDC_KEY, makeFakeAws, OTHER_TEST_OIDC_KEY, type FakeAws } from "./aws/fake-aws"
 
@@ -314,6 +314,35 @@ describe("AwsConnectionService", () => {
 				yield* streamSecretHash(created.id),
 				hashIngestKey(again, "maple-test-lookup-secret"),
 			)
+		}).pipe(Effect.provide(makeLayer(testDb, aws)))
+	})
+
+	it.effect("refuses a stored stream secret that is not in the v2 envelope", () => {
+		const testDb = createTestDb(trackedDbs)
+		const aws = makeFakeAws()
+		const region = Schema.decodeSync(AwsRegion)("us-east-1")
+		return Effect.gen(function* () {
+			const service = yield* AwsConnectionService
+			const created = yield* service.create(orgId, userId, {
+				accountId: account,
+				modules: [],
+				metricStream: { regions: [region], namespaces: ["AWS/Lambda"] },
+			})
+			const stored = {
+				ciphertext: Buffer.from("old").toString("base64"),
+				iv: Buffer.alloc(12, 1).toString("base64"),
+				tag: Buffer.alloc(16, 2).toString("base64"),
+			}
+			yield* Effect.promise(() =>
+				executeSql(
+					testDb,
+					`UPDATE aws_connections SET stream_secret_ciphertext = $1, stream_secret_iv = $2,
+					 stream_secret_tag = $3 WHERE id = $4`,
+					[stored.ciphertext, stored.iv, stored.tag, created.id],
+				),
+			)
+			const error = yield* service.setup(orgId, created.id).pipe(Effect.flip)
+			assert.strictEqual(error.message, "Failed to decrypt the AWS stream secret")
 		}).pipe(Effect.provide(makeLayer(testDb, aws)))
 	})
 

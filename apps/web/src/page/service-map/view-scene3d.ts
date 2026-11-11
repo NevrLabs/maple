@@ -1,5 +1,6 @@
-import { liveTopology } from "../../components/service-map/three/live-topology"
-import { mapPalette, paperBackground } from "../../components/service-map/three/palette"
+import { encodeJson } from "@maple/views/data/request-key"
+import { liveTopology } from "./three/live-topology"
+import { mapPalette, paperBackground } from "./three/palette"
 import {
 	connectedIds,
 	type District,
@@ -7,10 +8,10 @@ import {
 	formatRate,
 	HEALTH_COLOR,
 	HEALTH_LABEL,
-} from "../../components/service-map/three/spatial-layout"
-import type { Edge3D, Topology3D } from "../../components/service-map/three/types"
+} from "./three/spatial-layout"
+import type { Edge3D, Topology3D } from "./three/types"
 import type { WorldEntity } from "@maple/domain/http"
-import { Option, Schema, Array as Arr } from "effect"
+import { Option, Array as Arr } from "effect"
 import { Mount } from "foldkit"
 import type { Html, HtmlBuilder } from "foldkit/html"
 import type * as ServiceMap from "@maple/views/service-map/map/service-map"
@@ -39,8 +40,6 @@ import { hstack, vstack } from "@maple/views/ui/stack"
 import { layer } from "@maple/views/ui/layer"
 import { typography } from "@maple/views/ui/typography"
 import { stripClass } from "@maple/views/ui/rule"
-
-const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown))
 
 // The 3D viewport: the perspective bar, the
 // paper section with the canvas wrappers, the timber sign labels, the HUD, legend and camera
@@ -84,7 +83,7 @@ export type Scene3dOptions<M> = Readonly<{
 	toMessage: (message: Message) => M
 }>
 
-/** `ServiceMap3DViewport`'s props: a fixed topology, as the 3D lab passes it with `sample`. */
+/** The viewport's options: a fixed topology, as the 3D lab passes it with `sample`. */
 export type ViewportOptions<M> = Readonly<{
 	model: Model
 	topology: Topology3D
@@ -96,7 +95,7 @@ export type ViewportOptions<M> = Readonly<{
 
 type Palette = ReturnType<typeof mapPalette>
 
-/** `topology` as `LiveServiceMap3D` builds it from the effective graph and its dimming. */
+/** The 3D topology from the map's effective graph and its dimming. */
 export const topologyOf = (map: ServiceMap.Model): Topology3D =>
 	liveTopology(
 		map.graph.nodes,
@@ -190,7 +189,7 @@ const nodeLabels = <M>(
 				onClick: toMessage(Message.PickedNode({ nodeId: isSelected ? null : node.id })),
 				isSelected,
 				label: `Select ${node.label}${badge ? `, ${badge.label}` : ""}`,
-				className: `pointer-events-auto absolute top-0 left-0 flex max-w-40 border font-mono text-4xs leading-normal whitespace-nowrap transition-colors focus-visible:outline-2 focus-visible:outline-ring focus-visible:ring-0 ${SIGN_CLASS} ${isSelected ? "border-current" : "border-current/60 hover:border-current active:border-current"}`,
+				className: `pointer-events-auto absolute top-0 left-0 flex max-w-40 border font-mono text-4xs leading-normal whitespace-nowrap focus-visible:outline-2 focus-visible:outline-ring focus-visible:ring-0 ${SIGN_CLASS} ${isSelected ? "border-current" : "border-current/60 hover:border-current active:border-current"}`,
 				attributes: [
 					h.Key(node.id),
 					h.Attribute(LABEL, node.id),
@@ -261,14 +260,16 @@ const districtPlanks = <M>(
 			[
 				h.Key(`${perspective}:${district.id}`),
 				h.Attribute(LABEL, `district:${district.id}`),
-				h.Class(`absolute top-0 left-0 font-mono text-4xs uppercase tracking-widest ${PLANK_CLASS}`),
+				h.Class(
+					`absolute top-0 left-0 font-mono text-4xs uppercase tracking-overline ${PLANK_CLASS}`,
+				),
 				h.Style({ visibility: "hidden", "background-color": palette.trunk, color: palette.tape }),
 			],
 			[district.label],
 		),
 	)
 
-/** R3F's `<Canvas style={{ position: "absolute", inset: 0 }}>`: two wrapper divs and the canvas. */
+/** Two wrapper divs and the canvas: `startScene` sizes to the inner one and listens on the outer. */
 const canvas = <M>(
 	h: HtmlBuilder<M>,
 	input: {
@@ -387,7 +388,7 @@ export const scene3dView = <M>(h: HtmlBuilder<M>, { model, map, toMessage }: Sce
 		toMessage,
 	})
 
-/** `ServiceMap3DViewport` over any topology. */
+/** The viewport over any topology. */
 export const viewportView = <M>(h: HtmlBuilder<M>, options: ViewportOptions<M>): Html => {
 	const { model, topology, selectedId, toMessage } = options
 	const isDark = model.isDark ?? true
@@ -494,7 +495,7 @@ export const viewportView = <M>(h: HtmlBuilder<M>, options: ViewportOptions<M>):
 									? `${related?.size ?? 0} connected nodes · click the canvas to clear`
 									: options.sample === true
 										? "Narrow belts · calls / Wide belts · queues · sample traffic"
-										: "Rates from selected time range · ~ sampled estimate",
+										: "Rates over this window · ~ sampled estimate",
 							],
 						),
 						...Arr.map(["healthy", "elevated", "degraded"] as const, (status) =>

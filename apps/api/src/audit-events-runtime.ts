@@ -1,11 +1,11 @@
 import { EdgeCacheServiceLive } from "@maple/backend/platform/CacheBackendLive"
 import type { Message } from "@cloudflare/workers-types"
-import type { OrgId } from "@maple/domain/primitives"
+import type { OrgId } from "@maple/primitives"
 import { Cause, Clock, Effect, Layer, Array as Arr } from "effect"
 import { summarizeCause } from "@maple/backend/platform/describe-cause"
 import { EventBaseLive } from "@maple/backend/platform/DatabasePgLive"
 import type { QueueBatch } from "@maple/backend/platform/queue-batch"
-import { systemTenant } from "@maple/backend/services/alerts/system-tenant"
+import { ALERTING_SYSTEM_USER_ID, systemTenant } from "@maple/backend/services/auth/system-tenant"
 import { AUDIT_LOG_DATASOURCE } from "@maple/backend/services/audit/AuditLogService"
 import { WarehouseQueryService } from "@maple/backend/services/warehouse/WarehouseQueryService"
 import {
@@ -24,14 +24,6 @@ import {
 export const AuditEventsLive = WarehouseQueryService.layer.pipe(
 	Layer.provide(Layer.mergeAll(EventBaseLive, EdgeCacheServiceLive)),
 )
-
-/**
- * Must match `maxRetries` on the audit-events consumer in `worker.ts`.
- * Cloudflare routes the message to the DLQ after this many retries without
- * telling us; the check below is what makes the hand-off visible in logs at
- * the moment it happens.
- */
-const AUDIT_EVENTS_MAX_RETRIES = 5
 
 /**
  * Best-effort identity for the exhaustion log. The body reached us as queue
@@ -53,11 +45,11 @@ interface DecodedMessage {
 }
 
 /**
- * Retrying past the limit is what hands the message to the DLQ; acking there
- * would silently discard it instead.
+ * Retrying past the consumer's `maxRetries` is what hands the message to the DLQ;
+ * acking there would silently discard it. The log makes that silent hand-off visible.
  */
-const retryOrExhaust = (message: Message, cause: unknown) => {
-	const isFinalAttempt = message.attempts > AUDIT_EVENTS_MAX_RETRIES
+const retryOrExhaust = (message: Message, cause: unknown, maxRetries: number) => {
+	const isFinalAttempt = message.attempts > maxRetries
 	return Effect.annotateCurrentSpan({
 		"maple.audit.queue.message_outcome": isFinalAttempt ? "exhausted_dlq" : "retry",
 	}).pipe(
@@ -86,7 +78,10 @@ const retryOrExhaust = (message: Message, cause: unknown) => {
  * time; write failures retry through the queue's policy and, once exhausted,
  * land in `audit-events-dlq` rather than disappearing.
  */
-export const processAuditEventsBatch = Effect.fn("AuditEvents.processBatch")(function* (batch: QueueBatch) {
+export const processAuditEventsBatch = Effect.fn("AuditEvents.processBatch")(function* (
+	batch: QueueBatch,
+	maxRetries: number,
+) {
 	const warehouse = yield* WarehouseQueryService
 	const now = yield* Clock.currentTimeMillis
 
@@ -121,7 +116,7 @@ export const processAuditEventsBatch = Effect.fn("AuditEvents.processBatch")(fun
 		([orgId, group]) =>
 			warehouse
 				.ingest(
-					systemTenant(orgId),
+					systemTenant(orgId, ALERTING_SYSTEM_USER_ID),
 					AUDIT_LOG_DATASOURCE,
 					Arr.map(group, ({ event }) => auditEventToRow(event, now)),
 				)
@@ -144,7 +139,8 @@ export const processAuditEventsBatch = Effect.fn("AuditEvents.processBatch")(fun
 							? Effect.interrupt
 							: Effect.forEach(
 									group,
-									({ message }) => retryOrExhaust(message, summarizeCause(cause)),
+									({ message }) =>
+										retryOrExhaust(message, summarizeCause(cause), maxRetries),
 									{
 										discard: true,
 									},

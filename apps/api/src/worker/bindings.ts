@@ -8,22 +8,22 @@
  */
 import { StatusPageStore } from "@maple/backend/services/status-pages/StatusPageStore"
 import { StatusSnapshotsBucket, StatusSnapshotsKv } from "@maple/infra/cloudflare"
-import { MapleDb } from "@maple/infra/cloudflare"
+import { AuditEventsQueue, MapleDb, ReplayBlobs } from "@maple/infra/cloudflare"
 import * as Cloudflare from "@alchemy.run/cloudflare"
-import { dischargeRuntimeContext } from "@maple/backend/platform/alchemy-runtime"
+import { dischargeRuntimeContext } from "@maple/infra/worker-runtime"
 import { Effect, Layer, Option } from "effect"
 import {
 	ApiV2RateLimit,
 	AuditEventsQueueProducer,
 	CancellationReviewQueueProducer,
 	CliAuthRateLimit,
+	DataSourceDevelopmentCallLimit,
+	DataSourceProductionCallLimit,
 	EmailSender,
 	McpOAuthRateLimit,
 	type ObjectStore,
 	ObjectStoreError,
 	PlanetScaleWebhookQueueProducer,
-	type QueueProducer,
-	QueueSendError,
 	RateLimitBindingError,
 	type RateLimiter,
 	ReplayBlobBucket,
@@ -37,7 +37,9 @@ import {
 import { bindChatSessions, layerChatSessions } from "@maple/backend/platform/chat-sessions"
 import { bindEmailSender } from "@maple/backend/platform/email-sender"
 import { envPorts } from "@maple/backend/platform/env-ports"
+import { queueProducer } from "@maple/backend/platform/queue-producer"
 import { layerMapleDbConnection } from "@maple/backend/platform/pg-connection-source"
+import { DATA_SOURCE_CALL_LIMITS } from "@maple/backend/services/data-sources/DataSourceCallBudgetLive"
 import {
 	API_V2_RATE_LIMIT_PERIOD_SECONDS,
 	API_V2_RATE_LIMIT_REQUESTS,
@@ -47,13 +49,11 @@ import {
 	SHARE_LINK_RATE_LIMIT_REQUESTS,
 } from "@maple/backend/services/auth/ShareRateLimiter"
 import {
-	AuditEventsQueue,
 	CancellationReviewsQueue,
 	PlanetScaleWebhookQueue,
 	VcsBackfillQueue,
 	VcsSyncQueue,
 } from "../resources/queues"
-import { ReplayBlobs } from "../resources/replay-blobs"
 
 /**
  * The clients the init obtains. Each `yield*` binds its resource to the
@@ -89,6 +89,16 @@ export const bindApiClients = Effect.gen(function* () {
 			namespaceId: 2026072102,
 			simple: { limit: 60, period: 60 },
 		}),
+		// Maple's share of each connected Clerk instance's API limit, keyed by data source id.
+		// Shared by every worker that queries sources, so the namespace ids must match across them.
+		dataSourceProductionCallLimit: yield* Cloudflare.RateLimit("DATA_SOURCE_PRODUCTION_CALL_LIMITER", {
+			namespaceId: 2026110801,
+			simple: DATA_SOURCE_CALL_LIMITS.production,
+		}),
+		dataSourceDevelopmentCallLimit: yield* Cloudflare.RateLimit("DATA_SOURCE_DEVELOPMENT_CALL_LIMITER", {
+			namespaceId: 2026110802,
+			simple: DATA_SOURCE_CALL_LIMITS.development,
+		}),
 		// `send_email`, prd only.
 		email: yield* bindEmailSender,
 		// maple-ai's chat Durable Object, cross-script.
@@ -108,27 +118,6 @@ export const ApiBindingsLive = Layer.mergeAll(
 	Cloudflare.Workers.RateLimitBinding,
 	Cloudflare.Email.SendBinding,
 )
-
-/**
- * A producer over the raw queue handle rather than alchemy's `send`: the
- * client's option type omits `delaySeconds`, which the VCS producer needs to
- * park a rate-limited continuation until the provider's budget is back.
- */
-const producer = (client: Cloudflare.Queues.WriteQueueClient): QueueProducer => ({
-	sendBatch: (messages) =>
-		dischargeRuntimeContext(client.raw).pipe(
-			Effect.flatMap((queue) =>
-				Effect.tryPromise({
-					try: () => queue.sendBatch(messages),
-					catch: (cause) =>
-						new QueueSendError({
-							message: cause instanceof Error ? cause.message : "queue sendBatch failed",
-							cause,
-						}),
-				}),
-			),
-		),
-})
 
 const limiter = (client: Cloudflare.Workers.RateLimitClient): RateLimiter => ({
 	limit: (key) =>
@@ -185,15 +174,17 @@ export const apiPorts = (
 	env: Record<string, unknown>,
 ) =>
 	Layer.mergeAll(
-		Layer.succeed(VcsSyncQueueProducer, producer(clients.vcsSync)),
-		Layer.succeed(VcsBackfillQueueProducer, producer(clients.vcsBackfill)),
-		Layer.succeed(PlanetScaleWebhookQueueProducer, producer(clients.planetScaleWebhooks)),
-		Layer.succeed(AuditEventsQueueProducer, producer(clients.auditEvents)),
-		Layer.succeed(CancellationReviewQueueProducer, producer(clients.cancellationReviews)),
+		Layer.succeed(VcsSyncQueueProducer, queueProducer(clients.vcsSync)),
+		Layer.succeed(VcsBackfillQueueProducer, queueProducer(clients.vcsBackfill)),
+		Layer.succeed(PlanetScaleWebhookQueueProducer, queueProducer(clients.planetScaleWebhooks)),
+		Layer.succeed(AuditEventsQueueProducer, queueProducer(clients.auditEvents)),
+		Layer.succeed(CancellationReviewQueueProducer, queueProducer(clients.cancellationReviews)),
 		Layer.succeed(ApiV2RateLimit, limiter(clients.apiV2RateLimit)),
 		Layer.succeed(ShareLinkRateLimit, limiter(clients.shareLinkRateLimit)),
 		Layer.succeed(CliAuthRateLimit, limiter(clients.cliAuthRateLimit)),
 		Layer.succeed(McpOAuthRateLimit, limiter(clients.mcpOAuthRateLimit)),
+		Layer.succeed(DataSourceProductionCallLimit, limiter(clients.dataSourceProductionCallLimit)),
+		Layer.succeed(DataSourceDevelopmentCallLimit, limiter(clients.dataSourceDevelopmentCallLimit)),
 		Layer.succeed(ReplayBlobBucket, objectStore(clients.replayBlobs)),
 		Layer.unwrap(
 			dischargeRuntimeContext(Effect.all([clients.statusKv.raw, clients.statusBucket.raw])).pipe(

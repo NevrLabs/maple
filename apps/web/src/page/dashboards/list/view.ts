@@ -20,8 +20,6 @@ import { snapshotBanner } from "../kit/live-sync"
 import { String as Str } from "effect"
 import { hstack } from "@maple/views/ui/stack"
 
-// The dashboards list page: `PageShell` around the list.
-
 type H = HtmlBuilder<Message>
 
 /** A disabled write control says why on hover: a disabled button gets no pointer events itself. */
@@ -111,8 +109,10 @@ const actions = (h: H, reason: string | null): Html =>
 		}),
 	])
 
-/** Pinned with the header: it explains the disabled buttons above it. When the list failed too,
- * its error state already explains the outage, so the banner is dropped. */
+/**
+ * Pinned with the header: it explains the disabled buttons above it. When the list failed too, its
+ * error state already explains the outage, so the banner is dropped.
+ */
 const persistenceBanner = (h: H, error: string | null, isListFailed: boolean): Html | undefined => {
 	if (error === null || isListFailed) return undefined
 	const cause = UNREACHABLE.test(error)
@@ -124,7 +124,7 @@ const persistenceBanner = (h: H, error: string | null, isListFailed: boolean): H
 	])
 }
 
-/** The sync stream and the HTTP fallback both failed (`ListLoadError`). */
+/** The sync stream and the HTTP fallback both failed. */
 const LIST_LOAD_FAILURE: LoadFailure = {
 	_tag: "@maple/web/dashboards/ListLoadFailed",
 	type: "api_error",

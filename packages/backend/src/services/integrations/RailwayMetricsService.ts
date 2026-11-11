@@ -17,8 +17,9 @@ import {
 	RailwayIntegrationStatus,
 	UserId,
 } from "@maple/domain/http"
-import { pollStatus } from "@maple/domain/integration-inventory"
+import { pollStatus } from "./integration-inventory"
 import * as PG from "@maple-dev/effect-orm/postgres"
+import { leaseClaimable, leaseStillOurs } from "./lease"
 import {
 	RailwayConnections,
 	RailwayEnvironments,
@@ -27,13 +28,11 @@ import {
 } from "@maple/db/tables"
 import {
 	DateTime,
-	Cause,
 	Clock,
 	Context,
 	Duration,
 	Effect,
 	Layer,
-	Redacted,
 	Ref,
 	Schema,
 	String as Str,
@@ -41,10 +40,11 @@ import {
 	Record as Rec,
 } from "effect"
 import { FetchHttpClient, HttpClient } from "effect/http"
-import { decryptAes256Gcm, encryptAes256Gcm, parseBase64Aes256GcmKey } from "@maple/backend/platform/Crypto"
+import { openSecret, sealSecret, secretKeyringFromEnv } from "@maple/backend/platform/SecretBox"
+import { railwayTokenSlot } from "@maple/backend/platform/secret-slots"
 import { Database } from "@maple/backend/platform/DatabaseLive"
 import { makeDbExecute, makePersistenceErrorMapper } from "@maple/backend/platform/db-execute"
-import { summarizeCause } from "@maple/backend/platform/describe-cause"
+import { isolatePollFailure, pollFleet } from "./poll-fleet"
 import { Env } from "@maple/backend/platform/Env"
 import { OrgIngestKeysService } from "@maple/backend/services/org/OrgIngestKeysService"
 import {
@@ -55,7 +55,7 @@ import {
 	type PollOutcome,
 	reportPoll,
 	stampedSourceId,
-} from "@maple/backend/services/org/integration-sources"
+} from "@maple/backend/services/integrations/integration-sources"
 import { metricRowsToOtlp } from "./cloudflare-analytics/otlp"
 import { discover, fetchEnvironmentMetrics, RailwayApiError, type RailwayDiscovery } from "./railway/api"
 import { mapRailwayMetrics } from "./railway/mapping"
@@ -80,7 +80,6 @@ const DISCOVERY_TIMEOUT = Duration.seconds(60)
 const MAX_ENVIRONMENT_CALLS_PER_TICK = 15
 const RATE_LIMIT_HOLD_MS = 15 * 60_000
 const BILLING_HOLD_MS = 60 * 60_000
-const ORG_CONCURRENCY = 3
 /**
  * Connect runs the first poll inline so the page has an hour of data when it loads, instead of
  * every environment sitting at "pending" until the next cron tick. What doesn't finish in time is
@@ -104,9 +103,6 @@ const TOKEN_REJECTED_REASON = "Railway rejected the token. Reconnect Railway wit
 const toPersistenceError = makePersistenceErrorMapper(IntegrationsPersistenceError, "Railway database error")
 
 const floorToSample = (ms: number) => ms - (ms % SAMPLE_MS)
-
-/** Binds each ciphertext to its org so a row copied across orgs fails to decrypt. */
-const tokenAad = (orgId: OrgId) => Buffer.from(`railway-token:${orgId}`)
 
 const parseServices = (json: string): Readonly<Record<string, string>> =>
 	decodeServices(json).pipe((option) => (option._tag === "Some" ? option.value : {}))
@@ -175,8 +171,8 @@ export class RailwayMetricsService extends Context.Service<RailwayMetricsService
 			const env = yield* Env
 			const httpClient = yield* HttpClient.HttpClient
 			const ingestKeys = yield* OrgIngestKeysService
-			const encryptionKey = yield* parseBase64Aes256GcmKey(
-				Redacted.value(env.MAPLE_INGEST_KEY_ENCRYPTION_KEY),
+			const keyring = yield* secretKeyringFromEnv(
+				env,
 				(message) => new IntegrationsPersistenceError({ message }),
 			)
 			const ingest = yield* makeIngestSender
@@ -247,16 +243,17 @@ export class RailwayMetricsService extends Context.Service<RailwayMetricsService
 				)
 
 			const decryptToken = (connection: RailwayConnectionRow) =>
-				decryptAes256Gcm(
+				openSecret(
+					keyring,
+					railwayTokenSlot,
+					{ orgId: connection.orgId },
 					{
 						ciphertext: connection.tokenCiphertext,
 						iv: connection.tokenIv,
 						tag: connection.tokenTag,
 					},
-					encryptionKey,
 					() =>
 						new IntegrationsPersistenceError({ message: "Failed to decrypt the Railway token" }),
-					tokenAad(connection.orgId),
 				)
 
 			/** Upsert discovered environments; soft-disable the ones that disappeared. */
@@ -395,11 +392,12 @@ export class RailwayMetricsService extends Context.Service<RailwayMetricsService
 						sampleRateSeconds: SAMPLE_RATE_SECONDS,
 					}).pipe(Effect.mapError(toConnectError))
 				}
-				const encrypted = yield* encryptAes256Gcm(
+				const encrypted = yield* sealSecret(
+					keyring,
+					railwayTokenSlot,
+					{ orgId },
 					token,
-					encryptionKey,
 					(message) => new IntegrationsPersistenceError({ message }),
-					tokenAad(orgId),
 				)
 				const now = yield* Clock.currentTimeMillis
 				// A reconnect keeps the connection id and so its source.
@@ -496,12 +494,8 @@ export class RailwayMetricsService extends Context.Service<RailwayMetricsService
 							.set({ leaseUntil: now + LEASE_MS, updatedAt: now })
 							.where(($) => [
 								$.id.eq(connectionId),
-								PG.or(
-									$.leaseUntil.isNull(),
-									$.leaseUntil.lt(now),
-									// A bogus far-future lease (clock jump, crashed writer) must not wedge the org.
-									$.leaseUntil.gt(now + 2 * BILLING_HOLD_MS),
-								),
+								// A bogus far-future lease (clock jump, crashed writer) must not wedge the org.
+								leaseClaimable($.leaseUntil, now, 2 * BILLING_HOLD_MS),
 							])
 							.returning(),
 					),
@@ -520,7 +514,7 @@ export class RailwayMetricsService extends Context.Service<RailwayMetricsService
 							.set({ leaseUntil: holdUntilMs, updatedAt: now })
 							.where(($) => [
 								$.id.eq(connectionId),
-								claimedUntil === null ? $.leaseUntil.isNull() : $.leaseUntil.eq(claimedUntil),
+								leaseStillOurs($.leaseUntil, claimedUntil),
 							]),
 					),
 				)
@@ -822,29 +816,17 @@ export class RailwayMetricsService extends Context.Service<RailwayMetricsService
 							.where(($) => [$.authFailedAt.isNull()]),
 					),
 				)
-				const summaries = yield* Effect.forEach(
-					connections,
-					(row) =>
-						pollOrg(decodeOrgId(row.orgId)).pipe(
-							Effect.catchCause((cause) =>
-								Cause.hasInterruptsOnly(cause)
-									? Effect.interrupt
-									: Effect.logWarning("railway org poll failed", {
-											orgId: row.orgId,
-											error: summarizeCause(cause),
-										}).pipe(
-											Effect.as<RailwayPollOrgSummary>({
-												orgId: decodeOrgId(row.orgId),
-												skipped: "org poll failed",
-												callsMade: 0,
-												rowsIngested: 0,
-												failures: 1,
-											}),
-										),
-							),
-						),
-					{ concurrency: ORG_CONCURRENCY },
-				)
+				const summaries = yield* pollFleet(connections, (row) => pollOrg(decodeOrgId(row.orgId)), {
+					message: "railway org poll failed",
+					annotations: (row) => ({ orgId: row.orgId }),
+					fallback: (row): RailwayPollOrgSummary => ({
+						orgId: decodeOrgId(row.orgId),
+						skipped: "org poll failed",
+						callsMade: 0,
+						rowsIngested: 0,
+						failures: 1,
+					}),
+				})
 				return {
 					orgs: connections.length,
 					rowsIngested: Arr.reduce(summaries, 0, (sum, summary) => sum + summary.rowsIngested),
@@ -857,14 +839,7 @@ export class RailwayMetricsService extends Context.Service<RailwayMetricsService
 			const pollNow = (orgId: OrgId) =>
 				pollOrg(orgId).pipe(
 					Effect.timeoutOption(POLL_NOW_TIMEOUT),
-					Effect.catchCause((cause) =>
-						Cause.hasInterruptsOnly(cause)
-							? Effect.interrupt
-							: Effect.logWarning("railway on-demand poll failed", {
-									orgId,
-									error: summarizeCause(cause),
-								}),
-					),
+					isolatePollFailure("railway on-demand poll failed", { orgId }, undefined),
 					Effect.asVoid,
 				)
 

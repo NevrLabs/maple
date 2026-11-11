@@ -1,7 +1,7 @@
 import * as Policy from "@maple/domain/policy"
-import { withoutCheckoutReturn } from "../../lib/billing/checkout-return"
-import { hasBringYourOwnCloudAddOn } from "../../lib/billing/plan-gating"
-import { isClerkAuthEnabled } from "../../lib/services/common/auth-mode"
+import { withoutCheckoutReturn } from "../kit/billing/checkout-return"
+import { hasBringYourOwnCloudAddOn } from "../kit/billing/plan-gating"
+import { isClerkAuthEnabled } from "../../platform/auth-mode"
 import { isViewerSession } from "../../platform/selfhost-session"
 import * as SelfhostMembers from "./selfhost-members/update"
 import { rowsToV2ApiKeys } from "@maple/web-data/collections/api-keys"
@@ -27,6 +27,7 @@ import * as Billing from "./billing/update"
 import * as Members from "./members/update"
 import * as General from "./general/update"
 import * as DataPlatform from "./data-platform/update"
+import * as DataSources from "./data-sources/update"
 import * as AuditLog from "./audit-log/update"
 import * as Automation from "./automation/update"
 import type * as KeysMessage from "./keys/message"
@@ -46,8 +47,6 @@ import {
 type Return = PageReturn<Model, Message>
 type SettingsRoute = Extract<AppRoute, { readonly _tag: "Settings" }>
 
-// VISIBILITY (`useVisibleSettingsSections`)
-
 export const visibilityOf = (model: Model): Visibility => {
 	const grants = grantsOf(model)
 	const canManageWarehouse = Policy.has(grants, "warehouse:manage")
@@ -56,6 +55,10 @@ export const visibilityOf = (model: Model): Visibility => {
 		isClerk: isClerkAuthEnabled,
 		grants,
 		canAccessDataPlatform: canManageWarehouse && hasByoc,
+		hasDataSources: AsyncData.getOrElse(
+			AsyncData.map(model.session, (session) => session.hasDataSources),
+			() => false,
+		),
 		isDataPlatformLocked: isClerkAuthEnabled && canManageWarehouse && !hasByoc,
 	}
 }
@@ -88,25 +91,25 @@ export const isSettingsLoading = (model: Model): boolean =>
 export const activeTabOf = (model: Model): SettingsTab =>
 	resolveActiveSettingsTab(model.search.tab, visibleTabs(visibleSections(visibilityOf(model))))
 
-// TABS
-
-const TAB_TAGS = new Map<SettingsTab, TabModel["_tag"]>([
-	["mcp", "Mcp"],
-	["keys", "Keys"],
-	["ingestion", "Ingestion"],
-	["setup-health", "SetupHealth"],
-	["ai", "Ai"],
-	["automation", "Automation"],
-	["audit-log", "AuditLog"],
-	["data-platform", "DataPlatform"],
-	["general", "General"],
-	["members", isClerkAuthEnabled ? "Members" : "SelfhostMembers"],
-	["billing", "Billing"],
-])
-const tabTag = (tab: SettingsTab): TabModel["_tag"] => TAB_TAGS.get(tab) ?? "Unported"
+const TAB_TAGS = {
+	mcp: "Mcp",
+	keys: "Keys",
+	ingestion: "Ingestion",
+	"setup-health": "SetupHealth",
+	ai: "Ai",
+	automation: "Automation",
+	"audit-log": "AuditLog",
+	"data-platform": "DataPlatform",
+	"data-sources": "DataSources",
+	general: "General",
+	// NevrLabs selfhost (PATCHES #5): without Clerk the members tab is the fork's IdP-agnostic one.
+	members: isClerkAuthEnabled ? "Members" : "SelfhostMembers",
+	billing: "Billing",
+} as const satisfies Record<SettingsTab, TabModel["_tag"]>
+const tabTag = (tab: SettingsTab): TabModel["_tag"] => TAB_TAGS[tab]
 
 const isTabCurrent = (current: TabModel | null, tab: SettingsTab): boolean =>
-	current !== null && current._tag === tabTag(tab) && (current._tag !== "Unported" || current.tab === tab)
+	current !== null && current._tag === tabTag(tab)
 
 type TabOf<T extends TabModel["_tag"]> = Extract<TabModel, { readonly _tag: T }>
 
@@ -127,7 +130,7 @@ const putTab = (model: Model, tab: TabModel): Model =>
 
 /** Closes the open tab, keeping its state for a return. */
 const leaveTab = (model: Model): Model =>
-	model.tab === null || model.tab._tag === "Unported"
+	model.tab === null
 		? { ...model, tab: null }
 		: {
 				...model,
@@ -200,7 +203,7 @@ const initTab = (model: Model, tab: SettingsTab, context: PageContext): Return =
 			}
 		}
 		case "Ai": {
-			// `canAccessAi`: an admin of an org in the `aiAutoTriage` rollout (self-hosted has every rollout).
+			// An admin of an org in the `aiAutoTriage` rollout (self-hosted has every rollout).
 			const hasFlag = AsyncData.getOrElse(
 				AsyncData.map(model.session, (session) => session.hasAiAutoTriage),
 				() => false,
@@ -239,6 +242,20 @@ const initTab = (model: Model, tab: SettingsTab, context: PageContext): Return =
 				model: { ...model, tab: { _tag: "DataPlatform", model: step.model } },
 				commands: Command.mapMessages(step.commands ?? [], (message) =>
 					Message.GotDataPlatformMessage({ message }),
+				),
+			}
+		}
+		case "DataSources": {
+			// Connecting is admin-only, so a shared connect link opens the list for members.
+			const step = DataSources.init(
+				Policy.has(grantsOf(model), "data_sources:manage")
+					? model.search
+					: { source: model.search.source },
+			)
+			return {
+				model: { ...model, tab: { _tag: "DataSources", model: step.model } },
+				commands: Command.mapMessages(step.commands ?? [], (message) =>
+					Message.GotDataSourcesMessage({ message }),
 				),
 			}
 		}
@@ -282,8 +299,6 @@ const initTab = (model: Model, tab: SettingsTab, context: PageContext): Return =
 				),
 			}
 		}
-		case "Unported":
-			return { model: { ...model, tab: { _tag: "Unported", tab } } }
 	}
 }
 
@@ -368,6 +383,15 @@ const revisitTab = (model: Model, kept: TabModel, context: PageContext): Return 
 				),
 			}
 		}
+		case "DataSources": {
+			const step = DataSources.revisit(kept.model)
+			return {
+				model: { ...model, tab: { _tag: "DataSources", model: step.model } },
+				commands: Command.mapMessages(step.commands ?? [], (message) =>
+					Message.GotDataSourcesMessage({ message }),
+				),
+			}
+		}
 		case "General": {
 			const step = General.revisit(kept.model)
 			return {
@@ -404,8 +428,6 @@ const revisitTab = (model: Model, kept: TabModel, context: PageContext): Return 
 				),
 			}
 		}
-		case "Unported":
-			return { model: { ...model, tab: kept } }
 	}
 }
 
@@ -463,8 +485,6 @@ const syncTab = (model: Model, context: PageContext): Return => {
 	return { model }
 }
 
-// NAVIGATION
-
 const redirectUrl = (redirect: LegacySettingsRedirect): string => {
 	switch (redirect.kind) {
 		case "integrations":
@@ -476,7 +496,7 @@ const redirectUrl = (redirect: LegacySettingsRedirect): string => {
 	}
 }
 
-/** `pickAuditLogSearch`: the audit filters ride along on a tab switch. */
+/** The audit filters ride along on a tab switch. */
 const auditLogSearchOf = (search: SettingsSearch): SettingsSearch => ({
 	range: search.range,
 	since: search.since,
@@ -486,7 +506,7 @@ const auditLogSearchOf = (search: SettingsSearch): SettingsSearch => ({
 	outcome: search.outcome,
 })
 
-/** Retired `?tab=` values `<Navigate replace>` to their new home before the page renders. */
+/** Retired `?tab=` values are replaced by their new home before the page renders. */
 const enter = (model: Model, context: PageContext): Return =>
 	Option.match(resolveLegacySettingsTab(model.search.tab), {
 		onNone: () => syncTab(model, context),
@@ -495,8 +515,6 @@ const enter = (model: Model, context: PageContext): Return =>
 			outMessage: PageOutMessage.RequestedNavigation({ url: redirectUrl(redirect), isReplace: true }),
 		}),
 	})
-
-// ENTRY
 
 export const init = (route: SettingsRoute, context: PageContext): Return => {
 	const entered = enter(
@@ -590,7 +608,7 @@ const clearCheckoutMarker = (model: Model, isConfirmed: boolean) =>
 /** Lifts a Billing step: its commands, a stale customer read, and the cleared checkout marker. */
 const liftBilling = (model: Model, { step, isCustomerStale, checkout }: Billing.Step): Return => {
 	const next = putTab(model, { _tag: "Billing", model: step.model })
-	// `BILLING_CUSTOMER_KEY`: a cap save, the portal, a plan change or Retry read the customer again.
+	// A cap save, the portal, a plan change or Retry read the customer again.
 	return {
 		model: isCustomerStale
 			? {
@@ -717,6 +735,18 @@ const updateMessage = (model: Model, message: Message, context: PageContext): Re
 				model: putTab(model, { _tag: "DataPlatform", model: step.model }),
 				commands: Command.mapMessages(step.commands ?? [], (child) =>
 					Message.GotDataPlatformMessage({ message: child }),
+				),
+				outMessage: step.outMessage,
+			}
+		},
+		GotDataSourcesMessage: ({ message: inner }) => {
+			const tab = tabNamed(model, "DataSources")
+			if (tab === undefined) return { model }
+			const step = DataSources.update(tab.model, inner)
+			return {
+				model: putTab(model, { _tag: "DataSources", model: step.model }),
+				commands: Command.mapMessages(step.commands ?? [], (child) =>
+					Message.GotDataSourcesMessage({ message: child }),
 				),
 				outMessage: step.outMessage,
 			}

@@ -11,8 +11,8 @@ import { typography, typographyClass } from "@maple/views/ui/typography"
 import { hstack } from "@maple/views/ui/stack"
 import { Array as Arr, Record as Rec } from "effect"
 
-// The dashboard tools' approval summaries.
-// Icons and labels follow the widget-type registry (`widgetTypeFor`): `chart` and unknown kinds read as a line.
+// The dashboard tools' approval summaries. Icons and labels follow the widget-type registry:
+// `chart` and unknown kinds read as a line.
 
 const ICONS = new Map<string, IconName>([
 	["line", "ChartLineIcon"],
@@ -76,7 +76,7 @@ const widgetRow = <M>(h: HtmlBuilder<M>, widget: Widget): Html =>
 		{
 			gap: "2",
 			align: "center",
-			className: "rounded-md border border-border-subtle bg-background/60 px-2 py-1.5",
+			className: "rounded-md border border-border-subtle bg-surface-well px-2 py-1.5",
 		},
 		[
 			icon(h, vizIcon(widget.visualization), {
@@ -134,7 +134,7 @@ const heading = <M>(
 ): Html =>
 	hstack(h, { gap: "2" }, [
 		icon(h, glyph, { className: typographyClass({ tone: "muted", className: "size-3.5 shrink-0" }) }),
-		typography(h, { size: "sm", weight: "semibold" }, title),
+		typography(h, { size: "sm", weight: "medium" }, title),
 		...(dashboardId === null
 			? []
 			: [
@@ -144,7 +144,7 @@ const heading = <M>(
 				]),
 	])
 
-/** `deriveWidgetsFromCreate`: the widgets of a `dashboard_json`, else of a `widgets` list. */
+/** The widgets of a `dashboard_json`, else of a `widgets` list. */
 const widgetsOf = (input: Readonly<Record<string, unknown>>): ReadonlyArray<Widget> => {
 	const dashboard = safeParseJson(input.dashboard_json)
 	if (dashboard.ok) return Arr.flatMap(asArray(asRecord(dashboard.value)?.widgets) ?? [], normalizeWidget)
@@ -172,7 +172,7 @@ const createDashboard = <M>(h: HtmlBuilder<M>, obj: Input): Html => {
 				h.div(
 					[h.Class("min-w-0 flex-1")],
 					[
-						typography(h, { size: "sm", weight: "semibold", truncate: true, as: "div" }, [name]),
+						typography(h, { size: "sm", weight: "medium", truncate: true, as: "div" }, [name]),
 						...(innerName !== undefined && innerName !== name
 							? [
 									typography(h, { size: "2xs", tone: "muted", truncate: true, as: "div" }, [
@@ -286,7 +286,7 @@ const addWidget = <M>(h: HtmlBuilder<M>, obj: Input): Html => {
 		[h.Class("space-y-3")],
 		[
 			heading(h, "PlusIcon", ["Add widget"], asString(obj.dashboard_id) ?? EMPTY_VALUE),
-			panel(h, { tone: "background", className: "border-border-subtle bg-background/60 p-2" }, [
+			panel(h, { tone: "background", className: "border-border-subtle bg-surface-well p-2" }, [
 				hstack(h, { gap: "2" }, [
 					icon(h, vizIcon(visualization), {
 						className: "size-4 shrink-0 text-muted-foreground",
@@ -430,7 +430,7 @@ const SUMMARIES = new Map<string, <M>(h: HtmlBuilder<M>, obj: Input) => Html>([
 	["reorder_dashboard_widgets", reorderWidgets],
 ])
 
-/** `ApprovalSummary`'s registered renderers; `null` for a tool that falls back to the key-value list. */
+/** The registered approval summaries; `null` for a tool that falls back to the key-value list. */
 export const dashboardSummary = <M>(h: HtmlBuilder<M>, toolName: string, input: unknown): Html | null => {
 	const summary = SUMMARIES.get(toolName)
 	return summary === undefined ? null : summary(h, asRecord(input) ?? {})

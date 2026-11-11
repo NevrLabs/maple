@@ -18,8 +18,6 @@ import {
 import { typography } from "@maple/views/ui/typography"
 import { hstack } from "@maple/views/ui/stack"
 
-// `LinearFields`' view: a team picker, or connecting Linear in a popup (admins only).
-
 const IDLE: FieldState = {
 	isInvalid: false,
 	isDirty: false,
@@ -163,7 +161,7 @@ const teamField = <M>(h: HtmlBuilder<M>, inputs: Inputs<M>): Html => {
 					fieldError(
 						h,
 						{ ids: IDS, className: "text-2xs", state: IDLE },
-						"Couldn't load your Linear teams.",
+						"Couldn't load your Linear teams",
 					),
 					retry(h, inputs, "Try again"),
 				]

@@ -12,7 +12,7 @@ import { breakdownTable, dimensionTabs, panelFilterInput, panelView } from "./vi
 import { overviewCards } from "./view-overview"
 import { hstack, vstack } from "@maple/views/ui/stack"
 
-// The expand dialogs of `AnalyticsBreakdownPanel` and `AiPanel`: one dialog, whichever card opened it.
+// One expand dialog for the breakdown and AI cards, whichever card opened it.
 
 type H = HtmlBuilder<Message>
 
@@ -51,7 +51,7 @@ const breakdownContent = (h: H, model: Model, panelId: string): ReadonlyArray<Ht
 						" ",
 						ranking,
 						" ",
-						"over the selected window. Pick a row to filter the page.",
+						"over this window. Pick a row to filter the page.",
 					]),
 				]),
 				hstack(h, { justify: "between", wrap: true, className: "gap-x-3 gap-y-2" }, [

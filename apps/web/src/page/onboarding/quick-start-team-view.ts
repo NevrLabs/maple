@@ -1,7 +1,6 @@
-import { cn } from "@maple/ui/lib/utils"
 import { TONE_TEXT } from "@maple/ui/lib/tone"
 import type { Html, HtmlBuilder } from "foldkit/html"
-import { TRIAL_DURATION_DAYS } from "../../lib/billing/plans"
+import { TRIAL_DURATION_DAYS } from "../kit/billing/plans"
 import { AppRoute, hrefOf } from "../../route"
 import { button, linkButton } from "@maple/views/ui/button"
 import { heading } from "@maple/views/ui/heading"
@@ -12,9 +11,11 @@ import { icon, type IconName } from "@maple/views/ui/icon"
 import { input } from "@maple/views/ui/input"
 import { label } from "@maple/views/ui/label"
 import { Message } from "./quick-start"
-import { STEP_BODY_CLASS, STEP_FOOTER_CLASS } from "./step-layout"
+import { STEP_BODY_CLASS, STEP_FOOTER_LAYOUT } from "./step-layout"
+import { actionBar } from "@maple/views/ui/action-bar"
 import { isAlreadyInvited, type Team, TeamMessage } from "./quick-start-team"
 import { typography, typographyClass } from "@maple/views/ui/typography"
+import { dividedList } from "@maple/views/ui/rule"
 import { hstack, vstack } from "@maple/views/ui/stack"
 import { Array as Arr, String as Str } from "effect"
 
@@ -109,7 +110,7 @@ const toolRow = (h: H, tool: Tool): Html =>
 		),
 	])
 
-/** `StepTeam`: the tools Maple plugs into, then teammates. Every part is optional. */
+/** The tools Maple plugs into, then teammates. Every part is optional. */
 export const teamStep = (h: H, team: Team, orgName: string): Html => {
 	const isBusy = team.pending !== null
 	return h.div(
@@ -126,12 +127,11 @@ export const teamStep = (h: H, team: Team, orgName: string): Html => {
 			h.div(
 				[],
 				[
-					vstack(
+					dividedList(
 						h,
 						{
 							as: "ul",
-							className:
-								"divide-y divide-border overflow-hidden rounded-md border border-border bg-card",
+							className: "overflow-hidden bg-card",
 							attributes: [h.AriaLabel("Tools")],
 						},
 						Arr.map(TOOLS, (tool) => toolRow(h, tool)),
@@ -166,9 +166,11 @@ export const teamStep = (h: H, team: Team, orgName: string): Html => {
 						),
 					])
 				: h.output([h.Class(typographyClass({ size: "sm", tone: "muted" }))], ["Loading your team…"]),
-			h.div(
-				[h.Class(cn(STEP_FOOTER_CLASS, "justify-between"))],
-				[
+			actionBar(h, {
+				label: "Step actions",
+				as: "footer",
+				className: STEP_FOOTER_LAYOUT,
+				leading: [
 					button(
 						h,
 						{
@@ -178,6 +180,8 @@ export const teamStep = (h: H, team: Team, orgName: string): Html => {
 						},
 						[icon(h, "ArrowLeftIcon"), "Back"],
 					),
+				],
+				actions: [
 					button(
 						h,
 						{
@@ -191,7 +195,7 @@ export const teamStep = (h: H, team: Team, orgName: string): Html => {
 						],
 					),
 				],
-			),
+			}),
 		],
 	)
 }
@@ -220,7 +224,7 @@ const SURFACES: ReadonlyArray<Surface> = [
 	},
 ]
 
-/** `TeamPreview`: where Maple shows up, as examples. */
+/** Where Maple shows up, as examples. */
 export const teamPreview = (h: H): Html =>
 	vstack(h, { className: "gap-3.5" }, [
 		vstack(h, { gap: "1", className: "mb-1" }, [
@@ -241,7 +245,7 @@ export const teamPreview = (h: H): Html =>
 		typography(h, { size: "2xs", tone: "muted" }, ["Examples of what each one looks like."]),
 	])
 
-/** `PricingSkeleton`: while the customer is still loading. */
+/** Drawn while the customer is still loading. */
 const pricingSkeleton = (h: H): Html =>
 	h.div(
 		[
@@ -267,7 +271,7 @@ const pricingSkeleton = (h: H): Html =>
 		),
 	)
 
-/** `StepPlan` / `StepPlanLayout`: the trial pitch over the pricing cards; it is the first step, so no Back. */
+/** The trial pitch over the pricing cards; it is the first step, so no Back. */
 export const planStep = (h: H, isCustomerLoading: boolean, pricing: Html): Html =>
 	vstack(h, { align: "center", grow: true, className: "px-6 pb-12 pt-4 sm:px-12 lg:px-16" }, [
 		h.div(

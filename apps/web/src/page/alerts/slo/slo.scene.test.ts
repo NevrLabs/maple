@@ -26,7 +26,7 @@ import {
 	sloStatus,
 	type SloScenario,
 } from "../shared/slo-test-fixtures"
-import { destinationRow, incidentRow, NOW, ORG } from "../shared/test-rows"
+import { destinationRow, incidentRow, NOW, ORG } from "../../kit/alert-test-rows"
 import { Message } from "./message"
 import type { Model } from "./model"
 import { init, update } from "./update"
@@ -382,7 +382,7 @@ describe("SLO page", () => {
 			expectView(
 				within(
 					alertingPanel,
-					text("Burn-rate alerts are off: no incident opens however fast the budget burns."),
+					text("Burn-rate alerts are off: no incident opens however fast the budget burns"),
 				),
 			).toExist(),
 		)

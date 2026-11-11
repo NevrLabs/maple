@@ -34,19 +34,18 @@ import {
 	type ErrorIssueEventInsert,
 	type ErrorIssueEventRow,
 	type ErrorIssueRow,
-	IssueEscalations,
 } from "@maple/db/tables"
 import { Clock, Context, Effect, Layer, Option, Schema, Array as Arr } from "effect"
 import { Database } from "@maple/backend/platform/DatabaseLive"
 import { AuditLogService } from "@maple/backend/services/audit/AuditLogService"
 import { CurrentAuditActor } from "@maple/backend/services/auth/audit-actor"
-import { SYSTEM_ERRORS_AGENT_NAME } from "@maple/backend/services/auth/system-actors"
+import { SYSTEM_ERRORS_AGENT_NAME } from "@maple/domain/system-agents"
 import { currentTxid, readTxid } from "@maple/backend/platform/electric-txid"
 import { transitionRow } from "@maple/backend/platform/transition-row"
 import { ErrorActorsService } from "./ErrorActorsService"
 import { makeErrorDatabaseExecute } from "./error-persistence"
 import { issueFingerprintHashes } from "./issue-fingerprints"
-import { escalationDedupeKey, escalationReasonFor } from "./issue-severity"
+import { writeIssueSeverity } from "./issue-severity"
 
 const StoredJsonRecord = Schema.Record(Schema.String, Schema.Unknown)
 type StoredJsonRecord = typeof StoredJsonRecord.Type
@@ -58,6 +57,18 @@ const decodeIssueDateTimeSync = Schema.decodeUnknownSync(ErrorIssueDocument.fiel
 
 const DEFAULT_EVENTS_LIMIT = 100
 const DEFAULT_LEASE_DURATION_MS = 30 * 60_000
+
+/** The 409 for an issue somebody else holds. `row` is the holder's row, when one was read. */
+export const leaseConflict = (issueId: ErrorIssueId, row: ErrorIssueRow | null) =>
+	new ErrorIssueLeaseConflictError({
+		message: "Issue is held by another actor",
+		issueId,
+		currentHolderActorId: row?.leaseHolderActorId ?? null,
+		leaseExpiresAt:
+			row?.leaseExpiresAt == null
+				? null
+				: decodeIssueDateTimeSync(new Date(row.leaseExpiresAt).toISOString()),
+	})
 
 export interface ErrorIssueWorkflowPublicApi {
 	readonly heartbeatIssue: (
@@ -319,26 +330,33 @@ const make: Effect.Effect<
 		issueIds,
 	) => {
 		if (issueIds.length === 0) return Effect.succeed(new Set<ErrorIssueId>())
-		return Effect.all([
-			dbExecute((db) =>
-				db.run(
-					PG.from(ErrorIncidents)
-						.select("issueId")
-						.where(($) => [$.orgId.eq(orgId), $.status.eq("open"), $.issueId.in_(...issueIds)]),
+		return Effect.all(
+			[
+				dbExecute((db) =>
+					db.run(
+						PG.from(ErrorIncidents)
+							.select("issueId")
+							.where(($) => [
+								$.orgId.eq(orgId),
+								$.status.eq("open"),
+								$.issueId.in_(...issueIds),
+							]),
+					),
 				),
-			),
-			dbExecute((db) =>
-				db.run(
-					PG.from(AlertIncidents)
-						.select(($) => ({ issueId: $.errorIssueId }))
-						.where(($) => [
-							$.orgId.eq(orgId),
-							$.status.eq("open"),
-							$.errorIssueId.in_(...issueIds),
-						]),
+				dbExecute((db) =>
+					db.run(
+						PG.from(AlertIncidents)
+							.select(($) => ({ issueId: $.errorIssueId }))
+							.where(($) => [
+								$.orgId.eq(orgId),
+								$.status.eq("open"),
+								$.errorIssueId.in_(...issueIds),
+							]),
+					),
 				),
-			),
-		]).pipe(
+			],
+			{ concurrency: "unbounded" },
+		).pipe(
 			Effect.map(
 				([errorRows, alertRows]) =>
 					new Set([
@@ -364,28 +382,31 @@ const make: Effect.Effect<
 			if (issueIds.length === 0) return rollups
 			const upsert = (issueId: ErrorIssueId, patch: Partial<IssueActivityRollup>) =>
 				rollups.set(issueId, { ...(rollups.get(issueId) ?? EMPTY_ACTIVITY), ...patch })
-			const [commentRows, prRows] = yield* Effect.all([
-				dbExecute((db) =>
-					db.run(
-						PG.from(ErrorIssueEvents)
-							.select(($) => ({ issueId: $.issueId, count: PG.count() }))
-							.where(($) => [
-								$.orgId.eq(orgId),
-								$.issueId.in_(...issueIds),
-								$.type.in_("comment", "agent_note"),
-							])
-							.groupBy("issueId"),
+			const [commentRows, prRows] = yield* Effect.all(
+				[
+					dbExecute((db) =>
+						db.run(
+							PG.from(ErrorIssueEvents)
+								.select(($) => ({ issueId: $.issueId, count: PG.count() }))
+								.where(($) => [
+									$.orgId.eq(orgId),
+									$.issueId.in_(...issueIds),
+									$.type.in_("comment", "agent_note"),
+								])
+								.groupBy("issueId"),
+						),
 					),
-				),
-				dbExecute((db) =>
-					db.run(
-						PG.from(ErrorIssuePullRequests)
-							.select(($) => ({ issueId: $.issueId, state: $.state, count: PG.count() }))
-							.where(($) => [$.orgId.eq(orgId), $.issueId.in_(...issueIds)])
-							.groupBy("issueId", "state"),
+					dbExecute((db) =>
+						db.run(
+							PG.from(ErrorIssuePullRequests)
+								.select(($) => ({ issueId: $.issueId, state: $.state, count: PG.count() }))
+								.where(($) => [$.orgId.eq(orgId), $.issueId.in_(...issueIds)])
+								.groupBy("issueId", "state"),
+						),
 					),
-				),
-			])
+				],
+				{ concurrency: "unbounded" },
+			)
 			for (const row of commentRows) upsert(row.issueId, { commentCount: row.count })
 			for (const row of prRows) {
 				if (row.state === "open") upsert(row.issueId, { openPullRequestCount: row.count })
@@ -397,12 +418,22 @@ const make: Effect.Effect<
 	const hydrateNonEmpty = (orgId: OrgId, rows: Arr.NonEmptyReadonlyArray<ErrorIssueRow>) =>
 		Effect.gen(function* () {
 			const issueIds = Arr.map(rows, (row) => row.id)
-			const openSet = yield* issuesWithOpenIncidents(orgId, issueIds)
-			const activityMap = yield* issueActivityRollups(orgId, issueIds)
-			const hashesByIssue = yield* dbExecute((db) => issueFingerprintHashes(db, orgId, rows))
-			const actorMap = yield* actorsService.collectActorDocs(
-				orgId,
-				Arr.flatMap(rows, (row) => [row.assignedActorId ?? null, row.leaseHolderActorId ?? null]),
+			// Independent reads, run on every list call and after every mutation.
+			// The invocation's pool bounds how many are really in flight.
+			const [openSet, activityMap, hashesByIssue, actorMap] = yield* Effect.all(
+				[
+					issuesWithOpenIncidents(orgId, issueIds),
+					issueActivityRollups(orgId, issueIds),
+					dbExecute((db) => issueFingerprintHashes(db, orgId, rows)),
+					actorsService.collectActorDocs(
+						orgId,
+						Arr.flatMap(rows, (row) => [
+							row.assignedActorId ?? null,
+							row.leaseHolderActorId ?? null,
+						]),
+					),
+				],
+				{ concurrency: "unbounded" },
 			)
 			return Arr.map(rows, (row) =>
 				rowToIssue(
@@ -689,14 +720,6 @@ const make: Effect.Effect<
 		return yield* requireIssue(orgId, row.id)
 	})
 
-	const leaseConflict = (issueId: ErrorIssueId, row: ErrorIssueRow | null) =>
-		new ErrorIssueLeaseConflictError({
-			message: "Issue is held by another actor",
-			issueId,
-			currentHolderActorId: row?.leaseHolderActorId ?? null,
-			leaseExpiresAt: row?.leaseExpiresAt == null ? null : isoFromMs(row.leaseExpiresAt),
-		})
-
 	const heartbeatIssue: ErrorIssueWorkflowServiceApi["heartbeatIssue"] = Effect.fn(
 		"ErrorIssueWorkflowService.heartbeatIssue",
 	)(function* (orgId, actorId, issueId) {
@@ -833,34 +856,6 @@ const make: Effect.Effect<
 		return txid === undefined ? doc : new ErrorIssueDocument({ ...doc, txid })
 	})
 
-	/** The outbox row a severity change owes, or none when the change does not escalate. */
-	const severityEscalationInsert = (
-		orgId: OrgId,
-		issueId: ErrorIssueId,
-		from: IssueSeverity | null,
-		to: IssueSeverity,
-		source: "ai" | "manual",
-		timestamp: number,
-	): Option.Option<PG.InsertRowOf<typeof IssueEscalations>> =>
-		Option.map(Option.fromNullOr(escalationReasonFor(from, to)), (reason) => ({
-			id: newIssueEscalationId(),
-			orgId,
-			issueId,
-			severity: to,
-			source,
-			reason,
-			runId: null,
-			investigationId: null,
-			payloadJson: {},
-			deliveryResultsJson: [],
-			status: "queued",
-			attempts: 0,
-			dedupeKey: escalationDedupeKey(orgId, issueId, to),
-			error: null,
-			createdAt: timestamp,
-			processedAt: null,
-		}))
-
 	const setSeverity: ErrorIssueWorkflowServiceApi["setSeverity"] = Effect.fn(
 		"ErrorIssueWorkflowService.setSeverity",
 	)(function* (orgId, actorId, issueId, severity, opts) {
@@ -881,47 +876,34 @@ const make: Effect.Effect<
 		const changed = current.severity !== severity || current.severitySource !== nextSource
 		if (!changed) return yield* hydrateIssue(orgId, current)
 
-		const payload: StoredJsonRecord = opts?.note
+		const eventPayload: StoredJsonRecord = opts?.note
 			? { from: current.severity, to: severity, source, note: opts.note }
 			: { from: current.severity, to: severity, source }
-		const eventInsert =
-			current.severity !== severity
-				? Option.some(
-						buildEventInsert(orgId, issueId, actorId, "severity_change", timestamp, {
-							payload,
-						}),
-					)
-				: Option.none()
-		// Clearing the severity (null) never escalates; a set severity may.
-		const escalationInsert = Option.flatMap(Option.fromNullOr(severity), (next) =>
-			severityEscalationInsert(orgId, issueId, current.severity, next, source, timestamp),
-		)
 		// One transaction: a severity that committed without its escalation row
-		// could never page anyone — a retry sees the severity already stored and
+		// could never page anyone; a retry sees the severity already stored and
 		// returns before reaching the outbox insert.
 		const severityRows = yield* dbExecute((db) =>
 			db.transaction(
-				Effect.gen(function* () {
-					const rows = yield* db.run(
-						PG.update(ErrorIssues)
-							.set({ severity, severitySource: nextSource, updatedAt: timestamp })
-							.where(($) => [$.orgId.eq(orgId), $.id.eq(issueId)])
-							.returning(() => ({ txid: currentTxid })),
-					)
-					if (Option.isSome(eventInsert))
-						yield* db.run(PG.insertInto(ErrorIssueEvents).values(eventInsert.value))
-					if (Option.isSome(escalationInsert)) {
-						yield* db.run(
-							PG.insertInto(IssueEscalations)
-								.values(escalationInsert.value)
-								.onConflictDoNothing(),
-						)
-					}
-					return rows
+				writeIssueSeverity(db, {
+					orgId,
+					issueId,
+					actorId,
+					from: current.severity,
+					severity,
+					source,
+					timestamp,
+					eventId: newEventId(),
+					eventPayload,
+					escalation: {
+						id: newIssueEscalationId(),
+						runId: null,
+						investigationId: null,
+						payload: {},
+					},
 				}),
 			),
 		)
-		if (Option.isSome(eventInsert)) {
+		if (current.severity !== severity && severityRows.length > 0) {
 			yield* recordEventAudit(orgId, issueId, actorId, "severity_change", {})
 		}
 		yield* actorsService.touchActor(orgId, actorId, timestamp)

@@ -5,8 +5,11 @@ import {
 	type ConnectorConfig,
 } from "@maple/chat-platform"
 import { optionalRedacted, optionalString, stringWithDefault } from "@maple/infra/config-helpers"
-import { Config, Context, Effect, Layer, Option, Redacted, Schema, String as Str } from "effect"
+import { Config, Context, Effect, Layer, Option, Redacted, Result, Schema, String as Str } from "effect"
 import { type MapleRegion, parseMapleRegion } from "@maple/domain/organization-regions"
+import { type SecretKeyring, secretKeyringFrom } from "./SecretBox"
+import { DEFAULT_AUTUMN_API_URL } from "@maple/backend/services/billing/autumn-api"
+import { ingestKeyLookupHmacKeyFrom } from "./credential-tokens"
 
 /** Fatal misconfiguration discovered at startup: fails the layer build, so the worker refuses to boot. */
 class EnvValidationError extends Schema.TaggedError<EnvValidationError>()(
@@ -27,11 +30,12 @@ export interface EnvConfig {
 	readonly CLICKHOUSE_USER: string
 	readonly CLICKHOUSE_PASSWORD: Option.Option<Redacted.Redacted>
 	readonly CLICKHOUSE_DATABASE: string
-	readonly MAPLE_DB_URL: string
 	readonly MAPLE_AUTH_MODE: string
 	readonly MAPLE_ROOT_PASSWORD: Option.Option<Redacted.Redacted>
 	readonly MAPLE_DEFAULT_ORG_ID: string
 	readonly MAPLE_INGEST_KEY_ENCRYPTION_KEY: Redacted.Redacted
+	/** Comma-separated keys accepted for opening stored secrets only (docs/secret-encryption.md). */
+	readonly MAPLE_INGEST_KEY_DECRYPTION_KEYS: Option.Option<Redacted.Redacted>
 	readonly MAPLE_INGEST_KEY_LOOKUP_HMAC_KEY: Redacted.Redacted
 	/**
 	 * Keyed HMAC for dashboard share-link tokens. Optional here, and required by
@@ -54,8 +58,6 @@ export interface EnvConfig {
 	readonly MAPLE_ENVIRONMENT: string
 	/** The regional instance this worker belongs to, derived by the stack from the stage (`prd-eu` → `eu`). */
 	readonly MAPLE_REGION: MapleRegion
-	/** Escape hatch: allow real email sends outside production (e.g. a deliberate test run on a dev stage). */
-	readonly MAPLE_EMAIL_ALLOW_NONPROD: boolean
 	/** Route every org to the managed warehouse; honoured only in development. */
 	readonly MAPLE_IGNORE_ORG_CLICKHOUSE: boolean
 	readonly CLERK_SECRET_KEY: Option.Option<Redacted.Redacted>
@@ -94,6 +96,11 @@ export interface EnvConfig {
 	 */
 	readonly MAPLE_CANCELLATION_SLACK_CHANNEL_ID: Option.Option<string>
 	/**
+	 * Channel in the Hazel workspace `MAPLE_INTERNAL_ORG_ID` linked that plan-cancellation reports
+	 * are also posted to. Unset, or no Hazel workspace linked → reports go to Slack alone.
+	 */
+	readonly MAPLE_CANCELLATION_HAZEL_CHANNEL_ID: Option.Option<string>
+	/**
 	 * The Clerk dashboard's instance URL (`https://dashboard.clerk.com/apps/<app>/instances/<ins>`)
 	 * that cancellation reports link orgs into. Unset → a link to the last-active instance.
 	 */
@@ -114,6 +121,9 @@ export interface EnvConfig {
 	readonly EMAIL_FROM: string
 	readonly LINEAR_OAUTH_CLIENT_ID: Option.Option<string>
 	readonly LINEAR_OAUTH_CLIENT_SECRET: Option.Option<Redacted.Redacted>
+	/** Google OAuth client for the Search Console integration; unset means it is unavailable. */
+	readonly GOOGLE_SEARCH_CONSOLE_CLIENT_ID: Option.Option<string>
+	readonly GOOGLE_SEARCH_CONSOLE_CLIENT_SECRET: Option.Option<Redacted.Redacted>
 	/**
 	 * Resolved config for every chat connector the registry ships, keyed by the
 	 * name the connector declared. The catalog stays platform-neutral on purpose:
@@ -227,11 +237,11 @@ const envConfig = Config.all({
 	CLICKHOUSE_USER: stringWithDefault("CLICKHOUSE_USER", "default"),
 	CLICKHOUSE_PASSWORD: optionalRedacted("CLICKHOUSE_PASSWORD"),
 	CLICKHOUSE_DATABASE: stringWithDefault("CLICKHOUSE_DATABASE", "default"),
-	MAPLE_DB_URL: stringWithDefault("MAPLE_DB_URL", ""),
 	MAPLE_AUTH_MODE: stringWithDefault("MAPLE_AUTH_MODE", "self_hosted"),
 	MAPLE_ROOT_PASSWORD: optionalRedacted("MAPLE_ROOT_PASSWORD"),
 	MAPLE_DEFAULT_ORG_ID: stringWithDefault("MAPLE_DEFAULT_ORG_ID", "default"),
 	MAPLE_INGEST_KEY_ENCRYPTION_KEY: Config.Redacted("MAPLE_INGEST_KEY_ENCRYPTION_KEY"),
+	MAPLE_INGEST_KEY_DECRYPTION_KEYS: optionalRedacted("MAPLE_INGEST_KEY_DECRYPTION_KEYS"),
 	MAPLE_INGEST_KEY_LOOKUP_HMAC_KEY: Config.Redacted("MAPLE_INGEST_KEY_LOOKUP_HMAC_KEY"),
 	MAPLE_SHARE_TOKEN_HMAC_KEY: optionalRedacted("MAPLE_SHARE_TOKEN_HMAC_KEY"),
 	MAPLE_INGEST_PUBLIC_URL: stringWithDefault("MAPLE_INGEST_PUBLIC_URL", "http://127.0.0.1:3474"),
@@ -239,9 +249,6 @@ const envConfig = Config.all({
 	MAPLE_API_BASE_URL: stringWithDefault("MAPLE_API_BASE_URL", "http://127.0.0.1:3472"),
 	MAPLE_ENVIRONMENT: stringWithDefault("MAPLE_ENVIRONMENT", "development"),
 	MAPLE_REGION: stringWithDefault("MAPLE_REGION", "us").pipe(Config.map(parseMapleRegion)),
-	MAPLE_EMAIL_ALLOW_NONPROD: stringWithDefault("MAPLE_EMAIL_ALLOW_NONPROD", "false").pipe(
-		Config.map((value) => value === "true"),
-	),
 	MAPLE_IGNORE_ORG_CLICKHOUSE: stringWithDefault("MAPLE_IGNORE_ORG_CLICKHOUSE", "false").pipe(
 		Config.map((value) => value === "1" || value === "true"),
 	),
@@ -256,13 +263,14 @@ const envConfig = Config.all({
 		"false",
 	).pipe(Config.map((value) => value === "1" || value === "true")),
 	AUTUMN_SECRET_KEY: optionalRedacted("AUTUMN_SECRET_KEY"),
-	AUTUMN_API_URL: stringWithDefault("AUTUMN_API_URL", "https://api.useautumn.com"),
+	AUTUMN_API_URL: stringWithDefault("AUTUMN_API_URL", DEFAULT_AUTUMN_API_URL),
 	AUTUMN_WEBHOOK_SECRET: optionalRedacted("AUTUMN_WEBHOOK_SECRET"),
 	STRIPE_SECRET_KEY: optionalRedacted("STRIPE_SECRET_KEY"),
 	STRIPE_API_URL: stringWithDefault("STRIPE_API_URL", "https://api.stripe.com"),
 	MAPLE_SUPPORT_SLACK_BOT_TOKEN: optionalRedacted("MAPLE_SUPPORT_SLACK_BOT_TOKEN"),
 	MAPLE_SUPPORT_SLACK_TEAM_USER_IDS: optionalString("MAPLE_SUPPORT_SLACK_TEAM_USER_IDS"),
 	MAPLE_CANCELLATION_SLACK_CHANNEL_ID: optionalString("MAPLE_CANCELLATION_SLACK_CHANNEL_ID"),
+	MAPLE_CANCELLATION_HAZEL_CHANNEL_ID: optionalString("MAPLE_CANCELLATION_HAZEL_CHANNEL_ID"),
 	MAPLE_CLERK_DASHBOARD_URL: optionalString("MAPLE_CLERK_DASHBOARD_URL"),
 	MAPLE_INGEST_KEY: optionalRedacted("MAPLE_INGEST_KEY"),
 	MAPLE_ENDPOINT: optionalString("MAPLE_ENDPOINT"),
@@ -273,6 +281,8 @@ const envConfig = Config.all({
 	EMAIL_FROM: stringWithDefault("EMAIL_FROM", "Maple <notifications@noreply.maple.dev>"),
 	LINEAR_OAUTH_CLIENT_ID: optionalString("LINEAR_OAUTH_CLIENT_ID"),
 	LINEAR_OAUTH_CLIENT_SECRET: optionalRedacted("LINEAR_OAUTH_CLIENT_SECRET"),
+	GOOGLE_SEARCH_CONSOLE_CLIENT_ID: optionalString("GOOGLE_SEARCH_CONSOLE_CLIENT_ID"),
+	GOOGLE_SEARCH_CONSOLE_CLIENT_SECRET: optionalRedacted("GOOGLE_SEARCH_CONSOLE_CLIENT_SECRET"),
 	CHAT_CONNECTOR_CONFIG: chatConnectorConfig,
 	CHAT_CONNECTOR_OUTBOUND_CONFIG: chatConnectorOutboundConfig,
 	SANDBOX_INTERNAL_SERVICE_TOKEN: optionalRedacted("SANDBOX_INTERNAL_SERVICE_TOKEN"),
@@ -445,9 +455,26 @@ const makeEnv = Effect.gen(function* () {
 		return yield* new EnvValidationError({ message: "MAPLE_ROOT_PASSWORD cannot be empty" })
 	}
 
-	return Env.of(env)
+	return Env.of({
+		...env,
+		secretKeyring: secretKeyringFrom({
+			primary: Redacted.value(env.MAPLE_INGEST_KEY_ENCRYPTION_KEY),
+			decryptOnly: Option.map(env.MAPLE_INGEST_KEY_DECRYPTION_KEYS, Redacted.value),
+		}),
+		ingestKeyLookupHmacKey: ingestKeyLookupHmacKeyFrom(
+			Redacted.value(env.MAPLE_INGEST_KEY_LOOKUP_HMAC_KEY),
+		),
+	})
 })
 
-export class Env extends Context.Service<Env, EnvConfig>()("@maple/backend/lib/Env") {
+/** The config, plus the keys every service that encrypts or hashes would otherwise parse itself. */
+export interface EnvApi extends EnvConfig {
+	/** The keys stored secrets are sealed and opened with; read through `secretKeyringFromEnv`. */
+	readonly secretKeyring: Result.Result<SecretKeyring, string>
+	/** `MAPLE_INGEST_KEY_LOOKUP_HMAC_KEY`, trimmed; read through `ingestKeyLookupHmacKey`. */
+	readonly ingestKeyLookupHmacKey: Result.Result<string, string>
+}
+
+export class Env extends Context.Service<Env, EnvApi>()("@maple/backend/lib/Env") {
 	static readonly layer = Layer.effect(this, makeEnv)
 }

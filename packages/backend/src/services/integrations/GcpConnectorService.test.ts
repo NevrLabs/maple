@@ -1,8 +1,8 @@
 import { afterEach, assert, describe, it } from "@effect/vitest"
 import { ConfigProvider, Effect, Layer, Schema, Array as Arr } from "effect"
-import { hashIngestKey } from "@maple/db"
+import { hashIngestKey } from "../../platform/credential-tokens"
 import { gcpConnectorResourceNames } from "@maple/domain/gcp"
-import { GcpProjectId, GcpResourceNumber, OrgId, UserId } from "@maple/domain/primitives"
+import { GcpProjectId, GcpResourceNumber, OrgId, UserId } from "@maple/primitives"
 import { Env } from "@maple/backend/platform/Env"
 import {
 	cleanupTestDbs,
@@ -10,7 +10,7 @@ import {
 	executeSql,
 	queryFirstRow,
 	type TestDb,
-} from "@maple/backend/platform/test-pglite"
+} from "@maple/backend/testing/test-pglite"
 import { GcpConnectorService, type CreateGcpConnectorInput } from "./GcpConnectorService"
 
 const trackedDbs: TestDb[] = []
@@ -554,6 +554,28 @@ describe("GcpConnectorService", () => {
 			)
 			const error = yield* Effect.flip(gcp.scripts(orgId, target.id, scriptOptions))
 			assert.strictEqual(error._tag, "@maple/http/errors/IntegrationsPersistenceError")
+		}).pipe(Effect.provide(makeLayer(testDb)))
+	})
+
+	it.effect("refuses to render a stored secret that is not in the v2 envelope", () => {
+		const testDb = createTestDb(trackedDbs)
+		return Effect.gen(function* () {
+			const gcp = yield* GcpConnectorService
+			const connector = yield* gcp.create(orgId, userId, projectScope("acme-prod"))
+			const stored = {
+				ciphertext: Buffer.from("old").toString("base64"),
+				iv: Buffer.alloc(12, 1).toString("base64"),
+				tag: Buffer.alloc(16, 2).toString("base64"),
+			}
+			yield* Effect.promise(() =>
+				executeSql(
+					testDb,
+					"UPDATE gcp_connectors SET secret_ciphertext = $1, secret_iv = $2, secret_tag = $3 WHERE id = $4",
+					[stored.ciphertext, stored.iv, stored.tag, connector.id],
+				),
+			)
+			const error = yield* Effect.flip(gcp.scripts(orgId, connector.id, scriptOptions))
+			assert.strictEqual(error.message, "Failed to decrypt the Google Cloud connector secret")
 		}).pipe(Effect.provide(makeLayer(testDb)))
 	})
 

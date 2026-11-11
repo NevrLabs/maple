@@ -42,7 +42,7 @@ export interface RawSqlIssue {
 }
 
 /** Macro argument: a column identifier, optionally table-qualified. */
-const COLUMN_IDENT_RE = /^[A-Za-z_][A-Za-z0-9_.]*$/
+export const COLUMN_IDENT_RE = /^[A-Za-z_][A-Za-z0-9_.]*$/
 
 const DENY_LIST = [
 	"INSERT",
@@ -61,13 +61,13 @@ const DENY_LIST = [
 	"KILL",
 ] as const
 
-const DENY_LIST_RE = new RegExp(`\\b(${Arr.join(DENY_LIST, "|")})\\b`, "i")
+export const DENY_LIST_RE = new RegExp(`\\b(${Arr.join(DENY_LIST, "|")})\\b`, "i")
 
 /**
  * `INTO OUTFILE` is a SELECT terminal clause, so it slips past the deny list's
  * statement-keyword check while asking the server to write a file.
  */
-const INTO_OUTFILE_RE = /\bINTO\s+OUTFILE\b/i
+export const INTO_OUTFILE_RE = /\bINTO\s+OUTFILE\b/i
 
 /**
  * Table functions that read only generated, in-memory data and reach nothing
@@ -145,7 +145,7 @@ const READER_NAMES = new Set([
 	"fuzzjson",
 	"fuzzquery",
 ])
-const isReaderName = (name: string): boolean =>
+export const isReaderName = (name: string): boolean =>
 	READER_NAMES.has(name) || Arr.some(READER_PREFIXES, (prefix) => Str.startsWith(prefix)(name))
 
 interface SqlToken {
@@ -182,10 +182,8 @@ const IDENT_ESCAPES = new Map([
 	["e", "\x1b"],
 ])
 
-/** The character at `index`, or `""` past either end. */
 const charAt = (text: string, index: number): string => Option.getOrElse(Str.charAt(text, index), () => "")
 
-/** Where `search` first occurs at or after `from`, or -1. */
 const indexFrom = (text: string, search: string, from: number): number =>
 	Option.match(Str.indexOf(search)(Str.slice(from)(text)), {
 		onNone: () => -1,
@@ -462,7 +460,7 @@ const systemDatabaseReference = (sql: string): string | null => {
  * the first close, leaving the outer one's `*\/` behind). Where these appear the
  * masked text and the server disagree on what is code, so every check is moot.
  */
-const UNMASKED_SYNTAX: ReadonlyArray<readonly [RegExp, string]> = [
+export const UNMASKED_SYNTAX: ReadonlyArray<readonly [RegExp, string]> = [
 	[/#/, "'#' comments are not supported in raw SQL. Use -- or /* */ comments."],
 	[
 		/\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/,
@@ -624,7 +622,6 @@ const aliasBindsTable = (masked: string, alias: string): boolean => {
 	return false
 }
 
-/** The first org-filter problem in the query, or null. */
 const orgFilterIssue = (sql: string, masked: string): RawSqlIssue | null => {
 	for (const match of Str.matchAll(ORG_FILTER_MACRO_RE)(sql)) {
 		const alias = match[1] === undefined ? undefined : Str.trim(match[1])
@@ -820,7 +817,6 @@ export const rawSqlIssue = (
 	return options.workload === "dashboard" ? dashboardTimeBoundIssue(sql, maskedSql) : null
 }
 
-/** `rawSqlIssue` as a predicate, for editors that only need a yes/no. */
 export const isValidRawSql = (sql: string, workload: RawSqlWorkload = "interactive"): boolean =>
 	rawSqlIssue(sql, { workload }) === null
 
@@ -857,7 +853,6 @@ export const rawAlertSqlSelectsSamples = (sql: string): boolean => {
 	return false
 }
 
-/** The warning to show when a raw-SQL rule's minimum sample count is likely counting rows. */
 export const rawAlertSampleCountWarning = (sql: string, minimumSampleCount: number): string | null =>
 	minimumSampleCount > 1 && !rawAlertSqlSelectsSamples(sql)
 		? `Minimum sample count ${minimumSampleCount} counts returned rows (one per bucket) because the query has no \`samples\` column. Select an event count as \`samples\` (e.g. \`count() AS samples\`) to gate on volume.`

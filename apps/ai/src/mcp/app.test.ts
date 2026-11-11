@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "@effect/vitest"
-import { OrgId, UserId } from "@maple/domain/http"
+import { AuthorizationUnavailableError, OrgId, UserId } from "@maple/domain/http"
 import { INVESTIGATION_READ_FAMILIES } from "@maple/domain/http/v2"
 import {
 	ConfigProvider,
@@ -15,7 +15,7 @@ import {
 } from "effect"
 import { HttpRouter } from "effect/http"
 import { Env } from "@maple/backend/platform/Env"
-import { cleanupTestDbs, createTestDb, type TestDb } from "@maple/backend/platform/test-pglite"
+import { cleanupTestDbs, createTestDb, type TestDb } from "@maple/backend/testing/test-pglite"
 import { ErrorActorsService } from "@maple/backend/services/errors/ErrorActorsService"
 import { ApiKeysService } from "@maple/backend/services/org/ApiKeysService"
 import { AuthService } from "@maple/backend/services/auth/AuthService"
@@ -40,10 +40,12 @@ const makeMcpToolExecutorStubLayer = (
 				execute,
 				prepareRepository: () => Effect.void,
 				prepareConnectedRepositories: () => Effect.void,
+				listDataSources: () => Effect.succeed([]),
 			}
 			return {
 				load: Effect.succeed(executor),
-				loadReportingBuild: Effect.succeed({ executor, built: false }),
+				loadReportingBuild: Effect.succeed({ executor, build: "reused" as const }),
+				prewarm: Effect.void,
 			}
 		}),
 	)
@@ -124,9 +126,80 @@ describe("MCP HTTP authorization", () => {
 				'resource_metadata="https://api.example.com/.well-known/oauth-protected-resource/mcp"',
 			)
 			expect(response.headers.get("www-authenticate")).toContain('scope="mcp:tools"')
+			// No token was sent, so there is none to call invalid: the client starts OAuth, not a refresh.
+			expect(response.headers.get("www-authenticate")).not.toContain("invalid_token")
 		} finally {
 			await dispose()
 		}
+	})
+
+	describe("the session fallback", () => {
+		/** One `initialize` against the server, with `auth` standing in for the session resolver. */
+		const initialize = async (
+			auth: Layer.Layer<AuthService, never, Layer.Services<typeof AuthService.layer>>,
+			headers: Record<string, string>,
+		) => {
+			const db = createTestDb(createdDbs)
+			const base = Layer.mergeAll(db.layer, Env.layer.pipe(Layer.provide(testConfig())))
+			const services = Layer.mergeAll(
+				ApiKeysService.layer,
+				ErrorActorsService.layer,
+				auth,
+				makeMcpToolExecutorStubLayer(),
+				makeRateLimiterStubLayer(),
+			).pipe(Layer.provideMerge(base))
+			const { handler, dispose } = HttpRouter.toWebHandler(McpLive.pipe(Layer.provideMerge(services)), {
+				disableLogger: true,
+			})
+			const response = await handler(
+				new Request("https://api.example.com/mcp", {
+					method: "POST",
+					headers: { "content-type": "application/json", ...headers },
+					body: JSON.stringify({
+						jsonrpc: "2.0",
+						id: 1,
+						method: "initialize",
+						params: {
+							protocolVersion: "2025-11-25",
+							capabilities: {},
+							clientInfo: { name: "test", version: "1.0.0" },
+						},
+					}),
+				}),
+				Context.empty(),
+			)
+			await dispose()
+			return response
+		}
+
+		/** The real service with its session lookup failing the way an auth provider outage does. */
+		const authProviderAway = Layer.effect(
+			AuthService,
+			Effect.gen(function* () {
+				const auth = yield* AuthService
+				return {
+					...auth,
+					resolveMcpTenant: () =>
+						Effect.fail(
+							new AuthorizationUnavailableError({ message: "The auth provider is away" }),
+						),
+				}
+			}),
+		).pipe(Layer.provide(AuthService.layer))
+
+		it("answers 503, not a sign-in challenge, while the auth provider is away", async () => {
+			const response = await initialize(authProviderAway, { authorization: "Bearer aaa.bbb.ccc" })
+
+			expect(response.status).toBe(503)
+			expect(response.headers.get("www-authenticate")).toBeNull()
+		})
+
+		it("calls a session token nobody issued invalid", async () => {
+			const response = await initialize(AuthService.layer, { authorization: "Bearer aaa.bbb.ccc" })
+
+			expect(response.status).toBe(401)
+			expect(response.headers.get("www-authenticate")).toContain('error="invalid_token"')
+		})
 	})
 
 	it("accepts an audience-bound OAuth key behind a forwarded HTTPS proxy", async () => {

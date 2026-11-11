@@ -20,19 +20,17 @@ import {
 	managersOnlyPage,
 } from "../../kit/form-section"
 import { failureMessage, type LoadFailure } from "@maple/views/data/load-failure"
-import { LIMIT_REACHED_CODE, monitorHref, uptimeTabHref } from "../shared/uptime-commands"
-import { formatMs } from "../shared/uptime-derive"
-import { uptimePanelBody } from "../shared/uptime-view"
-import { formIssues } from "./derive"
-import { ASSERTION_OPS, type AssertionDraft, type MonitorKind } from "./form"
+import { LIMIT_REACHED_CODE, monitorHref, uptimeTabHref } from "../../kit/uptime/commands"
+import { formatMs } from "../../kit/uptime/derive"
+import { uptimePanelBody } from "../../kit/uptime/view"
+import { formIssues } from "../../kit/uptime/form-derive"
+import { ASSERTION_OPS, type AssertionDraft, type MonitorKind } from "../../kit/uptime/form"
 import { Message } from "./message"
 import { canManage, type Model } from "./model"
 import { assertionsSection, type H, requestSection, scheduleSection } from "./view-fields"
 import { dnsSection, heartbeatSection, notifySection, serviceSection, tcpSection } from "./view-kinds"
 import { typography, typographyClass } from "@maple/views/ui/typography"
 import { hstack, hstackClass, vstack, vstackClass } from "@maple/views/ui/stack"
-
-// `/alerts/uptime/new`: the kind picker, the kind's sections, the test panel and the action bar.
 
 const KINDS: ReadonlyArray<{ kind: MonitorKind; label: string; icon: IconName; description: string }> = [
 	{
@@ -144,7 +142,7 @@ const testResultBody = (h: H, model: Model): ReadonlyArray<Html> => {
 			result.ok
 				? Arr.map(model.form.assertions, (row) =>
 						hstack(h, { gap: "2", as: "li", attributes: [h.Key(String(row.id))] }, [
-							icon(h, "CheckIcon", { className: "text-severity-info" }),
+							icon(h, "CheckIcon", { size: 14, className: "shrink-0 text-severity-info" }),
 							describeAssertion(row),
 						]),
 					)
@@ -283,7 +281,10 @@ export const view = Submodel.defineView<Model, Message, PageViewInputs>((model, 
 	const isEdit = model.editingId !== null
 	const header = {
 		title: isEdit ? "Edit monitor" : "New monitor",
-		description: "Maple checks it from Ashburn, US and records every check as a trace.",
+		description:
+			model.form.kind === "heartbeat"
+				? "Maple records every ping and alerts when one is late or reports a failure."
+				: "Maple checks it from Ashburn, US and records every check as a trace.",
 	}
 	if (model.isSessionLoaded && !canManage(model)) return adminOnlyPage(h, model, header)
 	if (isEdit && AsyncData.isFailure(model.existing.data))

@@ -1,8 +1,4 @@
-import {
-	MIN_COMPARE_SPANS,
-	type ReleaseServiceImpact,
-	shortReleaseLabel,
-} from "../../../components/releases/release-model"
+import { MIN_COMPARE_SPANS, type ReleaseServiceImpact, shortReleaseLabel } from "../release-model"
 import {
 	countLabel,
 	EMPTY_VALUE,
@@ -148,9 +144,9 @@ const comparisonTable = <M>(h: HtmlBuilder<M>, impact: ReleaseServiceImpact, bas
 	])
 
 const OLDEST_VERSION =
-	"This is the oldest version of the service in the window, so there is nothing to compare against. Widen the time range to include the version it replaced."
+	"This is the oldest version of the service in this window, so there is nothing to compare against. Widen the time range to include the version it replaced."
 
-/** `ReleaseComparison`: this version against the one it replaced on the same service. */
+/** This version against the one it replaced on the same service. */
 export const releaseComparison = <M>(
 	h: HtmlBuilder<M>,
 	impact: ReleaseServiceImpact,
@@ -199,7 +195,7 @@ export type RailInput<M> = Readonly<{
 	timeZone: string
 }>
 
-/** `ReleaseVersionsRail`: every version of the service in the window, newest first. */
+/** Every version of the service in the window, newest first. */
 export const releaseVersionsRail = <M>(h: HtmlBuilder<M>, input: RailInput<M>): Html => {
 	const sorted = Arr.sort(
 		input.impacts,
@@ -208,7 +204,7 @@ export const releaseVersionsRail = <M>(h: HtmlBuilder<M>, input: RailInput<M>): 
 	return sectionCard(
 		h,
 		{
-			title: "Versions in window",
+			title: "Versions in this window",
 			action: typography(h, { size: "2xs", tone: "subtle" }, [countLabel(sorted.length, "version")]),
 		},
 		[

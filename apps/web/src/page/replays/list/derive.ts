@@ -1,26 +1,23 @@
 import type { SessionTag } from "@maple/domain/query-engine"
-import { isQualityTier, sessionTagsFromSearch } from "../../../components/replays/session-tags"
+import { isQualityTier, sessionTagsFromSearch } from "../kit/session-tags"
 import { Option, Array as Arr } from "effect"
 import { AsyncData } from "foldkit"
 import { formatCompact } from "@maple/views/ui/filters/range-format"
-import type { SessionRow } from "../kit/session-row"
+import { sessionListItems, type SessionRow } from "../kit/session-row"
 import type { Model, ReplaysFacets, Search } from "./model"
+import { pagedRows } from "../../kit/infinite-pages"
 
-/** `MAX_RETAINED_REPLAYS`. */
 export const MAX_RETAINED_REPLAYS = 500
 
 export const selectedTags = (search: Search): ReadonlyArray<SessionTag> =>
 	sessionTagsFromSearch(search.tags) ?? []
 
-/** `allData`: the first page then every later one, capped. */
+/** The first page then every later one, capped. */
 export const allRows = (model: Model): ReadonlyArray<SessionRow> =>
 	Option.match(AsyncData.getData(model.firstPage.data), {
 		onNone: () => [],
 		onSome: (first) =>
-			[...first.rows, ...Arr.flatMap(model.pagination.pages, (page) => page.rows)].slice(
-				0,
-				MAX_RETAINED_REPLAYS,
-			),
+			pagedRows(first.rows, model.pagination.pages, (page) => page.rows, MAX_RETAINED_REPLAYS),
 	})
 
 /** The cursor of the last page, while more remain and the cap has not been reached. */
@@ -31,7 +28,25 @@ export const nextCursor = (model: Model): string | null => {
 	return last?.hasMore === true ? last.nextCursor : null
 }
 
-/** `ReachEndSentinel` re-observes when `loading` or its `onReachEnd` deps change: the remount key. */
+/** The latest loaded pages, in a row, none of whose sessions shows as its own row (all folded). */
+export const stalledPages = (model: Model): number => {
+	const shown = new Set(
+		Arr.flatMap(
+			sessionListItems(allRows(model), {
+				collapse: collapsesLowSignal(model.search),
+				expanded: model.expandedRuns,
+				nowMs: model.nowMs,
+			}),
+			(item) => (item.kind === "session" ? [item.session.sessionId] : []),
+		),
+	)
+	return Arr.takeWhile(
+		Arr.reverse(model.pagination.pages),
+		(page) => !Arr.some(page.rows, (row) => shown.has(row.sessionId)),
+	).length
+}
+
+/** The list-end watcher's remount key: it re-observes when loading or the paging state changes. */
 export const listEndKey = (model: Model): string =>
 	Arr.join(
 		[

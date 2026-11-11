@@ -4,10 +4,11 @@ import type { VariableValues } from "@maple/query-engine"
 import { pluralize } from "@maple/ui/lib/format"
 import { toEpochMs } from "@maple/ui/lib/time-format"
 import { cn } from "@maple/ui/lib/utils"
-import { CANONICAL_COLS, colsForWidth } from "../../../components/dashboard-builder/canvas/grid-breakpoints"
+import { CANONICAL_COLS, colsForWidth } from "../kit/grid-breakpoints"
 import { AsyncData } from "foldkit"
 import type { Html, HtmlBuilder } from "foldkit/html"
 import * as Chart from "@maple/views/charts/chart"
+import { actionBar } from "@maple/views/ui/action-bar"
 import { button, linkButton } from "@maple/views/ui/button"
 import { empty, emptyDescription, emptyHeader, emptyMedia, emptyTitle } from "@maple/views/ui/empty"
 import { eyebrow } from "@maple/views/ui/eyebrow"
@@ -37,8 +38,6 @@ import { typography, typographyClass } from "@maple/views/ui/typography"
 import { hstack, vstack } from "@maple/views/ui/stack"
 import { Array as Arr } from "effect"
 
-// `TemplateDetailPanel` and `TemplateLivePreview`: a template's details and live preview.
-
 type H = HtmlBuilder<Message>
 
 const IDLE: FieldState = {
@@ -55,7 +54,7 @@ const paramIds = (key: string): FieldIds => ({
 	error: `template-param-${key}-error`,
 })
 
-/** `PanelRestState`: nothing selected yet. */
+/** Nothing selected yet. */
 export const panelRestState = (h: H): Html =>
 	empty(
 		h,
@@ -85,7 +84,7 @@ type PreviewWidget = DashboardDocument["widgets"][number]
 const heightFor = (widget: PreviewWidget): number =>
 	Math.max(widget.layout.h * ROW_HEIGHT, MIN_HEIGHT.get(widget.visualization) ?? MIN_HEIGHT_DEFAULT)
 
-/** `PreviewSkeleton`: a row of stats over a pair of charts at their real heights. */
+/** A row of stats over a pair of charts at their real heights. */
 const previewSkeleton = (h: H): Html => {
 	const statHeight = `${MIN_HEIGHT.get("stat") ?? 0}px`
 	return h.div(
@@ -99,7 +98,7 @@ const previewSkeleton = (h: H): Html => {
 	)
 }
 
-/** `TemplateLivePreview`: the template's widgets drawn over the org's own data. */
+/** The template's widgets drawn over the org's own data. */
 const livePreview = (h: H, model: Model, timeZone: string): Html =>
 	AsyncData.match(model.preview.data, {
 		// A required parameter still empty holds the preview back: say what it waits on.
@@ -197,7 +196,7 @@ const previewBody = (h: H, model: Model, timeZone: string, variables: VariableVa
 	])
 }
 
-/** `RequirementBlock`: what the org needs before the widgets fill in. */
+/** What the org needs before the widgets fill in. */
 const requirementBlock = (
 	h: H,
 	template: V2DashboardTemplate,
@@ -312,7 +311,7 @@ const parameterFields = (h: H, model: Model, template: V2DashboardTemplate): Rea
 							field(
 								h,
 								{
-									className: "items-stretch gap-1.75",
+									className: "items-stretch gap-2",
 									state: IDLE,
 									attributes: [h.Key(parameter.key)],
 								},
@@ -366,64 +365,56 @@ const parameterFields = (h: H, model: Model, template: V2DashboardTemplate): Rea
 const createRow = (h: H, model: Model, template: V2DashboardTemplate, isReady: boolean): Html => {
 	const missing = missingRequiredOf(template, model.parameters)
 	const create = Message.ClickedCreate({ templateId: template.id })
-	return h.div(
-		[h.Class("sticky bottom-0 z-10 -mx-8 -mb-8 bg-[var(--panel-surface)] px-8 pt-3 pb-6")],
-		[
-			h.div([
-				h.AriaHidden(true),
-				h.Class(
-					"pointer-events-none absolute inset-x-0 bottom-full h-12 bg-gradient-to-t from-[var(--panel-surface)] to-transparent",
-				),
-			]),
-			hstack(h, { align: "center", wrap: true, className: "gap-x-3.5 gap-y-2" }, [
-				...(isReady
-					? [
-							button(
-								h,
-								{
-									isDisabled: missing.length > 0,
-									isLoading: model.isCreating,
-									attributes: [h.OnClick(create)],
-								},
-								[
-									"Create dashboard",
-									icon(h, "ArrowRightIcon", {
-										attributes: [h.DataAttribute("icon", "inline-end")],
-									}),
-								],
-							),
-						]
-					: [
-							linkButton(h, { href: setupHref(template) }, [
-								`Set up ${template.requirement?.setupLabel ?? "the collector"}`,
-								icon(h, "ExternalLinkIcon", {
-									attributes: [h.DataAttribute("icon", "inline-end")],
-								}),
-							]),
-							button(
-								h,
-								{
-									variant: "outline",
-									isDisabled: missing.length > 0,
-									isLoading: model.isCreating,
-									attributes: [h.OnClick(create)],
-								},
-								["Create it anyway"],
-							),
-						]),
-				typography(h, { size: "2xs", tone: "muted", as: "p", className: "min-w-0" }, [
-					missing.length > 0
-						? `Fill in ${Arr.join(missing, " and ")} first.`
-						: isReady
-							? "Creates a copy you own. Edit or delete it freely."
-							: "Creating it now is fine. The widgets stay empty until the data shows up, then fill in on their own.",
-				]),
+	return actionBar(h, {
+		label: "Create dashboard",
+		className: "mt-6",
+		leading: [
+			typography(h, { size: "2xs", tone: "muted", as: "p", className: "min-w-0" }, [
+				missing.length > 0
+					? `Fill in ${Arr.join(missing, " and ")} first.`
+					: isReady
+						? "Creates a copy you own. Edit or delete it freely."
+						: "Creating it now is fine. The widgets stay empty until the data shows up, then fill in on their own.",
 			]),
 		],
-	)
+		actions: isReady
+			? [
+					button(
+						h,
+						{
+							size: "sm",
+							isDisabled: missing.length > 0,
+							isLoading: model.isCreating,
+							attributes: [h.OnClick(create)],
+						},
+						[
+							"Create dashboard",
+							icon(h, "ArrowRightIcon", {
+								attributes: [h.DataAttribute("icon", "inline-end")],
+							}),
+						],
+					),
+				]
+			: [
+					button(
+						h,
+						{
+							size: "sm",
+							variant: "outline",
+							isDisabled: missing.length > 0,
+							isLoading: model.isCreating,
+							attributes: [h.OnClick(create)],
+						},
+						["Create it anyway"],
+					),
+					linkButton(h, { size: "sm", href: setupHref(template) }, [
+						`Set up ${template.requirement?.setupLabel ?? "the collector"}`,
+						icon(h, "ExternalLinkIcon", { attributes: [h.DataAttribute("icon", "inline-end")] }),
+					]),
+				],
+	})
 }
 
-/** `TemplateDetailPanel`. */
 export const detailPanel = (
 	h: H,
 	model: Model,

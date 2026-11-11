@@ -1,21 +1,9 @@
-import type { InkPalette } from "../../../components/service-map/three/palette"
-import {
-	DEER_NECK,
-	DEER_YAW,
-	drawBird,
-	drawBlimp,
-	drawDeerHead,
-	drawDuck,
-} from "../../../components/service-map/three/maple-scenery"
-import type { Waterway } from "../../../components/service-map/three/maple-scenery-field"
-import {
-	type Bounds,
-	hash,
-	prototypes,
-	type Sketch,
-	sketchOf,
-} from "../../../components/service-map/three/maple-scenery-sketch"
+import type { InkPalette } from "./palette"
+import { DEER_NECK, DEER_YAW, drawBird, drawBlimp, drawDeerHead, drawDuck } from "./maple-scenery"
+import type { Waterway } from "./maple-scenery-field"
+import { type Bounds, hash, prototypes, type Sketch, sketchOf } from "./maple-scenery-sketch"
 import * as THREE from "three"
+import { lampPool } from "./decor"
 import { group, inkBox, inkSolid, mesh, type Running, type Scope, sketchDrawing, type Vec3 } from "./kit"
 import { Array as Arr } from "effect"
 
@@ -284,21 +272,8 @@ export function campfire(
 ): THREE.Group {
 	const elapsed = clock(scope, running)
 	const puff = new THREE.IcosahedronGeometry(0.11, 0)
-	const disc = new THREE.CircleGeometry(0.85, 24).rotateX(-Math.PI / 2)
-	const glow = night
-		? // A steady warm pool of firelight on the ground; it never flickers.
-			mesh(
-				disc,
-				new THREE.MeshBasicMaterial({
-					color: palette.glow,
-					transparent: true,
-					opacity: 0.16,
-					depthWrite: false,
-				}),
-				{ position: [0, 0.012, 0] },
-			)
-		: null
-	if (glow) glow.renderOrder = 1
+	// A steady warm pool of firelight on the ground; it never flickers.
+	const glow = night ? lampPool({ position: [0, 0.012, 0], radius: 0.85, color: palette.glow }) : null
 	const puffs = Arr.map([0, 1, 2], () =>
 		group({}, [inkSolid({ geometry: puff, color: palette.cloud, ink: palette.ink })]),
 	)

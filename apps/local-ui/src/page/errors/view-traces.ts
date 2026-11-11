@@ -16,7 +16,7 @@ import type { ErrorTrace, ErrorTypeRow } from "./fetch"
 import { Message } from "./message"
 import type { Card } from "./model"
 
-// The open panel of `ErrorTypeCard`: the most recent traces of one error type.
+// An error type card's open panel: the most recent traces of one error type.
 
 type H = HtmlBuilder<Message>
 
@@ -37,7 +37,7 @@ export const relativeTime = (h: H, value: DateTime.Utc, clock: Clock): Html | st
 			})
 }
 
-/** `traceLinkParams`: the view's params, plus the error span to focus when the trace has one. */
+/** The view's params, plus the error span to focus when the trace has one. */
 const traceLinkHref = (trace: ErrorTrace, query: URLSearchParams): string => {
 	const params = new URLSearchParams(Rec.fromEntries(query))
 	if (trace.errorSpanId) params.set("spanId", trace.errorSpanId)
@@ -94,13 +94,13 @@ export const cardTraces = (
 	if (Option.isSome(failure))
 		return errorState(h, {
 			failure: failure.value,
-			title: "Couldn’t load traces",
+			title: "Couldn't load traces",
 			onRetry: Message.ClickedRetryTraces({ fingerprintHash: row.fingerprintHash }),
 		})
 	const traces = Option.getOrElse(AsyncData.getData(card.traces.data), () => [])
 	if (traces.length === 0)
 		return typography(h, { as: "p", size: "xs", tone: "muted", className: "py-2" }, [
-			"No traces found for this error in the selected range.",
+			"No traces for this error in this window",
 		])
 	return dividedList(
 		h,

@@ -1,4 +1,4 @@
-import { SEVERITY_FILL } from "../../errors/kit/severity"
+import { severityDot } from "../../kit/issue-severity"
 import { NARROW_TWO_COLUMNS, ROOMY_COLUMN, WIDE_COLUMN } from "../kit/layout"
 import type { SecurityAuditFinding, SecurityAuditRun, SecurityAuditTarget } from "@maple/domain/http"
 import { AsyncData } from "foldkit"
@@ -14,7 +14,6 @@ import { meter } from "@maple/views/ui/meter"
 import { timestamp } from "@maple/views/ui/timestamp"
 import { skeletonSlowNote } from "@maple/views/ui/skeleton"
 import { panel, panelHeader } from "@maple/views/ui/panel"
-import { statusDot } from "@maple/views/ui/status-dot"
 import {
 	ROW_LINK_LIFT,
 	rowLink,
@@ -70,7 +69,7 @@ import {
 } from "./derive"
 import { canRunAudits, Message, type Model } from "./model"
 import { bucketOf, countByBucket, isUnverified } from "../kit/findings"
-import { findingBadge } from "../kit/findings-view"
+import { estimatedSeverityBadge, unverifiedChip } from "../kit/findings-view"
 import { auditSteps, emptyOnRamp } from "./view-empty"
 import { leadsLine, stopSummaryOf } from "../kit/outcome"
 import { emptyMessage } from "@maple/views/ui/empty"
@@ -246,8 +245,6 @@ const kpis = (h: H, model: Model): Html => {
 	])
 }
 
-// TARGETS TABLE
-
 /** "3 high, 1 unverified": how many of a severity's count are estimates. */
 const countTitle = (
 	count: number,
@@ -282,14 +279,7 @@ const leadCounts = (h: H, findings: ReadonlyArray<SecurityAuditFinding>): Html =
 						h.Class(cn(hstackClass({ gap: "1.5", inline: true }), ROW_LINK_LIFT)),
 						h.Title(countTitle(counts[severity], severity, unverified)),
 					],
-					[
-						statusDot(h, {
-							tone: "custom",
-							size: "lg",
-							className: SEVERITY_FILL[severity],
-						}),
-						String(counts[severity]),
-					],
+					[severityDot(h, severity), String(counts[severity])],
 				),
 			),
 			...(toValidate === 0
@@ -314,7 +304,7 @@ const severityLegend = (h: H): Html =>
 		{ gap: "2.5", as: "span", attributes: [h.AriaHidden(true)] },
 		Arr.map(["critical", "high", "medium", "low"] as const, (severity) =>
 			hstack(h, { gap: "1.5", inline: true, as: "span", attributes: [h.Key(severity)] }, [
-				statusDot(h, { tone: "custom", className: SEVERITY_FILL[severity] }),
+				severityDot(h, severity),
 				SECURITY_SEVERITY_LABEL[severity],
 			]),
 		),
@@ -484,8 +474,6 @@ const targetsPanel = (h: H, model: Model, targets: ReadonlyArray<SecurityAuditTa
 		]),
 	])
 
-// BOTTOM PANELS
-
 const findingHref = (finding: SecurityAuditFinding) =>
 	hrefOf(AppRoute.SecurityFinding({ targetId: finding.targetId, fingerprint: finding.fingerprint }))
 
@@ -515,7 +503,7 @@ const findingItem = (h: H, finding: SecurityAuditFinding, repository: string): H
 				[h.Class("w-16 shrink-0")],
 				[
 					isUnverified(finding)
-						? findingBadge(h, finding)
+						? estimatedSeverityBadge(h, finding)
 						: finding.verdict === "needs_validation"
 							? h.span([h.Class("text-xs text-muted-foreground normal-case")], ["To validate"])
 							: finding.overallSeverity === null
@@ -523,7 +511,7 @@ const findingItem = (h: H, finding: SecurityAuditFinding, repository: string): H
 								: securitySeverityBadge(h, finding.overallSeverity),
 				],
 			),
-			vstack(h, { shrink: true, as: "span" }, [
+			vstack(h, { shrink: true, grow: true, as: "span" }, [
 				typography(h, { size: "sm", truncate: true }, [finding.record.title]),
 				typography(h, { size: "xs", tone: "muted", truncate: true }, [
 					Arr.join(
@@ -532,6 +520,7 @@ const findingItem = (h: H, finding: SecurityAuditFinding, repository: string): H
 					),
 				]),
 			]),
+			...(isUnverified(finding) ? [h.span([h.Class("shrink-0")], [unverifiedChip(h)])] : []),
 		],
 		`${finding.targetId}/${finding.fingerprint}`,
 	)

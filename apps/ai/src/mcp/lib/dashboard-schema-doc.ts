@@ -49,8 +49,6 @@ const json = (value: unknown): string => "```json\n" + stringifyJsonPretty(value
 
 const mcpPanels = (): ReadonlyArray<WidgetTypeMeta> => Arr.filter(PANEL_TYPES, (meta) => meta.mcpExposed)
 
-// --- panel types ---------------------------------------------------------
-
 const panelTypesSection = (): string => {
 	const rows = Arr.map(mcpPanels(), (meta) => {
 		const notes: string[] = []
@@ -100,8 +98,6 @@ const panelTypesSection = (): string => {
 		"\n",
 	)
 }
-
-// --- data sources --------------------------------------------------------
 
 const exampleQuerySource = () =>
 	makeQueryDataSource({
@@ -329,8 +325,6 @@ const dataSourcesSection = (): string =>
 		"\n",
 	)
 
-// --- units ---------------------------------------------------------------
-
 const unitsSection = (): string =>
 	Arr.join(
 		[
@@ -359,8 +353,6 @@ const unitsSection = (): string =>
 		],
 		"\n",
 	)
-
-// --- queries -------------------------------------------------------------
 
 const queriesSection = (): string => {
 	const aggRows = Arr.map(
@@ -456,6 +448,10 @@ const queriesSection = (): string => {
 			'a span attribute, so `db.system = "clickhouse"` works directly. Cap: 5 `attr.*` plus 5',
 			"`resource.*` filters per query.",
 			"",
+			"On `logs` the keys are `service.name`, `severity`, `attr.<key>`, `resource.<key>` and",
+			'`body` (alias `message`), a substring match on the log message: `body contains "timeout"`.',
+			"`body` takes `=` or `contains` (both match a substring) and appears at most once per query.",
+			"",
 			"On `metrics`, `attr.<key>` filters the datapoint labels with any operator. A metric reported",
 			"per `state` (`system.cpu.utilization`) averages to roughly 1/states unless scoped: `avg` with",
 			'`attr.state = "idle"` is the idle fraction (busy is 1 minus it), `attr.state != "idle"` drops',
@@ -471,8 +467,6 @@ const queriesSection = (): string => {
 		"\n",
 	)
 }
-
-// --- display -------------------------------------------------------------
 
 const displaySection = (): string =>
 	Arr.join(
@@ -521,8 +515,6 @@ const displaySection = (): string =>
 		],
 		"\n",
 	)
-
-// --- raw sql -------------------------------------------------------------
 
 const rawSqlSection = (): string =>
 	Arr.join(

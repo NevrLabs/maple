@@ -237,7 +237,7 @@ port. `maple start -d` checks the port before spawning and reports ready only
 when `/local/status` answers with the child's pid (120s budget).
 
 **Under a supervisor.** A start refusal that retrying cannot fix (an unloadable
-libchdb, a dirty or incompatible store; the list is `DETERMINISTIC_START_TAGS` in
+libchdb, a dirty or incompatible store; the list is `isDeterministicStartFailure` in
 `apps/cli/src/commands/start-failures.ts`) exits with status **78**, and so does
 a `maple start -d` whose child exited 78. Tell the supervisor not to restart on
 it: systemd `RestartPreventExitStatus=78`, launchd `KeepAlive` =
@@ -436,10 +436,11 @@ progress. Target-only abandonment validates the coordinator-owned journal
 structure and filesystem proofs without requiring the historical executable
 module or its state decoder to remain available.
 
-Migration edges are statically registered. v0 -> v1 is a typed module
-(`local-store-migrations/legacy-to-current.ts`); every later edge is one row of
-the append-only table in `local-store-migrations/steps.ts`, run by the single
-executor in `step-executor.ts`. A row names its id and versions, the typed
+Migration edges are statically registered in `packages/local-server/src`. v0 -> v1
+is a typed module (`local-store-migrations/legacy-to-current.ts`); every later edge
+is one row of the append-only table in `local-store-migrations/steps.ts`, run by
+the single executor in `step-executor.ts`. A row's position fixes its versions and,
+with its slug, its id (the journal key). A row names the typed
 operations to run on the cloned target before and after the target snapshot is
 bootstrapped (add columns or an index, drop views, tables or columns, backfill
 statements), any extra row counts to record and re-check, and its plan lines
@@ -452,23 +453,19 @@ operations must be safe for this shared in-place topology. The coordinator test
 seam exercises a two-edge chain, a resumed verified edge, and one final
 promotion.
 
-Structural identities live in the append-only history at
-`packages/local-server/src/local-schema-history.ts`. The schema gate checks the
-current identity against the history tip, preserves the base branch's prior
-entries in CI, and requires every historical identity to reach the current one
-through registered migration edges. Changing a schema digest or manifest
-therefore requires a new versioned entry and an executable edge together.
+Structural identities are derived from the frozen per-version DDL snapshots in
+`packages/local-server/src/schema/history/`, listed in
+`packages/local-server/src/local-schema-history.ts`. The schema gate checks that
+the current schema is the newest snapshot, holds every snapshot the base branch
+shipped byte-identical in CI, and requires every historical identity to reach the
+current one through registered migration edges. Changing a schema digest or
+manifest therefore requires a new snapshot and an executable edge together.
 
-Everything that pairing demands except the DDL is derived from the new version
-number, so `bun run local-schema:bump <slug>` writes it: the retained snapshot
-(kept with the migrations in `apps/cli/src/server/schema/`), the version
-constant, the `schema-snapshots.ts` and `schema-identity.ts` edit sites, the history entry's
-hashes, a new row in `steps.ts`, and the ids and identities pinned in
-`apps/cli/test/local-store-migrations.test.ts` and the native probe. It leaves
-the row's operations, plan line and dispositions to be written.
-When the gate fails because the schema moved without a bump, it names that
-command; when a hand-bump left the history behind, it prints the entry to
-append.
+`bun run local-schema:bump <slug>` writes everything except the DDL work: the
+new snapshot, its entry in the history list, the version constant, and a new row
+in `steps.ts`. It leaves the row's operations, plan line and dispositions to be
+written. When the gate fails because the schema moved without a bump, it names
+that command.
 
 The Linux native probe `apps/cli/test/native-local-store-migration.sh` uses a
 native chDB setup helper to create a stopped historical raw-table fixture,
@@ -815,6 +812,23 @@ MAPLE_TARGET=linux-arm64 scripts/build-local-binary.sh   # cross-compile (linux-
 apps/cli/docker/build-image.sh maple-local:dev && apps/cli/docker/image-smoke.sh maple-local:dev
 ```
 
+## Nix flake
+
+`flake.nix` packages the released bundle (`nix/package.nix`, pinned by
+`nix/release.json`) and exports `nixosModules.maple` (`nix/module.nix`), the
+systemd counterpart of the container entrypoint: a static `maple` user,
+secrets from files via `LoadCredential`, `HOME=/var/lib/maple`, `--offline`, the same dirty-store
+policy and `RestartPreventExitStatus=78`. The package wraps `maple` with
+`MAPLE_NO_UPDATE_CHECK=1` and refuses `maple update`;
+autoPatchelf keeps Bun's appended payload intact, but stripping would not, so
+`dontStrip` stays. User docs: `apps/landing/src/content/docs/self-hosting/platforms/nixos.md`.
+
+- `nix/test.nix` is a NixOS VM test (ingest key, access token, a span through
+  OTLP and back through the CLI, a restart). The `Nix` workflow runs
+  `nix flake check` on changes to the flake.
+- The release workflow's `nix-release` job runs `scripts/update-nix-release.sh <tag>`
+  after a stable release and opens a PR with the new pin. Run it by hand to re-pin.
+
 ## Release signing
 
 A `.sha256` published next to a bundle only proves the download is intact: the
@@ -822,12 +836,20 @@ same workflow uploads both to the same GitHub release, so anyone who can publish
 a release or replace its assets can ship a matching checksum. Each release
 therefore also carries `<bundle>.tar.gz.sha256.sig`, an Ed25519 signature over
 the exact `.sha256` bytes made with a key that exists only as the
-`MAPLE_RELEASE_SIGNING_KEY` Actions secret, while every binary embeds the public
-half. The signed line names its bundle (`<hash>  maple-<tag>-<target>.tar.gz`),
+`MAPLE_RELEASE_SIGNING_KEY` secret of the `cli-release` environment, while every
+binary embeds the public half. The signed line names its bundle (`<hash>  maple-<tag>-<target>.tar.gz`),
 so a signature from another version or platform cannot vouch for a different
 download. Signing does not help if the build itself is compromised or the key
 leaks, so each tarball also gets a GitHub build-provenance attestation as an
 independent check.
+
+Who can get a signature: `local-binary-release.yml` signs only when it is
+dispatched on `main` with a `tag` input (`release.yml` does this for each new CLI
+version). Before any repo code runs, its preflight job requires the tag to be
+`v<apps/cli version>` at the tagged commit and that commit to be on main's history,
+and the build then checks out that exact commit. Only then does the job enter
+`cli-release`, which deploys from `main` only. A tarball already on a release is
+never replaced. Build-only runs (no `tag`) never see the key.
 
 How it is checked (`scripts/sign-local-release.ts` signs,
 `apps/cli/src/core/release-signature.ts` verifies):
@@ -864,7 +886,7 @@ Provisioning the key (once, on a trusted machine):
 
 1. `bun scripts/generate-release-signing-key.ts ~/maple-release-signing.pem`
    writes the private key (mode `0600`) and prints the public key.
-2. `gh secret set MAPLE_RELEASE_SIGNING_KEY < ~/maple-release-signing.pem`.
+2. `gh secret set MAPLE_RELEASE_SIGNING_KEY --env cli-release < ~/maple-release-signing.pem`.
 3. Paste the public key into `MAPLE_RELEASE_PUBLIC_KEY` in
    `apps/cli/src/core/release-signature.ts` and `release_public_key` in
    `scripts/install.sh` (a test keeps them equal), and merge.

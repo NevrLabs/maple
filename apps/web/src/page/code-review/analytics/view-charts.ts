@@ -1,5 +1,5 @@
 import type { CodeReviewAnalytics } from "@maple/domain/http"
-import { bucketIso } from "../../../components/code-review/code-review-format"
+import { bucketIso } from "../kit/code-review-format"
 import type { Html, HtmlBuilder } from "foldkit/html"
 import * as BarChart from "@maple/views/charts/bar-chart"
 import type * as Chart from "@maple/views/charts/chart"
@@ -15,8 +15,6 @@ import { repositoryList } from "./view-lists"
 import { vstack } from "@maple/views/ui/stack"
 import { Array as Arr, Record as Rec, Order } from "effect"
 import { textLink } from "@maple/views/ui/text-link"
-
-// `VolumeCard` and `IssuesCard`.
 
 type H = HtmlBuilder<Message>
 
@@ -116,7 +114,12 @@ export const volumeCard = (
 			control: panelSelect(h, model.volumeSelect, VOLUME_LABELS, "Volume metric", (message) =>
 				Message.GotVolumeSelectMessage({ message }),
 			),
-			footer: repositoryList(h, "Top repositories by reviews", topRepositories(analytics, "reviews")),
+			footer: repositoryList(
+				h,
+				"Top repositories by reviews",
+				topRepositories(analytics, "reviews"),
+				model.search,
+			),
 		},
 		[
 			chartFrame(h, analytics.current.reviews === 0, () =>
@@ -158,7 +161,12 @@ export const issuesCard = (
 		}),
 	)
 	const footer = vstack(h, { gap: "3" }, [
-		repositoryList(h, "Repositories with the most issues", topRepositories(analytics, "findings")),
+		repositoryList(
+			h,
+			"Repositories with the most issues",
+			topRepositories(analytics, "findings"),
+			search,
+		),
 		textLink(h, { href, tone: "muted", className: "self-center text-sm underline-offset-4" }, [
 			"See all issues caught",
 			icon(h, "ArrowRightIcon", { size: 14 }),

@@ -8,7 +8,7 @@ import {
 	SESSION_TAG_LABELS,
 	SESSION_TAG_ORDER,
 	SESSION_TAG_STYLES,
-} from "../../../components/replays/session-tags"
+} from "./session-tags"
 import type { Html, HtmlBuilder } from "foldkit/html"
 import { badge } from "@maple/views/ui/display"
 import { icon } from "@maple/views/ui/icon"
@@ -16,16 +16,10 @@ import { pressable } from "@maple/views/ui/pressable"
 import { textLink } from "@maple/views/ui/text-link"
 import { tooltipTrigger } from "@maple/views/ui/tooltip-host"
 import { truncatedText } from "@maple/views/ui/truncated-text"
+import { errorCountPill } from "@maple/views/ui/error-count-pill"
 import { relativeTime } from "../../kit/relative-time"
 import type { SessionRow } from "./session-row"
-import {
-	browserIconFor,
-	COLUMNS,
-	deviceIconFor,
-	errorCountPill,
-	livePill,
-	type SessionsListOptions,
-} from "./sessions-parts"
+import { browserIconFor, COLUMNS, deviceIconFor, livePill, type SessionsListOptions } from "./sessions-parts"
 import { typography, typographyClass } from "@maple/views/ui/typography"
 import { hstack } from "@maple/views/ui/stack"
 import { selectableRow } from "@maple/views/ui/selectable-row"
@@ -98,7 +92,7 @@ const sessionTags = <M>(
 	)
 
 const sessionBadges = <M>(h: HtmlBuilder<M>, session: SessionRow): ReadonlyArray<Html> => [
-	...(session.errorCount > 0 ? [errorCountPill(h, session.errorCount)] : []),
+	...(session.errorCount > 0 ? [errorCountPill(h, { count: session.errorCount })] : []),
 	...(session.traceCount > 0
 		? [
 				badge(h, { variant: "meta", pill: true, size: "xs", mono: true }, [

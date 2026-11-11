@@ -9,36 +9,29 @@ import {
 	failureStatus,
 	fillTrend,
 	unwrapToolErrorText,
-} from "../../../lib/agent-sessions/tool-error-display"
+} from "../../kit/tools/tool-error-display"
 import { UNGROUPED_FINGERPRINT } from "@maple/web-data/lib/tool-analytics"
 import type { Html, HtmlBuilder } from "foldkit/html"
 import type { LoadFailure } from "@maple/views/data/load-failure"
 import { errorState } from "@maple/views/ui/error-state"
 import { eyebrow } from "@maple/views/ui/eyebrow"
+import { badge } from "@maple/views/ui/display"
 import { icon } from "@maple/views/ui/icon"
 import { miniBars } from "@maple/views/ui/mini-bars"
 import { pressable } from "@maple/views/ui/pressable"
 import { skeleton } from "@maple/views/ui/skeleton"
 import { statusDot } from "@maple/views/ui/status-dot"
 import { truncatedText } from "@maple/views/ui/truncated-text"
-import { errorTextLine, failureStatusLine, maskChip, windowRangeLabel } from "../tools-kit/error-parts"
-import type { ToolErrorRow } from "../tools-kit/model"
-import {
-	shareCell,
-	type SortState,
-	sortRows,
-	th,
-	toolTableRow,
-	toolTable,
-	toolTableBody,
-	toolTableHead,
-} from "../tools-kit/table"
+import { errorTextLine, failureStatusLine, maskChip, windowRangeLabel } from "../../kit/tools/error-parts"
+import type { ToolErrorRow } from "../../kit/tools/model"
+import { shareCell, th, toolTableRow, toolTable, toolTableBody, toolTableHead } from "../../kit/tools/table"
 import { relativeTime } from "../../kit/relative-time"
 import { Message } from "./message"
 import { typography, typographyClass } from "@maple/views/ui/typography"
 import { hstack, vstack } from "@maple/views/ui/stack"
 import { columnClass } from "@maple/views/ui/column"
 import { Array as Arr, String as Str } from "effect"
+import { type SortState, sortRows } from "../../kit/table-sort"
 
 type H = HtmlBuilder<Message>
 
@@ -63,7 +56,7 @@ export type Prepared = ToolErrorRow &
 		spark: ReadonlyArray<number>
 	}>
 
-/** `prepareToolErrors`: messages unwrapped, the shared prefix hoisted, trends filled over the window. */
+/** Messages unwrapped, the shared prefix hoisted, trends filled over the window. */
 export const prepare = (rows: ReadonlyArray<ToolErrorRow>, range: Range) => {
 	const failures = Arr.reduce(rows, 0, (sum, row) => sum + row.calls)
 	const bucket = errorTrendBucket(range.startMs, range.endMs)
@@ -152,15 +145,9 @@ const errorRow = (
 					groupTitle(h, row),
 					...(sharedType === undefined && row.errorType !== ""
 						? [
-								h.span(
-									[
-										h.Class(
-											cn(
-												"flex h-4.5 shrink-0 items-center rounded-sm border border-border px-1.5 text-2xs leading-3.5",
-												TONE_TEXT.crit,
-											),
-										),
-									],
+								badge(
+									h,
+									{ variant: "meta", size: "xs", className: cn("px-1.5", TONE_TEXT.crit) },
 									[row.errorType],
 								),
 							]
@@ -476,8 +463,8 @@ export const errorsTable = (h: H, inputs: ErrorsTableInputs): Html => {
 							[h.Class("pl-3.5 text-xs text-muted-foreground")],
 							[
 								inputs.toolCalls > 0
-									? `All ${formatNumber(inputs.toolCalls)} ${inputs.tool} ${pluralize(inputs.toolCalls, "call")} in this range succeeded.`
-									: `${inputs.tool} was not called in this range.`,
+									? `All ${formatNumber(inputs.toolCalls)} ${inputs.tool} ${pluralize(inputs.toolCalls, "call")} in this window succeeded`
+									: `${inputs.tool} was not called in this window`,
 							],
 						),
 					])

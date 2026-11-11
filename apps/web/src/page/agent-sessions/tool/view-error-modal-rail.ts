@@ -1,5 +1,5 @@
 import { formatNumber } from "@maple/ui/lib/format"
-import { unwrapToolErrorText, type VariantDifference } from "../../../lib/agent-sessions/tool-error-display"
+import { unwrapToolErrorText, type VariantDifference } from "../../kit/tools/tool-error-display"
 import { sessionRowId } from "@maple/agent-sessions"
 import { cn } from "@maple/ui/lib/utils"
 import { AsyncData } from "foldkit"
@@ -19,8 +19,6 @@ import type { ModalInputs } from "./view-error-modal"
 import { typography } from "@maple/views/ui/typography"
 import { hstack, vstack } from "@maple/views/ui/stack"
 import { Array as Arr, String as Str } from "effect"
-
-// The rail of `ToolErrorModal`: the variants a group folded, where it happens, which sessions hit it.
 
 type H = HtmlBuilder<Message>
 type BreakdownRow = ErrorDetail["breakdown"][number]
@@ -73,7 +71,7 @@ const variantsSection = (
 					onClick: Message.ClickedVariant({ variant: isSelected ? undefined : row.message }),
 					isSelected,
 					className: cn(
-						"-mx-2 flex h-8 shrink-0 items-center gap-2.5 rounded-md px-2 text-left font-mono text-xs transition-colors",
+						"-mx-2 flex h-8 shrink-0 items-center gap-2.5 rounded-md px-2 text-left font-mono text-xs",
 						isSelected ? "bg-primary-a2" : "hover:bg-surface-sunken active:bg-surface-sunken",
 					),
 					attributes: [h.Key(row.message), h.Title(unwrapToolErrorText(row.message).text)],
@@ -167,7 +165,7 @@ export const sessionLink = (
 			),
 		],
 		[
-			typography(h, { truncate: true }, [sessionRowId(options.sessionId)]),
+			typography(h, { mono: true, truncate: true }, [sessionRowId(options.sessionId)]),
 			icon(h, "ExternalLinkIcon", {
 				size: 10,
 				className: "shrink-0 text-muted-foreground",
@@ -178,7 +176,7 @@ export const sessionLink = (
 
 const sessionRowClass = (isSelected: boolean) =>
 	cn(
-		"group flex w-full shrink-0 items-center gap-3 border-b border-border-subtle pr-4 pl-4 text-left transition-colors",
+		"group flex w-full shrink-0 items-center gap-3 border-b border-border-subtle pr-4 pl-4 text-left",
 		!isSelected && "hover:bg-surface-sunken active:bg-surface-sunken",
 	)
 

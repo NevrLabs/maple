@@ -1,9 +1,9 @@
 import { Array, Option, Predicate, Schema, Record as Rec } from "effect"
-import { Subscription } from "foldkit"
+import { AsyncData, Subscription } from "foldkit"
 import type { Command } from "foldkit"
 import type { Html, HtmlBuilder } from "foldkit/html"
 import type { Resources } from "../platform/resources"
-import type { AppRoute } from "../route"
+import { AppRoute } from "../route"
 import type { BreadcrumbEntry } from "../shell"
 import type { PageSourceRef } from "../shell/source-link"
 import type {
@@ -31,6 +31,7 @@ import * as AlertsSlo from "./alerts/slo"
 import * as AlertsSloNew from "./alerts/slo-form"
 import * as AlertsSchedule from "./alerts/schedule"
 import * as AlertsScheduleNew from "./alerts/schedule-form"
+import * as AlertsEscalationChain from "./alerts/escalation-chain"
 import * as IngestRuleEditor from "./settings/ingest-rule"
 import * as DashboardsList from "./dashboards/list"
 import * as DashboardTemplates from "./dashboards/templates"
@@ -127,6 +128,7 @@ export const pages = [
 	AlertsSloNew.page,
 	AlertsSchedule.page,
 	AlertsScheduleNew.page,
+	AlertsEscalationChain.page,
 	StatusPagesList.page,
 	StatusPageBuilder.page,
 	StatusPageEditor.page,
@@ -196,9 +198,7 @@ export const pages = [
 ]
 
 /** Public routes a page renders bare, outside the shell (`/share/$token`). */
-const BARE_PAGE_ROUTES: ReadonlyArray<AppRoute["_tag"]> = ["Share"]
-
-export const isBarePageRoute = (route: AppRoute): boolean => BARE_PAGE_ROUTES.includes(route._tag)
+export const isBarePageRoute = AppRoute.isAnyOf(["Share"])
 
 export const PageSlot = Schema.Union(Array.map(pages, (page) => page.Slot))
 export type PageSlot = typeof PageSlot.Type
@@ -261,23 +261,12 @@ export const enterRoute = (
 		},
 	)
 
-const ASYNC_DATA_TAGS: ReadonlyArray<string> = [
-	"Idle",
-	"Loading",
-	"Refreshing",
-	"Failure",
-	"Stale",
-	"Success",
-]
-
 /** Some `AsyncData` in the Model is in flight; its answer would be dropped while parked. */
 const hasLoadInFlight = (value: unknown): boolean => {
 	if (Array.isArray(value)) return Array.some(value, hasLoadInFlight)
 	if (!Predicate.isReadonlyObject(value)) return false
-	const tag = value["_tag"]
 	// An `AsyncData`'s own data holds no requests: rows are not walked.
-	if (Predicate.isString(tag) && ASYNC_DATA_TAGS.includes(tag))
-		return tag === "Loading" || tag === "Refreshing"
+	if (AsyncData.isAsyncData(value)) return AsyncData.isPending(value)
 	return Array.some(Rec.values(value), hasLoadInFlight)
 }
 
@@ -339,10 +328,11 @@ export const updatePage = (
 				onSome: (page) => toTransition(page.update(current, message, context), current),
 			})
 
+/** Widens one page's step to the registry's transition union (the per-page types do not unify). */
 const toHeld = (step: Option.Option<PageStep<PageSlot, PageMessage>>): Option.Option<PageTransition> => step
 
 /**
- * `useBlocker`: a navigation to `route` that would drop the open instance, held by a page that
+ * A navigation to `route` that would drop the open instance, held by a page that
  * blocks it; `None` lets it through (no page, a page that allows it, or the same instance).
  */
 export const blockNavigation = (
@@ -400,6 +390,13 @@ export const pageSubscriptions = Subscription.aggregate<PageHost, PageMessage, R
 /** The page's view boundary: a new instance (another org on the same route, too) mounts afresh. */
 export const pageSlotId = (slot: PageSlotBase): string => `page:${pageIdentity(slot)}`
 
+/**
+ * A `slotId` only scopes dispatch, so the instance's identity also keys the DOM: dashboard A to B
+ * would otherwise patch A's tree in place and B's `OnMount` hooks (the grid measure) never run.
+ */
+const keyedByInstance = <ParentMessage>(h: HtmlBuilder<ParentMessage>, key: string, child: Html): Html =>
+	h.keyed("div")(key, [h.Class("contents")], [child])
+
 /** Embeds the active page under `pageSlotId`. */
 export const viewPage = <ParentMessage>(
 	h: HtmlBuilder<ParentMessage>,
@@ -410,16 +407,20 @@ export const viewPage = <ParentMessage>(
 	Option.match(pageById(slot._tag), {
 		onNone: () => h.empty,
 		onSome: (page) =>
-			h.submodel({
-				slotId: pageSlotId(slot),
-				model: slot,
-				view: page.hostView,
-				viewInputs: inputs,
-				toParentMessage,
-			}),
+			keyedByInstance(
+				h,
+				pageSlotId(slot),
+				h.submodel({
+					slotId: pageSlotId(slot),
+					model: slot,
+					view: page.hostView,
+					viewInputs: inputs,
+					toParentMessage,
+				}),
+			),
 	})
 
-/** The active page's top-bar actions (`DashboardPage topbarActions`), or nothing. */
+/** The active page's top-bar actions, or nothing. */
 export const viewPageTopbarActions = <ParentMessage>(
 	h: HtmlBuilder<ParentMessage>,
 	slot: PageSlotBase,
@@ -429,11 +430,15 @@ export const viewPageTopbarActions = <ParentMessage>(
 	Option.match(pageById(slot._tag), {
 		onNone: () => h.empty,
 		onSome: (page) =>
-			h.submodel({
-				slotId: `page-topbar:${pageIdentity(slot)}`,
-				model: slot,
-				view: page.hostTopbarActions,
-				viewInputs: inputs,
-				toParentMessage,
-			}),
+			keyedByInstance(
+				h,
+				`page-topbar:${pageIdentity(slot)}`,
+				h.submodel({
+					slotId: `page-topbar:${pageIdentity(slot)}`,
+					model: slot,
+					view: page.hostTopbarActions,
+					viewInputs: inputs,
+					toParentMessage,
+				}),
+			),
 	})

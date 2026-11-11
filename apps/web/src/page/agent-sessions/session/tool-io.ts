@@ -1,6 +1,5 @@
 import type { TranscriptPayload } from "@maple/agent-sessions"
 import { formatBytes } from "@maple/ui/lib/format"
-import { TONE_SOFT } from "@maple/ui/lib/tone"
 import { cn } from "@maple/ui/lib/utils"
 import type { Html, HtmlBuilder } from "foldkit/html"
 import { badge } from "@maple/views/ui/display"
@@ -14,8 +13,6 @@ import { clampedBody, payloadCopyButton } from "./transcript-kit"
 import { typography, typographyClass } from "@maple/views/ui/typography"
 import { hstack, vstack } from "@maple/views/ui/stack"
 import { Array as Arr } from "effect"
-
-// Tool input and output, and its summary: one invocation, both halves, joined by a spine.
 
 type H = HtmlBuilder<Message>
 
@@ -101,7 +98,7 @@ export const truncatedNote = (h: H): Html =>
 	])
 
 export const truncatedBadge = (h: H): Html =>
-	badge(h, { size: "xs", mono: true, className: TONE_SOFT.warn }, ["truncated by the emitter"])
+	badge(h, { size: "xs", mono: true, variant: "warn" }, ["truncated by the emitter"])
 
 /** The copy and the rendered/raw switch at a payload header's right edge. */
 export const payloadActions = (
@@ -245,7 +242,7 @@ const missingHalf = (h: H, label: string, note: string): Html =>
 		],
 	)
 
-/** `ToolIo`: both halves always drawn; one quiet line when neither was captured. */
+/** Both halves always drawn; one quiet line when neither was captured. */
 export const toolIo = (
 	h: H,
 	model: Model,

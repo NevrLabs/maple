@@ -1,13 +1,14 @@
 import { formatNumber, formatPercent } from "@maple/ui/lib/format"
 import { cn } from "@maple/ui/lib/utils"
 import type { Html, HtmlBuilder } from "foldkit/html"
+import { stripClass } from "@maple/views/ui/rule"
 import { emptyMessage } from "@maple/views/ui/empty"
 import { icon } from "@maple/views/ui/icon"
 import { panel } from "@maple/views/ui/panel"
 import { pressable } from "@maple/views/ui/pressable"
 import { searchInput } from "@maple/views/ui/search-input"
 import { controlledView as controlledToggleGroup } from "@maple/views/ui/toggle-group"
-import { columnHead, dataTable, dataTableEmpty } from "../infra/kit/data-table"
+import { columnHead, dataTable, dataTableEmpty } from "../kit/data-table"
 import { sortRowsByField } from "../kit/table-sort"
 import { type FilterKey, Message } from "./message"
 import type { Model, PanelState } from "./model"
@@ -17,8 +18,6 @@ import { typography, typographyClass } from "@maple/views/ui/typography"
 import { hstack } from "@maple/views/ui/stack"
 import { columnClass } from "@maple/views/ui/column"
 import { Array as Arr, String as Str, Option } from "effect"
-
-// `AnalyticsBreakdownPanel`: one breakdown card.
 
 type H = HtmlBuilder<Message>
 type SortKey = "name" | "count" | "views"
@@ -42,7 +41,7 @@ export type BreakdownCard = Readonly<{ id: string; dimensions: ReadonlyArray<Bre
 
 type ShareRow = BreakdownRow & Readonly<{ share: number }>
 
-/** `shareBar` (infra/primitives/share-bar.ts): the row's background filled to its share. */
+/** The row's background filled to its share. */
 const shareBarStyle = (share: number): Readonly<Record<string, string>> => {
 	const pct = Math.min(100, share * 100)
 	if (!Number.isFinite(pct) || pct < 0.5) return {}
@@ -82,7 +81,6 @@ export const panelView = (state: PanelState, dimensions: ReadonlyArray<Breakdown
 
 type PanelView = NonNullable<ReturnType<typeof panelView>>
 
-/** `DimensionTabs`. */
 export const dimensionTabs = (
 	h: H,
 	cardId: string,
@@ -102,7 +100,6 @@ export const dimensionTabs = (
 		})),
 	})
 
-/** `FilterInput`. */
 export const panelFilterInput = (
 	h: H,
 	cardId: string,
@@ -116,7 +113,7 @@ export const panelFilterInput = (
 		id: `analytics-${cardId}-filter${idSuffix}`,
 		size: "sm",
 		value,
-		placeholder: `Filter ${nounPlural}`,
+		placeholder: `Filter ${nounPlural}…`,
 		onInput: (next) => Message.ChangedPanelQuery({ panel: cardId, value: next }),
 		onClear: Message.ChangedPanelQuery({ panel: cardId, value: "" }),
 		className,
@@ -129,7 +126,7 @@ const sortHead = (cardId: string, view: PanelView, key: SortKey) => ({
 	onSort: Message.ClickedPanelSort({ panel: cardId, key, current: view.sort }),
 })
 
-/** `BreakdownTable`: the card's capped table, or the dialog's ranked one. */
+/** The card's capped table, or the dialog's ranked one. */
 export const breakdownTable = (
 	h: H,
 	model: Model,
@@ -206,7 +203,10 @@ export const breakdownTable = (
 							isSelected,
 							selectedLane: isSelected,
 							className: cn(
-								"group flex w-full items-center gap-3 border-b border-border-subtle px-3 py-2 text-left transition-colors last:border-0 @min-[420px]/panel:gap-4 @min-[420px]/panel:px-4",
+								stripClass(
+									"row",
+									"group flex w-full items-center gap-3 px-3 text-left @min-[420px]/panel:gap-4 @min-[420px]/panel:px-4",
+								),
 								"hover:bg-foreground/[0.06] active:bg-foreground/[0.06] focus-visible:bg-foreground/[0.06] focus-visible:outline-none",
 							),
 							attributes: [
@@ -237,7 +237,7 @@ export const breakdownTable = (
 									[
 										h.Class(
 											cn(
-												"min-w-0 truncate text-xs transition-colors",
+												"min-w-0 truncate text-xs",
 												isSelected
 													? typographyClass({
 															tone: "foreground",

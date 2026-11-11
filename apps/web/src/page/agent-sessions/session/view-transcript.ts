@@ -23,8 +23,6 @@ import { continuedKeys, transcriptRows } from "./transcript-rows"
 import { COLUMN } from "./transcript-shell"
 import { emptyTurnRow, turnChapter } from "./transcript-turns"
 
-// The session transcript: the session as a conversation.
-
 type H = HtmlBuilder<Message>
 
 /** Starting guesses only: every mounted row is measured. */
@@ -46,7 +44,7 @@ const ROW_ESTIMATE = {
 	divider: 60,
 } satisfies Record<TranscriptRow["kind"], number>
 
-/** `useVirtualizer` with `directDomUpdates`: rows measured, placed and the list sized off-render. */
+/** The virtualizer with direct DOM updates: rows measured, placed and the list sized off-render. */
 const VirtualizeTranscript = Mount.defineStream("VirtualizeAgentSessionTranscript", {
 	messages: [Message.ChangedTranscriptWindow],
 	execute: ({ element, viewStateChanges }) =>
@@ -127,7 +125,7 @@ export const transcript = (h: H, model: Model, data: SessionData, timeZone: stri
 		return emptyMessage(h, {}, [
 			Str.trim(model.query) === ""
 				? "No AI activity in this session. Its spans are HTTP and database work, which the transcript excludes. The Traces view shows them."
-				: "No blocks match this filter.",
+				: "No blocks match these filters",
 		])
 	const context: BlockContext = { model, data, timeZone, continued: continuedKeys(rows) }
 	const mounted = Arr.flatMap(model.transcriptWindow.items, (item) => {

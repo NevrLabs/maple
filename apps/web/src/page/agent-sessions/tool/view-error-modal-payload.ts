@@ -8,19 +8,17 @@ import {
 	payloadLinesBytes,
 	unwrapToolErrorText,
 	whatsWrong,
-} from "../../../lib/agent-sessions/tool-error-display"
+} from "../../kit/tools/tool-error-display"
 import type { Html, HtmlBuilder } from "foldkit/html"
 import { button } from "@maple/views/ui/button"
 import { eyebrow } from "@maple/views/ui/eyebrow"
 import { statusDot } from "@maple/views/ui/status-dot"
 import { Message, type Model, type ToolErrorOccurrenceRow } from "./error-modal-model"
 import { typography } from "@maple/views/ui/typography"
+import { badge } from "@maple/views/ui/display"
 import { hstack, vstack } from "@maple/views/ui/stack"
 
 const encodePrettyJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown, { space: 2 }))
-
-// `SampleBody` of `ToolErrorModal`: what the call was handed and what it gave back, and where the
-// arguments confirm a schema failure, what is wrong with them.
 
 type H = HtmlBuilder<Message>
 
@@ -87,12 +85,7 @@ const payloadLineView = (h: H, line: PayloadLine): Html =>
 					),
 			...(line.folded === undefined
 				? []
-				: [
-						h.span(
-							[h.Class("ml-2 rounded-xs bg-muted px-1 text-2xs text-muted-foreground")],
-							[line.folded],
-						),
-					]),
+				: [badge(h, { variant: "muted", size: "xs", className: "ml-2" }, [line.folded])]),
 			...(line.note === undefined
 				? []
 				: [
@@ -100,14 +93,11 @@ const payloadLineView = (h: H, line: PayloadLine): Html =>
 							typography(h, { tone: "error" }, ["↑ ", line.note.text]),
 							...(line.note.hiddenBytes > 0
 								? [
-										h.span(
-											[
-												h.Class(
-													"rounded-xs bg-muted px-1 text-2xs text-muted-foreground",
-												),
-											],
-											["+", formatBytes(line.note.hiddenBytes), " not shown"],
-										),
+										badge(h, { variant: "muted", size: "xs" }, [
+											"+",
+											formatBytes(line.note.hiddenBytes),
+											" not shown",
+										]),
 									]
 								: []),
 						]),
@@ -274,7 +264,10 @@ export const sampleBody = (h: H, model: Model, row: ToolErrorOccurrenceRow): Htm
 							className: "rounded-md border border-border bg-sidebar p-3 font-mono",
 						},
 						[
-							statusDot(h, { tone: "custom", className: "mt-1.25 bg-muted-foreground" }),
+							statusDot(h, {
+								tone: "custom",
+								className: "mt-[calc(--spacing(1)+1px)] bg-muted-foreground",
+							}),
 							vstack(h, { gap: "1", as: "span" }, [
 								typography(h, { size: "xs", tone: "foreground", className: "leading-4" }, [
 									"The tool reported no error detail",

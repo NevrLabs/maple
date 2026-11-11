@@ -25,8 +25,6 @@ import { Array as Arr, String as Str, Option } from "effect"
 import { dividedList } from "@maple/views/ui/rule"
 import { textLink } from "@maple/views/ui/text-link"
 
-// `ConnectedView`'s repository panels, `RepoRow` and `BranchSelector`.
-
 type H = HtmlBuilder<Message>
 
 export const SYNC_PRESENTATION = {
@@ -100,7 +98,7 @@ const branchContent = (h: H, model: Model, repo: GithubRepoSummary): ReadonlyArr
 			filtered.length === 0
 				? [
 						typography(h, { size: "xs", tone: "muted", as: "p", className: "px-2 py-1.5" }, [
-							"No matches.",
+							"No matches",
 						]),
 					]
 				: Arr.map(filtered, (branch) =>

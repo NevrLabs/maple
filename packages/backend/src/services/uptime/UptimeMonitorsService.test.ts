@@ -4,6 +4,7 @@ import {
 	Effect,
 	Exit,
 	Layer,
+	Logger,
 	Option,
 	Ref,
 	Result,
@@ -14,7 +15,7 @@ import {
 import { HttpClient, type HttpClientRequest, HttpClientResponse } from "effect/http"
 import { TestClock } from "effect/testing"
 import { BillingCustomer, OrgId, UserId } from "@maple/domain/http"
-import { AlertDestinationId, UptimeIntervalSeconds, UptimeMonitorId } from "@maple/domain/primitives"
+import { AlertDestinationId, UptimeIntervalSeconds, UptimeMonitorId } from "@maple/primitives"
 import { UPTIME_USER_AGENT, UptimeCheckReport, type UptimeMonitorConfig } from "@maple/domain/uptime"
 import { Env } from "@maple/backend/platform/Env"
 import {
@@ -23,7 +24,7 @@ import {
 	executeSql,
 	queryFirstRow,
 	type TestDb,
-} from "@maple/backend/platform/test-pglite"
+} from "@maple/backend/testing/test-pglite"
 import { Database } from "@maple/backend/platform/DatabaseLive"
 import {
 	UptimeMonitorAllowance,
@@ -1219,5 +1220,152 @@ describe("UptimeMonitorsService backing alert rule", () => {
 			assert.strictEqual(error._tag, "@maple/http/errors/UptimeMonitorValidationError")
 			assert.include(error.message, "never runs")
 		}).pipe(Effect.provide(makeLayer(testDb)))
+	})
+
+	describe("request headers at rest", () => {
+		interface StoredHeaders {
+			readonly config_headers: string
+			readonly headers_ciphertext: string | null
+		}
+		const storedHeaders = (testDb: TestDb, id: UptimeMonitorId) =>
+			Effect.promise(() =>
+				queryFirstRow<StoredHeaders>(
+					testDb,
+					`select (config_json -> 'headers')::text as config_headers, headers_ciphertext
+					 from uptime_monitors where id = $1`,
+					[id],
+				),
+			)
+		const headersOf = (config: UptimeMonitorConfig) => (config._tag === "http" ? config.headers : null)
+		const SECRET = { Authorization: "Bearer s3cr3t-value", "X-Api-Key": "key-123" }
+
+		it.effect("stores header values sealed, and hands them back to the editor and the probe", () => {
+			const testDb = createTestDb(trackedDbs)
+			return Effect.gen(function* () {
+				const service = yield* UptimeMonitorsService
+				const monitor = yield* service.create(ORG, {
+					name: "API",
+					kind: "http",
+					config: httpConfig(undefined, { headers: SECRET }),
+					createdBy: USER,
+				})
+
+				const stored = yield* storedHeaders(testDb, monitor.id)
+				assert.strictEqual(stored?.config_headers, "{}")
+				assert.isTrue(Str.startsWith("v2.")(stored?.headers_ciphertext ?? ""))
+				const dump = yield* Effect.promise(() =>
+					queryFirstRow<{ readonly row: string }>(
+						testDb,
+						"select row_to_json(m)::text as row from uptime_monitors m where id = $1",
+						[monitor.id],
+					),
+				)
+				assert.notInclude(dump?.row ?? "", "s3cr3t-value")
+				assert.notInclude(dump?.row ?? "", "key-123")
+
+				assert.deepStrictEqual(headersOf(monitor.config), SECRET)
+				assert.deepStrictEqual(headersOf((yield* service.get(ORG, monitor.id)).config), SECRET)
+				const [target] = yield* service.listProbeTargets
+				assert.deepStrictEqual(target === undefined ? null : headersOf(target.config), SECRET)
+			}).pipe(Effect.provide(makeLayer(testDb)))
+		})
+
+		it.effect("replaces and clears the sealed headers on update", () => {
+			const testDb = createTestDb(trackedDbs)
+			return Effect.gen(function* () {
+				const service = yield* UptimeMonitorsService
+				const monitor = yield* service.create(ORG, {
+					name: "API",
+					kind: "http",
+					config: httpConfig(undefined, { headers: SECRET }),
+					createdBy: USER,
+				})
+				const before = yield* storedHeaders(testDb, monitor.id)
+
+				const changed = yield* service.update(ORG, monitor.id, {
+					updatedBy: USER,
+					config: httpConfig(undefined, { headers: { Authorization: "Bearer rotated" } }),
+				})
+				assert.deepStrictEqual(headersOf(changed.config), { Authorization: "Bearer rotated" })
+				const after = yield* storedHeaders(testDb, monitor.id)
+				assert.notStrictEqual(after?.headers_ciphertext, before?.headers_ciphertext)
+
+				const cleared = yield* service.update(ORG, monitor.id, {
+					updatedBy: USER,
+					config: httpConfig(),
+				})
+				assert.deepStrictEqual(headersOf(cleared.config), {})
+				assert.deepStrictEqual(yield* storedHeaders(testDb, monitor.id), {
+					config_headers: "{}",
+					headers_ciphertext: null,
+				})
+			}).pipe(Effect.provide(makeLayer(testDb)))
+		})
+
+		it.effect("does not open headers copied onto another org's monitor", () => {
+			const testDb = createTestDb(trackedDbs)
+			return Effect.gen(function* () {
+				const service = yield* UptimeMonitorsService
+				const victim = yield* service.create(ORG, {
+					name: "API",
+					kind: "http",
+					config: httpConfig(undefined, { headers: SECRET }),
+					createdBy: USER,
+				})
+				const thief = yield* service.create(OTHER_ORG, {
+					name: "Mine",
+					kind: "http",
+					config: httpConfig("https://thief.example.net/collect"),
+					createdBy: USER,
+				})
+				yield* Effect.promise(() =>
+					executeSql(
+						testDb,
+						`update uptime_monitors t
+						 set headers_ciphertext = v.headers_ciphertext, headers_iv = v.headers_iv,
+							headers_tag = v.headers_tag
+						 from uptime_monitors v where v.id = $1 and t.id = $2`,
+						[victim.id, thief.id],
+					),
+				)
+
+				const error = yield* Effect.flip(service.get(OTHER_ORG, thief.id))
+				assert.strictEqual(error._tag, "@maple/http/errors/UptimeMonitorPersistenceError")
+				const targets = yield* service.listProbeTargets
+				assert.deepStrictEqual(
+					Arr.map(targets, (target) => target.id),
+					[victim.id],
+				)
+			}).pipe(Effect.provide(makeLayer(testDb)))
+		})
+
+		it.effect("sends only sealed headers, and warns about ones written into the config", () => {
+			const testDb = createTestDb(trackedDbs)
+			const warnings: Array<string> = []
+			const captureWarnings = Logger.layer([
+				Logger.make(({ message, logLevel }) => {
+					if (logLevel === "Warn") warnings.push(String(message))
+				}),
+			])
+			return Effect.gen(function* () {
+				const service = yield* UptimeMonitorsService
+				const monitor = yield* createHttp("Old")
+				yield* Effect.promise(() =>
+					executeSql(
+						testDb,
+						`update uptime_monitors
+						 set config_json = jsonb_set(config_json, '{headers}', $1::jsonb) where id = $2`,
+						[JSON.stringify(SECRET), monitor.id],
+					),
+				)
+
+				assert.deepStrictEqual(headersOf((yield* service.get(ORG, monitor.id)).config), {})
+				const [target] = yield* service.listProbeTargets
+				assert.deepStrictEqual(target === undefined ? null : headersOf(target.config), {})
+				assert.deepStrictEqual(Arr.dedupe(warnings), [
+					"Uptime monitor has request headers outside the sealed columns",
+				])
+			}).pipe(Effect.provide(Layer.merge(makeLayer(testDb), captureWarnings)))
+		})
 	})
 })

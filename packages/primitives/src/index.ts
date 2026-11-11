@@ -81,9 +81,6 @@ export const DashboardTemplateCategory = Schema.Literals([
 })
 export type DashboardTemplateCategory = Schema.Schema.Type<typeof DashboardTemplateCategory>
 
-export const IngestKeyId = MapleId("@maple/IngestKeyId", "Ingest Key ID")
-export type IngestKeyId = Schema.Schema.Type<typeof IngestKeyId>
-
 export const ApiKeyId = MapleUuidId("@maple/ApiKeyId", "API Key ID")
 export type ApiKeyId = Schema.Schema.Type<typeof ApiKeyId>
 
@@ -130,6 +127,19 @@ export const GcpResourceNumber = Schema.String.check(Schema.isPattern(/^[0-9]{1,
 	Schema.annotate({ identifier: "@maple/GcpResourceNumber", title: "Google Cloud Resource Number" }),
 )
 export type GcpResourceNumber = Schema.Schema.Type<typeof GcpResourceNumber>
+
+export const SearchConsoleSiteId = MapleUuidId("@maple/SearchConsoleSiteId", "Search Console Site ID")
+export type SearchConsoleSiteId = Schema.Schema.Type<typeof SearchConsoleSiteId>
+
+/** A Search Console property: `sc-domain:example.com` or a URL prefix like `https://example.com/`. */
+export const SearchConsoleSiteUrl = Schema.String.check(
+	Schema.isMaxLength(2048),
+	Schema.isPattern(/^(sc-domain:[a-z0-9.-]+|https?:\/\/[^\s]+)$/iu),
+).pipe(
+	Schema.brand("@maple/SearchConsoleSiteUrl"),
+	Schema.annotate({ identifier: "@maple/SearchConsoleSiteUrl", title: "Search Console Site URL" }),
+)
+export type SearchConsoleSiteUrl = Schema.Schema.Type<typeof SearchConsoleSiteUrl>
 
 export const AwsConnectionId = MapleUuidId("@maple/AwsConnectionId", "AWS Connection ID")
 export type AwsConnectionId = Schema.Schema.Type<typeof AwsConnectionId>
@@ -463,6 +473,10 @@ export type IngestRuleId = Schema.Schema.Type<typeof IngestRuleId>
 export const SourceId = MapleUuidId("@maple/SourceId", "Source ID")
 export type SourceId = Schema.Schema.Type<typeof SourceId>
 
+/** A connected system Maple queries in place (a database or an API); not an ingest `Source`. */
+export const ExternalDataSourceId = MapleUuidId("@maple/ExternalDataSourceId", "External Data Source ID")
+export type ExternalDataSourceId = Schema.Schema.Type<typeof ExternalDataSourceId>
+
 /** Platforms that send telemetry to Maple with their own source token. */
 export const PUSH_SOURCE_PLATFORMS = [
 	"opentelemetry",
@@ -564,17 +578,6 @@ export type SourceResourceAttribute = Schema.Schema.Type<typeof SourceResourceAt
 export const RecommendationIssueId = MapleUuidId("@maple/RecommendationIssueId", "Recommendation Issue ID")
 export type RecommendationIssueId = Schema.Schema.Type<typeof RecommendationIssueId>
 
-export const TinybirdDeploymentId = MapleId("@maple/TinybirdDeploymentId", "Tinybird Deployment ID")
-export type TinybirdDeploymentId = Schema.Schema.Type<typeof TinybirdDeploymentId>
-
-export const TinybirdProjectRevision = MapleId("@maple/TinybirdProjectRevision", "Tinybird Project Revision")
-export type TinybirdProjectRevision = Schema.Schema.Type<typeof TinybirdProjectRevision>
-
-export const TinybirdHost = MapleId("@maple/TinybirdHost", "Tinybird Host")
-export type TinybirdHost = Schema.Schema.Type<typeof TinybirdHost>
-
-// Telemetry dimension primitives
-
 export const ServiceName = MapleTelemetry("@maple/ServiceName", "Service Name")
 export type ServiceName = Schema.Schema.Type<typeof ServiceName>
 
@@ -595,8 +598,6 @@ export type FingerprintHash = Schema.Schema.Type<typeof FingerprintHash>
 
 export const MetricName = MapleTelemetry("@maple/MetricName", "Metric Name")
 export type MetricName = Schema.Schema.Type<typeof MetricName>
-
-// OpenTelemetry enums (closed value sets → modeled as literal unions)
 
 // Title Case per the repo's span status convention; verified distinct values in the
 // warehouse are exactly Ok / Error / Unset.
@@ -628,16 +629,8 @@ export const HttpMethod = Schema.Literals([
 })
 export type HttpMethod = Schema.Schema.Type<typeof HttpMethod>
 
-// External / audit / dashboard reference IDs
-
 export const ExternalUserId = MapleId("@maple/ExternalUserId", "External User ID")
 export type ExternalUserId = Schema.Schema.Type<typeof ExternalUserId>
-
-export const WidgetId = MapleId("@maple/WidgetId", "Widget ID")
-export type WidgetId = Schema.Schema.Type<typeof WidgetId>
-
-export const ChartId = MapleId("@maple/ChartId", "Chart ID")
-export type ChartId = Schema.Schema.Type<typeof ChartId>
 
 /**
  * Which chat connector a conversation reached Maple through.

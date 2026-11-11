@@ -6,7 +6,7 @@ import { badge } from "@maple/views/ui/display"
 import { icon } from "@maple/views/ui/icon"
 import { settingRow } from "@maple/views/ui/setting-row"
 import { accountSectionSkeleton } from "../../kit/account-skeleton"
-import { settingsSection, settingsSections } from "../../kit/section"
+import { settingsSection, settingsSections } from "../../../kit/settings-section"
 import type { AccountUser } from "../user"
 import { Message, type Model } from "./model"
 import { PROVIDERS, providerOf } from "./update"
@@ -74,7 +74,7 @@ const providerRow = (h: H, model: Model, user: AccountUser, provider: (typeof PR
 												),
 											],
 										},
-										["Retry"],
+										["Try again"],
 									),
 								]),
 						button(

@@ -1,8 +1,6 @@
-import { humanize } from "../../../../lib/humanize"
+import { humanize } from "../../humanize"
 import type { IconName } from "@maple/views/ui/icon"
 import { Array as Arr, String as Str } from "effect"
-
-// A tool's label, icon and live activity.
 
 /** Strips the `mcp__<server>__` prefix MCP tools arrive with. */
 export const normalizeToolName = (toolName: string): string => Str.replace(/^mcp__.+?__/, "")(toolName)
@@ -12,7 +10,7 @@ const TOOL_LABELS = new Map<string, string>([
 	["system_health", "System Health"],
 	["diagnose_service", "Diagnose Service"],
 	["list_services", "List Services"],
-	["service_map", "Service Map"],
+	["service_map", "Service map"],
 	["get_service_top_operations", "Top Operations"],
 	["explore_attributes", "Explore Attributes"],
 	["describe_warehouse_tables", "Describe Tables"],
@@ -25,12 +23,14 @@ const TOOL_LABELS = new Map<string, string>([
 	// logs
 	["search_logs", "Search Logs"],
 	["mine_log_patterns", "Mine Log Patterns"],
+	["compare_log_patterns", "Compare Log Patterns"],
 	// errors
 	["find_errors", "Find Errors"],
 	["error_detail", "Error Detail"],
 	["list_error_issues", "List Error Issues"],
 	["list_error_incidents", "List Error Incidents"],
 	["list_error_issue_events", "Error Issue Events"],
+	["get_investigation", "Get Investigation"],
 	["claim_error_issue", "Claim Issue"],
 	["release_error_issue", "Release Issue"],
 	["transition_error_issue", "Transition Issue"],
@@ -43,6 +43,7 @@ const TOOL_LABELS = new Map<string, string>([
 	["query_data", "Query Data"],
 	["inspect_chart_data", "Inspect Chart Data"],
 	["compare_periods", "Compare Periods"],
+	["compare_operations", "Compare Operations"],
 	// dashboards
 	["list_dashboards", "List Dashboards"],
 	["get_dashboard", "Get Dashboard"],
@@ -112,11 +113,13 @@ const TOOL_ICONS = new Map<string, IconName>([
 	["inspect_span", "MagnifierIcon"],
 	["search_logs", "DatabaseIcon"],
 	["mine_log_patterns", "DatabaseIcon"],
+	["compare_log_patterns", "DatabaseIcon"],
 	["find_errors", "CircleXmarkIcon"],
 	["error_detail", "CircleWarningIcon"],
 	["list_error_issues", "FireIcon"],
 	["list_error_incidents", "FireIcon"],
 	["list_error_issue_events", "FireIcon"],
+	["get_investigation", "PulseIcon"],
 	["claim_error_issue", "FireIcon"],
 	["release_error_issue", "FireIcon"],
 	["transition_error_issue", "FireIcon"],
@@ -128,6 +131,7 @@ const TOOL_ICONS = new Map<string, IconName>([
 	["query_data", "ChartLineIcon"],
 	["inspect_chart_data", "ChartLineIcon"],
 	["compare_periods", "ClockIcon"],
+	["compare_operations", "ClockIcon"],
 	["list_dashboards", "GridIcon"],
 	["get_dashboard", "GridIcon"],
 	["create_dashboard", "GridSquareCirclePlusIcon"],

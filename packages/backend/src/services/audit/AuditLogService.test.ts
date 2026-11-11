@@ -3,7 +3,7 @@ import { AfterResponse } from "@maple/backend/platform/after-response"
 import { AuditEventsQueueProducer, QueueSendError } from "@maple/backend/platform/bindings"
 import { CurrentTenant } from "@maple/domain/http"
 import { encodePublicId, PublicIdPrefixes } from "@maple/domain/http/v2"
-import { ApiKeyId, OrgId, UserId } from "@maple/domain/primitives"
+import { ApiKeyId, OrgId, UserId } from "@maple/primitives"
 import type { AuditLogRow } from "@maple/domain/tinybird"
 import { Effect, Layer, Schema, Array as Arr } from "effect"
 import type { CompiledQuery } from "@maple-dev/effect-orm/clickhouse"
@@ -197,6 +197,32 @@ describe("AuditLogService (warehouse-backed)", () => {
 			yield* Effect.forEach(deferred, (work) => work, { discard: true })
 			expect(sent).toHaveLength(1)
 			expect(sent[0]).toMatchObject({ orgId: ORG, action: "dashboard.created" })
+		}),
+	)
+
+	it.effect("writes directly before returning when there is no queue, even if the request can defer", () =>
+		Effect.gen(function* () {
+			const warehouse = recordingWarehouse()
+			const deferred: Array<Effect.Effect<void>> = []
+			yield* Effect.gen(function* () {
+				const audit = yield* AuditLogService
+				yield* audit.record({
+					orgId: ORG,
+					actor: { type: "user", userId: USER },
+					source: "mcp",
+					action: "dashboard.created",
+				})
+			}).pipe(
+				Effect.provideService(AfterResponse, (work) => Effect.sync(() => deferred.push(work))),
+				Effect.provide(
+					Layer.effect(AuditLogService, AuditLogService.make).pipe(Layer.provide(warehouse.layer)),
+				),
+			)
+			// A retried warehouse insert can outlive `waitUntil`, so it is never deferred.
+			expect({ deferred: deferred.length, ingested: warehouse.ingested.length }).toEqual({
+				deferred: 0,
+				ingested: 1,
+			})
 		}),
 	)
 
@@ -426,9 +452,6 @@ describe("AuditLogService.layerMemory", () => {
 		}).pipe(Effect.provide(AuditLogService.layerMemory)),
 	)
 
-	// The credential and the surface are the two facts a mutation handler cannot
-	// re-derive, and getting them wrong is what made API-key and MCP actions read
-	// back as dashboard sessions.
 	it.effect("leaves out access entries before the limit, so changes behind many reads still list", () =>
 		Effect.gen(function* () {
 			const audit = yield* AuditLogService
@@ -455,6 +478,68 @@ describe("AuditLogService.layerMemory", () => {
 		}).pipe(Effect.provide(AuditLogService.layerMemory)),
 	)
 
+	it.effect("the changes kind keeps denied access; the access kind lists only access", () =>
+		Effect.gen(function* () {
+			const audit = yield* AuditLogService
+			yield* audit.record({
+				orgId: ORG,
+				actor: { type: "user", userId: USER },
+				source: "dashboard",
+				action: "dashboard.created",
+				resourceId: DASHBOARD_ID,
+			})
+			yield* TestClock.adjust("1 second")
+			yield* audit.record({
+				orgId: ORG,
+				actor: { type: "agent" },
+				source: "mcp",
+				action: "telemetry.read",
+			})
+			yield* TestClock.adjust("1 second")
+			yield* audit.record({
+				orgId: ORG,
+				actor: { type: "agent" },
+				source: "mcp",
+				action: "telemetry.sql_executed",
+				outcome: "denied",
+				denialReason: "write statement",
+			})
+			const actions = (rows: ReadonlyArray<{ readonly action: string }>) =>
+				Arr.map(rows, (row) => row.action)
+			expect(actions(yield* audit.list(ORG, { actionKind: "changes", limit: 10, offset: 0 }))).toEqual([
+				"telemetry.sql_executed",
+				"dashboard.created",
+			])
+			expect(actions(yield* audit.list(ORG, { actionKind: "access", limit: 10, offset: 0 }))).toEqual([
+				"telemetry.sql_executed",
+				"telemetry.read",
+			])
+		}).pipe(Effect.provide(AuditLogService.layerMemory)),
+	)
+
+	it.effect("compiles the changes kind to an exclusion that keeps denied entries", () =>
+		Effect.gen(function* () {
+			const warehouse = recordingWarehouse()
+			yield* Effect.gen(function* () {
+				const audit = yield* AuditLogService
+				yield* audit.list(ORG, { actionKind: "changes", limit: 5, offset: 0 })
+				yield* audit.list(ORG, { actionKind: "access", limit: 5, offset: 0 })
+			}).pipe(
+				Effect.provide(
+					Layer.effect(AuditLogService, AuditLogService.make).pipe(Layer.provide(warehouse.layer)),
+				),
+			)
+			const [changes, access] = warehouse.sql
+			expect(changes).toContain("NOT ((endsWith(audit_log.Action, '.read')")
+			expect(changes).toContain("OR audit_log.Outcome = 'denied')")
+			expect(access).toContain("endsWith(audit_log.Action, '.sql_executed')")
+			expect(access).not.toContain("NOT (endsWith(")
+		}),
+	)
+
+	// The credential and the surface are the two facts a mutation handler cannot
+	// re-derive, and getting them wrong is what made API-key and MCP actions read
+	// back as dashboard sessions.
 	describe("recordHttpAudit attribution", () => {
 		const tenant = new CurrentTenant.TenantSchema({
 			orgId: ORG,

@@ -1,15 +1,16 @@
 import { formatWarehouseDateTime } from "@maple/query-engine"
 import { formatBytes, formatNumber, pluralize } from "@maple/ui/lib/format"
 import { cn } from "@maple/ui/lib/utils"
-import type { VariantDifference } from "../../../lib/agent-sessions/tool-error-display"
+import type { VariantDifference } from "../../kit/tools/tool-error-display"
 import { formatDurationNs } from "@maple/web-data/lib/tool-analytics"
-import { formatTimestampInTimezone } from "@maple/web-data/lib/timezone-format"
+import { formatTimestampInTimezone } from "@maple/ui/lib/timezone-format"
 import { AsyncData } from "foldkit"
 import type { Html, HtmlBuilder } from "foldkit/html"
 import { AppRoute, hrefOf } from "../../../route"
 import { orderedSearch } from "../../../route/tanstack-search"
 import { emptyMessage } from "@maple/views/ui/empty"
 import { errorState } from "@maple/views/ui/error-state"
+import { badge } from "@maple/views/ui/display"
 import { icon } from "@maple/views/ui/icon"
 import { iconButton } from "@maple/views/ui/icon-button"
 import { pressable } from "@maple/views/ui/pressable"
@@ -23,8 +24,6 @@ import type { ModalInputs } from "./view-error-modal"
 import { typography, typographyClass } from "@maple/views/ui/typography"
 import { hstack, vstack } from "@maple/views/ui/stack"
 import { Array as Arr } from "effect"
-
-// `SamplesPane` and `Sample` of `ToolErrorModal`: the failed calls, newest first, one open at a time.
 
 type H = HtmlBuilder<Message>
 
@@ -236,12 +235,13 @@ const sampleRow = (
 					...(options.variant === undefined || options.variant === ""
 						? []
 						: [
-								h.span(
-									[
-										h.Class(
-											"hidden shrink-0 rounded-sm border border-border px-1.5 text-2xs leading-3.5 text-foreground-subtle md:block",
-										),
-									],
+								badge(
+									h,
+									{
+										variant: "meta",
+										size: "xs",
+										className: "hidden px-1.5 md:inline-flex",
+									},
 									["variant ", typography(h, { tone: "soft" }, [options.variant])],
 								),
 							]),

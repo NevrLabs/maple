@@ -61,6 +61,7 @@ import { OrgIngestRules, OrgIngestRuleSettings, OrgIngestRuleStats } from "./org
 import { OrgIngestKeys } from "./org-ingest-keys"
 import { OrgIngestSamplingPolicies } from "./org-ingest-sampling-policies"
 import { Sources } from "./sources"
+import { ExternalDataSources, ExternalDataSourceCatalogEntries } from "./external-data-sources"
 import { OrgRecommendationIssues } from "./org-recommendation-issues"
 import { PlanetscaleConnections } from "./planetscale-connections"
 import {
@@ -72,6 +73,7 @@ import {
 import { OrgOpenRouterKeys } from "./openrouter-keys"
 import { RailwayConnections, RailwayEnvironments } from "./railway"
 import { ScrapeTargets, ScrapeTargetChecks } from "./scrape-targets"
+import { SearchConsoleSites } from "./search-console-sites"
 import { ServiceMapWorldEntities } from "./service-map-world"
 import {
 	SecurityAuditEvents,
@@ -130,6 +132,7 @@ export * from "./dashboards"
 export * from "./device-credentials"
 export * from "./digest"
 export * from "./errors"
+export * from "./external-data-sources"
 export * from "./escalations"
 export * from "./escalation-chains"
 export * from "./oncall-schedules"
@@ -154,6 +157,7 @@ export * from "./planetscale-inventory"
 export * from "./openrouter-keys"
 export * from "./railway"
 export * from "./scrape-targets"
+export * from "./search-console-sites"
 export * from "./security-audit"
 export * from "./service-map-world"
 export * from "./sources"
@@ -238,6 +242,8 @@ export const allTables: ReadonlyArray<PgSchemaTable<string, ColumnDefs>> = [
 	OrgOpenRouterKeys,
 	OrgBillingLinks,
 	Sources,
+	ExternalDataSources,
+	ExternalDataSourceCatalogEntries,
 	OrgRecommendationIssues,
 	PlanetscaleConnections,
 	PlanetscalePollState,
@@ -249,6 +255,7 @@ export const allTables: ReadonlyArray<PgSchemaTable<string, ColumnDefs>> = [
 	ScrapeTargets,
 	ServiceMapWorldEntities,
 	ScrapeTargetChecks,
+	SearchConsoleSites,
 	SecurityAuditTargets,
 	SecurityAuditRuns,
 	SecurityAuditUnits,

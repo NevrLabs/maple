@@ -305,10 +305,6 @@ export function buildSessionSummary({
 	}
 }
 
-/* -------------------------------------------------------------------------- */
-/* Time                                                                       */
-/* -------------------------------------------------------------------------- */
-
 interface Interval {
 	readonly startMs: number
 	readonly endMs: number
@@ -369,7 +365,7 @@ export function findIdleGaps(spans: readonly AiSessionSpan[]): readonly IdleGap[
  * carries the time, and borrows a TTFT from a nested span when it reported
  * none.
  */
-export function computeAgentTime(spans: readonly AiSessionSpan[]): SessionAgentTime {
+function computeAgentTime(spans: readonly AiSessionSpan[]): SessionAgentTime {
 	const totals = new Map<AgentTimeKind, number>()
 	const add = (kind: AgentTimeKind, ms: number) => {
 		if (ms > 0) totals.set(kind, (totals.get(kind) ?? 0) + ms)
@@ -423,10 +419,6 @@ export function computeAgentTime(spans: readonly AiSessionSpan[]): SessionAgentT
 	}
 }
 
-/* -------------------------------------------------------------------------- */
-/* Tokens, models, cost                                                       */
-/* -------------------------------------------------------------------------- */
-
 const EMPTY_TOKENS: SessionTokenTotals = {
 	input: 0,
 	cacheRead: 0,
@@ -466,7 +458,6 @@ export function spanTokenBuckets(span: AiSessionSpan): SessionTokenTotals | unde
 	})
 }
 
-/** The five disjoint buckets plus their sum. */
 function tokenTotals(buckets: Omit<SessionTokenTotals, "total">): SessionTokenTotals {
 	return {
 		...buckets,
@@ -875,10 +866,6 @@ function toolUsage(
 	)
 }
 
-/* -------------------------------------------------------------------------- */
-/* Work and failures                                                          */
-/* -------------------------------------------------------------------------- */
-
 function errorSignal(span: AiSessionSpan): string {
 	return Arr.join(
 		Arr.filter(
@@ -1138,7 +1125,7 @@ const AGENT_LIMIT_PATTERN =
 	/\b(?:exceeded|reached) its ((?:[\w$.]+ ){0,6}?(?:duration (?:limit|budget)|limit|budget|allowance|bound|cap|duration))\b/i
 
 /** `duration limit`, `consecutive tool call failure limit`: the budget without its figure. */
-export function agentLimitName(text: string): string | undefined {
+function agentLimitName(text: string): string | undefined {
 	const match = AGENT_LIMIT_PATTERN.exec(text)?.[1]
 	if (match === undefined) return undefined
 	const words = Arr.filter(
@@ -1217,7 +1204,7 @@ function countFailures(events: readonly SessionFailureEvent[]): SessionFailureCo
 }
 
 /** Events sharing a label, counted, busiest first. */
-export function groupFailures(events: readonly SessionFailureEvent[]): readonly SessionFailureGroup[] {
+function groupFailures(events: readonly SessionFailureEvent[]): readonly SessionFailureGroup[] {
 	const groups = new Map<string, SessionFailureGroup>()
 	for (const event of events) {
 		const existing = groups.get(event.label)
@@ -1231,10 +1218,6 @@ export function groupFailures(events: readonly SessionFailureEvent[]): readonly 
 		b.count !== a.count ? b.count - a.count : Str.localeCompare(b.label)(a.label),
 	)
 }
-
-/* -------------------------------------------------------------------------- */
-/* How one call reads                                                         */
-/* -------------------------------------------------------------------------- */
 
 /** A $0.0004 session printed "$0.00" reads as "measured, and it was free".
  *  Shared by the overview's rails, the span expansion's meta strip and the
@@ -1284,10 +1267,6 @@ export function callMetaParts(span: AiSessionSpan, options?: CallMetaOptions): r
 export function callMetaLine(span: AiSessionSpan, options?: CallMetaOptions): string {
 	return Arr.join(callMetaParts(span, options), " · ")
 }
-
-/* -------------------------------------------------------------------------- */
-/* Small collection helpers                                                   */
-/* -------------------------------------------------------------------------- */
 
 function distinctInOrder(values: readonly (string | undefined)[]): readonly string[] {
 	const seen: string[] = []

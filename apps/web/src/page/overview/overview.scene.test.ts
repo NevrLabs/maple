@@ -8,10 +8,11 @@ import { ResolveThemeColors, ThemeMessage } from "@maple/views/charts/theme-colo
 import { toLoadFailure } from "@maple/views/data/load-failure"
 import { PageOutMessage, type PageContext } from "../contract"
 import { Message } from "./message"
-import type { FacetsHint, HealthSnapshot, Incident, Model } from "./model"
+import type { FacetsHint, HealthSnapshot, Model } from "./model"
 import { init, update } from "./update"
 import { view as pageView } from "./view"
 import { healthData } from "./view-health"
+import type { HealthIncident } from "../kit/service-health"
 
 const orgId = Schema.decodeSync(OrgId)("org_acme")
 const context: PageContext = { orgId, pinnedNamespace: null, timeZone: "UTC" }
@@ -48,7 +49,7 @@ const withFacets = (model: Model, environments: ReadonlyArray<string>) =>
 /** Everything the health sections block on has loaded, with `rows` in the snapshot. */
 const loaded = (
 	rows: ReadonlyArray<HealthSnapshot>,
-	incidents: ReadonlyArray<Incident> = [
+	incidents: ReadonlyArray<HealthIncident> = [
 		{ status: "open", groupKey: null, severity: "critical", signalType: "error_rate" },
 	],
 ): Model => {
@@ -281,7 +282,7 @@ describe("overview", () => {
 	})
 
 	test("an open anomaly-rule incident is an open anomaly, not a firing incident", () => {
-		const anomaly: Incident = {
+		const anomaly: HealthIncident = {
 			status: "open",
 			groupKey: null,
 			severity: "critical",
@@ -292,8 +293,7 @@ describe("overview", () => {
 			given(loaded([snapshotRow("checkout")], [anomaly])),
 			themeResolved(),
 			cursorMounted(),
-			expectView(text("Open:")).toExist(),
-			expectView(text("1 anomaly")).toExist(),
+			expectView(role("link", { name: /1 open anomaly/ })).toHaveAttr("href", "/alerts?signal=anomaly"),
 			expectView(text("Firing now:")).not.toExist(),
 		)
 		scene(
@@ -311,8 +311,7 @@ describe("overview", () => {
 			cursorMounted(),
 			expectView(text("Firing now:")).toExist(),
 			expectView(text("1 incident · 1 warning")).toExist(),
-			expectView(text("Open:")).toExist(),
-			expectView(text("1 anomaly")).toExist(),
+			expectView(role("link", { name: /1 open anomaly/ })).toHaveAttr("href", "/alerts?signal=anomaly"),
 		)
 	})
 

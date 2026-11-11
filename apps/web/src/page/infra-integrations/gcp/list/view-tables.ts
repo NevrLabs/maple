@@ -1,9 +1,5 @@
 import { GCP_INFRA_SERVICES, type GcpInfraServiceId } from "@maple/domain/gcp-infra"
-import {
-	gcpQueryInsightsConsoleUrl,
-	gcpSqlEngine,
-	gcpSqlSize,
-} from "../../../../components/infra/gcp/cloud-sql-signals"
+import { gcpQueryInsightsConsoleUrl, gcpSqlEngine, gcpSqlSize } from "../cloud-sql-signals"
 import {
 	GCP_DATABASE_RULES,
 	GCP_FILLING_FRACTION,
@@ -24,9 +20,9 @@ import {
 	type GcpSubscriptionRow,
 	type GcpWorkloadRow,
 	type GcpWorkloadScope,
-} from "../../../../components/infra/gcp/list-model"
-import { formatGcpValue, GCP_INFRA_COLUMNS, type GcpColumn } from "../../../../components/infra/gcp/tabs"
-import { BAR_VALUE_TONE } from "../../../../components/infra/severity-tokens"
+} from "../list-model"
+import { formatGcpValue, GCP_INFRA_COLUMNS, type GcpColumn } from "../tabs"
+import { BAR_VALUE_TONE } from "../../../kit/severity-tokens"
 import { errorRateClass } from "@maple/ui/lib/error-rate"
 import {
 	EMPTY_VALUE,
@@ -48,7 +44,8 @@ import {
 	dataTableEmpty,
 	skeletonRows,
 	ROW_LINK_CLASS,
-} from "../../../infra/kit/data-table"
+	NUMERIC_CELL,
+} from "../../../kit/data-table"
 import { type MetaItem, metaLine } from "../../../infra/kit/meta-line"
 import { gcpServiceIcon } from "../service-icon"
 import {
@@ -61,7 +58,6 @@ import {
 import {
 	type H,
 	NAME,
-	NUMBER,
 	type RowsContext,
 	rowSlot,
 	spark,
@@ -76,8 +72,6 @@ import { hstack, hstackClass, vstack } from "@maple/views/ui/stack"
 import { columnClass } from "@maple/views/ui/column"
 import { Array as Arr, String as Str } from "effect"
 
-// `GcpServicesTable`, `GcpSubscriptionsTable`, `GcpDatabasesTable` and `GcpServiceTable`.
-
 const seconds = (value: number) => formatLatency(value * 1000)
 const head = (h: H, label: string, width: string, align?: "right", hidden?: string) =>
 	columnHead(h, { label, width, align, hidden })
@@ -90,8 +84,6 @@ const placeItems = (
 
 const rowsOrEmpty = (h: H, rows: ReadonlyArray<Html>, emptyMessage: string) =>
 	rows.length === 0 ? [dataTableEmpty(h, [emptyMessage])] : rows
-
-// Services ---------------------------------------------------------------------------------------
 
 const SERVICE_KIND = { cloudRun: "Cloud Run", cloudFunctions: "Function 1st gen" } as const
 
@@ -149,8 +141,10 @@ const statusMix = (h: H, row: GcpServiceRow): Html => {
 	)
 }
 
-/** Below `md` the Status cell is hidden, so the idle billing note rides on the sub-line there. */
-/** The idle note rides inside the last item, separator included, so hiding it at `md` leaves no stray dot. */
+/**
+ * Below `md` the Status cell is hidden, so the idle billing note rides on the sub-line, inside the
+ * last item with its separator, so hiding it at `md` leaves no stray dot.
+ */
 const serviceMeta = (h: H, row: GcpServiceRow, showProject: boolean): ReadonlyArray<MetaItem> => {
 	// Only items metaLine will draw: the note joins the last shown one, never an empty slot.
 	const items = Arr.filter(
@@ -220,7 +214,7 @@ export const servicesTable = (
 								h.Class(
 									cn(
 										"w-16",
-										NUMBER,
+										NUMERIC_CELL,
 										rate === undefined ? "text-muted-foreground" : errorRateClass(rate),
 									),
 								),
@@ -232,7 +226,7 @@ export const servicesTable = (
 								h.Class(
 									cn(
 										"w-24",
-										NUMBER,
+										NUMERIC_CELL,
 										(row.latencyP95 ?? 0) >= GCP_SLOW_P95_SECONDS
 											? TONE_TEXT.warn
 											: "text-foreground-soft",
@@ -242,7 +236,7 @@ export const servicesTable = (
 							[row.latencyP95 === undefined ? EMPTY_VALUE : seconds(row.latencyP95)],
 						),
 						h.div(
-							[h.Class(cn("hidden w-20 text-foreground-soft lg:block", NUMBER))],
+							[h.Class(cn("hidden w-20 text-foreground-soft lg:block", NUMERIC_CELL))],
 							[
 								row.instances === undefined
 									? EMPTY_VALUE
@@ -250,7 +244,7 @@ export const servicesTable = (
 							],
 						),
 						h.div(
-							[h.Class(cn("hidden w-16 md:block", NUMBER, BAR_VALUE_TONE[cpuLevel]))],
+							[h.Class(cn("hidden w-16 md:block", NUMERIC_CELL, BAR_VALUE_TONE[cpuLevel]))],
 							[row.cpuP95 === undefined ? EMPTY_VALUE : formatPercentColumn(row.cpuP95)],
 						),
 					],
@@ -259,8 +253,6 @@ export const servicesTable = (
 			emptyMessage,
 		),
 	)
-
-// Pub/Sub subscriptions --------------------------------------------------------------------------
 
 const growthLabel = (growth: number) =>
 	growth > 0 ? `+${formatNumber(growth)}` : growth < 0 ? `−${formatNumber(-growth)}` : "steady"
@@ -343,7 +335,7 @@ export const subscriptionsTable = (
 								h.Class(
 									cn(
 										"w-28",
-										NUMBER,
+										NUMERIC_CELL,
 										(row.oldestUnackedSeconds ?? 0) >= GCP_STALE_SECONDS
 											? TONE_TEXT.warn
 											: "text-foreground-soft",
@@ -361,7 +353,7 @@ export const subscriptionsTable = (
 								h.Class(
 									cn(
 										"hidden w-20 md:block",
-										NUMBER,
+										NUMERIC_CELL,
 										pushRate === undefined
 											? "text-muted-foreground"
 											: errorRateClass(pushRate),
@@ -381,7 +373,7 @@ export const subscriptionsTable = (
 								h.Class(
 									cn(
 										"hidden w-24 md:block",
-										NUMBER,
+										NUMERIC_CELL,
 										row.deadLettered > 0 ? TONE_TEXT.crit : "text-foreground-soft",
 									),
 								),
@@ -394,8 +386,6 @@ export const subscriptionsTable = (
 			emptyMessage,
 		),
 	)
-
-// Cloud SQL instances ----------------------------------------------------------------------------
 
 const quotaTone = (value: number) =>
 	value >= GCP_LIMIT_FRACTION ? "crit" : value >= GCP_FILLING_FRACTION ? "warn" : "neutral"
@@ -470,7 +460,7 @@ const queryP95Cell = (h: H, row: GcpDatabaseRow): Html => {
 	const slow = (row.queryP95 ?? 0) >= GCP_SLOW_P95_SECONDS
 	return vstack(h, { align: "end", className: "w-20" }, [
 		h.span(
-			[h.Class(cn(NUMBER, slow ? TONE_TEXT.warn : "text-foreground-soft"))],
+			[h.Class(cn(NUMERIC_CELL, slow ? TONE_TEXT.warn : "text-foreground-soft"))],
 			[row.queryP95 === undefined ? EMPTY_VALUE : seconds(row.queryP95)],
 		),
 		...(isMysql(row) || row.slowQueries > 0
@@ -491,7 +481,7 @@ const connectionsCell = (h: H, row: GcpDatabaseRow, locale: string): Html => {
 	const count = (value: number) => value.toLocaleString(locale, { maximumFractionDigits: 0 })
 	return vstack(h, { align: "end", className: "w-36" }, [
 		h.span(
-			[h.Class(cn(NUMBER, quotaText(share)))],
+			[h.Class(cn(NUMERIC_CELL, quotaText(share)))],
 			[
 				row.connections === undefined
 					? EMPTY_VALUE
@@ -608,8 +598,6 @@ export const databasesTable = (
 		],
 	)
 
-// The other services (GKE, Compute Engine, Load Balancing) ---------------------------------------
-
 const GENERIC_NAME = columnClass({ min: "60" })
 const VALUE_WIDTH = "w-28"
 
@@ -619,7 +607,6 @@ const genericHead = (h: H, service: GcpInfraServiceId): ReadonlyArray<Html> => [
 	...Arr.map(GCP_INFRA_COLUMNS[service], (column) => head(h, column.label, VALUE_WIDTH, "right")),
 ]
 
-/** `GcpServiceTableLoading`. */
 export const serviceTableLoading = (h: H, service: GcpInfraServiceId): Html =>
 	dataTable(
 		h,
@@ -646,7 +633,7 @@ export const valueClass = (spec: GcpColumn, value: number | undefined): string =
 	return "text-foreground-soft"
 }
 
-/** `GcpServiceTable`: a service without a list of its own, its curated columns. */
+/** A service without a list of its own, its curated columns. */
 export const serviceTable = (
 	h: H,
 	service: GcpInfraServiceId,
@@ -693,7 +680,7 @@ export const serviceTable = (
 												mono: true,
 												truncate: true,
 												as: "div",
-												className: "transition-colors group-hover:text-primary",
+												className: "group-hover:text-primary",
 											},
 											[row.name],
 										),

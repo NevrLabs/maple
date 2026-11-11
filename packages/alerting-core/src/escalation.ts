@@ -21,7 +21,6 @@ export interface EscalationRunPosition {
 export interface EscalationIncidentState {
 	readonly open: boolean
 	readonly acknowledged: boolean
-	/** A silence covers the incident right now. */
 	readonly silenced: boolean
 }
 
@@ -90,7 +89,3 @@ export const planEscalationAdvance = (
 		next: nextPosition(run, step, nowMs),
 	}
 }
-
-/** Total steps a chain sends when nobody acknowledges. */
-export const escalationStepCount = (steps: EscalationSteps, repeatCount: number): number =>
-	steps.length * (repeatCount + 1)

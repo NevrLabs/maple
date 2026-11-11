@@ -13,8 +13,8 @@ import {
 	spanTokenBuckets,
 	spanTtftMs,
 } from "@maple/agent-sessions"
-import { type AxisTick, buildSessionAxis, type SessionAxis } from "../../../lib/agent-sessions/session-axis"
-import { isDelegation } from "../../../lib/agent-sessions/span-filters"
+import { type AxisTick, buildSessionAxis, type SessionAxis } from "../kit/session-axis"
+import { isDelegation } from "../kit/span-filters"
 import { shortId } from "@maple/ui/lib/ids"
 import { EMPTY_VALUE, formatDuration, formatNumber } from "@maple/ui/lib/format"
 import { formatSessionDuration } from "@maple/ui/lib/replay-format"
@@ -41,8 +41,6 @@ import { failedBadge } from "./view-kit"
 import { rowHeight, spanHeading, spanTarget, type WaterfallRow, waterfallRowsOf } from "./waterfall-rows"
 import { typography, typographyClass } from "@maple/views/ui/typography"
 import { hstack, hstackClass, vstack } from "@maple/views/ui/stack"
-
-// The session waterfall: turns, spans and idle gaps on one axis.
 
 type H = HtmlBuilder<Message>
 
@@ -490,7 +488,7 @@ export const waterfall = (h: H, model: Model, data: SessionData): Html => {
 			],
 			[
 				rows.length === 0
-					? emptyMessage(h, {}, ["No spans match this filter"])
+					? emptyMessage(h, {}, ["No spans match these filters"])
 					: h.div(
 							[h.Class("relative w-full"), h.Style({ height: `${totalSize}px` })],
 							Arr.flatMap(items, (item) => {
@@ -517,7 +515,7 @@ export const waterfall = (h: H, model: Model, data: SessionData): Html => {
 	])
 }
 
-/** `useVirtualizer` over the page scroller: rows are their estimates, never measured. */
+/** The virtualizer over the page scroller: rows are their estimates, never measured. */
 const VirtualizeWaterfall = Mount.defineStream("VirtualizeAgentSessionWaterfall", {
 	messages: [Message.ChangedWaterfallWindow],
 	execute: ({ element, viewStateChanges }) =>

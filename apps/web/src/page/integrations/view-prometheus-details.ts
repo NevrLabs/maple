@@ -1,6 +1,6 @@
 import type { V2ScrapeTarget, V2ScrapeTargetCheck } from "@maple/domain/http/v2"
 import { EMPTY_VALUE, formatDuration, formatNumber } from "@maple/ui/lib/format"
-import { diagnoseScrapeError } from "../../lib/scrape-error-diagnosis"
+import { diagnoseScrapeError } from "./scrape-error-diagnosis"
 import { Option, Schema, Array as Arr, Record as Rec } from "effect"
 import { AsyncData } from "foldkit"
 import type { Html, HtmlBuilder } from "foldkit/html"
@@ -27,14 +27,12 @@ import { hstack, hstackClass } from "@maple/views/ui/stack"
 import { timestamp } from "@maple/views/ui/timestamp"
 import { tooltipTrigger } from "@maple/views/ui/tooltip-host"
 
-// `ScrapeTargetDetails`, `MetricBox` and `ScrapeTargetChecksTable`.
-
 type H = HtmlBuilder<Message>
 
 const durationOf = (value: number | null) => (value === null ? EMPTY_VALUE : formatDuration(value * 1000))
 const countOf = (value: number | null) => (value === null ? EMPTY_VALUE : formatNumber(Math.round(value)))
 
-/** `scheduledStatusFromChecks` (only its label and tone are drawn here). */
+/** The scheduled status from the checks (only its label and tone are drawn here). */
 const statusFromChecks = (
 	target: V2ScrapeTarget,
 	latest: V2ScrapeTargetCheck | null,
@@ -97,7 +95,7 @@ const checksRows = (
 	nowMs: number,
 ): Html =>
 	checks.length === 0
-		? emptyMessage(h, { className: "rounded-md border bg-background/35 px-3 py-6" }, [
+		? emptyMessage(h, { className: "rounded-md border bg-surface-well px-3 py-6" }, [
 				"The first scrape runs shortly after you save. Use Test to check the endpoint now.",
 			])
 		: panel(h, { tone: "background" }, [
@@ -161,7 +159,7 @@ const checksRows = (
 				]),
 			])
 
-/** `ScrapeTargetDetails`: the selected target's header, diagnosis, scheduled scrape, target and history. */
+/** The selected target's header, diagnosis, scheduled scrape, target and history. */
 export const targetDetails = (h: H, model: Model, target: V2ScrapeTarget, timeZone: string): Html => {
 	const card = model.prometheusCard
 	const data = card.checks.data
@@ -327,7 +325,7 @@ export const targetDetails = (h: H, model: Model, target: V2ScrapeTarget, timeZo
 						sectionTitle(h, "ExternalLinkIcon", "Target"),
 						keyValueList(
 							h,
-							{ divided: true, className: "rounded-md border bg-background/35 px-3" },
+							{ divided: true, className: "rounded-md border bg-surface-well px-3" },
 							[
 								keyValue(h, { label: "Service" }, [target.service_name ?? target.name]),
 								keyValue(h, { label: "Instance" }, [hostnameOf(target.url)]),

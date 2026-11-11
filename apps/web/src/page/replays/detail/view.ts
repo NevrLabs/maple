@@ -2,7 +2,7 @@ import { shortId } from "@maple/ui/lib/ids"
 import { initialsFrom } from "@maple/ui/lib/initials"
 import { hostFromUrl } from "@maple/ui/lib/replay"
 import { formatSessionDuration } from "@maple/ui/lib/replay-format"
-import { parseChTimestampMs } from "../../../components/replays/replay-timeline"
+import { parseChTimestampMs } from "../kit/replay-timeline"
 import { Struct } from "effect"
 import { AsyncData, Submodel } from "foldkit"
 import { createLazy, type Html, type HtmlBuilder } from "foldkit/html"
@@ -20,7 +20,8 @@ import { dashboardPage } from "../../kit/dashboard-page"
 import { resourceNotFound } from "../../kit/resource-not-found"
 import { relativeTime } from "../../kit/relative-time"
 import { stableSlice } from "../../kit/stable-slice"
-import { errorCountPill, livePill } from "../kit/sessions-parts"
+import { livePill } from "../kit/sessions-parts"
+import { errorCountPill } from "@maple/views/ui/error-count-pill"
 import { WatchPlayerKeys } from "./command"
 import { detailOf, durationOf, isActive, labelOf, playerStatus } from "./derive"
 import { Message } from "./message"
@@ -34,11 +35,11 @@ import { textLink } from "@maple/views/ui/text-link"
 import { typography } from "@maple/views/ui/typography"
 import { hstack, vstack } from "@maple/views/ui/stack"
 
-// The replay detail page on `ResultPage`, with the replay studio.
+// The replay detail page, with the replay studio.
 
 type H = HtmlBuilder<Message>
 
-/** `ResultPage`'s crumb: the short id once loaded, else the state it is in. */
+/** The crumb: the short id once loaded, else the state it is in. */
 export const breadcrumbs = (model: Model): ReadonlyArray<BreadcrumbEntry> => [
 	{ label: "Replays", href: "/replays" },
 	{
@@ -51,7 +52,7 @@ export const breadcrumbs = (model: Model): ReadonlyArray<BreadcrumbEntry> => [
 	},
 ]
 
-/** `Reveal`: the one-shot entrance (frozen at its end state when motion is reduced). */
+/** The one-shot entrance (frozen at its end state when motion is reduced). */
 const reveal = (h: H, delay: number, child: Html): Html =>
 	h.div(
 		[
@@ -154,12 +155,12 @@ const identityBar = (h: H, model: IdentityView, session: ReplayDetail, timeZone:
 				]),
 				eyebrow(h, {}, ["duration"]),
 			]),
-			...(session.errorCount > 0 ? [errorCountPill(h, session.errorCount)] : []),
+			...(session.errorCount > 0 ? [errorCountPill(h, { count: session.errorCount })] : []),
 		]),
 	])
 }
 
-/** `ReplayStudio`: the stage column (identity, player, timeline) and the rail. */
+/** The stage column (identity, player, timeline) and the rail. */
 const studio = (h: H, model: Model, session: ReplayDetail, timeZone: string): Html => {
 	const { status, failure } = playerStatus(model, session)
 	const transport = replayTransport(h, model, status)
@@ -183,7 +184,6 @@ const studio = (h: H, model: Model, session: ReplayDetail, timeZone: string): Ht
 	)
 }
 
-/** `ReplayDetailSkeleton`. */
 const detailSkeleton = (h: H): Html =>
 	h.div(
 		[h.Class("flex flex-col gap-3.5 lg:flex-row")],

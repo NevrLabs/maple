@@ -1,6 +1,6 @@
 import { taxIdExampleFor, taxIdLabel } from "@maple/domain/billing-tax-ids"
 import type { BillingProfile, BillingTaxId } from "@maple/domain/http"
-import { verificationBadge } from "../../../../lib/billing/billing-profile"
+import { verificationBadge } from "../billing-profile"
 import { Option, Array as Arr } from "effect"
 import { Submodel } from "foldkit"
 import type { Html, HtmlBuilder } from "foldkit/html"
@@ -63,7 +63,7 @@ const countryField = (h: H, model: Model): Html => {
 			viewInputs: {
 				items: COUNTRY_NAMES,
 				placeholder: "Search countries…",
-				emptyText: "No country found",
+				emptyText: "No countries match",
 				className: "h-8 w-full",
 				toView: ({ field: control, rest }) => h.div([h.Class("contents")], [control, ...rest]),
 			},
@@ -121,7 +121,7 @@ const addTaxRow = (h: H, model: Model, profile: BillingProfile): Html => {
 	])
 }
 
-/** `BillingTaxIdsEditor`: saved as they are added or removed, each its own Stripe object. */
+/** Tax IDs save as they are added or removed, each its own Stripe object. */
 const taxIdsEditor = (h: H, model: Model, profile: BillingProfile): Html =>
 	field(h, { state: IDLE, className: "gap-2" }, [
 		fieldLabel(h, { ids: fieldIds("billing-tax-ids"), state: IDLE }, "Tax IDs"),
@@ -137,7 +137,7 @@ const taxIdsEditor = (h: H, model: Model, profile: BillingProfile): Html =>
 						: [
 								dividedList(
 									h,
-									{ as: "ul", bordered: false, className: "divide-border-subtle text-sm" },
+									{ as: "ul", bordered: false, className: "text-sm" },
 									Arr.map(profile.taxIds, (taxId) =>
 										hstack(
 											h,

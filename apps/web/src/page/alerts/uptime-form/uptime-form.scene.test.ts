@@ -16,10 +16,10 @@ import {
 import { describe, expect, test } from "vitest"
 import { toLoadFailure } from "@maple/views/data/load-failure"
 import { PageOutMessage, type PageContext } from "../../contract"
-import { ORG } from "../shared/test-rows"
-import { LIMIT_REACHED_CODE, monitorHref } from "../shared/uptime-commands"
-import { heartbeatMonitor, httpMonitor } from "../shared/uptime-test-monitors"
-import { wirePayload } from "./derive"
+import { ORG } from "../../kit/alert-test-rows"
+import { LIMIT_REACHED_CODE, monitorHref } from "../../kit/uptime/commands"
+import { heartbeatMonitor, httpMonitor } from "../../kit/uptime/test-monitors"
+import { wirePayload } from "../../kit/uptime/form-derive"
 import { Message } from "./message"
 import type { Model } from "./model"
 import { init, update } from "./update"
@@ -101,6 +101,19 @@ describe("uptime monitor form", () => {
 			expectView(text("The ping URL appears after you create the monitor.")).toExist(),
 			expectView(role("textbox", { name: "Grace period" })).toExist(),
 			expectView(role("textbox", { name: "URL" })).not.toExist(),
+		)
+	})
+
+	test("a heartbeat's header says Maple records pings, not that it checks from Ashburn", () => {
+		scene(
+			{ update: pageUpdate, view },
+			given(fresh()),
+			expectView(text(/from Ashburn, US and records every check/u)).toExist(),
+			click(role("button", { name: /Heartbeat/u })),
+			expectView(
+				text("Maple records every ping and alerts when one is late or reports a failure."),
+			).toExist(),
+			expectView(text(/from Ashburn, US and records every check/u)).not.toExist(),
 		)
 	})
 

@@ -9,7 +9,7 @@ import {
 	type MobilePushEnvironment,
 	type ResolvedMobileDevicePreferences,
 } from "@maple/domain/http"
-import { MobileDeviceId, type OrgId, type UserId } from "@maple/domain/primitives"
+import { MobileDeviceId, type OrgId, type UserId } from "@maple/primitives"
 import { Array as Arr, Clock, Context, Effect, Layer, Schema } from "effect"
 import { Database } from "@maple/backend/platform/DatabaseLive"
 import { makeDbExecute, makePersistenceErrorMapper } from "@maple/backend/platform/db-execute"
@@ -313,17 +313,12 @@ export class MobileDevicesService extends Context.Service<MobileDevicesService, 
 			) {
 				if (ids.length === 0) return
 				const now = yield* Clock.currentTimeMillis
-				yield* Effect.forEach(
-					ids,
-					(id) =>
-						dbExecute((db) =>
-							db.run(
-								PG.update(MobileDevices)
-									.set({ lastPushedAt: now })
-									.where(($) => [$.orgId.eq(orgId), $.id.eq(id)]),
-							),
-						),
-					{ discard: true },
+				yield* dbExecute((db) =>
+					db.run(
+						PG.update(MobileDevices)
+							.set({ lastPushedAt: now })
+							.where(($) => [$.orgId.eq(orgId), PG.inList($.id, ids)]),
+					),
 				)
 			})
 

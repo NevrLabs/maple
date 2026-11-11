@@ -58,14 +58,15 @@ The easiest way to get widget documents is to build the dashboard in Maple and [
 
 A notification channel that alert rules and uptime monitors deliver to. The fields depend on `type`:
 
-| `type`      | Fields                                                  |
-| ----------- | ------------------------------------------------------- |
-| `pagerduty` | `integration_key`                                       |
-| `webhook`   | `url`, optional `signing_secret`                        |
-| `discord`   | `webhook_url`                                           |
-| `telegram`  | `bot_token`, `chat_id`                                  |
-| `email`     | `member_user_ids`                                       |
-| `chat`      | `workspace_id` of a linked chat workspace, `channel_id` |
+| `type`        | Fields                                                  |
+| ------------- | ------------------------------------------------------- |
+| `pagerduty`   | `integration_key`                                       |
+| `webhook`     | `url`, optional `signing_secret`                        |
+| `discord`     | `webhook_url`                                           |
+| `telegram`    | `bot_token`, `chat_id`                                  |
+| `google-chat` | `webhook_url`                                           |
+| `email`       | `member_user_ids`                                       |
+| `chat`        | `workspace_id` of a linked chat workspace, `channel_id` |
 
 Every type also takes `name` (required) and `enabled` (**default** `true`). Credentials are write-only: Terraform sends the value from your configuration on every update and cannot see changes made in Maple. Read-only: `summary`, `channel_label`.
 
@@ -141,7 +142,7 @@ resource "maple_uptime_monitor" "nightly_backup" {
 | `dns`         | `hostname`, `record_type` (`A`, `AAAA`, `CNAME`, `MX`, `TXT`, `NS`), optional `expected`                    |
 | `heartbeat`   | `schedule` (`{ type = "interval", seconds }` or `{ type = "cron", expression, timezone }`), `grace_seconds` |
 
-Read-only: `kind`, `heartbeat_url` (the URL a heartbeat job pings), `alert_rule_id`. See [Uptime monitoring](/docs/alerting/uptime-monitoring).
+Read-only: `kind`, `heartbeat_url` (the URL a heartbeat job pings), `alert_rule_id`. See [Uptime monitoring](/docs/alerting/uptime-monitoring) and [Heartbeat monitors](/docs/alerting/heartbeat-monitors).
 
 ## maple_scrape_target
 

@@ -12,6 +12,7 @@
 // consumed by `QueryEngineService` — same output opts, different input formats,
 // so the two adapters are not duplicates.
 
+import * as Datasources from "@maple/domain/tinybird/datasources"
 import type { TracesMetric, AttributeFilter, MetricType } from "@maple/domain/query-engine"
 import { DEFAULT_ERROR_NAMESPACE_PREFIX, UNEXPECTED_IDENTITY_MARKERS } from "./queries/errors"
 import type { OrgId } from "@maple/domain"
@@ -334,6 +335,7 @@ export function compilePipeQuery(
 							search: str("search"),
 							limit: int("limit", 50),
 							offset: int("offset", 0),
+							order: str("order") === "asc" ? "asc" : undefined,
 							environments: strList("deployment_env"),
 							matchModes:
 								str("deployment_env_match_mode") === "contains"
@@ -834,8 +836,8 @@ export function compilePipeQuery(
 				return isRollupTopOperationsMetric(metric) &&
 					serviceName !== "" &&
 					str("raw_only") !== "1" &&
-					hasWarehouseTable(capabilities, "service_operations_minutely") &&
-					hasWarehouseTable(capabilities, "service_operations_hourly")
+					hasWarehouseTable(capabilities, Datasources.serviceOperationsMinutely) &&
+					hasWarehouseTable(capabilities, Datasources.serviceOperationsHourly)
 					? eraseType(
 							compile(topOperationsRollupQuery({ metric, serviceName, limit, environment }), {
 								orgId,
@@ -955,8 +957,6 @@ function buildAttributeFiltersFromParams(
 	})
 	return filters.length > 0 ? filters : undefined
 }
-
-// Parameter adapters — translate pipe-style params to typed query opts
 
 /**
  * `errorsOnly` is tri-state in the query layer: `true` keeps only errored spans,

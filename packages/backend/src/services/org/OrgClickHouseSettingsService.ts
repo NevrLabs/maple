@@ -47,23 +47,24 @@ import {
 	Effect,
 	Layer,
 	Option,
-	Redacted,
 	Ref,
 	Schedule,
 	Schema,
 	String as Str,
 } from "effect"
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http"
-import {
-	decryptAes256Gcm,
-	encryptAes256Gcm,
-	parseBase64Aes256GcmKey,
-	type EncryptedValue,
-} from "@maple/backend/platform/Crypto"
+import type { EncryptedValue } from "@maple/backend/platform/Crypto"
 import { SchemaApplyWorkflow } from "@maple/backend/platform/bindings"
 import { Database } from "@maple/backend/platform/DatabaseLive"
 import { makeDbExecute } from "@maple/backend/platform/db-execute"
 import { Env } from "@maple/backend/platform/Env"
+import {
+	openSecret,
+	sealSecret,
+	secretKeyringFromEnv,
+	type SecretKeyring,
+} from "@maple/backend/platform/SecretBox"
+import { clickHousePasswordSlot } from "@maple/backend/platform/secret-slots"
 import { forkRequestScoped } from "@maple/backend/platform/fork-request-scoped"
 import { readTextWithin, validateExternalUrl } from "@maple/safe-fetch"
 
@@ -154,6 +155,8 @@ const ORG_CH_CONFIG_MEMO_HARD_MS = 21_600_000
  */
 export const ORG_CH_CONFIG_CACHE_BUCKET = "org-ch-config"
 const ORG_CH_CONFIG_CACHE_TTL_SECONDS = 21_600
+/** How long a password that did not open straight from Postgres goes without another read of its row. */
+const UNOPENABLE_PASSWORD_RECHECK_MS = 60_000
 interface RuntimeConfigMemoEntry {
 	readonly value: CachedChSettings | null
 	readonly freshUntil: number
@@ -418,30 +421,21 @@ const STALE_APPLY_RUN_MS = 30 * 60_000
 
 const toEncryptionError = (message: string) => new OrgClickHouseSettingsEncryptionError({ message })
 
-const parseEncryptionKey = (raw: string): Effect.Effect<Buffer, OrgClickHouseSettingsEncryptionError> =>
-	parseBase64Aes256GcmKey(raw, (message) =>
-		toEncryptionError(
-			message === "Expected a non-empty base64 encryption key"
-				? "MAPLE_INGEST_KEY_ENCRYPTION_KEY is required"
-				: message === "Expected base64 for exactly 32 bytes"
-					? "MAPLE_INGEST_KEY_ENCRYPTION_KEY must be base64 for exactly 32 bytes"
-					: message,
-		),
-	)
-
 const encryptToken = (
+	keyring: SecretKeyring,
+	orgId: OrgId,
 	plaintext: string,
-	encryptionKey: Buffer,
 ): Effect.Effect<EncryptedValue, OrgClickHouseSettingsEncryptionError> =>
-	encryptAes256Gcm(plaintext, encryptionKey, () =>
+	sealSecret(keyring, clickHousePasswordSlot, { orgId }, plaintext, () =>
 		toEncryptionError("Failed to encrypt ClickHouse password"),
 	)
 
 const decryptToken = (
+	keyring: SecretKeyring,
+	orgId: OrgId,
 	encrypted: EncryptedValue,
-	encryptionKey: Buffer,
 ): Effect.Effect<string, OrgClickHouseSettingsEncryptionError> =>
-	decryptAes256Gcm(encrypted, encryptionKey, () =>
+	openSecret(keyring, clickHousePasswordSlot, { orgId }, encrypted, () =>
 		toEncryptionError("Failed to decrypt ClickHouse password"),
 	)
 
@@ -640,12 +634,6 @@ const decodeStatus = (raw: string | null | undefined): "connected" | "error" | n
 	if (raw === "connected" || raw === "error") return raw
 	return null
 }
-
-// We parse the bundled snapshot statements from the static migration snapshot.
-// Parsing is cheap, but the snapshot is also static across the process
-// lifetime so the service memoizes the result in a `Ref` (created in `make`)
-// to avoid re-parsing on every request without resorting to module-global
-// mutable state.
 
 const parseDesiredTables = (): ReadonlyArray<DesiredTable> => {
 	const out: DesiredTable[] = []
@@ -928,7 +916,7 @@ export class OrgClickHouseSettingsService extends Context.Service<
 		const dbExecute = makeDbExecute(database, "OrgClickHouseSettingsService", toPersistenceError)
 		const env = yield* Env
 		const httpClient = yield* HttpClient.HttpClient
-		const encryptionKey = yield* parseEncryptionKey(Redacted.value(env.MAPLE_INGEST_KEY_ENCRYPTION_KEY))
+		const keyring = yield* secretKeyringFromEnv(env, toEncryptionError)
 		// Dev-only way past a per-org BYO row; the environment gate keeps it off deploys.
 		const ignoreOrgClickHouse = env.MAPLE_ENVIRONMENT === "development" && env.MAPLE_IGNORE_ORG_CLICKHOUSE
 		// The background schema-apply Workflow, bound only by the api Worker that hosts it.
@@ -1027,18 +1015,6 @@ export class OrgClickHouseSettingsService extends Context.Service<
 				return hadOverride
 			})
 
-		/**
-		 * Public form of `invalidateRuntimeConfigCache`, for the warehouse
-		 * executor's credential-rotation self-heal.
-		 *
-		 * `resolveCachedSettings` serves this config stale by design, so a BYO
-		 * ClickHouse password rotation keeps resolving to the retired credential
-		 * until the entry ages out. The executor calls this on `WarehouseAuthError`
-		 * and retries once. The returned boolean is the retry gate: `true` only
-		 * when a per-org override was actually dropped, so an auth failure against
-		 * the shared managed credential — where re-resolving cannot change the
-		 * answer — is not run twice.
-		 */
 		const invalidateRuntimeConfig = (orgId: OrgId): Effect.Effect<boolean> =>
 			invalidateRuntimeConfigCache(orgId)
 
@@ -1052,18 +1028,17 @@ export class OrgClickHouseSettingsService extends Context.Service<
 			})
 		})
 
+		// `orgId` is the org the row (or its cache entry) was looked up by.
 		const decryptStoredPassword = (
+			orgId: OrgId,
 			row: Pick<ActiveRow, "chPasswordCiphertext" | "chPasswordIv" | "chPasswordTag">,
 		): Effect.Effect<string, OrgClickHouseSettingsEncryptionError> =>
 			row.chPasswordCiphertext !== null && row.chPasswordIv !== null && row.chPasswordTag !== null
-				? decryptToken(
-						{
-							ciphertext: row.chPasswordCiphertext,
-							iv: row.chPasswordIv,
-							tag: row.chPasswordTag,
-						},
-						encryptionKey,
-					)
+				? decryptToken(keyring, orgId, {
+						ciphertext: row.chPasswordCiphertext,
+						iv: row.chPasswordIv,
+						tag: row.chPasswordTag,
+					})
 				: Effect.succeed("")
 
 		const toResponse = (row: ActiveRow | null | undefined): OrgClickHouseSettingsResponse =>
@@ -1129,7 +1104,7 @@ export class OrgClickHouseSettingsService extends Context.Service<
 						message: "Password is required when changing the ClickHouse URL, user, or database",
 					})
 				}
-				plainPassword = yield* decryptStoredPassword(existing)
+				plainPassword = yield* decryptStoredPassword(existing.orgId, existing)
 			}
 			yield* validateClickHouseCredentialTransport(url, plainPassword)
 
@@ -1144,7 +1119,7 @@ export class OrgClickHouseSettingsService extends Context.Service<
 			)
 
 			const encryptedPassword =
-				plainPassword.length > 0 ? yield* encryptToken(plainPassword, encryptionKey) : null
+				plainPassword.length > 0 ? yield* encryptToken(keyring, orgId, plainPassword) : null
 
 			const now = yield* Clock.currentTimeMillis
 			yield* dbExecute((db) =>
@@ -1210,7 +1185,7 @@ export class OrgClickHouseSettingsService extends Context.Service<
 
 		const loadConfigForRow = (row: ActiveRow) =>
 			Effect.gen(function* () {
-				const password = yield* decryptStoredPassword(row)
+				const password = yield* decryptStoredPassword(row.orgId, row)
 				yield* validateClickHouseCredentialTransport(row.chUrl, password)
 				return {
 					url: row.chUrl,
@@ -1286,7 +1261,6 @@ export class OrgClickHouseSettingsService extends Context.Service<
 			yield* Effect.annotateCurrentSpan("orgId", orgId)
 			yield* Effect.annotateCurrentSpan("tenant.userId", userId)
 			yield* requireAdmin(roles)
-			// Ensure BYO ClickHouse is configured before queuing a run.
 			yield* requireActiveRow(orgId)
 
 			// Resolve the binding BEFORE claiming: a missing binding must not leave
@@ -1709,6 +1683,52 @@ export class OrgClickHouseSettingsService extends Context.Service<
 			},
 		)
 
+		/**
+		 * Ciphertexts that did not open straight from Postgres, so a broken row is not re-read per
+		 * call. A marker expires: the reseal pass may repair the row behind the cache.
+		 */
+		const unopenablePasswords = new Map<
+			OrgId,
+			{ readonly ciphertext: string | null; readonly atMs: number }
+		>()
+
+		/**
+		 * The cached settings with their password opened. The cache outlives a reseal and a key
+		 * rotation, so a triple that will not open is dropped and the row read again, once: `null`
+		 * when the row is gone by then.
+		 */
+		const openCachedPassword = (orgId: OrgId, cached: CachedChSettings) =>
+			decryptStoredPassword(orgId, cached).pipe(
+				Effect.map((password) => ({ settings: cached, password })),
+				Effect.catchTag("@maple/http/errors/OrgClickHouseSettingsEncryptionError", (error) =>
+					Effect.gen(function* () {
+						const nowMs = yield* Clock.currentTimeMillis
+						const marker = unopenablePasswords.get(orgId)
+						if (
+							marker !== undefined &&
+							marker.ciphertext === cached.chPasswordCiphertext &&
+							nowMs - marker.atMs < UNOPENABLE_PASSWORD_RECHECK_MS
+						) {
+							return yield* error
+						}
+						yield* invalidateRuntimeConfigCache(orgId)
+						const fresh = yield* resolveCachedSettings(orgId)
+						if (fresh === null) return null
+						const password = yield* decryptStoredPassword(orgId, fresh).pipe(
+							Effect.tapError(() =>
+								Effect.sync(() =>
+									unopenablePasswords.set(orgId, {
+										ciphertext: fresh.chPasswordCiphertext,
+										atMs: nowMs,
+									}),
+								),
+							),
+						)
+						return { settings: fresh, password }
+					}),
+				),
+			)
+
 		const resolveRuntimeConfig = Effect.fn("OrgClickHouseSettingsService.resolveRuntimeConfig")(
 			function* (orgId: OrgId) {
 				if (ignoreOrgClickHouse) {
@@ -1731,8 +1751,12 @@ export class OrgClickHouseSettingsService extends Context.Service<
 					"maple.clickhouse.schema_drift",
 					cached.schemaVersion !== clickHouseSchemaVersion,
 				)
-				const password = yield* decryptStoredPassword(cached)
-				yield* validateClickHouseCredentialTransport(cached.chUrl, password).pipe(
+				const opened = yield* openCachedPassword(orgId, cached)
+				if (opened === null) {
+					return Option.none<RuntimeBackendConfig>()
+				}
+				const { settings, password } = opened
+				yield* validateClickHouseCredentialTransport(settings.chUrl, password).pipe(
 					Effect.mapError(
 						(cause) =>
 							new OrgClickHouseSettingsStoredConfigInvalidError({
@@ -1743,10 +1767,10 @@ export class OrgClickHouseSettingsService extends Context.Service<
 				)
 				return Option.some<RuntimeBackendConfig>({
 					backend: "clickhouse",
-					url: cached.chUrl,
-					user: cached.chUser,
+					url: settings.chUrl,
+					user: settings.chUser,
 					password,
-					database: cached.chDatabase,
+					database: settings.chDatabase,
 				})
 			},
 		)
@@ -1789,7 +1813,7 @@ export class OrgClickHouseSettingsService extends Context.Service<
 			yield* Effect.annotateCurrentSpan("orgId", orgId)
 			yield* requireAdmin(roles)
 			const row = yield* requireActiveRow(orgId)
-			const password = yield* decryptStoredPassword(row)
+			const password = yield* decryptStoredPassword(row.orgId, row)
 			yield* validateClickHouseCredentialTransport(row.chUrl, password)
 			const yaml = renderCollectorYaml({
 				orgId,

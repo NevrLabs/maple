@@ -19,6 +19,7 @@ import {
 	ScrapeTargetUpstreamError,
 	ScrapeTargetValidationError,
 	type CreateScrapeTargetRequest,
+	type ScrapeResultReport,
 	type UpdateScrapeTargetRequest,
 } from "@maple/domain/http"
 import * as Orm from "@maple-dev/effect-orm/database"
@@ -40,20 +41,16 @@ import {
 	Exit,
 	Layer,
 	Option,
-	Redacted,
 	Schema,
 	Record as Rec,
 	String as Str,
 } from "effect"
 import { HttpClient, HttpClientRequest } from "effect/http"
-import {
-	encryptAes256Gcm,
-	parseBase64Aes256GcmKey,
-	type EncryptedValue,
-} from "@maple/backend/platform/Crypto"
+import { sealSecret, secretKeyringFromEnv, type SecretKeyring } from "@maple/backend/platform/SecretBox"
+import { scrapeTargetCredentialsSlot } from "@maple/backend/platform/secret-slots"
 import { forkRequestScoped } from "@maple/backend/platform/fork-request-scoped"
 import { Database } from "@maple/backend/platform/DatabaseLive"
-import { makeDbExecute } from "@maple/backend/platform/db-execute"
+import { makeDbExecute, makePersistenceErrorMapper } from "@maple/backend/platform/db-execute"
 import { msToSqlTimestamp } from "@maple/backend/platform/time"
 import { Env } from "@maple/backend/platform/Env"
 import {
@@ -83,21 +80,16 @@ import {
 	type PollOutcome,
 	pollReportDue,
 	reportPoll,
-} from "@maple/backend/services/org/integration-sources"
+} from "@maple/backend/services/integrations/integration-sources"
 import type { MapleDb } from "@maple/db/client"
-import { scrapeResource } from "@maple/domain/integration-inventory"
-import type { SourceId } from "@maple/domain/primitives"
+import { scrapeResource } from "./integration-inventory"
+import type { SourceId } from "@maple/primitives"
 
 type ScrapeTargetSet = PG.UpdateSetOf<typeof ScrapeTargets>
 type MutableScrapeTargetSet = { -readonly [K in keyof ScrapeTargetSet]: ScrapeTargetSet[K] }
 
-/** One scrape attempt as reported by the scraper loop or a manual probe. */
-export interface ScrapeResultReport {
-	readonly targetId: ScrapeTargetId
-	readonly scrapedAt: number
-	readonly error: string | null
-	readonly subTargetKey?: string | null
-}
+/** One scrape attempt as reported by the scraper loop or a manual probe: what the row converges on. */
+export type ScrapeResult = Pick<ScrapeResultReport, "targetId" | "scrapedAt" | "error" | "subTargetKey">
 
 /**
  * Row state one target converges on after applying its results in order.
@@ -113,7 +105,7 @@ export interface ScrapeTargetSummary {
 
 const applyScrapeResult = (
 	previous: ScrapeTargetSummary | undefined,
-	result: ScrapeResultReport,
+	result: ScrapeResult,
 ): ScrapeTargetSummary => {
 	// Discovered sub-targets roll up: any branch failure surfaces branch-prefixed.
 	// Per-branch health stays visible in check history via the per-branch `instance`.
@@ -138,7 +130,7 @@ const applyScrapeResult = (
  * old per-result writes cost ~95k UPDATEs a day to persist ~8k outcomes.
  */
 export const summarizeScrapeResults = (
-	results: ReadonlyArray<ScrapeResultReport>,
+	results: ReadonlyArray<ScrapeResult>,
 ): ReadonlyMap<ScrapeTargetId, ScrapeTargetSummary> =>
 	new Map(
 		Arr.map(
@@ -288,10 +280,10 @@ export interface ScrapeTargetsServiceApi {
 /** A probe parses at most this much of a target's body; the scraper itself reads up to 32 MiB. */
 const PROBE_MAX_BODY_BYTES = 4 * 1024 * 1024
 
-const toPersistenceError = (error: unknown) =>
-	new ScrapeTargetPersistenceError({
-		message: error instanceof Error ? error.message : "Scrape target persistence failed",
-	})
+const toPersistenceError = makePersistenceErrorMapper(
+	ScrapeTargetPersistenceError,
+	"Scrape target persistence failed",
+)
 
 const toEncryptionError = (message: string) => new ScrapeTargetEncryptionError({ message })
 
@@ -329,22 +321,15 @@ const normalizeBranchPatterns = (patterns: ReadonlyArray<string> | undefined): s
 	return [...seen]
 }
 
-const parseEncryptionKey = (raw: string): Effect.Effect<Buffer, ScrapeTargetEncryptionError> =>
-	parseBase64Aes256GcmKey(raw, (message) =>
-		toEncryptionError(
-			message === "Expected a non-empty base64 encryption key"
-				? "MAPLE_INGEST_KEY_ENCRYPTION_KEY is required"
-				: message === "Expected base64 for exactly 32 bytes"
-					? "MAPLE_INGEST_KEY_ENCRYPTION_KEY must be base64 for exactly 32 bytes"
-					: message,
-		),
-	)
-
+/** Seals credentials for the scrape target row that `ref` names. */
 const encryptCredentials = (
+	keyring: SecretKeyring,
+	ref: { readonly orgId: OrgId; readonly id: ScrapeTargetId },
 	plaintext: string,
-	encryptionKey: Buffer,
-): Effect.Effect<EncryptedValue, ScrapeTargetEncryptionError> =>
-	encryptAes256Gcm(plaintext, encryptionKey, () => toEncryptionError("Failed to encrypt credentials"))
+) =>
+	sealSecret(keyring, scrapeTargetCredentialsSlot, ref, plaintext, () =>
+		toEncryptionError("Failed to encrypt credentials"),
+	)
 
 const decodeAuthTypeEffect = Schema.decodeUnknownEffect(ScrapeAuthType)
 
@@ -644,9 +629,7 @@ export class ScrapeTargetsService extends Context.Service<ScrapeTargetsService, 
 			// Scoped per hop, so an unread body (non-2xx, PlanetScale) is cancelled on exit.
 			const httpClient = yield* HttpClient.HttpClient
 			const probeClient = guard(HttpClient.withScope(httpClient))
-			const encryptionKey = yield* parseEncryptionKey(
-				Redacted.value(env.MAPLE_INGEST_KEY_ENCRYPTION_KEY),
-			)
+			const keyring = yield* secretKeyringFromEnv(env, toEncryptionError)
 
 			const selectById = Effect.fn("ScrapeTargetsService.selectById")(function* (
 				orgId: OrgId,
@@ -691,7 +674,7 @@ export class ScrapeTargetsService extends Context.Service<ScrapeTargetsService, 
 					const { accessToken } = yield* supabaseOAuth.getValidAccessToken(row.orgId)
 					return { Authorization: `Bearer ${accessToken}` }
 				}
-				return yield* buildScrapeAuthHeaders(row, encryptionKey)
+				return yield* buildScrapeAuthHeaders(row, keyring)
 			})
 
 			const list = Effect.fn("ScrapeTargetsService.list")(function* (orgId: OrgId) {
@@ -798,6 +781,8 @@ export class ScrapeTargetsService extends Context.Service<ScrapeTargetsService, 
 
 				const name = Str.trim(request.name)
 				const serviceName = request.serviceName ?? null
+				// Minted before sealing: the credentials are bound to the row id.
+				const id = decodeTargetIdSync(randomUUID())
 
 				interface EncryptedCredentialFields {
 					authCredentialsCiphertext: string | null
@@ -812,7 +797,11 @@ export class ScrapeTargetsService extends Context.Service<ScrapeTargetsService, 
 
 				if (!isCredentialLessAuthType(authType)) {
 					yield* validateAuthCredentials(authType, request.authCredentials)
-					const encrypted = yield* encryptCredentials(request.authCredentials!, encryptionKey)
+					const encrypted = yield* encryptCredentials(
+						keyring,
+						{ orgId, id },
+						request.authCredentials!,
+					)
 					credentialFields = {
 						authCredentialsCiphertext: encrypted.ciphertext,
 						authCredentialsIv: encrypted.iv,
@@ -821,7 +810,6 @@ export class ScrapeTargetsService extends Context.Service<ScrapeTargetsService, 
 				}
 
 				const now = yield* Clock.currentTimeMillis
-				const id = decodeTargetIdSync(randomUUID())
 
 				// The target and the source it sends as land together.
 				const inserted = yield* dbExecute((db) =>
@@ -1054,7 +1042,11 @@ export class ScrapeTargetsService extends Context.Service<ScrapeTargetsService, 
 						updates.authCredentialsTag = null
 					} else if (newAuthType !== existing.authType || request.authCredentials) {
 						yield* validateAuthCredentials(newAuthType!, request.authCredentials)
-						const encrypted = yield* encryptCredentials(request.authCredentials!, encryptionKey)
+						const encrypted = yield* encryptCredentials(
+							keyring,
+							{ orgId: existing.orgId, id: existing.id },
+							request.authCredentials!,
+						)
 						updates.authCredentialsCiphertext = encrypted.ciphertext
 						updates.authCredentialsIv = encrypted.iv
 						updates.authCredentialsTag = encrypted.tag
@@ -1063,7 +1055,11 @@ export class ScrapeTargetsService extends Context.Service<ScrapeTargetsService, 
 					const currentAuthType = existing.authType
 					if (!isCredentialLessAuthType(currentAuthType)) {
 						yield* validateAuthCredentials(currentAuthType, request.authCredentials)
-						const encrypted = yield* encryptCredentials(request.authCredentials, encryptionKey)
+						const encrypted = yield* encryptCredentials(
+							keyring,
+							{ orgId: existing.orgId, id: existing.id },
+							request.authCredentials,
+						)
 						updates.authCredentialsCiphertext = encrypted.ciphertext
 						updates.authCredentialsIv = encrypted.iv
 						updates.authCredentialsTag = encrypted.tag

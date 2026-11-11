@@ -8,7 +8,7 @@ import { toLoadFailure } from "@maple/views/data/load-failure"
 import type { PageContext } from "../../contract"
 import { runOf } from "../shared/escalation-test-fixtures"
 import { pagedEvents } from "../shared/oncall-test-fixtures"
-import { incidentRow, INCIDENT_ID, NOW, ORG, ruleRow } from "../shared/test-rows"
+import { incidentRow, INCIDENT_ID, NOW, ORG, ruleRow } from "../../kit/alert-test-rows"
 import { Message } from "./message"
 import type { Model } from "./model"
 import { init, update } from "./update"
@@ -141,7 +141,7 @@ describe("alert incident, escalation", () => {
 			given(failed),
 			themeResolved(),
 			expectView(role("heading", { name: "Escalation" })).toExist(),
-			expectView(text("Couldn't load the escalation.")).toExist(),
+			expectView(text("Couldn't load the escalation")).toExist(),
 		)
 		scene(
 			{ update: pageUpdate, view },

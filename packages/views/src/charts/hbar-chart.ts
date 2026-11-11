@@ -1,4 +1,4 @@
-import { pickValueField, toBreakdownRows } from "@maple/ui/components/charts/_shared/breakdown-rows"
+import { pickValueField, toBreakdownRows } from "./series/breakdown-rows"
 import { formatNumber, formatPercent, formatValueByUnit } from "@maple/ui/lib/format"
 import { resolveSeriesColors } from "@maple/ui/lib/semantic-series-colors"
 import { cn } from "@maple/ui/lib/utils"
@@ -12,8 +12,8 @@ import { chartFrameClass, chartNoData } from "../ui/chart-frame"
 import { barFillClass } from "../ui/meter"
 import { hstack } from "../ui/stack"
 
-// Port of `QueryBuilderHbarChart` (packages/ui/src/components/charts/hbar/query-builder-hbar-chart.tsx):
-// ranked DOM bars sized from the measured card. The hovered row is the chart Model's `activeKey`.
+// The query-builder horizontal bar chart: ranked DOM bars sized from the measured card. The hovered
+// row is the chart Model's `activeKey`.
 
 export interface HbarChartInputs {
 	readonly data: ReadonlyArray<Record<string, unknown>>
@@ -147,7 +147,7 @@ export const view = Submodel.defineView<Model, Message, HbarChartInputs>((model,
 							{
 								align: "end",
 								className:
-									"pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-card via-card/90 to-transparent px-1 pt-4 text-3xs leading-none text-muted-foreground",
+									"pointer-events-none absolute inset-x-0 bottom-0 bg-linear-to-t from-card via-card/90 to-transparent px-1 pt-4 text-3xs leading-none text-muted-foreground",
 								attributes: [
 									h.Style({ height: `${MORE_ROW_H + 16}px` }),
 									h.DataAttribute("slot", "hbar-more"),

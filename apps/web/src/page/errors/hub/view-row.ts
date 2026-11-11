@@ -1,6 +1,6 @@
 import { EMPTY_VALUE, formatNumber } from "@maple/ui/lib/format"
 import { cn } from "@maple/ui/lib/utils"
-import type { ErrorSignal } from "../../../lib/models/error-signal"
+import type { ErrorSignal } from "../kit/error-signal"
 import type { Html, HtmlBuilder } from "foldkit/html"
 import * as Checkbox from "@maple/views/ui/checkbox"
 import { eyebrow } from "@maple/views/ui/eyebrow"
@@ -8,7 +8,7 @@ import { skeleton } from "@maple/views/ui/skeleton"
 import { AppRoute, hrefOf } from "../../../route"
 import { truncatedText } from "@maple/views/ui/truncated-text"
 import { serviceDot } from "@maple/views/ui/values"
-import { actorAvatar } from "../kit/actor"
+import { actorAvatar } from "../../kit/issue-actor"
 import {
 	PICKER_HOTKEY,
 	type PickerKind,
@@ -35,8 +35,6 @@ import {
 import { typography, typographyClass } from "@maple/views/ui/typography"
 import { hstackClass } from "@maple/views/ui/stack"
 import { timestamp } from "@maple/views/ui/timestamp"
-
-// The error signal header and row skeleton.
 
 /** Lane geometry, shared by the header and the rows so the two cannot drift. */
 export const LANE = {
@@ -98,7 +96,6 @@ export const signalHeader = (h: H, selection: HeaderSelection | null): Html =>
 
 const SKELETON_WIDTHS = ["72%", "48%", "61%", "39%", "55%", "44%"]
 
-/** A row that has not arrived yet, in the lanes it will occupy. */
 export const signalRowSkeleton = (h: H, index: number): Html =>
 	h.div(
 		[h.Class(cn(ROW_SHELL, "h-11")), h.AriaHidden(true)],
@@ -134,13 +131,12 @@ export type RowState = Readonly<{
 	timeZone: string
 	nowMs: number
 	sparkWindow: SparkWindow
-	/** This row's open quick-pick, if any. */
 	picker: Readonly<{ kind: PickerKind; quickPick: QuickPick.Model }> | null
 	/** The right-click menu, when this row was the last one pressed. */
 	rowMenu: ContextMenu.Model | null
 }>
 
-/** `ErrorSignalRow`: the row is the link; the checkbox and pickers sit inside it. */
+/** The row is the link; the checkbox and pickers sit inside it. */
 export const signalRow = (h: H, signal: ErrorSignal, state: RowState): Html => {
 	const href = hrefOf(AppRoute.ErrorIssue({ issueId: signal.id, search: {} }))
 	const { dense, isSurging, label } = sparkOf(signal, state.sparkWindow)
@@ -159,7 +155,6 @@ export const signalRow = (h: H, signal: ErrorSignal, state: RowState): Html => {
 						"hover:bg-surface-sunken active:bg-surface-sunken data-focused:bg-surface-sunken",
 						"data-selected:bg-primary-a2 data-selected:hover:bg-primary-a3 data-selected:active:bg-primary-a3",
 						"focus-visible:bg-surface-sunken focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring",
-						"transition-colors",
 					),
 				),
 				...(state.isFocused ? [h.DataAttribute("focused", "true")] : []),
@@ -200,9 +195,8 @@ export const signalRow = (h: H, signal: ErrorSignal, state: RowState): Html => {
 							h,
 							{
 								text: swap ? signal.detail : rowTitle,
-								// The exception type never truncates on wide rows; only the detail gives way.
-								className:
-									"font-medium text-foreground @4xl/page:max-w-[75%] @4xl/page:shrink-0",
+								// The detail (basis 0) gives way first; the title shrinks only so the activity chips fit.
+								className: "font-medium text-foreground @4xl/page:max-w-[75%]",
 							},
 							[rowTitle],
 						),
@@ -230,7 +224,7 @@ export const signalRow = (h: H, signal: ErrorSignal, state: RowState): Html => {
 	])
 }
 
-/** `IssueContextMenu`'s trigger around the row; the row last pressed carries the menu itself. */
+/** The context menu's trigger around the row; only the row last pressed carries the menu itself. */
 const rowMenuTrigger = (h: H, signal: ErrorSignal, state: RowState, children: ReadonlyArray<Html>): Html =>
 	state.rowMenu === null
 		? ContextMenuView.idleTrigger(
@@ -327,10 +321,9 @@ const trailingLanes = (h: H, signal: ErrorSignal, state: RowState): ReadonlyArra
 
 const pickerMessage = (message: QuickPick.Message) => Message.GotPickerMessage({ message })
 
-/** The row link (`rowRef`), the picker's anchor while its lane is hidden. */
+/** The row link: the picker's anchor while its lane is hidden. */
 export const rowSelector = (id: string): string => `a[data-issue-id="${id}"]`
 
-/** `SeverityPicker`: the closed trigger, or the open popover around it. */
 const severityPicker = (h: H, signal: ErrorSignal, state: RowState): Html =>
 	state.picker?.kind === "severity"
 		? QuickPick.view(h, {
@@ -351,7 +344,6 @@ const severityPicker = (h: H, signal: ErrorSignal, state: RowState): Html =>
 				onClick: Message.ClickedPickerTrigger({ id: signal.id, kind: "severity" }),
 			})
 
-/** `StatePicker`. */
 const statePicker = (h: H, signal: ErrorSignal, state: RowState): Html => {
 	const current = signal.issue.workflowState
 	return state.picker?.kind === "state"

@@ -1,9 +1,9 @@
-import { gcpAppWait } from "../../../../components/infra/gcp/cloud-sql-signals"
+import { gcpAppWait } from "../cloud-sql-signals"
 import { EMPTY_VALUE, formatLatency, formatNumber, formatPercent } from "@maple/ui/lib/format"
 import { LATENCY_BAR_TONE, latencyLevel, latencyToneClass } from "@maple/ui/lib/latency-tone"
 import { refreshingClass } from "@maple/ui/lib/refreshing"
 import { cn } from "@maple/ui/lib/utils"
-import { formatClockInTimezone } from "@maple/web-data/lib/timezone-format"
+import { formatClockInTimezone } from "@maple/ui/lib/timezone-format"
 import { AsyncData } from "foldkit"
 import type { Html, HtmlBuilder } from "foldkit/html"
 import { heading } from "@maple/views/ui/heading"
@@ -35,7 +35,7 @@ import { selectableRow } from "@maple/views/ui/selectable-row"
 const PEEK_ROW =
 	"flex items-center gap-3 border-b border-border-subtle px-1 py-2 last:border-0 hover:bg-surface-sunken active:bg-surface-sunken"
 
-// `GcpQueryPeekSheet`: one Query Insights statement, its callers and its slowest traced calls.
+// One Query Insights statement, its callers and its slowest traced calls.
 
 type H = HtmlBuilder<Message>
 type TimeSearch = Readonly<{ startTime?: string; endTime?: string; timePreset?: string }>
@@ -83,7 +83,7 @@ const header = (h: H, model: Model, peek: QueryPeek, inputs: QueryPeekInputs): H
 				"sr-only",
 			),
 			h.div(
-				[h.Class("relative rounded-md border bg-background/60")],
+				[h.Class("relative rounded-md border bg-surface-well")],
 				[
 					h.pre(
 						[
@@ -323,7 +323,7 @@ const notTraced = (h: H): Html =>
 		h.p(
 			[h.Class("max-w-md text-xs leading-relaxed text-muted-foreground")],
 			[
-				"No client span with this statement reached Maple in the window, so there is no caller or trace to open. Trace the service that runs it with OpenTelemetry's database instrumentation, keeping ",
+				"No client span with this statement reached Maple in this window, so there is no caller or trace to open. Trace the service that runs it with OpenTelemetry's database instrumentation, keeping ",
 				h.code([h.Class("font-mono")], ["db.query.text"]),
 				" on the span.",
 			],
@@ -393,7 +393,8 @@ export const queryPeekSheet = (h: H, model: Model, inputs: QueryPeekInputs): Htm
 		model: model.queryPeek,
 		view: DialogView.view,
 		viewInputs: {
-			className: "p-0 sm:max-w-xl",
+			className: "p-0",
+			size: "detail",
 			side: "right",
 			hasTrigger: false,
 			toView: ({ portal }) => portal,

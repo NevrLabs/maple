@@ -1,6 +1,6 @@
 import { ErrorIssueEventType } from "./http/errors"
 import { type PublicIdPrefix, PublicIdPrefixes } from "./http/v2/public-id"
-import { Array as Arr, Record as Rec } from "effect"
+import { Array as Arr, Record as Rec, String as Str } from "effect"
 
 /**
  * Every audited action in Maple, grouped by the resource it acts on.
@@ -42,6 +42,11 @@ export const AuditResources = {
 		verbs: ["created", "updated", "deleted"],
 	},
 	ingest_rule: { prefix: PublicIdPrefixes.ingestRule, verbs: ["created", "updated", "deleted"] },
+	/** External data sources; `metadata` says whether a secret changed, never its value. */
+	data_source: {
+		prefix: PublicIdPrefixes.dataSource,
+		verbs: ["created", "updated", "deleted", "tested", "catalog_refreshed", "catalog_curated"],
+	},
 	dashboard: {
 		prefix: PublicIdPrefixes.dashboard,
 		verbs: ["created", "updated", "deleted", "version_restored"],
@@ -101,13 +106,13 @@ export const AuditResources = {
 	},
 	/** Org-singleton public/private pair; which one rolled is in `metadata`. */
 	ingest_key: { verbs: ["rolled"] },
+	/** An MCP client's OAuth grant; the client and the member who approved it are in `metadata`. */
+	mcp_connection: { prefix: PublicIdPrefixes.mcpConnection, verbs: ["revoked"] },
 	/**
 	 * Every MCP tool invocation, whichever surface drove it (MCP transport, the
 	 * in-app chat, workflows, internal RPC). The tool and its parameters are in
 	 * `metadata`; a tool that also mutates a resource records that action too.
 	 */
-	/** An MCP client's OAuth grant; the client and the member who approved it are in `metadata`. */
-	mcp_connection: { prefix: PublicIdPrefixes.mcpConnection, verbs: ["revoked"] },
 	mcp_tool: { verbs: ["called"] },
 	investigation: {
 		prefix: PublicIdPrefixes.investigation,
@@ -216,6 +221,7 @@ export const AuditResourceLabels = {
 	api_key: "API key",
 	attribute_mapping: "Attribute mapping",
 	ingest_rule: "Ingest rule",
+	data_source: "Data source",
 	dashboard: "Dashboard",
 	chat_integration: "Chat integration",
 	dashboard_share: "Dashboard share",
@@ -287,6 +293,12 @@ export const AuditActionLabels = {
 	"ingest_rule.created": "Created ingest rule",
 	"ingest_rule.updated": "Updated ingest rule",
 	"ingest_rule.deleted": "Deleted ingest rule",
+	"data_source.created": "Connected data source",
+	"data_source.updated": "Updated data source",
+	"data_source.deleted": "Deleted data source",
+	"data_source.tested": "Tested data source",
+	"data_source.catalog_refreshed": "Refreshed data source catalog",
+	"data_source.catalog_curated": "Curated data source catalog entry",
 	"dashboard.created": "Created dashboard",
 	"dashboard.updated": "Updated dashboard",
 	"dashboard.deleted": "Deleted dashboard",
@@ -402,6 +414,17 @@ const isAuditAction = (action: string): action is AuditAction =>
 	Rec.has<string, string>(AuditActionLabels, action)
 const isAuditResourceType = (type: string): type is AuditResourceType =>
 	Rec.has<string, string>(AuditResourceLabels, type)
+
+/**
+ * Actions that record access rather than a change: reads, tool calls, SQL runs
+ * and API requests. A heavy agent user writes hundreds of these a day. The
+ * server filters by them and the web mutes them, so both read this one list.
+ */
+export const AUDIT_ACCESS_ACTION_SUFFIXES = [".read", ".called", ".sql_executed", ".request"] as const
+
+/** True for an access action (see {@link AUDIT_ACCESS_ACTION_SUFFIXES}). */
+export const isAuditAccessAction = (action: string): boolean =>
+	Arr.some(AUDIT_ACCESS_ACTION_SUFFIXES, (suffix) => Str.endsWith(suffix)(action))
 
 /** Label for an action string read off a row; null for one this build does not know. */
 export const auditActionLabel = (action: string): string | null =>

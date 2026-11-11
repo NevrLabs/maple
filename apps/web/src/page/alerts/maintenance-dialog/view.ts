@@ -50,7 +50,6 @@ const KINDS: ReadonlyArray<{ value: ScheduleKind; label: string }> = [
 	{ value: "once", label: "Once" },
 ]
 
-/** An error once a save was tried. */
 const shown = (model: Model, error: Option.Option<string>): Option.Option<string> =>
 	model.isShowingErrors ? error : Option.none()
 
@@ -201,7 +200,7 @@ const zoneField = (h: H, model: Model): Html =>
 				items: zoneItems(model),
 				ariaLabel: "Time zone",
 				placeholder: "Search time zones…",
-				emptyText: "No time zone matches that",
+				emptyText: "No time zones match",
 				startAddon: icon(h, "GlobeIcon"),
 				className: "w-full",
 				highlightsSelected: true,
@@ -227,7 +226,6 @@ const scheduleSection = (h: H, model: Model): Html =>
 		]),
 	])
 
-/** A checkbox with its label, and a muted line under it. */
 const checkboxOption = (
 	h: H,
 	model: Model,

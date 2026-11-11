@@ -27,7 +27,7 @@ import {
 	toolTableFooter,
 	toolTableHead,
 	toolTableRow,
-} from "../agent-sessions/tools-kit/table"
+} from "../kit/tools/table"
 import { pinnedNamespaceNotice } from "../kit/pinned-namespace-notice"
 import { listRelativeTime } from "../kit/relative-time"
 import { statRail, statRailItem, statRailItemSkeleton } from "../kit/stat-rail"
@@ -102,7 +102,7 @@ export type UsersListOptions<M> = Readonly<{
 	scope: ReadonlyArray<string>
 	onSearch: (value: string) => M
 	onClearSearch: M
-	/** Where a row links; rows are plain until the user page exists. */
+	/** Where a row links; without it rows are plain. */
 	userHref?: (userId: string) => string
 }>
 
@@ -130,7 +130,6 @@ export type UsersRailOptions<M> = Readonly<{
 const hasRailFilters = (filters: UsersFilters): boolean =>
 	filters.hasErrors || filters.hasReplay || filters.namespaces.length > 0 || filters.groups.length > 0
 
-/** The users filter rail: the toggles, then Namespace (or the pin's notice) and Group. */
 /** While the facets are out or failed: no counts and no options, only the picks already made. */
 const NO_FACETS: UsersFacets = { namespaces: [], groups: [], withErrors: 0, withReplay: 0 }
 
@@ -142,7 +141,7 @@ const railStatus = <M>(h: HtmlBuilder<M>, facets: UsersRailFacets, onRetry: M): 
 					hstack(h, { gap: "2", className: "px-1" }, [
 						typography(h, { size: "xs", tone: "muted" }, ["Couldn't load the filters"]),
 						button(h, { size: "xs", variant: "ghost", attributes: [h.OnClick(onRetry)] }, [
-							"Retry",
+							"Try again",
 						]),
 					]),
 				]
@@ -178,7 +177,7 @@ export const usersFilterRail = <M>(h: HtmlBuilder<M>, options: UsersRailOptions<
 				: filterSection(h, {
 						title: "Namespace",
 						description:
-							"The service.namespace of the services users' requests and sessions reached in the window.",
+							"The service.namespace of the services users' requests and sessions reached in this window.",
 						options: facets.namespaces,
 						selected: options.filters.namespaces,
 						isSearchable: true,
@@ -314,7 +313,7 @@ export const usersToolbar = <M>(
 		searchInput(h, {
 			id: "users-search",
 			value: options.filters.search,
-			placeholder: "Search by id, name or email",
+			placeholder: "Search by id, name or email…",
 			ariaLabel: "Search users",
 			onInput: options.onSearch,
 			onClear: options.onClearSearch,

@@ -5,9 +5,10 @@ import { badge } from "@maple/views/ui/display"
 import { icon } from "@maple/views/ui/icon"
 import { middleTruncate } from "@maple/views/ui/middle-truncate"
 import { pressable } from "@maple/views/ui/pressable"
+import { statusDot } from "@maple/views/ui/status-dot"
 import { segmentedSelect } from "@maple/views/ui/segmented-select"
 import { hstack, vstack } from "@maple/views/ui/stack"
-import { SEVERITY_FILL, severityIcon } from "../../errors/kit/severity"
+import { SEVERITY_FILL, severityIcon } from "../../kit/issue-severity"
 import { locationOf } from "./format"
 import {
 	BUCKET_LABEL,
@@ -27,22 +28,20 @@ import { Array as Arr, String as Str, Option } from "effect"
 
 /** A dot per bucket: the severity ramp, a hollow ring for info, dashed for an unproven lead. */
 export const bucketDot = <M>(h: HtmlBuilder<M>, bucket: SeverityBucket, className?: string): Html =>
-	h.span([
-		h.AriaHidden(true),
-		h.Class(
-			cn(
-				"inline-block size-2.5 shrink-0 rounded-full",
-				bucket === "informational"
-					? "border-2 border-foreground-subtle"
-					: bucket === "needs_validation"
-						? "border-2 border-dashed border-muted-foreground"
-						: bucket === "rejected"
-							? "bg-foreground-faint"
-							: SEVERITY_FILL[bucket],
-				className,
-			),
+	statusDot(h, {
+		tone: "custom",
+		size: "lg",
+		className: cn(
+			bucket === "informational"
+				? "border-2 border-foreground-subtle"
+				: bucket === "needs_validation"
+					? "border-2 border-dashed border-muted-foreground"
+					: bucket === "rejected"
+						? "bg-foreground-faint"
+						: SEVERITY_FILL[bucket],
+			className,
 		),
-	])
+	})
 
 /** Linear's priority marks: bars by severity, the warning glyph for critical, a dashed ring for
  * an unproven lead. Only critical is coloured, so the eye goes there first. `isQuiet` draws an
@@ -87,6 +86,10 @@ export const findingBadge = <M>(h: HtmlBuilder<M>, finding: SecurityAuditFinding
 				`${BUCKET_LABEL[bucketOf(finding)]} · unverified`,
 			])
 		: bucketBadge(h, bucketOf(finding))
+
+/** A compact estimated severity for narrow columns; pair it with `unverifiedChip`. */
+export const estimatedSeverityBadge = <M>(h: HtmlBuilder<M>, finding: SecurityAuditFinding): Html =>
+	badge(h, { variant: "outline", className: "border-dashed" }, [BUCKET_LABEL[bucketOf(finding)]])
 
 /** A scored lead's mark: its severity, quieter and labelled, until something proves it. */
 export const unverifiedChip = <M>(h: HtmlBuilder<M>): Html =>
@@ -266,7 +269,7 @@ export const findingGroups = <M>(h: HtmlBuilder<M>, options: FindingGroupsOption
 						{
 							onClick: options.onToggle(bucket),
 							className:
-								"sticky top-0 z-[1] flex h-9 w-full items-center gap-2 border-b border-border-subtle bg-surface-strong px-3 text-left backdrop-blur hover:bg-muted active:bg-muted",
+								"sticky top-0 z-1 flex h-9 w-full items-center gap-2 border-b border-border-subtle bg-surface-sunken px-3 text-left backdrop-blur hover:bg-surface-strong active:bg-surface-strong",
 							attributes: [h.AriaExpanded(!isCollapsed)],
 						},
 						[
@@ -308,6 +311,5 @@ export const findingGroups = <M>(h: HtmlBuilder<M>, options: FindingGroupsOption
 		}),
 	)
 
-/** Muted text for a trailing slot. */
 export const trailingText = <M>(h: HtmlBuilder<M>, text: string, className?: string): Html =>
 	h.span([h.Class(cn(typographyClass({ size: "xs", tone: "muted" }), className))], [text])

@@ -9,7 +9,7 @@ import { panel, panelHeader } from "@maple/views/ui/panel"
 import { formatExactCount } from "@maple/views/lib/locale"
 import { relativeTime } from "../../kit/relative-time"
 import { statRail, statRailItem } from "../../kit/stat-rail"
-import { SEVERITY_TOKEN } from "../kit/severity"
+import { SEVERITY_TOKEN } from "../../kit/issue-severity"
 import { Message } from "./message"
 import type { Model } from "./model"
 import { typography } from "@maple/views/ui/typography"
@@ -78,7 +78,7 @@ export const exceptionPanel = (h: H, model: Model, issue: ErrorIssueDocument): H
 							}),
 						])
 					: typography(h, { size: "xs", tone: "muted" }, [
-							"No stack frame was attributed to this fingerprint.",
+							"No stack frame was attributed to this fingerprint",
 						]),
 			]),
 		]),

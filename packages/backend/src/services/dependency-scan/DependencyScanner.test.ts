@@ -14,7 +14,7 @@ import {
 } from "effect"
 import { HttpClient, type HttpClientRequest, HttpClientResponse } from "effect/http"
 import { TestClock } from "effect/testing"
-import { cleanupTestDbs, createTestDb, type TestDb } from "@maple/backend/platform/test-pglite"
+import { cleanupTestDbs, createTestDb, type TestDb } from "@maple/backend/testing/test-pglite"
 import type { VcsTreeFile } from "@maple/backend/services/integrations/vcs/VcsProviderClient"
 import { PackageAdvisoryCatalog } from "@maple/backend/services/security/PackageAdvisoryCatalog"
 import osvFixture from "../security/__fixtures__/osv.json"
@@ -488,11 +488,13 @@ describe("DependencyScanner", () => {
 			state.files.set("package-lock.json", { sha: "lock-3", content: packageLock("4.18.0") })
 			const error = yield* Effect.flip(scanner.scan(installation, repository, { trigger: "push" }))
 			assert.strictEqual(error._tag, "@maple/dependency-scan/DependencyScanError")
+			// The typed failure's message, followed by what caused it: the span and error group
+			// show only this message.
+			assert.match(error.message, /^Could not read advisories: .+/)
 
 			const [latest] = yield* store.listScans({ orgId: repository.orgId, limit: 1 })
 			assert.strictEqual(latest?.status, "failed")
-			// The typed failure's message, followed by what caused it.
-			assert.match(latest?.error ?? "", /^Could not read advisories: .+/)
+			assert.strictEqual(latest?.error, error.message)
 			assert.deepStrictEqual(Arr.map(yield* findingsOf, keyOf).sort(), before)
 		}).pipe(Effect.provide(scannerFor(state)))
 	})

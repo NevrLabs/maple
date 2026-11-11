@@ -1,7 +1,7 @@
 import { Effect, Option, Result, Schema } from "effect"
 import { AsyncData, Command } from "foldkit"
 import { toLoadFailure } from "@maple/views/data/load-failure"
-import { apiBaseUrl } from "../../../lib/services/common/api-base-url"
+import { apiBaseUrl } from "../../../platform/api-base-url"
 import { readSessionToken } from "../../../platform/auth-api"
 import type { PageReturn } from "../../contract"
 import { Message, type Model, type UserAction, UserRow, UsersList } from "./model"

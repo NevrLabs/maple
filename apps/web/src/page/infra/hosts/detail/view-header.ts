@@ -1,4 +1,4 @@
-import { severityLevel } from "../../../../components/infra/format"
+import { severityLevel } from "../../kit/format"
 import { formatLoad, formatPercent } from "@maple/ui/lib/format"
 import type { Html, HtmlBuilder } from "foldkit/html"
 import { AppRoute, hrefOf } from "../../../../route"
@@ -13,8 +13,6 @@ import { hostStatusBadge } from "../../kit/status"
 import { Message } from "./message"
 import type { HostSummary } from "./model"
 import { typography, typographyClass } from "@maple/views/ui/typography"
-
-// `HostDetailHeader` / `HostDetailHeaderLoading` and `HeroChip`.
 
 type H = HtmlBuilder<Message>
 
@@ -39,7 +37,7 @@ const noData = (h: H, inputs: HeaderInputs): HostHeaderParts => ({
 	...pageHeroParts(h, {
 		title: typography(h, { mono: true }, [inputs.hostName]),
 		description:
-			"This host sent no metrics in the selected time window. It may have stopped reporting earlier: try a wider range, or go back to the hosts list.",
+			"This host sent no metrics in this window. It may have stopped reporting earlier: try a wider range, or go back to the hosts list.",
 	}),
 	actions: [
 		...(inputs.canWiden

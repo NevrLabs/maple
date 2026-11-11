@@ -26,8 +26,6 @@ import { typography, typographyClass } from "@maple/views/ui/typography"
 import { Array as Arr, String as Str } from "effect"
 import { hstack, vstack } from "@maple/views/ui/stack"
 
-// `TemplateList`: the templates as rows.
-
 type H = HtmlBuilder<Message>
 
 const READINESS_OPTIONS = [
@@ -36,7 +34,7 @@ const READINESS_OPTIONS = [
 	{ value: "needs-setup", label: "Needs setup" },
 ] as const
 
-/** `TemplateRow`: fixed-width lanes so names, counts and statuses form columns. */
+/** Fixed-width lanes so names, counts and statuses form columns. */
 const templateRow = (
 	h: H,
 	template: V2DashboardTemplate,
@@ -50,7 +48,7 @@ const templateRow = (
 			onClick: Message.ClickedTemplate({ templateId: template.id }),
 			selectedLane: isSelected,
 			className: cn(
-				"flex min-h-9 w-full items-center text-left transition-colors",
+				"flex min-h-9 w-full items-center text-left",
 				!isSelected && "hover:bg-surface-sunken active:bg-surface-sunken",
 			),
 			attributes: [h.Key(template.id), ...(isSelected ? [h.AriaCurrent("true")] : [])],
@@ -303,7 +301,7 @@ export const templateList = (
 									[
 										h.AriaHidden(true),
 										h.Class(
-											"pointer-events-none sticky bottom-0 h-6 bg-gradient-to-t from-background to-transparent",
+											"pointer-events-none sticky bottom-0 h-6 bg-linear-to-t from-background to-transparent",
 										),
 									],
 									[],
@@ -328,7 +326,7 @@ export const templateList = (
 					},
 					[icon(h, "PlusIcon", { size: 12, className: "text-muted-foreground" })],
 				),
-				hstack(h, { align: "baseline", shrink: true, as: "span", className: "grow gap-2.25" }, [
+				hstack(h, { align: "baseline", shrink: true, as: "span", className: "grow gap-2" }, [
 					typography(h, { size: "sm", tone: "foreground" }, ["Blank dashboard"]),
 					typography(h, { size: "2xs", tone: "muted" }, ["start from nothing"]),
 				]),

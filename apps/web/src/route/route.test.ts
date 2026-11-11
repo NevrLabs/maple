@@ -25,6 +25,47 @@ describe("routes", () => {
 		}
 	})
 
+	test("a string param a link wrote unquoted decodes to its text", () => {
+		expect(parse("/replays?userId=12345")).toMatchObject({ _tag: "Replays", search: { userId: "12345" } })
+		expect(parse("/logs?search=404")).toMatchObject({ _tag: "Logs", search: { search: "404" } })
+		expect(parse("/users?q=true")).toMatchObject({ _tag: "Users", search: { q: "true" } })
+		expect(parse("/metrics?q=null")).toMatchObject({ _tag: "Metrics", search: { q: "null" } })
+		expect(parse("/traces?httpStatusCodes=%5B404%2C%22500%22%5D")).toMatchObject({
+			_tag: "Traces",
+			search: { httpStatusCodes: ["404", "500"] },
+		})
+	})
+
+	test("an unquoted id too long or too odd for a number keeps every character", () => {
+		// Past 2^53, and exponent form: both would change when read as a number.
+		expect(parse("/traces/abc?spanId=9876543210987654321")).toMatchObject({
+			_tag: "Trace",
+			search: { spanId: "9876543210987654321" },
+		})
+		expect(parse("/logs?traceId=1e5")).toMatchObject({ _tag: "Logs", search: { traceId: "1e5" } })
+		// A span id is 16 hex characters, which can all be digits.
+		expect(parse("/agent-sessions/s1?span=1234567890123456")).toMatchObject({
+			_tag: "AgentSession",
+			search: { span: "1234567890123456" },
+		})
+		// The one required string param.
+		expect(parse("/infra/railway/svc?environmentId=42")).toMatchObject({
+			_tag: "InfraRailwayService",
+			search: { environmentId: "42" },
+		})
+	})
+
+	test("a numeric-looking string is written quoted and reads back the same", () => {
+		const route = parse("/replays?userId=12345")
+		expect(hrefOf(route)).toBe("/replays?userId=%2212345%22")
+		expect(parse(hrefOf(route))).toEqual(route)
+	})
+
+	test("a number param still reads a number the text does not print back as", () => {
+		expect(parse("/replays?durationMin=1e3")).toMatchObject({ search: { durationMin: 1000 } })
+		expect(parse("/traces?minDurationMs=1.50")).toMatchObject({ search: { minDurationMs: 1.5 } })
+	})
+
 	test("a user page takes any id the API accepts, decoded, and nothing longer", () => {
 		// Cloudflare delivers an encoded `%2F` as a real slash, so the id is the rest of the path.
 		const route = parse("/users/user/42%20ada")
@@ -69,11 +110,60 @@ describe("routes", () => {
 		expect(hrefOf(route)).toBe("/status-pages/stp_abc?view=settings")
 	})
 
+	test("each Alerts section has its own path, beside the detail pages under it", () => {
+		for (const section of ["rules", "uptime", "slos", "silences", "maintenance", "on-call", "routing"]) {
+			const route = parse(`/alerts/${section}`)
+			expect(route).toMatchObject({ _tag: "AlertsSection", section })
+			expect(hrefOf(route)).toBe(`/alerts/${section}`)
+		}
+		expect(parse("/alerts")._tag).toBe("Alerts")
+		expect(hrefOf(parse("/alerts/rules?status=firing"))).toBe("/alerts/rules?status=firing")
+		expect(parse("/alerts/uptime/new")._tag).toBe("AlertsUptimeNew")
+		expect(parse("/alerts/uptime/mon_1")._tag).toBe("AlertsUptimeMonitor")
+		expect(parse("/alerts/slos/slo_1")._tag).toBe("AlertsSlo")
+		expect(parse("/alerts/schedules/sch_1")._tag).toBe("AlertsSchedule")
+		expect(parse("/alerts/escalation-chains/new")._tag).toBe("AlertsEscalationChainNew")
+		expect(parse("/alerts/escalation-chains/esc_1")).toMatchObject({
+			_tag: "AlertsEscalationChain",
+			chainId: "esc_1",
+		})
+		expect(parse("/alerts/incidents/inc_1")._tag).toBe("AlertIncident")
+		expect(parse("/alerts/create")._tag).toBe("AlertsCreate")
+		expect(parse("/alerts/rules/0199a001-0000-7000-8000-000000000001")._tag).toBe("AlertRule")
+		expect(parse("/alerts/0199a001-0000-7000-8000-000000000001")._tag).toBe("AlertRuleLegacy")
+		expect(parse("/alerts/nope")._tag).toBe("NotFound")
+	})
+
+	test("an old `?tab=` link replaces itself with its section's path and keeps its other params", () => {
+		const redirectOf = (url: string) => Option.map(routeRedirect(parse(url)), (to) => to.url)
+		expect(redirectOf("/alerts?tab=rules&status=firing")).toEqual(
+			Option.some("/alerts/rules?status=firing"),
+		)
+		expect(redirectOf("/alerts?tab=%22silences%22&window=mw_1")).toEqual(
+			Option.some("/alerts/silences?window=mw_1"),
+		)
+		expect(redirectOf("/alerts?tab=oncall")).toEqual(Option.some("/alerts/on-call"))
+		expect(redirectOf("/alerts?tab=settings")).toEqual(Option.some("/alerts/routing"))
+		expect(redirectOf("/alerts?tab=inbox&signal=anomaly")).toEqual(Option.some("/alerts?signal=anomaly"))
+		expect(redirectOf("/alerts?tab=overview")).toEqual(Option.some("/alerts"))
+		expect(routeRedirect(parse("/alerts?tab=uptime"))).toEqual(
+			Option.some({ url: "/alerts/uptime", isReplace: true }),
+		)
+		// A rule's old address (notifications, the apps) opens it under Rules, keeping its tab and window.
+		expect(redirectOf("/alerts/0199a001-0000-7000-8000-000000000001?tab=history&timePreset=7d")).toEqual(
+			Option.some("/alerts/rules/0199a001-0000-7000-8000-000000000001?tab=history&timePreset=7d"),
+		)
+		expect(routeRedirect(parse("/alerts/rules/0199a001-0000-7000-8000-000000000001"))).toEqual(
+			Option.none(),
+		)
+		expect(routeRedirect(parse("/alerts?signal=anomaly"))).toEqual(Option.none())
+		expect(routeRedirect(parse("/alerts/rules"))).toEqual(Option.none())
+	})
+
 	test("the old status page links under Alerts redirect to their own section", () => {
 		expect(routeRedirect(parse("/alerts?tab=%22status-pages%22"))).toEqual(
 			Option.some({ url: "/status-pages", isReplace: true }),
 		)
-		expect(routeRedirect(parse("/alerts?tab=%22uptime%22"))).toEqual(Option.none())
 		expect(routeRedirect(parse("/alerts/status-pages/stp_abc"))).toEqual(
 			Option.some({ url: "/status-pages/stp_abc", isReplace: true }),
 		)

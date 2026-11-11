@@ -7,7 +7,7 @@ import {
 	ListSourcesOutput,
 	ScrapeTargetMutationOutput,
 } from "@maple/domain/mcp-outputs"
-import { RoleName } from "@maple/domain/primitives"
+import { RoleName } from "@maple/primitives"
 import type { McpToolResult } from "../types"
 import { installFakeWarehouse, restoreWarehouse } from "../../__evals__/fake-warehouse"
 import { makeEvalRuntime, markdown, runToolDirect, type EvalRuntime } from "../../__evals__/eval-runtime"
@@ -49,7 +49,7 @@ describe("list_integrations", () => {
 		expect(byProvider.get("prometheus")?.resources.map((r) => r.name)).toEqual([
 			INTEGRATION_WORLD.failingScrapeTarget,
 		])
-		expect(Arr.map(output.available, (a) => a.provider)).toEqual(["chat"])
+		expect(Arr.map(output.available, (a) => a.provider)).toEqual(["chat", "search_console"])
 		expect(markdown(result)).toContain("no successful update for 4 h")
 	})
 

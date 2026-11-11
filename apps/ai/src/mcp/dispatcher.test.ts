@@ -1,18 +1,20 @@
 import { assert, describe, expect, it } from "@effect/vitest"
 import { Context, Effect, Layer, Option, Schema, Tracer, Array as Arr, String as Str } from "effect"
 import type { McpToolNotFoundError } from "@maple/domain/mcp-tool-contract"
-import { ActorId } from "@maple/domain/primitives"
+import { ActorId } from "@maple/primitives"
 import { McpToolExecutor } from "./dispatcher"
-import { listMcpTools } from "./tool-catalog"
+import { listMcpTools } from "./tool-descriptors-render"
 import { MCP_ANTICIPATED_ERROR_IDENTIFIERS, recordExpectedMcpFailure } from "./expected-failures"
 import { mapleToolCatalog, mapleToolCatalogFor, toInputSchema, toOutputSchema } from "./tools/registry"
-import type { McpToolRuntimeRequirements } from "./tools/runtime-requirements"
-import type { TenantContext } from "@maple/backend/services/auth/tenant-context"
+import type { McpToolRuntimeRequirements } from "./tools/runtime-services"
+import type { TenantContext } from "@maple/domain/http"
 import { AuditLogService, makeMemoryAuditLog } from "@maple/backend/services/audit/AuditLogService"
 import { WarehouseQueryService } from "@maple/backend/services/warehouse/WarehouseQueryService"
 import { makeWarehouseServiceStub } from "@maple/backend/testing/warehouse-test-support"
 import { WarehouseQueryError } from "@maple/domain"
 import { RepoSandboxService } from "@maple/backend/services/sandbox/RepoSandboxService"
+import { ExternalDataSourceService } from "@maple/backend/services/data-sources/ExternalDataSourceService"
+import { OrganizationFeatureFlagsService } from "@maple/backend/services/org/OrganizationFeatureFlagsService"
 import {
 	type ConnectedSourceRepository,
 	VcsSourceService,
@@ -43,6 +45,8 @@ const CONNECTOR_TENANT: TenantContext = {
 const unusedRepositoryServices = Layer.mergeAll(
 	Layer.mock(RepoSandboxService, {}),
 	Layer.mock(VcsSourceService, {}),
+	Layer.mock(ExternalDataSourceService, {}),
+	OrganizationFeatureFlagsService.allEnabled,
 )
 
 // These cases stop at registry lookup/schema decoding, before a tool service is read.
@@ -495,6 +499,8 @@ describe("McpToolExecutor repository preparation", () => {
 				listRepositories: () =>
 					Effect.succeed([connected("octo/shop", false), connected("octo/legacy", true)]),
 			}),
+			Layer.mock(ExternalDataSourceService, {}),
+			OrganizationFeatureFlagsService.allEnabled,
 		)
 
 		return Effect.gen(function* () {

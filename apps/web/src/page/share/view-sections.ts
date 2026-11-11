@@ -10,8 +10,8 @@ import { hstack, hstackClass } from "@maple/views/ui/stack"
 import { Array as Arr } from "effect"
 import { typography } from "@maple/views/ui/typography"
 
-// `DashboardSectionView` with `readOnly`: the chevron, the title and the tabs, no editing; the classes are
-// the editable header's.
+// A read-only section header: the chevron, the title and the tabs, no editing. Its classes match
+// the dashboard page's editable header.
 
 type H = HtmlBuilder<Message>
 
@@ -32,7 +32,7 @@ const tabBar = (h: H, section: DashboardSection, activeTabId: string): Html =>
 				[
 					h.Class(
 						cn(
-							"group/tab flex shrink-0 items-center gap-1 border-b-2 px-2 py-1 text-xs transition-colors",
+							"group/tab flex shrink-0 items-center gap-1 border-b-2 px-2 py-1 text-xs",
 							isActive
 								? "border-primary text-foreground"
 								: "border-transparent text-muted-foreground hover:text-foreground active:text-foreground",
@@ -115,7 +115,7 @@ export const sharedSection = (
 					h,
 					{
 						size: "sm",
-						weight: "semibold",
+						weight: "medium",
 						truncate: true,
 						className: "min-w-0",
 						attributes: [h.Title(section.title)],

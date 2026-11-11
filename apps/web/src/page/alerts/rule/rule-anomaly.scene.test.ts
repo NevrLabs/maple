@@ -16,7 +16,7 @@ import { describe, expect, test } from "vitest"
 import { ResolveThemeColors, ThemeMessage } from "@maple/views/charts/theme-colors"
 import type { PageContext } from "../../contract"
 import { anomalyIncidentRow, anomalyRuleRow, defaultAnomalyRuleRow } from "../shared/anomaly-test-fixtures"
-import { DESTINATION_ID, destinationRow, NOW, ORG, stateRow } from "../shared/test-rows"
+import { DESTINATION_ID, destinationRow, NOW, ORG, stateRow } from "../../kit/alert-test-rows"
 import { Message } from "./message"
 import type { Model } from "./model"
 import { init, update } from "./update"
@@ -123,7 +123,7 @@ describe("alert rule page: anomaly rules", () => {
 			{ update: pageUpdate, view },
 			given(fallback),
 			themeResolved(),
-			expectView(text("No anomalies in this window.")).toExist(),
+			expectView(text("No anomalies in this window")).toExist(),
 			expectView(text(/fires into the void/)).not.toExist(),
 			expectView(text("Configure destinations")).not.toExist(),
 		)

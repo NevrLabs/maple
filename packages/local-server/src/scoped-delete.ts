@@ -119,6 +119,10 @@ export const TABLE_DELETE_PLAN = {
 	metrics_sum: raw("TimeUnix"),
 	product_events: derived("Timestamp", { env: null }),
 	scanner_requests: derived("Timestamp", { env: null }),
+	search_console_daily: {
+		strategy: "excluded",
+		reason: "imported from Google Search Console, not telemetry; local mode never writes it",
+	},
 	service_address_resolutions_hourly: edges("ResolvedTargetService"),
 	service_external_edges_hourly: derived("Hour"),
 	service_map_children: derived("Timestamp"),
@@ -166,10 +170,6 @@ const ROLLUP_SOURCE = "traces"
 type ScopedPlan = Extract<TableDeletePlan, { strategy: "scoped" }>
 
 const declares = (entry: ScopedPlan, dimension: Dimension): boolean => entry[dimension] !== null
-
-// ---------------------------------------------------------------------------
-// Request and SQL.
-// ---------------------------------------------------------------------------
 
 export const ScopedDeleteRequest = Schema.Struct({
 	service: Schema.optionalKey(Schema.NonEmptyString.check(Schema.isMaxLength(512))),
@@ -231,10 +231,6 @@ const hourList = (hours: ReadonlyArray<number>) =>
 		Arr.map(hours, (hour) => `${hour}`),
 		", ",
 	)
-
-// ---------------------------------------------------------------------------
-// Schema graph and plan resolution.
-// ---------------------------------------------------------------------------
 
 interface ViewEdge {
 	readonly name: string
@@ -487,10 +483,6 @@ const columnProblems = (name: string, table: LocalSchemaObject, entry: ScopedPla
 	}
 	return problems
 }
-
-// ---------------------------------------------------------------------------
-// Execution.
-// ---------------------------------------------------------------------------
 
 export const ScopedDeleteTableReport = Schema.Struct({
 	table: Schema.String,
@@ -748,10 +740,7 @@ const applyFilters = (db: Db, filters: ResolvedPlan["filters"]) =>
 		{ discard: true },
 	)
 
-// ---------------------------------------------------------------------------
-// Journal: written before the first mutation, removed after the last.
-// ---------------------------------------------------------------------------
-
+// The journal is written before the first mutation and removed after the last.
 const PendingDelete = Schema.Struct({
 	formatVersion: Schema.Literal(1),
 	request: ScopedDeleteRequest,

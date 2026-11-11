@@ -1,6 +1,6 @@
 import type { V2StatusPage } from "@maple/domain/http/v2"
 import type { Html, HtmlBuilder } from "foldkit/html"
-import { apiPublicUrl } from "../../../lib/services/common/api-base-url"
+import { apiPublicUrl } from "../../../platform/api-base-url"
 import { button, linkButton } from "@maple/views/ui/button"
 import { copyableField } from "@maple/views/ui/copyable-field"
 import { eyebrow } from "@maple/views/ui/eyebrow"
@@ -69,7 +69,7 @@ export const liveView = (h: H, model: Model, page: V2StatusPage): Html => {
 			// A draft reached by link, or one whose publish has not been read back yet, is not live.
 			page.draft
 				? eyebrow(h, {}, ["Draft"])
-				: hstack(h, { gap: "2", align: "center", as: "span", className: "text-severity-ok" }, [
+				: hstack(h, { gap: "2", align: "center", as: "span", className: "text-success" }, [
 						icon(h, "CircleCheckIcon", { size: 18 }),
 						eyebrow(h, {}, ["Published"]),
 					]),

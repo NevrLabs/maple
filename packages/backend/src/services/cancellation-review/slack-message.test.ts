@@ -4,12 +4,8 @@ import { Array as Arr, Option, Predicate, String as Str } from "effect"
 import { describe, expect, it } from "vitest"
 import { CANCELLATION_FIXTURES } from "./fixtures"
 import { deriveSignals, ruleReason } from "./signals"
-import {
-	buildCancellationMessage,
-	type CancellationReport,
-	OTHER_ORGS_SHOWN,
-	type OtherOrg,
-} from "./slack-message"
+import { type CancellationReport, OTHER_ORGS_SHOWN, type OtherOrg } from "./report"
+import { buildCancellationMessage } from "./slack-message"
 
 const report = (id: string, overrides: Partial<CancellationReport> = {}): CancellationReport => {
 	const fixture = Option.getOrUndefined(
@@ -299,6 +295,21 @@ describe("buildCancellationMessage", () => {
 			"38 GB",
 			"35 GB",
 		])
+	})
+
+	// Slack refuses the whole message (`invalid_blocks`) for a null column setting.
+	it("gives Slack an object for every table column setting", () => {
+		const [table] = Arr.filter(
+			buildCancellationMessage(report("pipeline-off")).blocks,
+			(block) => block.type === "table",
+		)
+		const settings = table?.column_settings
+		const columns = Arr.isArray(settings) ? settings : []
+		expect(columns.length).toBeGreaterThan(0)
+		for (const setting of columns) {
+			expect(setting).toBeTypeOf("object")
+			expect(setting).not.toBeNull()
+		}
 	})
 
 	it("lists what no stat covers, such as a past-due payment, under the reason", () => {

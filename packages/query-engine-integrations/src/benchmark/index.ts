@@ -9,30 +9,21 @@
 // against the real migrations alongside the core catalog.
 
 import { Effect, Array as Arr, Record as Rec, String as Str } from "effect"
-import { compileUnionUnsafe, compileUnsafe, type CompiledQuery } from "@maple/query-engine/ch"
+import { compileUnionUnsafe, compileUnsafe } from "@maple/query-engine/ch"
 import { AWS_INFRA_KIND_IDS, AWS_INFRA_KINDS } from "@maple/domain/aws-infra"
 import { GCP_INFRA_SERVICE_IDS, GCP_INFRA_SOURCE_IDS, GCP_INFRA_SOURCES } from "@maple/domain/gcp-infra"
 import { MAPLE_AI_TRACE_SESSION_PREFIX } from "@maple/domain/gen-ai"
 import * as CH from "../index"
-import { BenchmarkError, type CatalogEntry } from "@maple/query-engine/benchmark"
-import { fingerprintSql } from "@maple/query-engine/execution"
-import { OrgId } from "@maple/domain"
-
-export interface IntegrationFixture {
-	/** Source module basename, e.g. `"cloudflare-infra"`. */
-	readonly module: string
-	/** The exported builder this covers — must match the export name. */
-	readonly name: string
-	/** Distinguishes fixtures for one builder; appears in failure output. */
-	readonly label: string
-	readonly compile: () => CompiledQuery<unknown>
-}
-
-const ORG_ID = OrgId.make("org_sql_catalog")
-const START_TIME = "2026-01-01 10:30:00"
-const END_TIME = "2026-01-03 14:15:00"
-
-const window = { orgId: ORG_ID, startTime: START_TIME, endTime: END_TIME }
+import {
+	BenchmarkError,
+	builderCatalogEntries,
+	type BuilderCatalogEntry,
+	type BuilderFixture,
+	FIXTURE_END_TIME as END_TIME,
+	FIXTURE_ORG_ID as ORG_ID,
+	FIXTURE_START_TIME as START_TIME,
+	FIXTURE_WINDOW as window,
+} from "@maple/query-engine/benchmark"
 
 /** The window plus the bucket every timeseries builder resolves a param from. */
 const bucketed = { ...window, bucketSeconds: 300 }
@@ -130,7 +121,7 @@ const aiPageBounds = {
 	spansEnd: "2026-01-02 13:30:00",
 }
 
-export const integrationFixtures: ReadonlyArray<IntegrationFixture> = [
+export const integrationFixtures: ReadonlyArray<BuilderFixture> = [
 	{
 		// The AI sessions list is two reads. This one ranks the page on
 		// `ai_trace_index` alone and is the only one that sees the caller's window.
@@ -872,13 +863,13 @@ export const integrationFixtures: ReadonlyArray<IntegrationFixture> = [
 		label: "default",
 		compile: () => compileUnsafe(CH.gcpInfraPresenceSQL(), window),
 	},
-	...Arr.map(GCP_INFRA_SERVICE_IDS, (service): IntegrationFixture => ({
+	...Arr.map(GCP_INFRA_SERVICE_IDS, (service): BuilderFixture => ({
 		module: "gcp-infra",
 		name: "gcpInfraMetricsSQL",
 		label: service,
 		compile: () => compileUnsafe(CH.gcpInfraMetricsSQL(service), window),
 	})),
-	...Arr.map(GCP_INFRA_SOURCE_IDS, (source): IntegrationFixture => ({
+	...Arr.map(GCP_INFRA_SOURCE_IDS, (source): BuilderFixture => ({
 		module: "gcp-infra",
 		name: "gcpInfraTimeseriesSQL",
 		label: source,
@@ -893,7 +884,7 @@ export const integrationFixtures: ReadonlyArray<IntegrationFixture> = [
 	})),
 	...Arr.map(
 		Arr.filter(GCP_INFRA_SERVICE_IDS, (service) => CH.GCP_INFRA_SPARKLINE_METRICS[service] !== undefined),
-		(service): IntegrationFixture => ({
+		(service): BuilderFixture => ({
 			module: "gcp-infra",
 			name: "gcpInfraSparklinesSQL",
 			label: service,
@@ -926,13 +917,13 @@ export const integrationFixtures: ReadonlyArray<IntegrationFixture> = [
 		label: "default",
 		compile: () => compileUnsafe(CH.awsInfraPresenceSQL(), window),
 	},
-	...Arr.map(AWS_INFRA_KIND_IDS, (kind): IntegrationFixture => ({
+	...Arr.map(AWS_INFRA_KIND_IDS, (kind): BuilderFixture => ({
 		module: "aws-infra",
 		name: "awsInfraMetricsSQL",
 		label: kind,
 		compile: () => compileUnsafe(CH.awsInfraMetricsSQL(kind), window),
 	})),
-	...Arr.map(AWS_INFRA_KIND_IDS, (kind): IntegrationFixture => ({
+	...Arr.map(AWS_INFRA_KIND_IDS, (kind): BuilderFixture => ({
 		module: "aws-infra",
 		name: "awsInfraSparklinesSQL",
 		label: kind,
@@ -945,7 +936,7 @@ export const integrationFixtures: ReadonlyArray<IntegrationFixture> = [
 				bucketed,
 			),
 	})),
-	...Arr.map(AWS_INFRA_KIND_IDS, (kind): IntegrationFixture => ({
+	...Arr.map(AWS_INFRA_KIND_IDS, (kind): BuilderFixture => ({
 		module: "aws-infra",
 		name: "awsInfraTimeseriesSQL",
 		label: kind,
@@ -1065,7 +1056,91 @@ export const integrationFixtures: ReadonlyArray<IntegrationFixture> = [
 		module: "setup-audit",
 		name: "auditLogCorrelationQuery",
 		label: "default",
-		compile: () => compileUnsafe(CH.auditLogCorrelationQuery(), window),
+		compile: () =>
+			compileUnsafe(
+				CH.auditLogCorrelationQuery({ excludeServiceNames: ["maple-uptime", "github-actions"] }),
+				window,
+			),
+	},
+	{
+		module: "setup-audit",
+		name: "auditServiceIdentityQuery",
+		label: "default",
+		compile: () => compileUnsafe(CH.auditServiceIdentityQuery({ limit: 25 }), window),
+	},
+	{
+		module: "setup-audit",
+		name: "auditServiceSdkQuery",
+		label: "default",
+		compile: () => compileUnsafe(CH.auditServiceSdkQuery({ limit: 25 }), window),
+	},
+	{
+		module: "setup-audit",
+		name: "auditResourceValueSamplesQuery",
+		label: "default",
+		compile: () =>
+			compileUnsafe(CH.auditResourceValueSamplesQuery(["deployment.commit_sha", "env"]), window),
+	},
+	{
+		module: "setup-audit",
+		name: "auditResourceKeyServicesQuery",
+		label: "default",
+		compile: () =>
+			compileUnsafe(
+				CH.auditResourceKeyServicesQuery(["deployment.commit_sha", "env"], {
+					duplicatePairs: [["deployment.commit_sha", "service.version"]],
+				}),
+				window,
+			),
+	},
+	{
+		module: "setup-audit",
+		name: "auditSensitiveKeyEmittersQuery",
+		label: "default",
+		compile: () =>
+			compileUnsafe(CH.auditSensitiveKeyEmittersQuery(["http.request.header.authorization"]), window),
+	},
+	{
+		module: "setup-audit",
+		name: "auditMetricLabelByMetricQuery",
+		label: "default",
+		compile: () =>
+			compileUnsafe(
+				CH.auditMetricLabelByMetricQuery(["url.path"], { collapseServicePrefixes: ["cloudflare/"] }),
+				window,
+			),
+	},
+	{
+		module: "setup-audit",
+		name: "auditServiceResourceKeysQuery",
+		label: "default",
+		compile: () =>
+			compileUnsafe(
+				CH.auditServiceResourceKeysQuery(["service.version", "vcs.repository.url.full"]),
+				window,
+			),
+	},
+	{
+		module: "setup-audit",
+		name: "auditSpanNameTemplatesQuery",
+		label: "default",
+		compile: () => compileUnsafe(CH.auditSpanNameTemplatesQuery(), window),
+	},
+	{
+		module: "setup-audit",
+		name: "auditUncorrelatedLogMessagesQuery",
+		label: "default",
+		compile: () => compileUnsafe(CH.auditUncorrelatedLogMessagesQuery(["maple-api"]), window),
+	},
+	{
+		module: "setup-audit",
+		name: "auditInboundRoutesQuery",
+		label: "default",
+		compile: () =>
+			compileUnsafe(
+				CH.auditInboundRoutesQuery(["maple-api"], ["0af7651916cd43dd8448eb211c80319c"]),
+				traceWindow,
+			),
 	},
 	{
 		module: "setup-audit",
@@ -1084,35 +1159,9 @@ export const integrationFixtures: ReadonlyArray<IntegrationFixture> = [
 	},
 ]
 
-export interface IntegrationCatalogEntry extends CatalogEntry {
-	readonly compiled: CompiledQuery<unknown>
-}
-
 /** Compile every fixture. A fixture that throws fails here, not in production. */
 export const collectIntegrationQueryCatalog = Effect.try({
-	try: (): ReadonlyArray<IntegrationCatalogEntry> =>
-		Arr.map(integrationFixtures, (fixture) => {
-			const compiled = fixture.compile()
-			// The executor dies on unresolved placeholders at runtime; a fixture
-			// missing a compile param must fail HERE.
-			if (Str.includes("__PARAM_")(compiled.sql)) {
-				throw new Error(
-					`Integration catalog: ${fixture.module}/${fixture.name} (${fixture.label}) ` +
-						`left an unresolved __PARAM_ placeholder — a compile param is missing.`,
-				)
-			}
-			return {
-				id: `builder:${fixture.module}:${fixture.name}:${fixture.label}`,
-				name: fixture.name,
-				source: "builder",
-				label: fixture.label,
-				capabilityLabel: "baseline",
-				route: undefined,
-				fingerprint: fingerprintSql(compiled.sql),
-				sql: compiled.sql,
-				compiled,
-			}
-		}),
+	try: () => builderCatalogEntries("Integration catalog", integrationFixtures),
 	catch: (cause) =>
 		new BenchmarkError({ message: `Integration catalog compilation failed: ${String(cause)}` }),
 })
@@ -1142,7 +1191,7 @@ export const UNDECODED_INTEGRATION_QUERIES: ReadonlySet<string> = new Set([])
 
 /** The id of every catalog entry that decodes nothing. */
 export function undecodedIntegrationQueries(
-	entries: ReadonlyArray<IntegrationCatalogEntry>,
+	entries: ReadonlyArray<BuilderCatalogEntry>,
 ): ReadonlyArray<string> {
 	return Arr.map(
 		Arr.filter(entries, (entry) => entry.compiled.rowSchemaSource === "none"),
@@ -1156,7 +1205,7 @@ export function undecodedIntegrationQueries(
  * useless on its own — these are the aliases to give a type.
  */
 export function undecodedIntegrationColumns(
-	entries: ReadonlyArray<IntegrationCatalogEntry>,
+	entries: ReadonlyArray<BuilderCatalogEntry>,
 ): ReadonlyMap<string, ReadonlyArray<string>> {
 	const columns = new Map<string, ReadonlyArray<string>>()
 	for (const entry of entries) {

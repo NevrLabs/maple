@@ -20,9 +20,6 @@ import { variableComboIdOf } from "./variable-update"
 import { typography, typographyClass } from "@maple/views/ui/typography"
 import { hstack } from "@maple/views/ui/stack"
 
-// The variable selects: one chip per variable, and in
-// edit mode the `+` chip that opens the manager.
-
 type H = HtmlBuilder<Message>
 
 const chipLabel = (variable: DashboardVariable): string => variable.label ?? variable.name
@@ -134,7 +131,7 @@ const chipView = Submodel.defineView<Combobox.Model, Combobox.Message, ChipInput
 						listPopup(h, model, {
 							slot: "combobox",
 							items,
-							emptyText: inputs.options.loading ? "Loading values…" : "No matching values",
+							emptyText: inputs.options.loading ? "Loading values…" : "No values match",
 							anchorSelector: anchor,
 							className: "min-w-52",
 							listClassName: "max-h-72 overflow-y-auto p-1",
@@ -230,7 +227,7 @@ const control = (h: H, model: Model, context: PageContext, variable: DashboardVa
 	})
 }
 
-/** `VariableSelects`: nothing on a board without variables outside edit mode. */
+/** Nothing on a board without variables outside edit mode. */
 export const variableSelects = (
 	h: H,
 	model: Model,

@@ -1,3 +1,4 @@
+import { readClock } from "@maple/views/data/timing"
 import { StatusPageComponentId, StatusPageId, StatusPageIncidentId } from "@maple/domain"
 import {
 	StatusPageConfig,
@@ -6,15 +7,16 @@ import {
 	V2StatusPageComponentCreateParams,
 	V2StatusPageIncidentCreateParams,
 	V2StatusPageIncidentPostUpdateParams,
+	V2StatusPageIncidentUpdateParams,
 	V2StatusPageUpdateParams,
 } from "@maple/domain/http/v2"
-import { Clock, Duration, Effect, Schema } from "effect"
+import { Duration, Effect, Schema } from "effect"
 import { Command, Dom, Mount } from "foldkit"
-import { readGrants } from "../../../data/session-tenant"
 import {
 	applyPageConfig,
 	createIncident,
 	deleteComponent,
+	deleteIncident,
 	deletePage,
 	listComponents,
 	listPageIncidents,
@@ -30,21 +32,14 @@ import {
 	updateIncident,
 	updatePage,
 } from "../shared/commands"
-import { listMonitors, saveMonitor } from "../../alerts/shared/uptime-commands"
+import { listMonitors, saveMonitor } from "../../kit/uptime/commands"
 import { monitorPayloadFor } from "../shared/picker"
 import { Message } from "./message"
+import { fetchSessionGrants } from "../../kit/session-grants"
 
-export const ReadEditorClock = Command.define("ReadStatusPageClock", {
-	messages: [Message.ReadClock],
-	execute: Effect.map(Clock.currentTimeMillis, (nowMs) => Message.ReadClock({ nowMs })),
-})
+export const ReadEditorClock = readClock("ReadStatusPageClock", Message.ReadClock)
 
-export const FetchEditorSession = Command.define("FetchStatusPageSession", {
-	args: { orgId: Schema.String },
-	messages: [Message.CompletedFetchSession],
-	execute: ({ orgId }) =>
-		Effect.map(readGrants, (grants) => Message.CompletedFetchSession({ orgId, grants })),
-})
+export const FetchEditorSession = fetchSessionGrants("FetchStatusPageSession", Message.CompletedFetchSession)
 
 export const FetchPage = Command.define("FetchStatusPage", {
 	args: { key: Schema.String, pageId: StatusPageId },
@@ -151,6 +146,27 @@ export const PublishIncident = Command.define("PublishStatusPageIncident", {
 		updateIncident(incidentId, { published: true }).pipe(
 			Effect.result,
 			Effect.map((result) => Message.CompletedPublishIncident({ incidentId, result })),
+		),
+})
+
+/** Saves an incident's title, impact and components; posts no update. */
+export const SaveIncident = Command.define("SaveStatusPageIncident", {
+	args: { incidentId: StatusPageIncidentId, payload: V2StatusPageIncidentUpdateParams },
+	messages: [Message.CompletedSaveIncident],
+	execute: ({ incidentId, payload }) =>
+		updateIncident(incidentId, payload).pipe(
+			Effect.result,
+			Effect.map((result) => Message.CompletedSaveIncident({ result })),
+		),
+})
+
+export const DeleteIncident = Command.define("DeleteStatusPageIncident", {
+	args: { incidentId: StatusPageIncidentId },
+	messages: [Message.CompletedDeleteIncident],
+	execute: ({ incidentId }) =>
+		deleteIncident(incidentId).pipe(
+			Effect.result,
+			Effect.map((result) => Message.CompletedDeleteIncident({ result })),
 		),
 })
 

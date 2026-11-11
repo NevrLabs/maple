@@ -2,7 +2,7 @@
 import { Effect, Option, Schema, Array as Arr, Record as Rec } from "effect"
 import type { UptimeMonitorRow } from "@maple/domain/mcp-outputs"
 import { UPTIME_DEFAULT_TIMEOUT_MS } from "@maple/domain/http/v2"
-import type { UptimeMonitorKind } from "@maple/domain/primitives"
+import type { UptimeMonitorKind } from "@maple/primitives"
 import {
 	UptimeMonitorConfig,
 	type UptimeAssertion,
@@ -123,8 +123,6 @@ export const toMcpUptimeError = (tool: string) => (error: UptimeServiceError) =>
 	}
 }
 
-// --- Config from flat tool parameters ---
-
 export interface UptimeConfigFields {
 	readonly url?: string | undefined
 	readonly method?: UptimeHttpMethod | undefined
@@ -137,7 +135,7 @@ export interface UptimeConfigFields {
 	readonly expected?: string | undefined
 	readonly heartbeat_interval_seconds?: number | undefined
 	readonly cron?: string | undefined
-	readonly timezone?: string | undefined
+	readonly time_zone?: string | undefined
 	readonly grace_seconds?: number | undefined
 	/** Update only: drop the matching check or expected answer. */
 	readonly clear_max_response_ms?: boolean | undefined
@@ -157,7 +155,7 @@ const FIELD_KINDS: ReadonlyArray<readonly [keyof UptimeConfigFields, ReadonlyArr
 	["expected", ["dns"]],
 	["heartbeat_interval_seconds", ["heartbeat"]],
 	["cron", ["heartbeat"]],
-	["timezone", ["heartbeat"]],
+	["time_zone", ["heartbeat"]],
 	["grace_seconds", ["heartbeat"]],
 	["clear_max_response_ms", ["http"]],
 	["clear_body_contains", ["http"]],
@@ -268,10 +266,10 @@ const heartbeatSchedule = (
 		return invalid("Pass heartbeat_interval_seconds or cron, not both.", "cron")
 	}
 	if (fields.heartbeat_interval_seconds !== undefined) {
-		if (fields.timezone !== undefined) {
+		if (fields.time_zone !== undefined) {
 			return invalid(
-				"timezone applies to a cron schedule; this heartbeat runs on an interval.",
-				"timezone",
+				"time_zone applies to a cron schedule; this heartbeat runs on an interval.",
+				"time_zone",
 			)
 		}
 		return Effect.succeed({ _tag: "interval", seconds: fields.heartbeat_interval_seconds })
@@ -325,7 +323,7 @@ export const buildUptimeConfig = Effect.fnUntraced(function* (
 			})
 		}
 		case "heartbeat": {
-			const schedule = yield* heartbeatSchedule(fields, fields.timezone ?? DEFAULT_HEARTBEAT_TIMEZONE)
+			const schedule = yield* heartbeatSchedule(fields, fields.time_zone ?? DEFAULT_HEARTBEAT_TIMEZONE)
 			if (schedule === undefined) {
 				return yield* invalid(
 					"A heartbeat monitor needs heartbeat_interval_seconds (at least 60) or a cron expression.",
@@ -393,12 +391,12 @@ export const updateUptimeConfig = Effect.fnUntraced(function* (
 		case "heartbeat": {
 			const currentZone =
 				current.schedule._tag === "cron" ? current.schedule.timezone : DEFAULT_HEARTBEAT_TIMEZONE
-			const timezone = fields.timezone ?? currentZone
+			const timezone = fields.time_zone ?? currentZone
 			const next = yield* heartbeatSchedule(fields, timezone)
-			if (next === undefined && fields.timezone !== undefined && current.schedule._tag !== "cron") {
+			if (next === undefined && fields.time_zone !== undefined && current.schedule._tag !== "cron") {
 				return yield* invalid(
-					"timezone applies to a cron schedule; this heartbeat runs on an interval.",
-					"timezone",
+					"time_zone applies to a cron schedule; this heartbeat runs on an interval.",
+					"time_zone",
 				)
 			}
 			const schedule =

@@ -11,8 +11,6 @@ import { typography } from "@maple/views/ui/typography"
 import { Array as Arr } from "effect"
 import { vstack } from "@maple/views/ui/stack"
 
-// `CloudflareZoneRail`.
-
 type H = HtmlBuilder<Message>
 
 const railLink = (h: H, name: IconName, tab: ZoneTab, children: ReadonlyArray<string>): Html =>
@@ -87,7 +85,7 @@ export const zoneRail = (
 				]),
 		detailRailGroup(h, "Security", [
 			firewallEvents === null || firewallEvents === 0
-				? note(h, "No firewall events in this window.")
+				? note(h, "No firewall events in this window")
 				: railLink(h, "ShieldCheckIcon", "security", [
 						formatNumber(firewallEvents),
 						" firewall events",

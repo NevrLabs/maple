@@ -19,7 +19,7 @@ import type { PageViewInputs } from "../contract"
 import { dashboardPage } from "../kit/dashboard-page"
 import type { BreadcrumbEntry } from "../../shell"
 import { navShell } from "../kit/nav-shell"
-import { INLINE_LINK_CLASS } from "./kit/section"
+import { INLINE_LINK_CLASS } from "../kit/settings-section"
 import * as IngestionView from "./ingestion/view"
 import * as KeysView from "./keys/view"
 import * as McpView from "./mcp/view"
@@ -29,6 +29,7 @@ import * as MembersView from "./members/view"
 import * as SelfhostMembersView from "./selfhost-members/view"
 import * as GeneralView from "./general/view"
 import * as DataPlatformView from "./data-platform/view"
+import * as DataSourcesView from "./data-sources/view"
 import * as AuditLogView from "./audit-log/view"
 import * as AutomationView from "./automation/view"
 import * as SetupHealthView from "./setup-health/view"
@@ -146,6 +147,20 @@ const tabContent = (h: H, model: Model, inputs: PageViewInputs): ReadonlyArray<H
 					viewInputs: { nowMs: model.nowMs, timeZone: inputs.context.timeZone },
 				}),
 			]
+		case "DataSources":
+			return [
+				h.submodel({
+					slotId: "settings-data-sources",
+					model: tab.model,
+					view: DataSourcesView.view,
+					toParentMessage: (message) => Message.GotDataSourcesMessage({ message }),
+					viewInputs: {
+						canManage: Policy.has(visibilityOf(model).grants, "data_sources:manage"),
+						nowMs: model.nowMs,
+						timeZone: inputs.context.timeZone,
+					},
+				}),
+			]
 		case "General":
 			return [
 				h.submodel({
@@ -196,9 +211,6 @@ const tabContent = (h: H, model: Model, inputs: PageViewInputs): ReadonlyArray<H
 					},
 				}),
 			]
-		case "Unported":
-			// TODO(settings): every remaining tab is ported tab by tab; until then it renders empty.
-			return []
 	}
 }
 
@@ -336,6 +348,14 @@ const tabActions = (h: H, model: Model): Html | undefined => {
 				view: MembersView.headerActions,
 				toParentMessage: (message) => Message.GotMembersMessage({ message }),
 				viewInputs: {},
+			})
+		case "DataSources":
+			return h.submodel({
+				slotId: "settings-data-sources-actions",
+				model: tab.model,
+				view: DataSourcesView.headerActions,
+				toParentMessage: (message) => Message.GotDataSourcesMessage({ message }),
+				viewInputs: { canManage: Policy.has(visibilityOf(model).grants, "data_sources:manage") },
 			})
 		default:
 			return undefined

@@ -4,7 +4,7 @@ import { ListUsersOutput } from "@maple/domain/mcp-outputs"
 import { formatWarehouseDateTime } from "@maple/query-engine"
 import { UsersReadService } from "@maple/backend/services/users/UsersReadService"
 import { McpInvalidInputError, type McpToolRegistrar } from "./types"
-import { CurrentMcpTenant } from "../lib/query-warehouse"
+import { CurrentMcpTenant } from "../tenant"
 import { MCP_DISCOVERY_MAX_HOURS } from "../lib/time"
 import { formatNumber } from "../lib/format"
 import type { UserChannel } from "@maple/domain/http"
@@ -48,7 +48,7 @@ export function registerListUsersTool(server: McpToolRegistrar) {
 		name: TOOL,
 		title: "List Users",
 		description:
-			"List the end users of the org's own apps: people identified with `identify()` or a `user.id` span attribute. One row per user, most recently seen first, with sessions, requests, errors, where the requests came from (web, mobile, api, mcp) and which signals carry them (replay, events, mcp, traces, logs). Open one with `inspect_user`.",
+			"List the end users of the org's own apps: people identified with `identify()` or a `user.id` span attribute. One row per user, most recently seen first, with sessions, requests, errors, where the requests came from (web, mobile, api, mcp) and which signals carry them (replay, events, mcp, traces, logs). Open one with `inspect_user`. Accounts and signups in a connected auth system (Clerk) are a data source: `search_data_sources`.",
 		parameters: Schema.Struct({
 			...WINDOW.fields,
 			namespaces: P.optionalList(
@@ -60,7 +60,6 @@ export function registerListUsersTool(server: McpToolRegistrar) {
 			limit: P.limit({ default: 25, max: 100, noun: "users" }),
 			cursor: P.optionalText("The `nextCursor` from a previous page, to read the next one"),
 		}),
-		output: ListUsersOutput,
 		hints: { readOnly: true },
 		scopeFamily: "users",
 		phrases: ["Listing users"],
@@ -132,6 +131,7 @@ export function registerListUsersTool(server: McpToolRegistrar) {
 								hints: [
 									"Widen start_time/end_time, or drop filters.",
 									"Users appear once an app calls identify() or sets the user.id span attribute.",
+									"Accounts and signups in a connected system such as Clerk: search_data_sources.",
 								],
 							},
 						}

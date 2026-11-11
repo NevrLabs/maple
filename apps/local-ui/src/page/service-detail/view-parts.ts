@@ -7,6 +7,7 @@ import { badge } from "@maple/views/ui/display"
 import { icon } from "@maple/views/ui/icon"
 import { serviceDot } from "@maple/views/ui/values"
 import { hstack } from "@maple/views/ui/stack"
+import { eyebrow } from "@maple/views/ui/eyebrow"
 import { typography } from "@maple/views/ui/typography"
 import type { Html, HtmlBuilder } from "foldkit/html"
 import { hrefFor } from "../../route"
@@ -76,7 +77,7 @@ export const detailHeader = (
 		]),
 	])
 
-/** `StatCard`: `valueClassName` comes after `danger`, so the latency ramp wins. */
+/** `valueClassName` comes after `danger`, so the latency ramp wins. */
 const statCard = (
 	h: HtmlBuilder<Message>,
 	label: string,
@@ -87,17 +88,7 @@ const statCard = (
 	h.div(
 		[h.Class("rounded-md border bg-card px-3 py-2")],
 		[
-			typography(
-				h,
-				{
-					as: "div",
-					size: "3xs",
-					weight: "medium",
-					tone: "muted",
-					className: "uppercase tracking-wider",
-				},
-				[label],
-			),
+			eyebrow(h, { as: "div" }, [label]),
 			typography(
 				h,
 				{

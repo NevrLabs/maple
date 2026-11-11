@@ -30,10 +30,12 @@ import {
 	String as Str,
 } from "effect"
 import { FetchHttpClient, HttpClient } from "effect/http"
-import { decryptAes256Gcm, encryptAes256Gcm, parseBase64Aes256GcmKey } from "@maple/backend/platform/Crypto"
+import { openSecret, sealSecret, secretKeyringFromEnv } from "@maple/backend/platform/SecretBox"
+import { planetScaleDatabaseWebhookSecretSlot } from "@maple/backend/platform/secret-slots"
 import { Database } from "@maple/backend/platform/DatabaseLive"
-import { makeDbExecute } from "@maple/backend/platform/db-execute"
+import { makeDbExecute, makePersistenceErrorMapper } from "@maple/backend/platform/db-execute"
 import { summarizeCause } from "@maple/backend/platform/describe-cause"
+import { isolatePollFailure } from "./poll-fleet"
 import { Env } from "@maple/backend/platform/Env"
 import { PlanetScaleOAuthService } from "@maple/backend/services/auth/PlanetScaleOAuthService"
 import { collectPages, decodeConsumed, runPlanetScale, type SdkError } from "./planetscale/api"
@@ -54,7 +56,7 @@ const eventsFor = (kind: string): ReadonlyArray<string> =>
 		: PLANETSCALE_WEBHOOK_EVENTS
 
 /** Whether a grant's scopes allow creating webhooks (organization `write_databases`). */
-export const grantsWebhookManagement = (scopes: ReadonlyArray<string>): boolean =>
+const grantsWebhookManagement = (scopes: ReadonlyArray<string>): boolean =>
 	Arr.some(scopes, (scope) => scope === "write_databases" || Str.endsWith(":write_databases")(scope))
 
 /** The card's webhook summary, from the grant's scopes and the org's live database rows. */
@@ -125,10 +127,10 @@ export interface PlanetScaleWebhookServiceApi {
 	) => Effect.Effect<string | null, IntegrationsPersistenceError>
 }
 
-const toPersistenceError = (error: unknown) =>
-	new IntegrationsPersistenceError({
-		message: error instanceof Error ? error.message : "PlanetScale webhook persistence failed",
-	})
+const toPersistenceError = makePersistenceErrorMapper(
+	IntegrationsPersistenceError,
+	"PlanetScale webhook persistence failed",
+)
 
 const sameEvents = (left: ReadonlyArray<string>, right: ReadonlyArray<string>) =>
 	left.length === right.length && Arr.every(left, (event) => right.includes(event))
@@ -143,8 +145,8 @@ export class PlanetScaleWebhookService extends Context.Service<
 		const env = yield* Env
 		const psOAuth = yield* PlanetScaleOAuthService
 		const httpClient = yield* HttpClient.HttpClient
-		const encryptionKey = yield* parseBase64Aes256GcmKey(
-			Redacted.value(env.MAPLE_INGEST_KEY_ENCRYPTION_KEY),
+		const keyring = yield* secretKeyringFromEnv(
+			env,
 			(message) => new IntegrationsPersistenceError({ message }),
 		)
 		const webhookBase = `${Str.replace(/\/$/, "")(env.MAPLE_API_BASE_URL)}${WEBHOOK_PATH}`
@@ -204,13 +206,15 @@ export class PlanetScaleWebhookService extends Context.Service<
 			) {
 				return null
 			}
-			return yield* decryptAes256Gcm(
+			return yield* openSecret(
+				keyring,
+				planetScaleDatabaseWebhookSecretSlot,
+				{ orgId: row.orgId, id: row.id },
 				{
 					ciphertext: row.webhookSecretCiphertext,
 					iv: row.webhookSecretIv,
 					tag: row.webhookSecretTag,
 				},
-				encryptionKey,
 				() =>
 					new IntegrationsPersistenceError({
 						message: "Failed to decrypt PlanetScale webhook secret",
@@ -349,9 +353,11 @@ export class PlanetScaleWebhookService extends Context.Service<
 					: yield* adoptWebhook(connection, row, existing, events)
 
 			if (webhook.secret != null && (webhook.id !== row.webhookId || webhook.secret !== stored)) {
-				const encrypted = yield* encryptAes256Gcm(
+				const encrypted = yield* sealSecret(
+					keyring,
+					planetScaleDatabaseWebhookSecretSlot,
+					{ orgId: row.orgId, id: row.id },
 					webhook.secret,
-					encryptionKey,
 					() =>
 						new IntegrationsPersistenceError({
 							message: "Failed to encrypt PlanetScale webhook secret",
@@ -454,16 +460,10 @@ export class PlanetScaleWebhookService extends Context.Service<
 							})
 						}).pipe(
 							// The connection is going away regardless; a webhook left behind only 404s.
-							Effect.catchCause((cause) =>
-								Cause.hasInterruptsOnly(cause)
-									? Effect.interrupt
-									: Effect.logWarning("PlanetScale webhook removal failed").pipe(
-											Effect.annotateLogs({
-												orgId: connection.orgId,
-												database: row.name,
-												error: summarizeCause(cause),
-											}),
-										),
+							isolatePollFailure(
+								"PlanetScale webhook removal failed",
+								{ orgId: connection.orgId, database: row.name },
+								undefined,
 							),
 						),
 					{ concurrency: DATABASE_CONCURRENCY, discard: true },

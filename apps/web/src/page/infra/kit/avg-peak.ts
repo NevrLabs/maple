@@ -2,7 +2,7 @@ import type { ChildAttribute, Html, HtmlBuilder } from "foldkit/html"
 import { vstack } from "@maple/views/ui/stack"
 import { typography } from "@maple/views/ui/typography"
 
-// `AvgPeak`: avg → peak in one cell, the breakdown as its tooltip body.
+// Avg → peak in one cell, the breakdown as its tooltip body.
 
 export type AvgPeakOptions = Readonly<{
 	avg: number
@@ -44,7 +44,7 @@ export const avgPeakContent = <M>(h: HtmlBuilder<M>, options: AvgPeakOptions): H
 			],
 		),
 		typography(h, { tone: "muted", as: "div" }, [
-			h.div([], ["Over the selected time range."]),
+			h.div([], ["Over this window"]),
 			...(options.note === undefined ? [] : [h.div([], [options.note])]),
 		]),
 	])

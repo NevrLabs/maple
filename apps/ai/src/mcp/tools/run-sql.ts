@@ -1,8 +1,9 @@
 import { McpInvalidInputError, McpQueryBudgetError, McpQueryError, type McpToolRegistrar } from "./types"
 import { Effect, Schema, Array as Arr, Record as Rec, String as Str } from "effect"
-import { RunSqlOutput } from "@maple/domain/mcp-outputs"
-import { CurrentMcpTenant } from "../lib/query-warehouse"
-import { autoBucketSeconds, runRawSql } from "../lib/run-raw-sql"
+import { RawSqlValidationError } from "@maple/domain/http"
+import { WarehouseInvalidSqlError } from "@maple/domain/http/warehouse-errors"
+import { CurrentMcpTenant } from "../tenant"
+import { runRawSql } from "../lib/run-raw-sql"
 import { truncate } from "../lib/format"
 import { toMcpQueryError } from "../lib/map-warehouse-error"
 import { stringifyJson } from "../lib/json"
@@ -18,11 +19,24 @@ import {
 import {
 	identifierText,
 	type IdentifierRewrite,
+	referencedTableNames,
 	referencedTables,
 	unknownIdentifierName,
 } from "../lib/sql-identifiers"
+import { INGEST_PINNED_TABLES } from "@maple/query-engine/execution"
 import { fixFromError, fixOrgFilterOr, guardSelectStar } from "../lib/sql-fixes"
 import { attributeScanOf, checkAttributeScanBudget } from "../lib/run-sql-span-budget"
+
+/** Ingest-pinned tables the SQL reads: a BYO ClickHouse org's run_sql sees them empty. */
+const managedOnlyTablesOf = (sql: string): { readonly managedOnlyTables: Array<string> } | undefined => {
+	const pinned = Arr.filter(referencedTableNames(sql), (name) => Arr.contains(INGEST_PINNED_TABLES, name))
+	return pinned.length === 0 ? undefined : { managedOnlyTables: pinned }
+}
+
+const isQueryError = Schema.is(McpQueryError)
+const isBudgetError = Schema.is(McpQueryBudgetError)
+const isInvalidSql = Schema.is(WarehouseInvalidSqlError)
+const isRawSqlRefusal = Schema.is(RawSqlValidationError)
 
 // Rows returned to the model are capped so a wide/long result doesn't blow the
 // context. The full count is always reported via meta.rowCount.
@@ -68,7 +82,7 @@ export const withTableListOnUnknownTable = (
 	error: McpQueryError | McpQueryBudgetError,
 	sql = "",
 ): McpQueryError | McpQueryBudgetError => {
-	if (error._tag !== "@maple/mcp/errors/McpQueryError" || !UNKNOWN_TABLE.test(error.message)) return error
+	if (!isQueryError(error) || !UNKNOWN_TABLE.test(error.message)) return error
 	const names = Arr.join(
 		Arr.map(listWarehouseTables(), (t) => t.name),
 		", ",
@@ -121,8 +135,7 @@ const MAX_DESCRIBED_TABLES = 3
 export const withColumnListOnUnknownColumn =
 	(sql: string) =>
 	(error: McpQueryError | McpQueryBudgetError): McpQueryError | McpQueryBudgetError => {
-		if (error._tag !== "@maple/mcp/errors/McpQueryError" || !UNKNOWN_COLUMN.test(error.message))
-			return error
+		if (!isQueryError(error) || !UNKNOWN_COLUMN.test(error.message)) return error
 
 		const written = unknownIdentifierName(error.message)
 		const column = written?.split(".").at(-1)
@@ -208,7 +221,7 @@ const runSqlSchema = Schema.Struct({
 })
 
 const runSqlDescription =
-	"Run one read-only ClickHouse SELECT against the org's warehouse and return its rows: " +
+	"Run one read-only ClickHouse SELECT against Maple's own telemetry warehouse (this org's traces, logs, metrics) and return its rows: " +
 	`at most ${MAX_RAW_SQL_RESULT_ROWS} are fetched and the first ${MAX_RENDERED_ROWS} rendered, with the count reported. ` +
 	"Use it for what query_data cannot express, to spot-check data, or to test SQL for a raw_sql widget. For trends and top-N prefer query_data. " +
 	"The SQL must AND in `$__orgFilter`; macros are listed on `sql`. " +
@@ -219,7 +232,8 @@ const runSqlDescription =
 	"trace_list_mv is one root span per trace with HttpRoute/HttpMethod/HttpStatusCode (a String) columns and no attribute maps or ParentSpanId. " +
 	"Rollups (*_hourly/*_minutely) keep time in Hour/Minute and counts in SpanCount; merge their AggregateFunction columns. " +
 	"Compare timestamps to 'YYYY-MM-DD HH:MM:SS', not ISO T/Z strings; bucket with toStartOfInterval. " +
-	"Call describe_warehouse_tables for a table's columns, units and enum casing before guessing names."
+	"Call describe_warehouse_tables for a table's columns, units and enum casing before guessing names. " +
+	"It cannot reach databases or APIs the org connected as data sources: query those with query_data_source."
 
 /** Twelve significant digits: hides binary float noise (8282.599999999999) without losing real precision. */
 const roundFloat = (value: number): number =>
@@ -273,7 +287,7 @@ const BUDGET_ROLLUP_HINT =
 export const withRollupHintOnBudget = (
 	error: McpQueryError | McpQueryBudgetError,
 ): McpQueryError | McpQueryBudgetError =>
-	error._tag === "@maple/mcp/errors/McpQueryBudgetError" && error.setting !== "max_threads"
+	isBudgetError(error) && error.setting !== "max_threads"
 		? new McpQueryBudgetError({
 				message: `${error.message} ${BUDGET_ROLLUP_HINT}`,
 				pipeName: error.pipeName,
@@ -286,11 +300,10 @@ export const withRollupHintOnBudget = (
  * caller's to fix: an expected 400, not a query failure that opens an error issue.
  */
 export const callerSqlAsInvalidInput = (
-	cause: { readonly _tag: string },
+	cause: unknown,
 	error: McpQueryError | McpQueryBudgetError,
 ): McpQueryError | McpQueryBudgetError | McpInvalidInputError =>
-	cause._tag === "@maple/http/errors/WarehouseInvalidSqlError" &&
-	error._tag === "@maple/mcp/errors/McpQueryError"
+	isInvalidSql(cause) && isQueryError(error)
 		? new McpInvalidInputError({ message: error.message, parameter: "sql" })
 		: error
 
@@ -316,7 +329,7 @@ const withRewriteNote = (message: string, rewrites: ReadonlyArray<IdentifierRewr
 const withCallerErrorText =
 	(rewrites: ReadonlyArray<IdentifierRewrite>) =>
 	(error: McpQueryError | McpQueryBudgetError): McpQueryError | McpQueryBudgetError =>
-		error._tag === "@maple/mcp/errors/McpQueryError"
+		isQueryError(error)
 			? new McpQueryError({
 					message: withRewriteNote(rawSqlErrorText(error.message), rewrites),
 					pipeName: error.pipeName,
@@ -349,7 +362,6 @@ export function registerRunSqlTool(server: McpToolRegistrar) {
 		title: "Run SQL",
 		description: runSqlDescription,
 		parameters: runSqlSchema,
-		output: RunSqlOutput,
 		hints: { readOnly: true },
 		phrases: ["Running a query", "Running SQL", "Querying the warehouse"],
 		handler: Effect.fn("McpTool.runSql")(function* (params) {
@@ -357,7 +369,6 @@ export function registerRunSqlTool(server: McpToolRegistrar) {
 			yield* Effect.annotateCurrentSpan("maple.mcp.run_sql.has_reason", params.reason !== undefined)
 			const tenant = yield* CurrentMcpTenant
 			const { st, et } = yield* WINDOW.resolve(params, "run_sql")
-			const granularitySeconds = params.granularity_seconds ?? autoBucketSeconds(st, et)
 
 			const execute = (sql: string) =>
 				runRawSql({
@@ -365,7 +376,7 @@ export function registerRunSqlTool(server: McpToolRegistrar) {
 					sql,
 					startTime: st,
 					endTime: et,
-					granularitySeconds,
+					granularitySeconds: params.granularity_seconds,
 					truncateAtCap: true,
 				})
 
@@ -387,7 +398,7 @@ export function registerRunSqlTool(server: McpToolRegistrar) {
 						const fix =
 							passes >= MAX_IDENTIFIER_FIXES
 								? undefined
-								: error._tag === "@maple/http/errors/RawSqlValidationError"
+								: isRawSqlRefusal(error)
 									? error.code === "InvalidMacro" && ORG_FILTER_OR.test(error.message)
 										? fixOrgFilterOr(sql)
 										: undefined
@@ -426,8 +437,7 @@ export function registerRunSqlTool(server: McpToolRegistrar) {
 					? runFixing(sql, initial)
 					: runFixing(seeked, initial).pipe(
 							Effect.catchIf(
-								(failure) =>
-									failure.error._tag === "@maple/http/errors/WarehouseInvalidSqlError",
+								(failure) => isInvalidSql(failure.error),
 								() => runFixing(sql, initial),
 							),
 						)
@@ -435,7 +445,7 @@ export function registerRunSqlTool(server: McpToolRegistrar) {
 			const { rows, columns, rowCount, expandedSql, rewrites } = yield* run.pipe(
 				Effect.mapError(({ error, sql, rewrites }) =>
 					// Macro/safety failures (a missing `$__orgFilter` above all) are caller-fixable.
-					error._tag === "@maple/http/errors/RawSqlValidationError"
+					isRawSqlRefusal(error)
 						? new McpInvalidInputError({
 								message: withRewriteNote(
 									`SQL rejected (${error.code}): ${error.message}`,
@@ -481,6 +491,7 @@ export function registerRunSqlTool(server: McpToolRegistrar) {
 					: undefined),
 				...(rewrites.length === 0 ? undefined : { rewrites: [...rewrites] }),
 				...(params.show_sql === true ? { expandedSql } : undefined),
+				...(rowCount === 0 ? managedOnlyTablesOf(sql) : undefined),
 			}
 		}),
 		render: (output) => {
@@ -513,7 +524,27 @@ export function registerRunSqlTool(server: McpToolRegistrar) {
 					["Rows", String(output.rowCount)],
 					["Columns", String(output.columns.length)],
 				],
-				...(output.rowCount === 0 ? { empty: { message: "No rows returned." } } : undefined),
+				...(output.rowCount === 0
+					? {
+							empty: {
+								message: "No rows returned.",
+								...(output.managedOnlyTables === undefined
+									? undefined
+									: {
+											hints: [
+												`${Arr.join(output.managedOnlyTables, ", ")} is filled only in Maple's managed warehouse; if this org runs its own ClickHouse, run_sql reads that cluster, where it stays empty.${
+													Arr.contains(
+														output.managedOnlyTables,
+														"search_console_daily",
+													)
+														? " search_console_queries and search_console_pages read it on any setup."
+														: ""
+												}`,
+											],
+										}),
+							},
+						}
+					: undefined),
 				blocks: [
 					...(output.rowCount === 0
 						? []

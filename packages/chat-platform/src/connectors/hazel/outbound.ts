@@ -37,8 +37,9 @@ import {
 	type ChatTarget,
 	type ChatThreadRequest,
 	type ChatWritePhase,
+	withRateLimitRetry,
 } from "../../outbound"
-import type { ChatBlock } from "../../render/blocks"
+import type { ChatBlock, ChatPageBlock } from "../../render/blocks"
 import { API_BASE, API_HOST, BOT_TOKEN_CONFIG } from "./api"
 import { mentionOf } from "./gateway-events"
 import { HAZEL_CONNECTOR_ID } from "./id"
@@ -47,6 +48,7 @@ import {
 	renderHazelLive,
 	renderHazelMessage,
 	type HazelEmbed,
+	type HazelEmbedHtml,
 	type HazelLiveBody,
 	type HazelMessageBody,
 } from "./render"
@@ -65,9 +67,6 @@ const MAX_MESSAGE_CHARS = MAX_CONTENT_CHARS - 400
  * when its embeds change, and once at the end. So the driver writes as often as a reader can tell.
  */
 const MIN_EDIT_INTERVAL = Duration.millis(250)
-
-/** How many times a 429 is waited out before the turn gives up on the message. */
-const MAX_RATE_LIMIT_ATTEMPTS = 3
 
 /** The longest a 429 may park a turn: a remote number reaching `Effect.sleep` is bounded here. */
 const MAX_RETRY_AFTER = Duration.seconds(10)
@@ -138,6 +137,11 @@ const finishedEmbeds = (body: HazelLiveBody): ReadonlyArray<HazelEmbed> => [
 const MessageCreated = Schema.Struct({ data: Schema.Struct({ id: Schema.String }) })
 
 const ThreadCreated = Schema.Struct({ data: Schema.Struct({ id: Schema.String }) })
+
+/** `POST /html-renders` answers with the embed's `html` to post the page in. */
+const HtmlRenderPublished = Schema.Struct({
+	data: Schema.Struct({ renderId: Schema.String, title: Schema.String, height: Schema.Number }),
+})
 
 /** One earlier message, as far as the model's context reads it. */
 const HistoryMessage = Schema.Struct({
@@ -248,25 +252,14 @@ export const hazelOutbound: ChatOutbound<HttpClient.HttpClient | ConnectorCreden
 			route: string,
 			request: HttpClientRequest.HttpClientRequest,
 		): Effect.Effect<HttpClientResponse.HttpClientResponse, ChatOutboundError> =>
-			Effect.flatMap(token, (bearer) => {
-				const tryOnce = (
-					count: number,
-				): Effect.Effect<HttpClientResponse.HttpClientResponse, ChatOutboundError> =>
-					attempt(bearer, operation, route, request).pipe(
-						Effect.catchTag("@maple/chat-platform/connectors/hazel/RateLimited", (limited) =>
-							// History is CONTEXT read before the turn starts: waiting out a rate limit
-							// there delays the answer for background the model can do without.
-							count >= MAX_RATE_LIMIT_ATTEMPTS || operation === "history"
-								? Effect.fail(
-										failed(operation, "Hazel kept rate limiting this message", {
-											status: 429,
-										}),
-									)
-								: Effect.andThen(Effect.sleep(limited.wait), tryOnce(count + 1)),
-						),
-					)
-				return tryOnce(1)
-			})
+			Effect.flatMap(token, (bearer) =>
+				withRateLimitRetry(attempt(bearer, operation, route, request), {
+					operation,
+					rateLimited: HazelRateLimited,
+					pause: (limited) => Effect.sleep(limited.wait),
+					gaveUp: (extra) => failed(operation, "Hazel kept rate limiting this message", extra),
+				}),
+			)
 
 		/** The reply's JSON in `schema`, failing the operation (without the body) when it is not. */
 		const read = <A>(
@@ -293,15 +286,41 @@ export const hazelOutbound: ChatOutbound<HttpClient.HttpClient | ConnectorCreden
 				threadChannelId: null,
 			})
 
+		/**
+		 * A page block's HTML, stored for the channel it is posted in; Hazel then serves it only to
+		 * that channel's members.
+		 */
+		const publishPage = (channelId: string, page: ChatPageBlock) =>
+			send(
+				"post",
+				"/html-renders",
+				HttpClientRequest.post(`${API_BASE}/html-renders`).pipe(
+					HttpClientRequest.bodyJsonUnsafe({
+						channelId,
+						title: page.title,
+						html: page.html,
+						height: page.height,
+					}),
+				),
+			).pipe(
+				Effect.flatMap((response) => read("post", response, HtmlRenderPublished, "no HTML render")),
+				Effect.map((published): HazelEmbedHtml => published.data),
+			)
+
 		const post = Effect.fn("Hazel.post")(function* (
 			target: ChatTarget,
 			blocks: ReadonlyArray<ChatBlock>,
 		) {
+			const channelId = channelOf(target)
+			const pages = yield* Effect.forEach(
+				Arr.filter(blocks, (block): block is ChatPageBlock => block.kind === "page"),
+				(page) => publishPage(channelId, page),
+			)
 			const response = yield* send(
 				"post",
 				"/messages",
 				HttpClientRequest.post(`${API_BASE}/messages`).pipe(
-					postBody(channelOf(target), renderHazelMessage(blocks)),
+					postBody(channelId, renderHazelMessage(blocks, pages)),
 				),
 			)
 			const created = yield* read("post", response, MessageCreated, "no message id")

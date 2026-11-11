@@ -10,6 +10,7 @@ import { AsyncData, Submodel } from "foldkit"
 import type { Html, HtmlBuilder } from "foldkit/html"
 import { failureMessage } from "@maple/views/data/load-failure"
 import { alert, alertDescription, alertTitle } from "@maple/views/ui/alert"
+import { actionBar } from "@maple/views/ui/action-bar"
 import { button, linkButton } from "@maple/views/ui/button"
 import { errorState } from "@maple/views/ui/error-state"
 import { icon } from "@maple/views/ui/icon"
@@ -19,7 +20,7 @@ import { heading } from "@maple/views/ui/heading"
 import type { PageViewInputs } from "../../contract"
 import { dashboardPage } from "../../kit/dashboard-page"
 import { resourceNotFound } from "../../kit/resource-not-found"
-import { settingsSection } from "../../settings/kit/section"
+import { settingsSection } from "../../kit/settings-section"
 import { publicAddress, statusPagesHref } from "../shared/commands"
 import { textField } from "../shared/fields"
 import { APPEARANCES, presetCards } from "../shared/look"
@@ -243,42 +244,35 @@ const previewPanel = (h: H, model: Model): Html =>
 
 const footerBar = (h: H, model: Model): Html => {
 	const isReady = canSubmit(model)
-	return hstack(
-		h,
-		{
-			gap: "3",
-			align: "center",
-			justify: "between",
-			wrap: true,
-			className: "sticky bottom-4 z-10 rounded-lg border bg-popover py-2 pr-2 pl-4 shadow-popup",
-		},
-		[
+	return actionBar(h, {
+		label: "Publish",
+		leading: [
 			typography(h, { size: "xs", tone: "muted", as: "p" }, ["Nothing is public until you publish."]),
-			hstack(h, { gap: "2" }, [
-				button(
-					h,
-					{
-						size: "sm",
-						variant: "outline",
-						isLoading: model.submitting === "draft",
-						isDisabled: !isReady,
-						attributes: [h.OnClick(Message.ClickedSubmit({ mode: "draft" }))],
-					},
-					["Save as draft"],
-				),
-				button(
-					h,
-					{
-						size: "sm",
-						isLoading: model.submitting === "publish",
-						isDisabled: !isReady,
-						attributes: [h.OnClick(Message.ClickedSubmit({ mode: "publish" }))],
-					},
-					["Publish page"],
-				),
-			]),
 		],
-	)
+		actions: [
+			button(
+				h,
+				{
+					size: "sm",
+					variant: "outline",
+					isLoading: model.submitting === "draft",
+					isDisabled: !isReady,
+					attributes: [h.OnClick(Message.ClickedSubmit({ mode: "draft" }))],
+				},
+				["Save as draft"],
+			),
+			button(
+				h,
+				{
+					size: "sm",
+					isLoading: model.submitting === "publish",
+					isDisabled: !isReady,
+					attributes: [h.OnClick(Message.ClickedSubmit({ mode: "publish" }))],
+				},
+				["Publish page"],
+			),
+		],
+	})
 }
 
 const builder = (h: H, model: Model): Html =>

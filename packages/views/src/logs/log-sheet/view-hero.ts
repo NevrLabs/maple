@@ -45,7 +45,7 @@ export const copyable = (
 			label: "Copy value",
 			onClick: Message.ClickedCopy({ copyId, text: value }),
 			className: cn(
-				"-mx-0.5 cursor-pointer rounded-sm px-0.5 text-left transition-colors",
+				"-mx-0.5 cursor-pointer rounded-sm px-0.5 text-left",
 				status === "idle" && "hover:bg-surface-sunken active:bg-surface-sunken",
 				status === "copied" && "bg-severity-info-a3",
 				status === "error" && "bg-severity-error-a3",
@@ -56,7 +56,7 @@ export const copyable = (
 	)
 }
 
-/** `LogTextButton`: the tiny muted text action. */
+/** The tiny muted text action. */
 export const logTextButton = (
 	h: H,
 	className: string | undefined,
@@ -85,7 +85,7 @@ export const heroHeader = (
 	h: H,
 	model: Model,
 	log: LogRecord,
-	/** `null`: `showClose={false}` on `/logs/$logId`. */
+	/** `null` on `/logs/$logId`, which shows no close. */
 	close: ReadonlyArray<ChildAttribute> | null,
 ): Html => {
 	const message = logMessageOf(log.body ?? "")

@@ -10,6 +10,7 @@ import { Message as MembersMessage } from "./members/model"
 import { Message as SelfhostMembersMessage } from "./selfhost-members/model"
 import { Message as GeneralMessage } from "./general/model"
 import { Message as DataPlatformMessage } from "./data-platform/model"
+import { Message as DataSourcesMessage } from "./data-sources/model"
 import { Message as AuditLogMessage } from "./audit-log/model"
 import { Message as AutomationMessage } from "./automation/model"
 import * as Ingestion from "./ingestion/message"
@@ -33,6 +34,7 @@ export const Message = defineMessageUnion({
 	GotSelfhostMembersMessage: { message: SelfhostMembersMessage },
 	GotGeneralMessage: { message: GeneralMessage },
 	GotDataPlatformMessage: { message: DataPlatformMessage },
+	GotDataSourcesMessage: { message: DataSourcesMessage },
 	GotAuditLogMessage: { message: AuditLogMessage },
 	GotAutomationMessage: { message: AutomationMessage },
 	/** The `api_keys` shape (Keys and the audit log's actor names), for the org it was read for. */

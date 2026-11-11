@@ -14,10 +14,10 @@ import {
 	shortReleaseLabel,
 	type ReleaseGroup,
 	type ReleaseServiceImpact,
-} from "../../../components/releases/release-model"
+} from "../release-model"
 import type { Html, HtmlBuilder } from "foldkit/html"
 import { AppRoute, hrefOf } from "../../../route"
-import { severityBadge } from "../../errors/kit/severity"
+import { severityBadge } from "../../kit/issue-severity"
 import { emptyMessage } from "@maple/views/ui/empty"
 import { listRow } from "@maple/views/ui/list-row"
 import { panel, panelBody, panelHeader } from "@maple/views/ui/panel"
@@ -26,19 +26,17 @@ import { table, tableBody, tableCell, tableHead, tableHeader, tableRow } from "@
 import { truncatedText } from "@maple/views/ui/truncated-text"
 import { serviceDot } from "@maple/views/ui/values"
 import { relativeTime } from "../../kit/relative-time"
-import { commitAvatar, firstLine, releaseHealthFigure, releaseHref } from "../kit"
+import { releaseHealthFigure, releaseHref } from "../kit"
 import { type Overlays, releaseHealthPill } from "../overlays-view"
 import { textLink } from "@maple/views/ui/text-link"
 import { typography, typographyClass } from "@maple/views/ui/typography"
 import { hstack, vstack } from "@maple/views/ui/stack"
 import { Array as Arr, String as Str, Option, Order } from "effect"
-
-// `ReleaseDeployOverview`'s sections, `ReleaseChangeset` and `IssueList` + `IssueLine`.
+import { commitAvatar, firstLine } from "../../kit/commit-card"
 
 export type Clock = Readonly<{ nowMs: number; timeZone: string }>
 type TimeSearch = Readonly<{ startTime?: string; endTime?: string; timePreset?: string }>
 
-/** `SectionCard`. */
 export const sectionCard = <M>(
 	h: HtmlBuilder<M>,
 	options: Readonly<{ title: string; action?: Html; className?: string }>,
@@ -280,7 +278,6 @@ export type ChangesetState =
 	| { readonly _tag: "Unavailable"; readonly base: string }
 	| { readonly _tag: "Loaded"; readonly base: string; readonly range: VcsCommitRangeResponse }
 
-/** `ReleaseChangeset`. */
 export const releaseChangeset = <M>(h: HtmlBuilder<M>, state: ChangesetState, clock: Clock): Html => {
 	if (state._tag === "NoBase")
 		return sectionCard(h, { title: "What shipped" }, [
@@ -289,7 +286,7 @@ export const releaseChangeset = <M>(h: HtmlBuilder<M>, state: ChangesetState, cl
 	if (state._tag === "NotShas")
 		return sectionCard(h, { title: "What shipped" }, [
 			emptyMessage(h, {}, [
-				"These versions are not commit shas, so the commits between them are unknown.",
+				"These versions are not commit shas, so the commits between them are unknown",
 			]),
 		])
 	const action = typography(h, { size: "2xs", tone: "subtle" }, [
@@ -303,7 +300,7 @@ export const releaseChangeset = <M>(h: HtmlBuilder<M>, state: ChangesetState, cl
 	if (state._tag === "Unavailable")
 		return sectionCard(h, { title: "What shipped", action }, [
 			emptyMessage(h, {}, [
-				"Both versions need to be commits of a connected repository's tracked branch to list what changed between them.",
+				"Both versions need to be commits of a connected repository's tracked branch to list what changed between them",
 			]),
 		])
 	const { range } = state
@@ -438,7 +435,7 @@ const issueLine = <M>(
 						tone: "muted",
 						mono: true,
 						numeric: true,
-						attributes: [h.Title("Occurrences on this version in the window")],
+						attributes: [h.Title("Occurrences on this version in this window")],
 					},
 					[formatNumber(occurrences ?? issue.occurrenceCount), "×"],
 				),
@@ -455,7 +452,6 @@ const issueLine = <M>(
 	})
 }
 
-/** `IssueList`. */
 export const issueList = <M>(
 	h: HtmlBuilder<M>,
 	options: Readonly<{

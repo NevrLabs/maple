@@ -1,4 +1,4 @@
-import { shortTarget } from "../../../lib/agent-sessions/span-filters"
+import { shortTarget } from "../kit/span-filters"
 import { formatDuration } from "@maple/ui/lib/format"
 import { cn } from "@maple/ui/lib/utils"
 import { getSmoothStepPath, Position } from "@xyflow/system"
@@ -36,7 +36,6 @@ import { typography, typographyClass } from "@maple/views/ui/typography"
 import { hstack, vstack } from "@maple/views/ui/stack"
 import { Array as Arr } from "effect"
 
-// The session flow: one lane per turn on the xyflow canvas.
 // TODO(list-navigation): the arrow-key node cursor is not ported.
 
 type H = HtmlBuilder<Message>
@@ -59,7 +58,7 @@ const stepNode = (h: H, node: FlowNode, isSelected: boolean): ReadonlyArray<Html
 		{
 			onClick: Message.ClickedSpan({ spanId: isSelected ? undefined : node.span.spanId }),
 			className: cn(
-				"flex size-full flex-col justify-center gap-1 rounded-md border bg-card px-2.5 py-2 text-left hover:border-ring active:border-ring",
+				"flex size-full flex-col justify-center gap-1 rounded-md border bg-card px-2.5 py-2 text-left hover:border-border-strong active:border-border-strong",
 				"focus-visible:ring-ring",
 				node.isErrored ? "border-severity-error-a4" : "border-border",
 				isSelected && "border-primary bg-primary-a1",
@@ -204,7 +203,7 @@ const edgesOf = (h: H, lanes: ReadonlyArray<FlowLane>, isRelaid: boolean): Html 
 
 const LEGEND = ["agent", "inference", "tool"] as const
 
-/** `FlowControls`: in, out, and back to the top of the session at 1:1. */
+/** In, out, and back to the top of the session at 1:1. */
 const controls = (h: H, model: Model): Html => {
 	const { zoom } = model.flowCanvas.viewport
 	return hstack(
@@ -212,7 +211,7 @@ const controls = (h: H, model: Model): Html => {
 		{
 			gap: "1",
 			align: "center",
-			className: "pointer-events-auto rounded-md bg-background/80 p-0.5 backdrop-blur-sm",
+			className: "pointer-events-auto rounded-md bg-surface-float p-0.5 backdrop-blur-sm",
 		},
 		[
 			iconButton(
@@ -249,7 +248,7 @@ const floor = (h: H, model: Model): Html =>
 					align: "stretch",
 					wrap: true,
 					className:
-						"pointer-events-auto gap-x-4 gap-y-1 rounded-md bg-background/80 px-2 py-1 text-muted-foreground text-xs backdrop-blur-sm",
+						"pointer-events-auto gap-x-4 gap-y-1 rounded-md bg-surface-float px-2 py-1 text-muted-foreground text-xs backdrop-blur-sm",
 				},
 				[
 					...Arr.map(LEGEND, (category) =>
@@ -285,7 +284,7 @@ export const flow = (h: H, model: Model, data: SessionData): Html => {
 		h,
 		{ className: "relative grow" },
 		lanes.length === 0
-			? [emptyMessage(h, {}, ["No spans match this filter"])]
+			? [emptyMessage(h, {}, ["No spans match these filters"])]
 			: [
 					h.div(
 						[h.Class("relative min-h-48 grow")],

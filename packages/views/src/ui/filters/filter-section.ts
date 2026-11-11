@@ -1,13 +1,13 @@
 import { formatNumber } from "@maple/domain/format"
 import { countLabel } from "@maple/ui/lib/format"
 import { cn } from "@maple/ui/lib/utils"
-import { collapsiblePanelStyles } from "@maple/ui/styles/ui/collapsible"
-import { eyebrowVariants } from "@maple/ui/styles/ui/eyebrow"
+import { collapsiblePanelStyles } from "../collapsible.styles"
+import { eyebrowVariants } from "../eyebrow.styles"
 import type { Html, HtmlBuilder } from "foldkit/html"
 import { button } from "../button"
 import * as Checkbox from "../checkbox"
 import { badge } from "../display"
-import { badgeVariants } from "@maple/ui/styles/ui/badge"
+import { badgeVariants } from "../badge.styles"
 import { emptyMessage } from "../empty"
 import { icon, iconColor, type IconName } from "../icon"
 import { label } from "../label"
@@ -16,16 +16,15 @@ import { searchInput } from "../search-input"
 import { tooltipTrigger } from "../tooltip-host"
 import { Array as Arr, Order, String as Str } from "effect"
 
-// Port of `FilterSection` / `SearchableFilterSection` (packages/ui/src/components/filters/filter-section.tsx).
-// Alt+click on a label toggles the exclusion: `OnClick` carries no modifiers, so the root's
-// `altClickExclude` Subscription reads it and presses the row's Exclude action (`data-alt-exclude`).
+// A filter rail section of checkbox values, searchable when long. Alt+click on a label toggles the
+// exclusion: `OnClick` carries no modifiers, so the root's `altClickExclude` Subscription reads it
+// and presses the row's Exclude action (`data-alt-exclude`).
 
 export type FilterOption = Readonly<{ name: string; count: number }>
 
 /** Matches rendered while searching; past this the answer is a longer search term. */
 const MAX_SEARCH_RESULTS = 50
 
-// copied: `visibleFilterOptions` (the React module also holds the components).
 const visibleFilterOptions = (input: {
 	readonly options: ReadonlyArray<FilterOption>
 	readonly selected: ReadonlyArray<string>
@@ -90,7 +89,7 @@ export type FilterSectionConfig<M> = Readonly<{
 	onToggle: (name: string) => M
 	onOnly?: (name: string) => M
 	onExclude?: (name: string) => M
-	/** `colorMap`: a swatch before the label (`serviceColorMap` for services). */
+	/** A swatch before the label (the service colour for services). */
 	colorOf?: (name: string) => string | undefined
 	/** `getOptionIcon`: a mark before the label (browser, device, vendor), tinted by `getOptionIconColor`. */
 	getOptionIcon?: (name: string) => IconName | undefined
@@ -101,11 +100,11 @@ export type FilterSectionConfig<M> = Readonly<{
 	/** The label's `title` when it is more than the label. */
 	getOptionDescription?: (name: string) => string | undefined
 	showCounts?: boolean
-	/** `FilterDescription`: the info mark beside the title, this text in its tooltip. */
+	/** The info mark beside the title, this text in its tooltip. */
 	description?: string
 }>
 
-/** `FilterRowAction`: the `tag` badge as a button, transparent until the row is hovered. */
+/** The `tag` badge as a button, transparent until the row is hovered. */
 const rowAction = <M>(
 	h: HtmlBuilder<M>,
 	text: string,
@@ -122,7 +121,6 @@ const rowAction = <M>(
 					badgeVariants({
 						variant: "tag",
 						className: cn(
-							"transition-colors",
 							isPressed === true
 								? "bg-destructive-a2 text-destructive [button&]:hover:bg-destructive-a3 [button&]:active:bg-destructive-a3 [button&]:hover:text-destructive [button&]:active:text-destructive"
 								: "bg-transparent",
@@ -154,7 +152,7 @@ const countText = <M>(h: HtmlBuilder<M>, option: FilterOption, isTriState: boole
 		[formatNumber(option.count)],
 	)
 
-/** `FilterDescription`: the info mark beside a filter's title, its description in a tooltip. */
+/** The info mark beside a filter's title, its description in a tooltip. */
 export const filterDescriptionMark = <M>(h: HtmlBuilder<M>, title: string, description: string): Html =>
 	h.span(
 		[
@@ -266,7 +264,7 @@ const optionRow = <M>(h: HtmlBuilder<M>, config: FilterSectionConfig<M>, option:
 								h.span(
 									[
 										h.Class(
-											"pointer-events-none absolute inset-y-0 right-0 flex items-center gap-1 bg-background opacity-0 transition-opacity before:pointer-events-none before:absolute before:inset-y-0 before:right-full before:w-6 before:bg-gradient-to-r before:from-transparent before:to-background group-hover/option:pointer-events-auto group-hover/option:opacity-100 group-focus-within/option:pointer-events-auto group-focus-within/option:opacity-100 pointer-coarse:pointer-events-auto pointer-coarse:opacity-100",
+											"pointer-events-none absolute inset-y-0 right-0 flex items-center gap-1 bg-background opacity-0 transition-opacity before:pointer-events-none before:absolute before:inset-y-0 before:right-full before:w-6 before:bg-linear-to-r before:from-transparent before:to-background group-hover/option:pointer-events-auto group-hover/option:opacity-100 group-focus-within/option:pointer-events-auto group-focus-within/option:opacity-100 pointer-coarse:pointer-events-auto pointer-coarse:opacity-100",
 										),
 									],
 									[
@@ -321,7 +319,15 @@ export const filterSection = <M>(h: HtmlBuilder<M>, config: FilterSectionConfig<
 	if (config.options.length === 0 && excluded.length === 0 && config.selected.length === 0) return null
 	const defaultOpen = config.defaultOpen ?? true
 	const state = sectionOf(config.sections, config.title, defaultOpen)
-	const isSearchable = config.isSearchable ?? false
+	// A list that already shows every value has nothing to search; a typed term keeps the box.
+	// Chosen values missing from `options` still get a row, so they count toward the overflow.
+	const valueCount = new Set([
+		...Arr.map(config.options, (option) => option.name),
+		...config.selected,
+		...excluded,
+	]).size
+	const isSearchable =
+		(config.isSearchable ?? false) && (valueCount > (config.maxVisible ?? 5) || state.search !== "")
 	const { visible, hasMore, overflowingMatches } = visibleFilterOptions({
 		options: config.options,
 		selected: config.selected,
@@ -343,7 +349,7 @@ export const filterSection = <M>(h: HtmlBuilder<M>, config: FilterSectionConfig<
 					h.AriaExpanded(state.isOpen),
 					h.Class(
 						cn(
-							"group flex w-full items-center justify-between gap-2 py-2 hover:text-foreground active:text-foreground text-muted-foreground",
+							"group flex w-full items-center justify-between gap-2 py-1.5 hover:text-foreground active:text-foreground text-muted-foreground",
 							eyebrowVariants({ variant: "label" }),
 						),
 					),
@@ -371,7 +377,7 @@ export const filterSection = <M>(h: HtmlBuilder<M>, config: FilterSectionConfig<
 								: collapsedBadges(h, config.selected.length, excluded.length)),
 							icon(h, "ChevronDownIcon", {
 								className: cn(
-									"size-3.5 shrink-0 text-foreground-faint transition-[transform,color] duration-200 ease-out group-hover:text-muted-foreground",
+									"size-3.5 shrink-0 text-foreground-faint transition-transform duration-200 ease-out group-hover:text-muted-foreground",
 									state.isOpen && "rotate-180",
 								),
 							}),
@@ -395,18 +401,14 @@ export const filterSection = <M>(h: HtmlBuilder<M>, config: FilterSectionConfig<
 							],
 							[
 								h.div(
-									[h.Class("pb-3")],
+									[h.Class("pb-2")],
 									[
 										...(isSearchable ? [sectionSearch(h, config, state.search)] : []),
 										h.div(
-											[h.Class("space-y-2")],
+											[h.Class("space-y-1.5")],
 											[
 												...(visible.length === 0
-													? [
-															emptyMessage(h, { className: "py-2" }, [
-																"No matches found",
-															]),
-														]
+													? [emptyMessage(h, { className: "py-2" }, ["No matches"])]
 													: Arr.map(visible, (option) =>
 															optionRow(h, config, option),
 														)),
@@ -432,7 +434,7 @@ export const filterSection = <M>(h: HtmlBuilder<M>, config: FilterSectionConfig<
 																	variant: "link",
 																	size: "xs",
 																	className:
-																		"px-0 text-muted-foreground hover:text-foreground active:text-foreground",
+																		"h-5 px-0 text-muted-foreground hover:text-foreground active:text-foreground sm:h-5",
 																	attributes: [
 																		h.OnClick(
 																			toSections(
@@ -467,15 +469,15 @@ const sectionSearch = <M>(h: HtmlBuilder<M>, config: FilterSectionConfig<M>, sea
 	searchInput(h, {
 		id: `filter-section-${config.title}-search`,
 		size: "sm",
-		className: "mb-2",
-		placeholder: `Search ${Str.toLowerCase(config.title)}...`,
+		className: "mb-1.5",
+		placeholder: `Search ${Str.toLowerCase(config.title)}…`,
 		value: search,
 		onInput: (value) =>
 			config.toSectionsMessage(SectionsMessage.ChangedSearch({ key: config.title, search: value })),
 		onClear: config.toSectionsMessage(SectionsMessage.ChangedSearch({ key: config.title, search: "" })),
 	})
 
-/** `SingleCheckboxFilter`: one checkbox with its label (and count). */
+/** One checkbox with its label (and count). */
 export const singleCheckboxFilter = <M>(
 	h: HtmlBuilder<M>,
 	config: Readonly<{ title: string; isChecked: boolean; onToggle: M; count?: number }>,

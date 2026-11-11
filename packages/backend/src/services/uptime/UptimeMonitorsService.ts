@@ -29,7 +29,7 @@ import {
 	UptimeMonitorStatus,
 	OrgId,
 	type UserId,
-} from "@maple/domain/primitives"
+} from "@maple/primitives"
 import {
 	appendRecentCheck,
 	applyUptimeCheck,
@@ -70,8 +70,12 @@ import { Database } from "@maple/backend/platform/DatabaseLive"
 import { makeDbExecute } from "@maple/backend/platform/db-execute"
 import { msToSqlTimestamp } from "@maple/backend/platform/time"
 import { Env } from "@maple/backend/platform/Env"
+import { secretKeyringFromEnv } from "@maple/backend/platform/SecretBox"
 import { ensureWithinLimit, UptimeMonitorAllowance } from "./UptimeMonitorAllowance"
-import { countCheck, countOne, upsertDailyCounts, type UptimeDailyCount } from "./uptime-daily"
+import { openConfigHeaders, sealConfigHeaders, type StoredUptimeHeaders } from "./uptime-headers"
+import { countCheck, upsertDailyCounts, type UptimeDailyCount } from "./uptime-daily"
+import { heartbeatCheckState, recordHeartbeatCheck, toUptimePersistenceError } from "./uptime-state"
+import { lockOrgAlertRules } from "@maple/backend/services/alerts/alert-persistence"
 import { bumpPagesForMonitors } from "@maple/backend/services/status-pages/outbox"
 import { uptimeRuleFields } from "@maple/backend/services/alerts/AlertRuleModel"
 import { deleteRuleRows } from "@maple/backend/services/alerts/AlertRulesService"
@@ -230,12 +234,6 @@ const TEST_BODY_PREFIX_CHARS = 2048
 const HOST_PATTERN = /^[A-Za-z0-9.:-]+$/u
 const IPV4_PATTERN = /^\d{1,3}(\.\d{1,3}){3}$/u
 
-const toPersistenceError = (error: unknown) =>
-	new UptimeMonitorPersistenceError({
-		message: error instanceof Error ? error.message : "Uptime monitor persistence failed",
-		cause: error,
-	})
-
 const invalid = (message: string) => new UptimeMonitorValidationError({ message })
 
 const notFound = (monitorId: UptimeMonitorId) =>
@@ -355,6 +353,9 @@ type MonitorWithStateRow = Pick<
 	| "name"
 	| "kind"
 	| "configJson"
+	| "headersCiphertext"
+	| "headersIv"
+	| "headersTag"
 	| "intervalSeconds"
 	| "failuresToDown"
 	| "serviceName"
@@ -386,6 +387,9 @@ const selectMonitors = () =>
 			name: $.name,
 			kind: $.kind,
 			configJson: $.configJson,
+			headersCiphertext: $.headersCiphertext,
+			headersIv: $.headersIv,
+			headersTag: $.headersTag,
 			intervalSeconds: $.intervalSeconds,
 			failuresToDown: $.failuresToDown,
 			serviceName: $.serviceName,
@@ -519,7 +523,7 @@ export class UptimeMonitorsService extends Context.Service<UptimeMonitorsService
 	{
 		make: Effect.gen(function* () {
 			const database = yield* Database
-			const dbExecute = makeDbExecute(database, "UptimeMonitorsService", toPersistenceError)
+			const dbExecute = makeDbExecute(database, "UptimeMonitorsService", toUptimePersistenceError)
 			const env = yield* Env
 			const allowance = yield* UptimeMonitorAllowance
 			// Scoped per hop, so an unread body is cancelled on exit. A cross-origin redirect drops
@@ -530,49 +534,77 @@ export class UptimeMonitorsService extends Context.Service<UptimeMonitorsService
 				ownHeaders: ["user-agent"],
 			})
 			const apiBaseUrl = Str.replace(/\/+$/u, "")(env.MAPLE_API_BASE_URL)
+			const keyring = yield* secretKeyringFromEnv(
+				env,
+				(message) => new UptimeMonitorPersistenceError({ message }),
+			)
+			const sealHeaders = (orgId: OrgId, id: UptimeMonitorId, config: UptimeMonitorConfig) =>
+				sealConfigHeaders(
+					keyring,
+					{ orgId, id },
+					config,
+					(reason) =>
+						new UptimeMonitorPersistenceError({
+							message: `Headers of uptime monitor ${id} could not be sealed: ${reason}`,
+						}),
+				)
+
+			const openHeaders = (
+				row: { readonly orgId: OrgId; readonly id: UptimeMonitorId } & StoredUptimeHeaders,
+				config: UptimeMonitorConfig,
+			) =>
+				openConfigHeaders(
+					keyring,
+					row,
+					config,
+					(reason) =>
+						new UptimeMonitorPersistenceError({
+							message: `Stored headers of uptime monitor ${row.id} could not be opened: ${reason}`,
+						}),
+				)
 
 			const toRecord = (row: MonitorWithStateRow) =>
 				Effect.all({
 					intervalSeconds: decodeInterval(row.intervalSeconds),
 					destinationIds: decodeDestinationIds(row.destinationIdsJson ?? []),
 				}).pipe(
-					Effect.mapBoth({
-						onFailure: (error) =>
+					Effect.mapError(
+						(error) =>
 							new UptimeMonitorPersistenceError({
 								message: `Stored interval or destinations of uptime monitor ${row.id} are invalid`,
 								cause: error,
 							}),
-						onSuccess: ({ intervalSeconds, destinationIds }): UptimeMonitorRecord => ({
-							id: row.id,
-							orgId: row.orgId,
-							name: row.name,
-							kind: row.kind,
-							config: row.configJson,
-							intervalSeconds,
-							failuresToDown: row.failuresToDown,
-							serviceName: row.serviceName,
-							enabled: row.enabled,
-							destinationIds,
-							alertRuleId: row.alertRuleId,
-							tier: asTier(row.tier),
-							heartbeatUrl:
-								row.heartbeatToken === null ? null : `${apiBaseUrl}/hb/${row.heartbeatToken}`,
-							state: {
-								status: row.status,
-								consecutiveFailures: row.consecutiveFailures,
-								consecutiveSuccesses: row.consecutiveSuccesses,
-								statusChangedAt: row.statusChangedAt,
-								lastCheck: row.lastCheckJson,
-								recent: row.recentJson,
-								lastPingAt: row.lastPingAt,
-							},
-							createdAt: row.createdAt,
-							updatedAt: row.updatedAt,
-						}),
-					}),
-				)
+				Effect.zip(openHeaders(row, row.configJson)),
+				Effect.map(([{ intervalSeconds, destinationIds }, config]): UptimeMonitorRecord => ({
+					id: row.id,
+					orgId: row.orgId,
+					name: row.name,
+					kind: row.kind,
+					config,
+					intervalSeconds,
+					failuresToDown: row.failuresToDown,
+					serviceName: row.serviceName,
+					enabled: row.enabled,
+					destinationIds,
+					alertRuleId: row.alertRuleId,
+					// NevrLabs selfhost (PATCHES #13): core vs informational tier drives routing and the Alerts page.
+					tier: asTier(row.tier),
+					heartbeatUrl:
+						row.heartbeatToken === null ? null : `${apiBaseUrl}/hb/${row.heartbeatToken}`,
+					state: {
+						status: row.status,
+						consecutiveFailures: row.consecutiveFailures,
+						consecutiveSuccesses: row.consecutiveSuccesses,
+						statusChangedAt: row.statusChangedAt,
+						lastCheck: row.lastCheckJson,
+						recent: row.recentJson,
+						lastPingAt: row.lastPingAt,
+					},
+					createdAt: row.createdAt,
+					updatedAt: row.updatedAt,
+				})),
 
-			const requireMonitor = Effect.fn("UptimeMonitorsService.requireMonitor")(function* (
+		const requireMonitor = Effect.fn("UptimeMonitorsService.requireMonitor")(function* (
 				orgId: OrgId,
 				monitorId: UptimeMonitorId,
 			) {
@@ -646,8 +678,7 @@ export class UptimeMonitorsService extends Context.Service<UptimeMonitorsService
 			 * The per-org lock monitor creates (and alert rule writes) take inside their transaction,
 			 * so two concurrent creates cannot both pass a full plan.
 			 */
-			const lockOrgMonitors = (db: MapleDb, orgId: OrgId) =>
-				db.execute(Orm.sql`select pg_advisory_xact_lock(hashtext(${orgId}))`)
+			const lockOrgMonitors = lockOrgAlertRules
 
 			/**
 			 * Monitors counted against the plan `orgId` bills to: the billing org's and every member's,
@@ -708,6 +739,7 @@ export class UptimeMonitorsService extends Context.Service<UptimeMonitorsService
 
 				const now = yield* Clock.currentTimeMillis
 				const id = UptimeMonitorId.make(randomUUID())
+				const stored = yield* sealHeaders(orgId, id, config)
 				const ruleId = AlertRuleId.make(randomUUID())
 				const enabled = input.enabled !== false
 				const serviceName = input.serviceName ?? null
@@ -744,7 +776,7 @@ export class UptimeMonitorsService extends Context.Service<UptimeMonitorsService
 									orgId,
 									name,
 									kind: config._tag,
-									configJson: config,
+									...stored,
 									intervalSeconds: input.intervalSeconds ?? DEFAULT_INTERVAL_SECONDS,
 									failuresToDown,
 									serviceName,
@@ -808,6 +840,7 @@ export class UptimeMonitorsService extends Context.Service<UptimeMonitorsService
 						: yield* keepRedactedHeaders(current.config, input.config)
 				const config =
 					keptConfig === undefined ? undefined : yield* validateConfig(current.kind, keptConfig)
+				const stored = config === undefined ? undefined : yield* sealHeaders(orgId, monitorId, config)
 				const name = input.name === undefined ? undefined : yield* validateName(input.name)
 				const failuresToDown =
 					input.failuresToDown === undefined
@@ -901,7 +934,7 @@ export class UptimeMonitorsService extends Context.Service<UptimeMonitorsService
 											? { alertRuleId: ruleId }
 											: undefined),
 										...(name === undefined ? undefined : { name }),
-										...(config === undefined ? undefined : { configJson: config }),
+										...stored,
 										...(input.intervalSeconds === undefined
 											? undefined
 											: { intervalSeconds: input.intervalSeconds }),
@@ -999,13 +1032,18 @@ export class UptimeMonitorsService extends Context.Service<UptimeMonitorsService
 								serviceName: $.serviceName,
 								intervalSeconds: $.intervalSeconds,
 								configJson: PG.undecoded($.configJson),
+								headersCiphertext: $.headersCiphertext,
+								headersIv: $.headersIv,
+								headersTag: $.headersTag,
 							}))
 							.where(($) => [$.enabled.eq(true), $.kind.in_("http", "tcp", "dns")]),
 					),
 				)
-				// A config that no longer decodes skips its monitor, never the scraper's whole list.
+				// A config that no longer decodes, or headers that no longer open, skip their monitor,
+				// never the scraper's whole list.
 				const targets = yield* Effect.forEach(rows, (row) =>
 					decodeConfig(row.configJson).pipe(
+						Effect.flatMap((config) => openHeaders(row, config)),
 						Effect.map((config): ReadonlyArray<UptimeProbeTargetRow> =>
 							config._tag === "heartbeat"
 								? []
@@ -1020,8 +1058,10 @@ export class UptimeMonitorsService extends Context.Service<UptimeMonitorsService
 										},
 									],
 						),
-						Effect.catchTag("SchemaError", (error) =>
-							Effect.logWarning("Skipping uptime monitor with an undecodable config").pipe(
+						Effect.catch((error) =>
+							Effect.logWarning(
+								"Skipping uptime monitor whose config or headers cannot be read",
+							).pipe(
 								Effect.annotateLogs({
 									monitorId: row.id,
 									orgId: row.orgId,
@@ -1186,32 +1226,19 @@ export class UptimeMonitorsService extends Context.Service<UptimeMonitorsService
 					return yield* new UptimeHeartbeatNotFound({ message: "No such heartbeat" })
 				}
 				const now = yield* Clock.currentTimeMillis
-				const status: UptimeMonitorStatus = ok ? "up" : "down"
 				const written = yield* dbExecute((db) =>
 					db.transaction(
 						Effect.gen(function* () {
 							const updated = yield* db.run(
 								PG.update(UptimeMonitorStates)
 									.set({
-										status,
-										consecutiveFailures: ok ? 0 : row.consecutiveFailures + 1,
-										consecutiveSuccesses: ok ? row.consecutiveSuccesses + 1 : 0,
-										statusChangedAt: status === row.status ? row.statusChangedAt : now,
-										lastCheckJson: {
-											at: now,
+										...heartbeatCheckState(
+											row,
+											now,
 											ok,
-											durationMs: null,
-											statusCode: null,
-											error: ok ? null : "The job reported a failure",
-											traceId: null,
-										},
-										recentJson: appendRecentCheck(row.recentJson, {
-											at: now,
-											ok,
-											durationMs: null,
-										}),
+											ok ? null : "The job reported a failure",
+										),
 										lastPingAt: now,
-										updatedAt: now,
 									})
 									// Fenced on the state read: a ping or pause in between changes the counters or
 									// `updated_at`, and this ping is read and applied again instead of overwriting it.
@@ -1226,14 +1253,7 @@ export class UptimeMonitorsService extends Context.Service<UptimeMonitorsService
 									.returning("monitorId"),
 							)
 							if (updated.length === 0) return updated
-							yield* upsertDailyCounts(db, [
-								{
-									monitorId: row.id,
-									orgId: row.orgId,
-									count: countOne({ at: now, ok, down: status === "down" }),
-								},
-							])
-							if (status !== row.status) yield* bumpPagesForMonitors(db, row.orgId, [row.id])
+							yield* recordHeartbeatCheck(db, row.orgId, row.id, row.status, { at: now, ok })
 							return updated
 						}),
 					),

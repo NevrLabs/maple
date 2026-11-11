@@ -1,8 +1,8 @@
 import type { CodeReviewCiJob, CodeReviewCiPipeline, CodeReviewCiRedStreak } from "@maple/domain/http"
-import { failRate } from "../../../components/code-review/ci/ci-format"
-import { formatSpan } from "../../../components/code-review/code-review-format"
+import { failRate } from "../kit/ci-format"
+import { formatSpan } from "../kit/code-review-format"
 import { EMPTY_VALUE, formatDuration, formatNumber, formatPercent } from "@maple/ui/lib/format"
-import { TONE_SOFT, TONE_TEXT } from "@maple/ui/lib/tone"
+import { TONE_TEXT } from "@maple/ui/lib/tone"
 import { cn } from "@maple/ui/lib/utils"
 import type { Html, HtmlBuilder } from "foldkit/html"
 import { AppRoute, hrefOf } from "../../../route"
@@ -27,8 +27,6 @@ import { Message } from "./model"
 import { typography, typographyClass } from "@maple/views/ui/typography"
 import { hstack } from "@maple/views/ui/stack"
 import { Array as Arr } from "effect"
-
-// `WorkflowsTable`, `RedStreakLine` and `JobsTable`.
 
 type H = HtmlBuilder<Message>
 type TimeContext = Readonly<{ nowMs: number; timeZone: string }>
@@ -77,7 +75,7 @@ const redStreakLine = (h: H, red: CodeReviewCiRedStreak, time: TimeContext): Htm
 							h.Class(typographyClass({ tone: "foreground", hoverUnderline: true })),
 							h.Href(traceHref),
 							h.Title("Open the first failed run's trace"),
-							// `event.stopPropagation()` keeps the row's click off; the page follows the link itself.
+							// Keeps the row's click off; the page follows the link itself.
 							h.OnClick(Message.ClickedTraceLink({ url: traceHref }), {
 								defaultAction: "Prevent",
 								propagation: "Stop",
@@ -140,7 +138,7 @@ const workflowRow = (
 							),
 							...(row.red
 								? [
-										badge(h, { size: "sm", className: cn("shrink-0", TONE_SOFT.crit) }, [
+										badge(h, { size: "sm", variant: "crit", className: "shrink-0" }, [
 											"Failing · ",
 											formatNumber(row.red.failedRuns),
 											" ",

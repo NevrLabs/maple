@@ -2,7 +2,7 @@ import { isChartRuntimeReady } from "@maple/views/charts/chart-runtime"
 import { ResolveThemeColors } from "@maple/views/charts/theme-colors"
 import { errorState } from "@maple/views/ui/error-state"
 import { skeletonList } from "@maple/views/ui/skeleton"
-import { METRIC_TYPE_COLORS } from "@maple/web/page/metrics/shared"
+import { METRIC_TYPE_COLORS } from "@maple/views/ui/metric-type"
 import { Option, Array as Arr } from "effect"
 import { AsyncData, Submodel } from "foldkit"
 import type { Html, HtmlBuilder } from "foldkit/html"
@@ -61,7 +61,7 @@ export const view = Submodel.defineView<Model, Message, PageViewInputs>((model, 
 		if (Option.isSome(failure))
 			return errorState(h, {
 				failure: failure.value,
-				title: "Couldn’t load metrics",
+				title: "Couldn't load metrics",
 				onRetry: Message.ClickedRefresh(),
 			})
 		if (entries.length === 0)

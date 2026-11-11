@@ -1,4 +1,4 @@
-import type { ErrorSignal } from "../../../lib/models/error-signal"
+import type { ErrorSignal } from "../kit/error-signal"
 import { Option, Array as Arr } from "effect"
 import { createKeyedLazy, type Html, type HtmlBuilder } from "foldkit/html"
 import { toLoadFailure } from "@maple/views/data/load-failure"
@@ -13,8 +13,6 @@ import { hubEmpty } from "./view-empty"
 import { Message } from "./message"
 import type { Model } from "./model"
 import { type HeaderSelection, type RowState, signalHeader, signalRow, signalRowSkeleton } from "./view-row"
-
-// `ErrorsHubView`'s body: skeleton rows, the retry card, the rows, the empty states and paging.
 
 type H = HtmlBuilder<Message>
 
@@ -60,7 +58,7 @@ export const pagingFooter = (h: H, paging: PagingState): ReadonlyArray<Html> => 
 		isFailed: paging === "failed",
 		onLoadMore: Message.ClickedLoadMore(),
 		className: stripClass("block"),
-		children: paging === "failed" ? [h.span([], ["Couldn't load more errors."])] : [],
+		children: paging === "failed" ? [h.span([], ["Couldn't load more errors"])] : [],
 	})
 	return footer === null ? [] : [footer]
 }

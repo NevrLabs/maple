@@ -9,22 +9,20 @@ import {
 	PlanetscaleDatabases,
 	PlanetscalePollState,
 	RailwayConnections,
+	SearchConsoleSites,
 	RailwayEnvironments,
 	ScrapeTargets,
 	Sources,
 	VcsInstallations,
 	VcsRepositories,
 } from "@maple/db/tables"
-import {
-	buildIntegrationInventory,
-	type IntegrationInventory,
-	withSourceHealth,
-} from "@maple/domain/integration-inventory"
-import type { OrgId } from "@maple/domain/primitives"
+import type { IntegrationInventory } from "@maple/domain/integration-inventory"
+import { buildIntegrationInventory, withSourceHealth } from "./integration-inventory"
+import type { OrgId } from "@maple/primitives"
 import { Clock, Context, Effect, Layer, Option, Schema, Array as Arr, Record as Rec } from "effect"
 import { Database } from "@maple/backend/platform/DatabaseLive"
 import { makeDbExecute } from "@maple/backend/platform/db-execute"
-import { readHealthOverrides } from "@maple/backend/services/org/integration-sources"
+import { readHealthOverrides } from "@maple/backend/services/integrations/integration-sources"
 import { SOURCE_HEALTH_COLUMNS, sourceRowHealth } from "@maple/backend/services/org/source-rows"
 
 export class IntegrationInventoryUnavailableError extends Schema.TaggedError<IntegrationInventoryUnavailableError>()(
@@ -176,6 +174,11 @@ const make: Effect.Effect<IntegrationInventoryServiceApi, never, Database> = Eff
 							.select("connector", "name", "createdAt")
 							.where(($) => [$.orgId.eq(orgId)]),
 					),
+					searchConsoleSites: db.run(
+						PG.from(SearchConsoleSites)
+							.select("siteUrl", "enabled", "lastSyncedAt", "lastError")
+							.where(($) => [$.orgId.eq(orgId)]),
+					),
 					sources: db.run(
 						PG.from(Sources)
 							.select(...SOURCE_HEALTH_COLUMNS)
@@ -219,6 +222,7 @@ const make: Effect.Effect<IntegrationInventoryServiceApi, never, Database> = Eff
 				),
 				scrapeTargets: rows.scrapeTargets,
 				chatWorkspaces: rows.chatWorkspaces,
+				searchConsoleSites: rows.searchConsoleSites,
 			},
 			now,
 		)

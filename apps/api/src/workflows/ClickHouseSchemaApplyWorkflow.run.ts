@@ -12,7 +12,6 @@
  * Clocks are read inside steps only: the body replays, and a clock read there
  * would differ on every replay.
  */
-import { createDecipheriv } from "node:crypto"
 import * as PG from "@maple-dev/effect-orm/postgres"
 import { OrgClickHouseSchemaApplyRuns, OrgClickHouseSettings } from "@maple/db/tables"
 import {
@@ -26,6 +25,13 @@ import {
 	parseEmittedStatement,
 	performanceOnlySearchColumns,
 	qualifyStatementForDatabase,
+	quoteClickHouseIdentifier,
+	recordFeatureSql,
+	recordMigrationSql,
+	selectAppliedVersionsSql,
+	selectFeatureRevisionsSql,
+	createSchemaFeaturesTableSql,
+	createSchemaMigrationsTableSql,
 	type ActualTable,
 	type ApplyStep,
 	type DesiredTable,
@@ -53,6 +59,14 @@ import {
 	ORG_CH_CONFIG_CACHE_BUCKET,
 } from "@maple/backend/services/org/OrgClickHouseSettingsService"
 import { durableStep, type DurableStepConfig } from "@maple/backend/platform/durable-step"
+import {
+	DECRYPTION_KEYS_ENV,
+	openSecret,
+	parseSecretKeyring,
+	PRIMARY_KEY_ENV,
+	type SecretKeyring,
+} from "@maple/backend/platform/SecretBox"
+import { clickHousePasswordSlot } from "@maple/backend/platform/secret-slots"
 import { transitionRow } from "@maple/backend/platform/transition-row"
 
 /**
@@ -94,8 +108,7 @@ export interface SchemaApplyWorkflowResult {
 	readonly appliedVersions: ReadonlyArray<number>
 }
 
-/** The one secret the run needs, resolved by the `ConfigProvider` the Workflow class builds on the env. */
-const ENCRYPTION_KEY_CONFIG = "MAPLE_INGEST_KEY_ENCRYPTION_KEY"
+/** The secrets the run needs, resolved by the `ConfigProvider` the Workflow class builds on the env. */
 
 interface LoadOptionalFeatureStateOptions<E, R> {
 	readonly ensureBookkeeping: Effect.Effect<void, E, R>
@@ -151,8 +164,6 @@ export const loadOptionalFeatureState = <E, R>(
 	)
 
 const STEP: DurableStepConfig = { retries: { limit: 5, delay: "2 seconds", backoff: "exponential" } }
-
-// --- ClickHouse exec --------------------------------------------------------
 
 interface ChConfig {
 	readonly url: string
@@ -258,65 +269,37 @@ const parseSortingKeyRows = parseJsonEachRow(
 	Schema.Struct({ sorting_key: Schema.optionalKey(Schema.String) }),
 )
 
-// --- migration bookkeeping (mirrors the service + CLI) ----------------------
-
-const MIGRATIONS_TABLE = "_maple_schema_migrations"
-const FEATURES_TABLE = "_maple_schema_features"
-const quote = (name: string): string => `\`${Str.replace(/`/g, "``")(name)}\``
-
 const ensureMigrationsTable = (cfg: ChConfig) =>
-	execClickHouse(
-		cfg,
-		`CREATE TABLE IF NOT EXISTS ${quote(MIGRATIONS_TABLE)} (version UInt32, applied_at DateTime64(3) DEFAULT now64(3), description String) ENGINE = MergeTree ORDER BY version`,
-	).pipe(Effect.asVoid)
+	execClickHouse(cfg, createSchemaMigrationsTableSql).pipe(Effect.asVoid)
 
 const ensureFeaturesTable = (cfg: ChConfig) =>
-	execClickHouse(
-		cfg,
-		`CREATE TABLE IF NOT EXISTS ${quote(FEATURES_TABLE)} (
-  id String,
-  revision UInt32,
-  applied_at DateTime64(3) DEFAULT now64(3),
-  description String
-) ENGINE = ReplacingMergeTree(revision) ORDER BY id`,
-	).pipe(Effect.asVoid)
+	execClickHouse(cfg, createSchemaFeaturesTableSql).pipe(Effect.asVoid)
 
 const readAppliedVersions = (
 	cfg: ChConfig,
 ): Effect.Effect<ReadonlyArray<number>, ClickHouseExecError, HttpClient.HttpClient> =>
-	execClickHouse(cfg, `SELECT version FROM ${quote(MIGRATIONS_TABLE)} FORMAT JSONEachRow`).pipe(
+	execClickHouse(cfg, selectAppliedVersionsSql).pipe(
 		Effect.map((text) => [...new Set(Arr.map(parseVersionRows(text), (r) => r.version))]),
 	)
 
 const recordVersion = (cfg: ChConfig, version: number, description: string) =>
-	execClickHouse(
-		cfg,
-		`INSERT INTO ${quote(MIGRATIONS_TABLE)} (version, description) VALUES (${version}, '${Str.replace(/'/g, "''")(description)}')`,
-	).pipe(Effect.asVoid)
+	execClickHouse(cfg, recordMigrationSql(version, description)).pipe(Effect.asVoid)
 
 /** Entries rather than a Map: a step's value must survive Cloudflare's JSON persistence. */
 const readAppliedFeatureRevisions = (
 	cfg: ChConfig,
 ): Effect.Effect<ReadonlyArray<readonly [string, number]>, ClickHouseExecError, HttpClient.HttpClient> =>
-	execClickHouse(
-		cfg,
-		`SELECT id, max(revision) AS revision FROM ${quote(FEATURES_TABLE)} GROUP BY id FORMAT JSONEachRow`,
-	).pipe(
+	execClickHouse(cfg, selectFeatureRevisionsSql).pipe(
 		Effect.map((text) =>
 			Arr.map(parseFeatureRevisionRows(text), (row) => [row.id, row.revision] as const),
 		),
 	)
 
 const recordFeature = (cfg: ChConfig, id: string, revision: number, description: string) =>
-	execClickHouse(
-		cfg,
-		`INSERT INTO ${quote(FEATURES_TABLE)} (id, revision, description) VALUES ('${Str.replace(/'/g, "''")(id)}', ${revision}, '${Str.replace(/'/g, "''")(description)}')`,
-	).pipe(Effect.asVoid)
+	execClickHouse(cfg, recordFeatureSql(id, revision, description)).pipe(Effect.asVoid)
 
 const normalizeExpression = (value: string): string =>
 	Str.toLowerCase(Str.replace(/\s+/g, "")(Str.replace(/`/g, "")(value)))
-
-// --- config load + decrypt (mirror of the service helper) -------------------
 
 /** The Workflow was started with an `orgId` that is not one. */
 export class SchemaApplyPayloadError extends Schema.TaggedError<SchemaApplyPayloadError>()(
@@ -336,31 +319,10 @@ export class SchemaApplyConfigError extends Schema.TaggedError<SchemaApplyConfig
 	{ message: Schema.String },
 ) {}
 
-const decryptPassword = (
-	encryptionKey: Buffer,
-	ciphertext: string,
-	iv: string,
-	tag: string,
-): Effect.Effect<string, SchemaApplyConfigError> =>
-	Effect.try({
-		try: () => {
-			const decipher = createDecipheriv("aes-256-gcm", encryptionKey, Buffer.from(iv, "base64"))
-			decipher.setAuthTag(Buffer.from(tag, "base64"))
-			return Buffer.concat([
-				decipher.update(Buffer.from(ciphertext, "base64")),
-				decipher.final(),
-			]).toString("utf8")
-		},
-		catch: (cause) =>
-			new SchemaApplyConfigError({
-				message: `Stored ClickHouse password could not be decrypted: ${cause instanceof Error ? cause.message : String(cause)}`,
-			}),
-	})
-
 const loadConfig = (
 	database: DatabaseApi,
 	orgId: OrgId,
-	encryptionKey: Buffer,
+	keyring: SecretKeyring,
 ): Effect.Effect<ChConfig, SchemaApplyConfigError | DatabaseError> =>
 	Effect.gen(function* () {
 		const rows = yield* database.execute((db) =>
@@ -379,11 +341,19 @@ const loadConfig = (
 		}
 		const password =
 			row.chPasswordCiphertext && row.chPasswordIv && row.chPasswordTag
-				? yield* decryptPassword(
-						encryptionKey,
-						row.chPasswordCiphertext,
-						row.chPasswordIv,
-						row.chPasswordTag,
+				? yield* openSecret(
+						keyring,
+						clickHousePasswordSlot,
+						{ orgId: row.orgId },
+						{
+							ciphertext: row.chPasswordCiphertext,
+							iv: row.chPasswordIv,
+							tag: row.chPasswordTag,
+						},
+						(message) =>
+							new SchemaApplyConfigError({
+								message: `Stored ClickHouse password could not be decrypted: ${message}`,
+							}),
 					)
 				: ""
 		const parsedUrl = yield* Effect.try({
@@ -407,8 +377,6 @@ const loadConfig = (
 		}
 		return { url: row.chUrl, user: row.chUser, password, database: row.chDatabase }
 	})
-
-// --- run-row progress (org_clickhouse_schema_apply_runs) --------------------
 
 type RunPatch = Partial<{
 	status: "queued" | "running" | "succeeded" | "failed"
@@ -498,8 +466,6 @@ export const withRunHeartbeat = <A, E, R>(fence: RunFence, statement: Effect.Eff
 const fencedExec = (fence: RunFence, cfg: ChConfig, patch: RunPatch, sql: string) =>
 	updateRun(fence, patch).pipe(Effect.andThen(withRunHeartbeat(fence, execClickHouse(cfg, sql))))
 
-// --- snapshot-diff additive (mirror of OrgClickHouseSettingsService) --------
-
 const parseDesiredTables = (): ReadonlyArray<DesiredTable> => {
 	const out: DesiredTable[] = []
 	for (const stmt of clickHouseMigrations[0]?.statements ?? []) {
@@ -573,7 +539,7 @@ const reconcileSchemaSnapshot = (
 				const colDef = extractColumnDefinition(table.createStatement, drift.column)
 				return colDef
 					? [
-							`ALTER TABLE ${quote(cfg.database)}.${quote(entry.name)} ADD COLUMN IF NOT EXISTS ${colDef}`,
+							`ALTER TABLE ${quoteClickHouseIdentifier(cfg.database)}.${quoteClickHouseIdentifier(entry.name)} ADD COLUMN IF NOT EXISTS ${colDef}`,
 						]
 					: []
 			})
@@ -582,8 +548,6 @@ const reconcileSchemaSnapshot = (
 			discard: true,
 		})
 	})
-
-// --- orchestration ----------------------------------------------------------
 
 interface SkippedFeature {
 	readonly id: string
@@ -674,28 +638,37 @@ export const runClickHouseSchemaApply = (
 const applySchema = (fence: RunFence) =>
 	Effect.gen(function* () {
 		const { database, orgId } = fence
-		const encryptionKeyText = yield* Config.Redacted(ENCRYPTION_KEY_CONFIG).pipe(
+		const encryptionKeyText = yield* Config.Redacted(PRIMARY_KEY_ENV).pipe(
 			Effect.mapError(
 				(error) =>
 					new SchemaApplyConfigError({
-						message: `${ENCRYPTION_KEY_CONFIG} is not configured: ${error.message}`,
+						message: `${PRIMARY_KEY_ENV} is not configured: ${error.message}`,
 					}),
 			),
 		)
-		const encryptionKey = Buffer.from(Str.trim(Redacted.value(encryptionKeyText)), "base64")
-		// AES-256-GCM: anything else fails later as a misleading password-decryption error.
-		if (encryptionKey.length !== 32) {
-			return yield* new SchemaApplyConfigError({
-				message: `${ENCRYPTION_KEY_CONFIG} must be base64 for exactly 32 bytes`,
-			})
-		}
+		const decryptionKeysText = yield* Config.option(Config.Redacted(DECRYPTION_KEYS_ENV)).pipe(
+			Effect.mapError(
+				(error) =>
+					new SchemaApplyConfigError({
+						message: `${DECRYPTION_KEYS_ENV} is not readable: ${error.message}`,
+					}),
+			),
+		)
+		// A malformed key fails here: later it would surface as a misleading decryption error.
+		const keyring = yield* parseSecretKeyring(
+			{
+				primary: Redacted.value(encryptionKeyText),
+				decryptOnly: Option.map(decryptionKeysText, Redacted.value),
+			},
+			(message) => new SchemaApplyConfigError({ message }),
+		)
 		const appliedVersions: number[] = []
 		const skippedFeatures: SkippedFeature[] = []
 
 		const cfg = yield* durableStep(
 			"load-config",
 			Effect.gen(function* () {
-				const c = yield* loadConfig(database, orgId, encryptionKey)
+				const c = yield* loadConfig(database, orgId, keyring)
 				const startedAt = yield* Clock.currentTimeMillis
 				yield* updateRun(fence, {
 					status: "running",

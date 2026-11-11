@@ -18,13 +18,10 @@ import type { Model } from "./model"
 import { sectionMenuIdOf } from "./section-update"
 import { hstack, hstackClass } from "@maple/views/ui/stack"
 
-// A dashboard section's header, `SectionTabBar` and
-// `InlineEditableText`: the chevron, the renamable title, the tabs, "+" and the options menu.
-
 type H = HtmlBuilder<Message>
 type Section = NonNullable<DashboardDocument["sections"]>[number]
 
-/** `InlineEditableText`: a span that renames on double-click, Enter or F2, else the input. */
+/** A span that renames on double-click, Enter or F2, else the input. */
 export const inlineEditableText = (
 	h: H,
 	model: Model,
@@ -84,7 +81,7 @@ export const inlineEditableText = (
 	)
 }
 
-/** `SectionTabBar`: the underline tabs of a group with two or more. */
+/** The underline tabs of a group with two or more. */
 const tabBar = (h: H, model: Model, section: Section, activeTabId: string, isEditable: boolean): Html =>
 	hstack(
 		h,
@@ -103,7 +100,7 @@ const tabBar = (h: H, model: Model, section: Section, activeTabId: string, isEdi
 					[
 						h.Class(
 							cn(
-								"group/tab flex shrink-0 items-center gap-1 border-b-2 px-2 py-1 text-xs transition-colors",
+								"group/tab flex shrink-0 items-center gap-1 border-b-2 px-2 py-1 text-xs",
 								isActive
 									? "border-primary text-foreground"
 									: "border-transparent text-muted-foreground hover:text-foreground active:text-foreground",
@@ -341,7 +338,7 @@ const sectionBody = (h: H, inputs: SectionViewInputs): Html => {
 	const add = Message.ClickedAddSectionWidget({ sectionId: inputs.section.id, tabId: inputs.activeTabId })
 	return inputs.isEditable
 		? emptyMessage(h, { className: "flex items-center gap-2 px-1 py-6 text-left" }, [
-				h.span([], ["No widgets in this group yet."]),
+				h.span([], ["No widgets in this group yet"]),
 				button(h, { variant: "ghost", size: "sm", attributes: [h.OnClick(add)] }, [
 					icon(h, "PlusIcon"),
 					"Add widget",
@@ -352,7 +349,7 @@ const sectionBody = (h: H, inputs: SectionViewInputs): Html => {
 
 const trash = (h: H) => icon(h, "TrashIcon", { className: "text-destructive" })
 
-/** `DeleteSectionDialog` and `DeleteTabDialog`: keep the widgets somewhere sensible, or delete them too. */
+/** Keep the widgets somewhere sensible, or delete them too. */
 export const sectionDialogs = (h: H, model: Model): ReadonlyArray<Html> => {
 	const sections = model.document?.sections ?? []
 	const widgets = model.document?.widgets ?? []

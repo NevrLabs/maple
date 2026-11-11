@@ -2,10 +2,12 @@
 import { McpToolNotFoundError } from "@maple/domain/mcp-tool-contract"
 import { scopeAllows } from "@maple/domain/http/v2"
 import type { McpToolSurface } from "@maple/domain/mcp-manifest"
+import { McpToolOutputs } from "@maple/domain/mcp-outputs"
 import { Clock, Effect, Schema, type SchemaAST, Array as Arr, Record as Rec, String as Str } from "effect"
 import { registerAddDashboardWidgetTool } from "./add-dashboard-widget"
 import { registerDescribeWarehouseTablesTool } from "./describe-warehouse-tables"
 import { registerComparePeriodsTool } from "./compare-periods"
+import { registerCompareOperationsTool } from "./compare-operations"
 import { registerCreateAlertRuleTool } from "./create-alert-rule"
 import { registerPreviewAlertRuleTool } from "./preview-alert-rule"
 import { registerUpdateAlertRuleTool } from "./update-alert-rule"
@@ -45,6 +47,11 @@ import { registerInspectSecurityFindingTool } from "./inspect-security-finding"
 import { registerListSecurityAuditRunsTool } from "./list-security-audit-runs"
 import { registerInspectSecurityAuditRunTool } from "./inspect-security-audit-run"
 import { registerListSourcesTool } from "./list-sources"
+import { registerListDataSourcesTool } from "./list-data-sources"
+import { registerSearchDataSourcesTool } from "./search-data-sources"
+import { registerDescribeDataSourceTool } from "./describe-data-source"
+import { registerQueryDataSourceTool } from "./query-data-source"
+import { canonicalToolName } from "./tool-name-aliases"
 import { registerCiRunsTool } from "./ci-runs"
 import { registerCompareCommitsTool } from "./compare-commits"
 import { registerIntegrationWriteTools } from "./integration-writes"
@@ -56,6 +63,8 @@ import { registerGetInstrumentationRecommendationsTool } from "./get-instrumenta
 import { registerGetServiceTopOperationsTool } from "./get-service-top-operations"
 import { registerServiceDeploymentsTool } from "./service-deployments"
 import { registerRouteUsageTool } from "./route-usage"
+import { registerSearchConsoleQueriesTool } from "./search-console-queries"
+import { registerSearchConsolePagesTool } from "./search-console-pages"
 import { registerIngestFreshnessTool } from "./ingest-freshness"
 import { registerDbQueryVolumeTool } from "./db-query-volume"
 import { registerListInfraTool } from "./list-infra"
@@ -72,6 +81,7 @@ import { registerClaimErrorIssueTool } from "./claim-error-issue"
 import { registerCommentOnErrorIssueTool } from "./comment-on-error-issue"
 import { registerListErrorIncidentsTool } from "./list-error-incidents"
 import { registerListErrorIssueEventsTool } from "./list-error-issue-events"
+import { registerGetInvestigationTool } from "./get-investigation"
 import { registerListErrorIssuesTool } from "./list-error-issues"
 import { registerLinkPullRequestTool } from "./link-pull-request"
 import { registerProposeFixTool } from "./propose-fix"
@@ -94,6 +104,7 @@ import { registerRemoveDashboardWidgetTool } from "./remove-dashboard-widget"
 import { registerReplaceDashboardWidgetsTool } from "./replace-dashboard-widgets"
 import { registerReorderDashboardWidgetsTool } from "./reorder-dashboard-widgets"
 import { registerMineLogPatternsTool } from "./mine-log-patterns"
+import { registerCompareLogPatternsTool } from "./compare-log-patterns"
 import { registerSearchLogsTool } from "./search-logs"
 import { registerSearchTracesTool } from "./search-traces"
 import { registerSearchSessionsTool } from "./search-sessions"
@@ -112,7 +123,7 @@ import { registerServiceMapTool } from "./service-map"
 import { registerSourceCodeTools } from "./source-code"
 import { registerSandboxTools } from "./sandbox"
 import { registerPullRequestTools } from "./pull-request"
-import { CurrentMcpTenant } from "../lib/query-warehouse"
+import { CurrentMcpTenant } from "../tenant"
 import {
 	audienceAdmits,
 	McpAuthInvalidError,
@@ -136,7 +147,7 @@ import { filterNextCalls, nextCallsOf, type NextCall, type ToolDoc } from "../li
 import { stringifyJson } from "../lib/json"
 import { renderToolDocWithinBudget } from "./tool-output"
 import { CurrentWindowNotes, WindowNotes } from "../lib/window-notes"
-import type { McpToolRequirements } from "./runtime-requirements"
+import type { McpToolRequirements } from "./runtime-services"
 import { registerUpdateDashboardTool } from "./update-dashboard"
 import { registerUpdateDashboardWidgetTool } from "./update-dashboard-widget"
 
@@ -219,7 +230,7 @@ const isEmptyStructSchema = (base: Record<string, unknown>): boolean => {
  * `Schema.optional(X)` — which CLAUDE.md mandates for MCP tool params — has type
  * `X | undefined`, but `toJsonSchemaDocument` renders that absence as a JSON
  * `null` branch. The published schema therefore told every MCP client that
- * `{"service": null}` was valid on every optional parameter of all 57 tools,
+ * `{"service": null}` was valid on every optional parameter of every tool,
  * while the decoder rejects it with `Expected string | undefined`. An agent that
  * read the schema literally got "Invalid parameters" for doing what it was told.
  *
@@ -345,7 +356,7 @@ export const toInputSchema = (schema: Schema.Top): Record<string, unknown> => {
 	// `onExcessProperty: "error"` keeps `additionalProperties: false` on every
 	// published tool. rc.116 made the emitted value follow this option and
 	// defaults it to the decoder's behaviour, which would have loosened the
-	// schema all 57 public MCP tools advertise.
+	// schema every public MCP tool advertises.
 	const document = Schema.toJsonSchemaDocument(schema, { onExcessProperty: "error" })
 	const rawBase =
 		Rec.keys(document.definitions).length > 0
@@ -381,14 +392,15 @@ export const toInputSchema = (schema: Schema.Top): Record<string, unknown> => {
 const collectMapleToolDefinitions = (): ReadonlyArray<MapleToolDefinition> => {
 	const definitions: MapleToolDefinition[] = []
 	const define: McpToolRegistrar["define"] = (spec) => {
-		const encode = Schema.encodeUnknownEffect(spec.output)
+		const outputSchema: Schema.Codec<unknown, unknown> = McpToolOutputs[spec.name]
+		const encode = Schema.encodeUnknownEffect(outputSchema)
 		definitions.push({
 			name: spec.name,
 			title: spec.title,
 			description: spec.description,
 			schema: spec.parameters,
 			parseOptions: { onExcessProperty: spec.rejectUnknownKeys === true ? "error" : "ignore" },
-			outputSchema: spec.output,
+			outputSchema,
 			hints: spec.hints,
 			aliases: spec.aliases ?? {},
 			valueAliases: spec.valueAliases ?? {},
@@ -423,6 +435,7 @@ const collectMapleToolDefinitions = (): ReadonlyArray<MapleToolDefinition> => {
 	registerInspectSpanTool(registrar)
 	registerSearchLogsTool(registrar)
 	registerMineLogPatternsTool(registrar)
+	registerCompareLogPatternsTool(registrar)
 	registerSearchTracesTool(registrar)
 	registerSearchSessionsTool(registrar)
 	registerQueryFunnelTool(registrar)
@@ -484,6 +497,7 @@ const collectMapleToolDefinitions = (): ReadonlyArray<MapleToolDefinition> => {
 	registerReorderDashboardWidgetsTool(registrar)
 	registerInspectChartDataTool(registrar)
 	registerComparePeriodsTool(registrar)
+	registerCompareOperationsTool(registrar)
 	registerExploreAttributesTool(registrar)
 	registerListServicesTool(registrar)
 	registerGetServiceTopOperationsTool(registrar)
@@ -497,11 +511,17 @@ const collectMapleToolDefinitions = (): ReadonlyArray<MapleToolDefinition> => {
 	registerGetInstrumentationRecommendationsTool(registrar)
 	registerAuditSetupTool(registrar)
 	registerListIntegrationsTool(registrar)
+	registerSearchConsoleQueriesTool(registrar)
+	registerSearchConsolePagesTool(registrar)
 	registerListSecurityFindingsTool(registrar)
 	registerInspectSecurityFindingTool(registrar)
 	registerListSecurityAuditRunsTool(registrar)
 	registerInspectSecurityAuditRunTool(registrar)
 	registerListSourcesTool(registrar)
+	registerListDataSourcesTool(registrar)
+	registerSearchDataSourcesTool(registrar)
+	registerDescribeDataSourceTool(registrar)
+	registerQueryDataSourceTool(registrar)
 	registerCiRunsTool(registrar)
 	registerCompareCommitsTool(registrar)
 	registerIntegrationWriteTools(registrar)
@@ -523,6 +543,7 @@ const collectMapleToolDefinitions = (): ReadonlyArray<MapleToolDefinition> => {
 	registerProposeFixTool(registrar)
 	registerLinkPullRequestTool(registrar)
 	registerListErrorIssueEventsTool(registrar)
+	registerGetInvestigationTool(registrar)
 	registerRegisterAgentTool(registrar)
 	registerSendMapleFeedbackTool(registrar)
 	registerListMapleFeedbackTool(registrar)
@@ -606,7 +627,7 @@ export const readToolCall = (
 			readonly decodes: boolean
 	  }
 	| undefined => {
-	const definition = mapleToolDefinitions.find((candidate) => candidate.name === name)
+	const definition = findDefinition(name)
 	if (definition === undefined) return undefined
 	const normalized = normalizeFor(definition, input ?? {})
 	return {
@@ -643,9 +664,14 @@ const toDecodeErrorMessage = (
 		? formatDecodeFailure(definition.name, error, inputSchemaOf(definition), normalized)
 		: String(error)
 
+const findDefinition = (name: string): MapleToolDefinition | undefined => {
+	const canonical = canonicalToolName(name)
+	return mapleToolDefinitions.find((candidate) => candidate.name === canonical)
+}
+
 /** A registered tool this surface cannot see: a shared tool pointing at it is expected. */
 const isHiddenOn = (tool: string, surface: McpToolSurface): boolean => {
-	const target = mapleToolDefinitions.find((candidate) => candidate.name === tool)
+	const target = findDefinition(tool)
 	return target !== undefined && !audienceAdmits(target.audience, surface)
 }
 
@@ -654,7 +680,7 @@ const isHiddenOn = (tool: string, surface: McpToolSurface): boolean => {
  * parameter that was renamed, or a tool the caller cannot see, is worse than none.
  */
 const isValidNextCall = (call: NextCall, surface: McpToolSurface): boolean => {
-	const target = mapleToolDefinitions.find((candidate) => candidate.name === call.tool)
+	const target = findDefinition(call.tool)
 	if (target === undefined || !audienceAdmits(target.audience, surface)) return false
 	const normalized = normalizeFor(target, call.args)
 	return (
@@ -706,7 +732,7 @@ export const executeRegisteredMcpToolUnscoped = Effect.fn("McpToolRegistry.execu
 	input: unknown,
 	surface: McpToolSurface,
 ) {
-	const definition = mapleToolDefinitions.find((candidate) => candidate.name === name)
+	const definition = findDefinition(name)
 	if (!definition || !audienceAdmits(definition.audience, surface)) {
 		if (definition) {
 			yield* Effect.logWarning("MCP tool is not exposed on this surface").pipe(

@@ -19,8 +19,6 @@ import { typography, typographyClass } from "@maple/views/ui/typography"
 import { hstack, vstack } from "@maple/views/ui/stack"
 import { Array as Arr, String as Str } from "effect"
 
-// The transcript's model calls: `AssistantBlock`, `PromptBlock`, `StructureRow`.
-
 type H = HtmlBuilder<Message>
 
 const mono = (h: H, text: string): Html => typography(h, { mono: true }, [text])
@@ -70,7 +68,7 @@ const assistantError = (
 						}),
 					]),
 				]),
-		typography(h, { size: "xs", tone: "muted", as: "p" }, ["No reply was produced by this call."]),
+		typography(h, { size: "xs", tone: "muted", as: "p" }, ["No reply was produced by this call"]),
 	])
 }
 

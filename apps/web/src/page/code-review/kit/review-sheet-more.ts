@@ -1,5 +1,5 @@
 import type { CodeReviewDetail, PrReviewPostMerge, PrReviewTelemetry } from "@maple/domain/http"
-import { outcomeOf } from "../../../components/code-review/code-review-format"
+import { outcomeOf } from "./code-review-format"
 import { countLabel, formatDuration, formatErrorRate, formatNumber } from "@maple/ui/lib/format"
 import { TONE_TEXT } from "@maple/ui/lib/tone"
 import { cn } from "@maple/ui/lib/utils"
@@ -16,8 +16,6 @@ import { CI_RUNS_SHOWN } from "./review-sheet-update"
 import { emptyMessage } from "@maple/views/ui/empty"
 import { typography, typographyClass } from "@maple/views/ui/typography"
 import { hstack, vstack } from "@maple/views/ui/stack"
-
-// `ProductionSection`, `PostMergeSection`, `PullRequestCiRuns` and the review history.
 
 type H = HtmlBuilder<SheetMessage>
 
@@ -132,7 +130,7 @@ export const postMergeSection = (
 
 const ciSection = (h: H, children: ReadonlyArray<Html>): Html => section(h, "CI runs", children)
 
-/** `PullRequestCiRuns`: the pull request's runs over the last 90 days. */
+/** The pull request's runs over the last 90 days. */
 export const ciRunsSection = (h: H, sheet: ReviewSheet): Html =>
 	AsyncData.matchData(sheet.ciRuns.data, {
 		onEmpty: () => ciSection(h, [ciRunsSkeleton(h)]),
@@ -213,7 +211,7 @@ export const historySection = (h: H, sheet: ReviewSheet, detail: CodeReviewDetai
 								// The current review is marked by its tint, not dimmed like a disabled control.
 								isDisabled: isCurrent,
 								className: cn(
-									"flex w-full items-center gap-3 rounded-md px-2 py-1.5 text-left text-sm transition-colors disabled:cursor-default disabled:opacity-100",
+									"flex w-full items-center gap-3 rounded-md px-2 py-1.5 text-left text-sm disabled:cursor-default disabled:opacity-100",
 									isCurrent
 										? "bg-muted"
 										: "hover:bg-surface-sunken active:bg-surface-sunken",

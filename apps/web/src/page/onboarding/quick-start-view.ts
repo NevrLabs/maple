@@ -1,4 +1,4 @@
-import { ONBOARDING_INTENTS } from "../../lib/onboarding-intent"
+import { ONBOARDING_INTENTS } from "./onboarding-intent"
 import {
 	filledSurfaces,
 	languageDocsOf,
@@ -9,7 +9,7 @@ import {
 	type StackAnswers,
 	type StackItem,
 	type StackPlatform,
-} from "../../lib/onboarding-stack"
+} from "./onboarding-stack"
 import { cn } from "@maple/ui/lib/utils"
 import { AsyncData } from "foldkit"
 import type { Html, HtmlBuilder } from "foldkit/html"
@@ -25,18 +25,20 @@ import * as CopyButton from "@maple/views/ui/copy-button"
 import * as GuidedSetup from "../kit/guided-setup"
 import { presenceOf, type TelemetrySignalKind } from "@maple/views/data/signal-presence"
 import { ConnectMessage } from "./quick-start-connect"
-import { TEST_TRACE_SERVICE } from "../../lib/own-services"
+import { TEST_TRACE_SERVICE } from "../kit/own-services"
 import type { LiveFindings } from "./quick-start-live"
 import { regionStep } from "./quick-start-region-view"
 import { isResumable } from "./quick-start-drawer"
 import { drawerView } from "./quick-start-drawer-view"
 import * as QuickStartTeamView from "./quick-start-team-view"
-import { STEP_BODY_CLASS, STEP_FOOTER_CLASS } from "./step-layout"
+import { STEP_BODY_CLASS, STEP_FOOTER_LAYOUT } from "./step-layout"
+import { actionBar } from "@maple/views/ui/action-bar"
 import { Message, type Model, MountDitherField } from "./quick-start"
 import { type QuickStartState, resolveQuickStartStep, type StepId } from "./quick-start-state"
 import { eyebrow, eyebrowVariants } from "@maple/views/ui/eyebrow"
 import { statusDot } from "@maple/views/ui/status-dot"
 import { typography, typographyClass } from "@maple/views/ui/typography"
+import { dividedList } from "@maple/views/ui/rule"
 import { hstack, hstackClass, vstack } from "@maple/views/ui/stack"
 import { layer } from "@maple/views/ui/layer"
 import { Array as Arr, String as Str } from "effect"
@@ -47,14 +49,10 @@ import { selectableRow } from "@maple/views/ui/selectable-row"
 
 type H = HtmlBuilder<Message>
 
-/** `OnboardingLayout`'s right cluster: the progress trail, then the account actions. */
+/** The header's right cluster: the progress trail, then the account actions. */
 export const accountClusterOf = <M>(h: HtmlBuilder<M>, children: ReadonlyArray<Html>): Html =>
 	hstack(h, { gap: "3" }, children)
 
-/**
- * `MotionStep key={step}` at rest (reduced motion: no slide). A new step is a new element, as
- * AnimatePresence remounts it, so no card is patched over from the previous step.
- */
 /** The agent prompt's copy state, kept with the snippets'. */
 const AGENT_PROMPT_COPY = "agent-prompt"
 
@@ -256,8 +254,6 @@ const shell = (h: H, options: ShellOptions, children: ReadonlyArray<Html>): Html
 	)
 }
 
-// STACK
-
 /** A compact pick: one line of label and description, so the whole stack fits on a laptop screen. */
 const stackCard = (h: H, item: StackItem, isChecked: boolean, onChange: Message): Html =>
 	choiceCard(
@@ -368,12 +364,13 @@ const backButton = (h: H, to: StepId): Html =>
 
 /** The step's actions on the right, with a Back button on the left when there is a step before it. */
 const stepFooter = (h: H, children: ReadonlyArray<Html>, back: StepId | null = null): Html =>
-	back === null
-		? h.div([h.Class(STEP_FOOTER_CLASS)], children)
-		: h.div(
-				[h.Class(cn(STEP_FOOTER_CLASS, "justify-between"))],
-				[backButton(h, back), hstack(h, { gap: "4" }, children)],
-			)
+	actionBar(h, {
+		label: "Step actions",
+		as: "footer",
+		className: STEP_FOOTER_LAYOUT,
+		leading: back === null ? [] : [backButton(h, back)],
+		actions: children,
+	})
 
 const stackStep = (h: H, state: QuickStartState, query: string, hasPlan: boolean): Html => {
 	const { languages, platforms } = state.stack
@@ -462,12 +459,11 @@ const stackPreview = (h: H, orgName: string, state: QuickStartState): Html => {
 					),
 				]
 			: [
-					vstack(
+					dividedList(
 						h,
 						{
 							as: "ul",
-							className:
-								"divide-y divide-border overflow-hidden rounded-md border border-border bg-background",
+							className: "overflow-hidden bg-background",
 						},
 						Arr.map(surfaces, (surface) =>
 							hstack(h, { align: "center", as: "li", className: "gap-3.5 px-4 py-3" }, [
@@ -521,8 +517,6 @@ const stackPreview = (h: H, orgName: string, state: QuickStartState): Html => {
 				]),
 	])
 }
-
-// CONNECT
 
 const toConnect = (message: ConnectMessage): Message => Message.GotConnectMessage({ message })
 
@@ -670,12 +664,11 @@ export const connectStep = (h: H, model: Model, state: QuickStartState): Html =>
 				: [
 						vstack(h, { gap: "3", as: "section" }, [
 							eyebrow(h, { variant: "label", as: "h2" }, ["Providers"]),
-							vstack(
+							dividedList(
 								h,
 								{
 									as: "ul",
-									className:
-										"divide-y divide-border overflow-hidden rounded-md border border-border bg-card",
+									className: "overflow-hidden bg-card",
 								},
 								Arr.map(platforms, (platform) => providerRow(h, model, platform)),
 							),
@@ -814,12 +807,11 @@ const connectPreview = (h: H, orgName: string, model: Model, state: QuickStartSt
 				[statusDot(h, { tone: "ok" }), "Listening"],
 			),
 		]),
-		vstack(
+		dividedList(
 			h,
 			{
 				as: "ul",
-				className:
-					"divide-y divide-border overflow-hidden rounded-md border border-border bg-background",
+				className: "overflow-hidden bg-background",
 			},
 			[
 				...Arr.map(rows, (row) =>
@@ -871,8 +863,6 @@ const connectPreview = (h: H, orgName: string, model: Model, state: QuickStartSt
 		),
 	])
 }
-
-// LIVE
 
 type StartCard = Readonly<{
 	glyph: PixelGlyphName
@@ -1048,12 +1038,11 @@ export const liveStep = (h: H, model: Model, state: QuickStartState, orgName: st
 				: [
 						vstack(h, { gap: "3", as: "section" }, [
 							eyebrow(h, { variant: "label", as: "h2" }, ["Still waiting on"]),
-							vstack(
+							dividedList(
 								h,
 								{
 									as: "ul",
-									className:
-										"divide-y divide-border overflow-hidden rounded-md border border-border",
+									className: "overflow-hidden",
 								},
 								[
 									...Arr.map(notConnected, (platform) =>

@@ -1,18 +1,12 @@
 import { McpServer } from "effect/ai"
 import { Effect } from "effect"
 
-export const InstructionsResource = McpServer.resource({
-	uri: "maple://instructions",
-	name: "Maple MCP Usage Guide",
-	description: "Cross-cutting rules for using Maple MCP tools effectively",
-	audience: ["assistant"] as ReadonlyArray<"user" | "assistant">,
-	priority: 1,
-	content: Effect.succeed(
-		`# Maple MCP Tool Usage Guide
+/** The usage guide's text: cross-cutting rules every Maple MCP client reads. */
+export const MCP_INSTRUCTIONS = `# Maple MCP Tool Usage Guide
 
 ## Time Format
 - Always use YYYY-MM-DD HH:mm:ss in UTC
-- Default window is 6 hours for most tools, 1 hour for query_data
+- Default window is 6 hours for most tools, query_data included; each tool's \`start_time\` description states its own default. A tool that narrows the window (a query_data breakdown covers a bounded range) says so in its response, so check the window it reports
 - Specify explicit time ranges for targeted investigations
 
 ## Investigation Workflow
@@ -76,6 +70,7 @@ first occurrences ──> (candidate) ──> issue in \`triage\`
 
 - \`list_error_issues\` — the work queue. Filter by \`workflow_state\` and \`severity\`.
 - \`list_error_issue_events\` — one issue's history. Read before acting.
+- \`get_investigation\` — Maple's whole diagnosis for an investigation id a dashboard prompt hands you.
 - \`claim_error_issue\` / \`release_error_issue\` — the lease.
 - \`comment_on_error_issue\` — findings that are not yet a fix.
 - \`set_issue_severity\` — how bad it is, with a reason.
@@ -88,7 +83,7 @@ first occurrences ──> (candidate) ──> issue in \`triage\`
 
 ## Attribute Filtering
 - Call \`explore_attributes\` before filtering by custom attributes
-- Prefer service_name filters to narrow results before free-text search
+- Prefer the \`service\` filter to narrow results before free-text search
 - Common span attributes: http.method, http.route, http.status_code, db.system
 - Common resource attributes: service.name, deployment.environment, service.version
 
@@ -101,9 +96,9 @@ first occurrences ──> (candidate) ──> issue in \`triage\`
 - Histogram percentiles (p50/p95/p99) are not available for metrics in query_data; use avg, or source=traces p95_duration for request latency
 
 ## Pagination
-- Tools that return lists support pagination via offset parameter
-- Check the hasMore field in responses to know if more results exist
-- Use nextOffset value to fetch the next page
+- Most list and search tools page by \`offset\`: when more rows remain the response says so and gives the \`offset\` of the next page (\`nextOffset\`)
+- \`list_error_issues\` and \`list_users\` page by \`cursor\` instead: pass the response's \`nextCursor\` back as \`cursor\`; it is absent on the last page
+- A tool with neither parameter returns one capped page: raise \`limit\` up to the tool's maximum, or narrow the filters or the window where it has them. Rows past the cap cannot be paged to
 
 ## Tool Selection Guide
 - Error investigation: find_errors -> error_detail -> inspect_trace
@@ -111,7 +106,8 @@ first occurrences ──> (candidate) ──> issue in \`triage\`
 - Performance analysis: find_slow_traces -> inspect_trace -> get_service_top_operations
 - Trend analysis: query_data (timeseries or breakdown)
 - Service discovery: list_services -> diagnose_service
-- Sources: list_sources is everything that sends data (SDKs, collectors, clusters, scrape targets, integrations) with whether data is arriving; its \`src_\` ids match the \`maple_source_id\` resource attribute.
+- Sources: list_ingest_sources is everything that sends data (SDKs, collectors, clusters, scrape targets, integrations) with whether data is arriving; its \`src_\` ids match the \`maple_source_id\` resource attribute.
+- Data sources: databases and APIs the org connected to query in place (orders, payments, user accounts), separate from its telemetry. \`search_data_sources\` finds the table by topic, \`describe_data_source\` gives its fields and query language, \`query_data_source\` runs SQL or a resource query. \`run_sql\` never reaches them.
 - Integrations: list_integrations is what is connected and broken (revoked grants, stale pollers, repos that stop syncing, failing scrape targets); audit_setup adds fix hints. Admins can poll Railway now (sync_railway) and manage plain Prometheus scrape targets (create_scrape_target, update_scrape_target enabled=false to pause, delete_scrape_target); connecting a provider stays in Settings.
 - Security (Security Center): list_security_findings (no \`area\` = overview of the code audit, vulnerable dependencies, scanner probes services answered and runtimes with CVEs or past end of life, worst first; \`area\` = one in full, \`service\` narrows all four) -> inspect_security_finding (a finding in full by its id; an advisory id such as CVE-… answers "are we affected" with what was checked). Audit runs: list_security_audit_runs (run history, why a run stopped, spend against the monthly limit) -> inspect_security_audit_run (what a run covered or skipped, rejected claims, its step log). Code audit findings and run detail are admin-only.
 - Infrastructure (hosts, Kubernetes pods/nodes/workloads, Docker containers): list_infra (no \`kind\` = overview of what reports, hottest first) -> inspect_infra (CPU/memory over the window with the peak time, a node's or workload's pods). diagnose_service shows the workload and pods a service runs on. Connected integrations add kinds: cloudflare_zones / cloudflare_workers (requests, 5xx, latency; inspect a zone with section=traffic|breakdown|security|dns), railway_services and planetscale_databases; list_integrations says which are connected and healthy. Resource metrics are also chartable: create_dashboard group_by \`resource.host.name\` / \`resource.k8s.pod.name\` on source=metrics
@@ -123,7 +119,7 @@ first occurrences ──> (candidate) ──> issue in \`triage\`
 - Quieting alerts for a window (maintenance, a known outage): create_alert_silence (matchers + duration_minutes or ends_at) / list_alert_silences / end_alert_silence. Incidents still open; only notifications are held back.
 - Uptime: list_uptime_monitors is every http/tcp/dns check and heartbeat with its status and last check; a failed check's trace id goes to inspect_trace. Admins manage them with create_uptime_monitor / update_uptime_monitor (enabled=false pauses) / delete_uptime_monitor. A down monitor opens an alert incident with signal type \`uptime\`; its rule is managed only through the monitor.
 - SLOs: list_slos is every SLO with its SLI, budget left and worst burn rate, burning ones first -> inspect_slo (each 5m/30m/1h/6h burn window, which tier breaches, alerting) -> get_incident_timeline rule_id=<its alert rule>. Admins and engineers manage them with create_slo / update_slo (alerting_enabled=false silences it) / delete_slo. An SLO's burn-rate rule (signal type \`slo_burn_rate\`) is managed only through the SLO.
-- Status pages (what customers see, separate from alert incidents): list_status_pages -> get_status_page (component statuses, open incidents, freshness) -> create_status_page_incident / schedule_status_page_maintenance (drafts unless publish=true) -> post_status_page_update -> resolve_status_page_incident. Every message is public text. Admins edit a whole page (settings, theme, components) with get_status_page_config -> apply_status_page_config, one atomic write.
+- Status pages (what customers see, separate from alert incidents): get_status_page (no page: every page; with page: component statuses, open incidents, freshness) -> post_status_page_update (no incident: opens one, or maintenance with starts_at/ends_at, a draft unless publish=true; with incident: the next update, status=resolved closes it). Every message is public text. Admins edit a whole page (settings, theme, components) with get_status_page include_config=true -> apply_status_page_config, one atomic write.
 - AI agent sessions (LLM agent traces — NOT browser replays): list_agent_sessions -> get_agent_session (verdict and checks) -> get_agent_session_transcript (what it did step by step; \`failed_only\`, \`turn\`) -> inspect_span (one span in full)
 - End users (people the org's apps identified with identify() or a \`user.id\` attribute): list_users (most recently seen first; \`has_errors\`, \`search\`) -> inspect_user (sessions, MCP sessions, the issues they hit, failed requests) -> inspect_trace / error_detail / get_session_transcript
 - Agent tool health: get_agent_tools_overview -> get_agent_tools_overview tool="<tool>" (its failure groups) -> get_agent_tool_error
@@ -175,6 +171,13 @@ downgrades a verdict on its own.
 Whole-document writes (\`create_dashboard\`/\`update_dashboard\` with \`dashboard_json\`) report the
 same problems as warnings but never block — they are the restore path, and a board that predates
 a rule still has to round-trip.
-`,
-	),
+`
+
+export const InstructionsResource = McpServer.resource({
+	uri: "maple://instructions",
+	name: "Maple MCP Usage Guide",
+	description: "Cross-cutting rules for using Maple MCP tools effectively",
+	audience: ["assistant"] as ReadonlyArray<"user" | "assistant">,
+	priority: 1,
+	content: Effect.succeed(MCP_INSTRUCTIONS),
 })

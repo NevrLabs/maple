@@ -4,15 +4,13 @@ import type { Html, HtmlBuilder } from "foldkit/html"
 import { AppRoute, hrefOf } from "../../../../route"
 import { meter } from "@maple/views/ui/meter"
 import { skeleton } from "@maple/views/ui/skeleton"
-import { columnHead, dataTable, ROW_LINK_CLASS, skeletonRows } from "../../../infra/kit/data-table"
+import { columnHead, dataTable, NUMERIC_CELL, ROW_LINK_CLASS, skeletonRows } from "../../../kit/data-table"
 import { collectingLabel, healthPill, SATURATION } from "../health"
 import type { ProjectView } from "./derive"
 import type { Message } from "./message"
 import { typography, typographyClass } from "@maple/views/ui/typography"
 import { Array as Arr } from "effect"
 import { hstack, vstack } from "@maple/views/ui/stack"
-
-// The project table and its loading state.
 
 type H = HtmlBuilder<Message>
 
@@ -60,7 +58,7 @@ export const supabaseTableLoading = (h: H): Html =>
 	)
 
 const MUTED = typographyClass({ size: "2xs", tone: "muted", mono: true })
-const NUMBER = typographyClass({ size: "xs", tone: "soft", mono: true, numeric: true })
+const NUMBER = cn(NUMERIC_CELL, typographyClass({ tone: "soft" }))
 
 /** A utilisation bar and its percent; a project without metrics shows an empty track. */
 const usageCell = (h: H, label: string, fraction: number | null): Html =>
@@ -145,7 +143,7 @@ const row = (h: H, view: ProjectView): Html => {
 						weight: "medium",
 						mono: true,
 						truncate: true,
-						className: "transition-colors group-hover:text-primary",
+						className: "group-hover:text-primary",
 						attributes: [h.Title(view.displayName)],
 					},
 					[view.displayName],

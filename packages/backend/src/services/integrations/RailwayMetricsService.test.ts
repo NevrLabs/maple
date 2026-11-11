@@ -16,10 +16,10 @@ import { TestClock } from "effect/testing"
 import { FetchHttpClient } from "effect/http"
 import { OrgId, UserId } from "@maple/domain/http"
 import { Env } from "@maple/backend/platform/Env"
-import { cleanupTestDbs, createTestDb, queryFirstRow, type TestDb } from "@maple/backend/platform/test-pglite"
+import { cleanupTestDbs, createTestDb, queryFirstRow, type TestDb } from "@maple/backend/testing/test-pglite"
 import { OrgIngestKeysService } from "@maple/backend/services/org/OrgIngestKeysService"
-import { publicSourceId } from "@maple/backend/services/org/integration-sources"
-import { SourceId } from "@maple/domain/primitives"
+import { publicSourceId } from "@maple/backend/services/integrations/integration-sources"
+import { SourceId } from "@maple/primitives"
 import { nextWindow, RailwayMetricsService } from "./RailwayMetricsService"
 
 const now = Date.UTC(2026, 9, 3, 12, 30, 30)
@@ -425,6 +425,38 @@ describe("RailwayMetricsService", () => {
 				const status = yield* railway.sync(orgId)
 				assert.strictEqual(calls.ingest.length, 2)
 				assert.isNotNull(status.environments[0].lastSyncedAt)
+			}),
+		)
+	})
+
+	it.effect("refuses to poll with a stored token that is not in the v2 envelope", () => {
+		const testDb = createTestDb(trackedDbs)
+		const calls: StubCalls = { railway: [], ingest: [] }
+		const stub = stubFetch(calls)
+		return run(
+			testDb,
+			stub,
+			Effect.gen(function* () {
+				const railway = yield* RailwayMetricsService
+				yield* railway.connect(orgId, userId, "rw_token_123")
+				const stored = {
+					ciphertext: Buffer.from("old").toString("base64"),
+					iv: Buffer.alloc(12, 1).toString("base64"),
+					tag: Buffer.alloc(16, 2).toString("base64"),
+				}
+				yield* Effect.promise(() =>
+					queryFirstRow(
+						testDb,
+						`UPDATE railway_connections SET token_ciphertext = $1, token_iv = $2, token_tag = $3
+						 WHERE org_id = $4 RETURNING id`,
+						[stored.ciphertext, stored.iv, stored.tag, orgId],
+					),
+				)
+				yield* resetWatermarks(testDb)
+				const before = calls.railway.length
+				const error = yield* railway.pollOrg(orgId).pipe(Effect.flip)
+				assert.strictEqual(error.message, "Failed to decrypt the Railway token")
+				assert.strictEqual(calls.railway.length, before)
 			}),
 		)
 	})

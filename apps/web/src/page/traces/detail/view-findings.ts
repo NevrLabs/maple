@@ -1,5 +1,5 @@
 import { countLabel } from "@maple/ui/lib/format"
-import { collectTraceErrors, spanHttpStatus, type TraceErrors } from "../../../lib/traces/trace-errors"
+import { collectTraceErrors, spanHttpStatus, type TraceErrors } from "@maple/views/traces/trace-errors"
 import type { Html, HtmlBuilder } from "foldkit/html"
 import { alert, alertAction, alertDescription, alertTitle } from "@maple/views/ui/alert"
 import { button } from "@maple/views/ui/button"
@@ -109,7 +109,7 @@ const productEventRow = (h: HtmlBuilder<Message>, event: ProductEvent): Html => 
 						h,
 						{
 							onClick: Message.ClickedProductEvent({ spanId: event.spanId }),
-							className: `${rowClassName} hover:bg-muted active:bg-muted focus-visible:bg-muted focus-visible:outline-none`,
+							className: `${rowClassName} hover:bg-surface-sunken active:bg-surface-sunken focus-visible:bg-surface-sunken focus-visible:outline-none`,
 						},
 						content,
 					),

@@ -8,13 +8,7 @@ import {
 	AlertThresholds as AlertThresholdsSchema,
 	type AnomalySignalType,
 } from "@maple/domain/http"
-import {
-	AlertRuleId,
-	AnomalyIncidentId,
-	UserId,
-	type ErrorIssueId,
-	type OrgId,
-} from "@maple/domain/primitives"
+import { AlertRuleId, AnomalyIncidentId, type ErrorIssueId, type OrgId } from "@maple/primitives"
 import { Array as Arr, Clock, Context, Effect, HashMap, HashSet, Layer, Option, Result, Schema } from "effect"
 import { Database } from "@maple/backend/platform/DatabaseLive"
 import { makeDbExecute } from "@maple/backend/platform/db-execute"
@@ -33,6 +27,7 @@ import {
 	type AnomalyRuleScope,
 	type AnomalySeverityCode,
 } from "./anomaly-rule"
+import { ALERTING_SYSTEM_USER_ID } from "@maple/backend/services/auth/system-tenant"
 
 /** What an `anomaly` alert rule observes for one anomaly incident on a tick. */
 export interface AnomalyAlertObservation {
@@ -76,7 +71,6 @@ export interface AnomalyAlertSourceApi {
 }
 
 const MAX_DEFAULT_RULE_BACKFILL = 100
-const SYSTEM_USER_ID = Schema.decodeSync(UserId)("system-alerting")
 const decodeAnomalyIncidentId = Schema.decodeUnknownOption(AnomalyIncidentId)
 const decodeThresholds = Schema.decodeUnknownOption(AlertThresholdsSchema)
 const decodeSeverity = Schema.decodeUnknownOption(AlertSeveritySchema)
@@ -129,49 +123,53 @@ export class AnomalyAlertSource extends Context.Service<AnomalyAlertSource, Anom
 			) {
 				yield* Effect.annotateCurrentSpan({ orgId, "maple.alert.rule_id": ruleId })
 				const { rules, anomalies, openAlertIncidents, settings } = yield* dbExecute((db) =>
-					Effect.all({
-						settings: detectionSettings(db, orgId),
-						rules: db.run(
-							PG.from(AlertRules)
-								.select(
-									"id",
-									"severity",
-									"thresholdsJson",
-									"serviceNamesJson",
-									"environmentsJson",
-									"anomalySignalsJson",
-								)
-								.where(($) => [
-									$.orgId.eq(orgId),
-									$.signalType.eq("anomaly"),
-									$.enabled.eq(true),
-								]),
-						),
-						anomalies: db.run(
-							PG.from(AnomalyIncidents)
-								.select(
-									"id",
-									"signalType",
-									"serviceName",
-									"deploymentEnv",
-									"severity",
-									"lastObservedValue",
-									"baselineMedian",
-									"errorIssueId",
-								)
-								.where(($) => [$.orgId.eq(orgId), $.status.eq("open")]),
-						),
-						// Every anomaly rule's open incidents, so an anomaly stays on the rule paging it.
-						openAlertIncidents: db.run(
-							PG.from(AlertIncidents)
-								.select("ruleId", "groupKey")
-								.where(($) => [
-									$.orgId.eq(orgId),
-									$.signalType.eq("anomaly"),
-									$.status.eq("open"),
-								]),
-						),
-					}),
+					Effect.all(
+						{
+							settings: detectionSettings(db, orgId),
+							rules: db.run(
+								PG.from(AlertRules)
+									.select(
+										"id",
+										"severity",
+										"thresholdsJson",
+										"serviceNamesJson",
+										"environmentsJson",
+										"anomalySignalsJson",
+									)
+									.where(($) => [
+										$.orgId.eq(orgId),
+										$.signalType.eq("anomaly"),
+										$.enabled.eq(true),
+									]),
+							),
+							anomalies: db.run(
+								PG.from(AnomalyIncidents)
+									.select(
+										"id",
+										"signalType",
+										"serviceName",
+										"deploymentEnv",
+										"severity",
+										"lastObservedValue",
+										"baselineMedian",
+										"errorIssueId",
+									)
+									.where(($) => [$.orgId.eq(orgId), $.status.eq("open")]),
+							),
+							// Every anomaly rule's open incidents, so an anomaly stays on the rule paging it.
+							openAlertIncidents: db.run(
+								PG.from(AlertIncidents)
+									.select("ruleId", "groupKey")
+									.where(($) => [
+										$.orgId.eq(orgId),
+										$.signalType.eq("anomaly"),
+										$.status.eq("open"),
+									]),
+							),
+						},
+						// Four independent reads, so they share the pool instead of queueing.
+						{ concurrency: "unbounded" },
+					),
 				)
 				const candidates = Arr.map(rules, (rule) => ({
 					id: rule.id,
@@ -328,8 +326,8 @@ export class AnomalyAlertSource extends Context.Service<AnomalyAlertSource, Anom
 										lastScheduledAt: null,
 										createdAt: now,
 										updatedAt: now,
-										createdBy: SYSTEM_USER_ID,
-										updatedBy: SYSTEM_USER_ID,
+										createdBy: ALERTING_SYSTEM_USER_ID,
+										updatedBy: ALERTING_SYSTEM_USER_ID,
 									})
 									.onConflictDoNothing()
 									.returning("id"),

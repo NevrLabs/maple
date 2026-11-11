@@ -29,7 +29,7 @@ const deadlineOf = (checklist: V2OnboardingChecklist): number | null =>
 				onSome: DateTime.toEpochMillis,
 			})
 
-/** `ProgressChip`: `2/5`, written out. */
+/** `2/5`, written out. */
 const progressChip = (h: H, completed: number, total: number): Html =>
 	badge(
 		h,
@@ -45,7 +45,7 @@ const progressChip = (h: H, completed: number, total: number): Html =>
 		[String(completed), "/", String(total)],
 	)
 
-/** `RewardCallout`: the one-time pointer under the pill. */
+/** The one-time pointer under the pill. */
 const rewardCallout = (h: H, checklist: V2OnboardingChecklist): Html =>
 	h.div(
 		[
@@ -73,7 +73,7 @@ const rewardCallout = (h: H, checklist: V2OnboardingChecklist): Html =>
 					[
 						typography(
 							h,
-							{ size: "sm", weight: "semibold", className: "block whitespace-nowrap" },
+							{ size: "sm", weight: "medium", className: "block whitespace-nowrap" },
 							["Finish setting up"],
 						),
 						h.span(
@@ -133,7 +133,7 @@ const stepRow = (h: H, step: V2OnboardingChecklistStep): Html =>
 							h.span(
 								[
 									h.Class(
-										"size-4 shrink-0 rounded-full border border-dashed border-foreground-faint group-hover:border-solid group-hover:border-foreground",
+										"size-4 shrink-0 rounded-full border border-dashed border-foreground-faint group-hover:border-solid group-hover:border-border-strong",
 									),
 									h.AriaHidden(true),
 								],
@@ -151,7 +151,7 @@ const stepRow = (h: H, step: V2OnboardingChecklistStep): Html =>
 				],
 			)
 
-/** `OnboardingChecklistPanel`: the reward, the progress meter, the steps and the footer. */
+/** The reward, the progress meter, the steps and the footer. */
 export const checklistPanel = (h: H, model: Model, checklist: V2OnboardingChecklist): ReadonlyArray<Html> => {
 	const isClaimed = model.isJustClaimed || checklist.status === "claimed"
 	const deadlineMs = deadlineOf(checklist)

@@ -1,9 +1,4 @@
-import {
-	DB_NODE_PREFIX,
-	NS_LABEL_HEIGHT,
-	NS_PADDING_X,
-	NS_PADDING_Y,
-} from "@maple/ui/components/service-map/service-map-utils"
+import { DB_NODE_PREFIX, NS_LABEL_HEIGHT, NS_PADDING_X, NS_PADDING_Y } from "../graph/service-map-utils"
 import { getValueHue } from "@maple/ui/lib/colors"
 import type { Html, HtmlBuilder } from "foldkit/html"
 import { icon } from "../../ui/icon"
@@ -16,8 +11,7 @@ import { Array as Arr, String as Str } from "effect"
 import { hstack } from "../../ui/stack"
 import { typography } from "../../ui/typography"
 
-// The dotted namespace boxes `ServiceMapFlowCanvas` derives from node extents, and
-// `NamespaceGroupNode` (packages/ui `service-map/service-map-namespace-group.tsx`).
+// The dotted namespace boxes the service map derives from node extents, and their node.
 
 const FALLBACK_NODE_WIDTH = 220
 const FALLBACK_NODE_HEIGHT = 70
@@ -40,7 +34,7 @@ const box = <M>(h: HtmlBuilder<M>, label: string, hue: number, onCollapse: M): H
 					align: "center",
 					as: "span",
 					className:
-						"pointer-events-auto absolute left-2.5 top-2 max-w-[calc(100%-1.25rem)] rounded-md border border-namespace-label-edge bg-namespace-label-fill px-1.5 py-0.5 text-3xs font-semibold uppercase tracking-widest text-namespace-label",
+						"pointer-events-auto absolute left-2.5 top-2 max-w-[calc(100%-1.25rem)] rounded-md border border-namespace-label-edge bg-namespace-label-fill px-1.5 py-0.5 text-3xs font-semibold uppercase tracking-overline text-namespace-label",
 				},
 				[
 					typography(h, { truncate: true }, [label]),

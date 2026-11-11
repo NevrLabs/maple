@@ -78,7 +78,7 @@ export const rejectedState = (h: HtmlBuilder<Message>, rejection: Rejection): Ht
 								h.pre(
 									[
 										h.Class(
-											"whitespace-pre-wrap break-all rounded-md border bg-muted/40 px-3 py-2 text-left font-mono text-2xs",
+											"whitespace-pre-wrap break-all rounded-md border bg-surface-sunken px-3 py-2 text-left font-mono text-2xs",
 										),
 									],
 									[rejection.detail],
@@ -122,7 +122,7 @@ const docsLink = (h: HtmlBuilder<Message>, href: string, label: string) =>
 		[label],
 	)
 
-/** `InstallCommands`: Homebrew or the install script, for a machine without the CLI. */
+/** Homebrew or the install script, for a machine without the CLI. */
 const installCommands = (h: HtmlBuilder<Message>, model: Model): Html =>
 	h.submodel({
 		slotId: "install-tabs",
@@ -155,7 +155,7 @@ export const disconnectedState = (h: HtmlBuilder<Message>, model: Model): Html =
 				icon(h, "ConnectionIcon", { className: "text-muted-foreground" }),
 			]),
 			emptyHeader(h, [
-				emptyTitle(h, ["Can’t reach Maple Local"]),
+				emptyTitle(h, ["Can't reach Maple Local"]),
 				emptyDescription(h, [
 					"Nothing is answering on port ",
 					model.env.port,

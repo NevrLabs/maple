@@ -16,7 +16,7 @@ import { Message } from "./message"
 import type { Model, SessionDetail } from "./model"
 import { statTile, statusBadge } from "./view-bits"
 
-// The hero and stat tiles of `SessionDetailView`.
+// The session detail page's hero and stat tiles.
 
 export const SESSION_ID_COPY = "session-id"
 
@@ -32,7 +32,7 @@ export const hero = (
 		h.div(
 			[
 				h.Class(
-					`grid size-12 shrink-0 place-items-center rounded-full bg-gradient-to-br ${gradientFor(model.sessionId)} text-base font-semibold text-on-fill shadow-raised`,
+					`grid size-12 shrink-0 place-items-center rounded-full bg-linear-to-br ${gradientFor(model.sessionId)} text-base font-semibold text-on-fill shadow-raised`,
 				),
 			],
 			[initialsFrom(label)],

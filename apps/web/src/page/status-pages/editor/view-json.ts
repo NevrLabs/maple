@@ -9,7 +9,7 @@ import { icon } from "@maple/views/ui/icon"
 import { label } from "@maple/views/ui/label"
 import { panel, panelBody, panelHeader } from "@maple/views/ui/panel"
 import { textarea } from "@maple/views/ui/textarea"
-import { adminOnlyNote } from "../../settings/kit/section"
+import { adminOnlyNote } from "../../kit/settings-section"
 import { formatConfig, problemText } from "./config-json"
 import { Message } from "./message"
 import { canManage, type Model } from "./model"
@@ -58,7 +58,7 @@ const summary = (h: H, changes: StatusPageConfigChanges): Html => {
 			h,
 			[
 				rows.length === 0
-					? typography(h, { size: "sm", tone: "muted", as: "p" }, ["No changes yet."])
+					? typography(h, { size: "sm", tone: "muted", as: "p" }, ["No changes yet"])
 					: h.dl(
 							[h.Class("grid grid-cols-[max-content_minmax(0,1fr)] gap-x-6 gap-y-1.5 text-sm")],
 							Arr.flatMap(rows, ([term, detail]) => [

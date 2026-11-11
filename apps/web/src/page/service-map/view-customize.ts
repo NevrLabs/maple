@@ -1,5 +1,5 @@
 import { type BuildingType, serviceBuildingId } from "@maple/domain/http"
-import type { Topology3D } from "../../components/service-map/three/types"
+import type { Topology3D } from "./three/types"
 import { Array as Arr, Option } from "effect"
 import type { Html, HtmlBuilder } from "foldkit/html"
 import { button } from "@maple/views/ui/button"
@@ -30,7 +30,7 @@ const saveStatus = <M>(h: HtmlBuilder<M>, model: Model, toMessage: (message: Mes
 						variant: "outline",
 						attributes: [h.OnClick(toMessage(Message.ClickedRetrySave()))],
 					},
-					["Retry"],
+					["Try again"],
 				),
 			])
 		: model.isConflicted && !model.isSaving
@@ -68,7 +68,7 @@ export const customizeControls = <M>(
 						variant: "outline",
 						attributes: [h.OnClick(toMessage(Message.ClickedRetryLoad()))],
 					},
-					["Retry"],
+					["Try again"],
 				),
 			]),
 		]

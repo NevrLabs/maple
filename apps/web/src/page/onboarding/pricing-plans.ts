@@ -1,7 +1,7 @@
 import type { CatalogPlan, CatalogPlanItem } from "@maple/domain/http"
 import { isPricingCardFeature } from "@maple/domain/billing"
 import { formatCurrency } from "@maple/domain/format"
-import { formatCount, formatQuoteUnits, quoteUnits } from "../../lib/billing/usage"
+import { formatCount, formatQuoteUnits, quoteUnits } from "../kit/billing/usage"
 import type { IconName } from "@maple/views/ui/icon"
 import { Array as Arr, String as Str } from "effect"
 import { replaceWith } from "@maple/strings"
@@ -21,8 +21,8 @@ const DATA_FEATURE_LABELS = new Map<string, string>([
 	["logs", "Logs"],
 	["traces", "Traces"],
 	["metrics", "Metrics"],
-	["browser_sessions", "Browser Sessions"],
-	["product_events", "Product Events"],
+	["browser_sessions", "Browser sessions"],
+	["product_events", "Product events"],
 	["ai_credits", "AI usage"],
 ])
 
@@ -91,8 +91,8 @@ export const ENTERPRISE_DATA_FEATURES: ReadonlyArray<FeatureRow> = [
 	{ featureId: "logs", label: "Logs", value: "Custom", detail: null },
 	{ featureId: "traces", label: "Traces", value: "Custom", detail: null },
 	{ featureId: "metrics", label: "Metrics", value: "Custom", detail: null },
-	{ featureId: "browser_sessions", label: "Browser Sessions", value: "Custom", detail: null },
-	{ featureId: "product_events", label: "Product Events", value: "Custom", detail: null },
+	{ featureId: "browser_sessions", label: "Browser sessions", value: "Custom", detail: null },
+	{ featureId: "product_events", label: "Product events", value: "Custom", detail: null },
 ]
 
 export type Scenario = "new" | "active" | "scheduled" | "upgrade" | "downgrade"

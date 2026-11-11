@@ -1,4 +1,4 @@
-import { pickValueField } from "@maple/ui/components/charts/_shared/breakdown-rows"
+import { pickValueField } from "./series/breakdown-rows"
 import { EMPTY_VALUE, formatPercent } from "@maple/ui/lib/format"
 import { TONE_TEXT } from "@maple/ui/lib/tone"
 import { cn } from "@maple/ui/lib/utils"
@@ -18,8 +18,7 @@ import { hstack, vstack } from "../ui/stack"
 import { swatch } from "../ui/swatch"
 import { chartNoData } from "../ui/chart-frame"
 
-// Port of `FunnelDropoffChart` (packages/ui/src/components/charts/funnel/funnel-dropoff-chart.tsx).
-// The hovered column is the chart Model's `activeKey` (its index).
+// `FunnelDropoffChart`. The hovered column is the chart Model's `activeKey` (its index).
 
 type H = HtmlBuilder<Message>
 
@@ -231,7 +230,7 @@ const pill = (h: H, ctx: ColumnContext, step: Step, prev: Step, isLast: boolean)
 			align: "center",
 			as: "span",
 			className:
-				"absolute bottom-1.5 left-1.5 rounded-md bg-card/95 px-1.5 py-1 text-2xs leading-none tabular-nums whitespace-nowrap shadow-raised ring-1 ring-border-subtle",
+				"absolute bottom-1.5 left-1.5 rounded-md bg-surface-float backdrop-blur-sm px-1.5 py-1 text-2xs leading-none tabular-nums whitespace-nowrap shadow-raised ring-1 ring-border-subtle",
 			attributes: [h.DataAttribute("slot", "funnel-dropoff-pill")],
 		},
 		[

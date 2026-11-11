@@ -11,12 +11,12 @@ import { DateTime, Effect, Result, Schema, Scope, String as Str } from "effect"
 import { assert, describe, it } from "vitest"
 import type { McpToolExecutorApi } from "../dispatcher"
 import { noRepositoryWarmup } from "../../../test/chat/tool-executor"
-import type { TenantContext } from "@maple/backend/services/auth/tenant-context"
 import { makeRecordingTracer } from "@maple/backend/testing/recording-tracer"
 import { AgentSpawner } from "@yielded/agent/agent-runtime"
 import { AgentId, RunId, ThreadId } from "@yielded/agent/identifiers"
 import { agentForSession, agentPolicyFor } from "../../chat/agents"
-import { APPROVAL_NOTE, buildMapleToolkit, splitToolResult, type ToolUiPayload } from "./llm-tools"
+import { APPROVAL_NOTE, buildMapleToolkit, type ToolUiPayload } from "./llm-tools"
+import type { TenantContext } from "@maple/domain/http"
 
 const TENANT: TenantContext = {
 	orgId: Schema.decodeSync(OrgId)("org_test"),
@@ -140,15 +140,6 @@ describe("buildMapleToolkit", () => {
 		assert.deepEqual(uis, [
 			["call-1", { __maple_ui: true, tool: "list_services", data: { services: [] } }],
 		])
-	})
-
-	it("strips a legacy UI block from the model's text and still recovers it for the UI", () => {
-		const legacy = JSON.stringify({ __maple_ui: true, tool: "list_services", data: { services: [] } })
-		const split = splitToolResult("list_services", {
-			content: [{ text: "## Services" }, { text: legacy }],
-		})
-		assert.equal(split.text, "## Services")
-		assert.deepEqual(split.ui, { __maple_ui: true, tool: "list_services", data: { services: [] } })
 	})
 
 	it("fails a tool that reported an error with its message", async () => {

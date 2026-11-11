@@ -7,7 +7,7 @@ import {
 	unwrapToolErrorText,
 	variantDifferences,
 	type VariantDifference,
-} from "../../../lib/agent-sessions/tool-error-display"
+} from "../../kit/tools/tool-error-display"
 import { UNGROUPED_FINGERPRINT } from "@maple/web-data/lib/tool-analytics"
 import { Option, Array as Arr } from "effect"
 import { AsyncData, Submodel } from "foldkit"
@@ -18,10 +18,11 @@ import * as DialogView from "@maple/views/ui/dialog-view"
 import { linkButton } from "@maple/views/ui/button"
 import { eyebrow } from "@maple/views/ui/eyebrow"
 import { heading } from "@maple/views/ui/heading"
+import { badge } from "@maple/views/ui/display"
 import { icon } from "@maple/views/ui/icon"
 import { iconButton } from "@maple/views/ui/icon-button"
 import { miniBars } from "@maple/views/ui/mini-bars"
-import { errorTextHeading, failureStatusLine, windowRangeLabel } from "../tools-kit/error-parts"
+import { errorTextHeading, failureStatusLine, windowRangeLabel } from "../../kit/tools/error-parts"
 import { type ErrorDetail, Message, type Model } from "./error-modal-model"
 import { occurrencesOf } from "./error-modal-update"
 import { railView } from "./view-error-modal-rail"
@@ -30,8 +31,6 @@ import type { Prepared } from "./view-errors"
 import { typography, typographyClass } from "@maple/views/ui/typography"
 import { hstack, vstack } from "@maple/views/ui/stack"
 import { timestamp } from "@maple/views/ui/timestamp"
-
-// The tool error modal: one error group of one tool in full.
 
 type H = HtmlBuilder<Message>
 
@@ -134,14 +133,10 @@ const headerLead = (h: H, inputs: ModalInputs): Html => {
 				...(group.errorType === ""
 					? []
 					: [
-							h.span(
-								[
-									h.Class(
-										"ml-1 rounded-sm border border-border px-1.5 text-2xs text-foreground-subtle",
-									),
-								],
-								["error.type ", group.errorType],
-							),
+							badge(h, { variant: "meta", size: "xs", className: "ml-1 px-1.5" }, [
+								"error.type ",
+								group.errorType,
+							]),
 						]),
 			],
 		),

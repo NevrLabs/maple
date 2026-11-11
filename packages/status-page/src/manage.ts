@@ -2,10 +2,10 @@ import {
 	StatusPageIncidentImpact,
 	type StatusPageIncidentKind,
 	StatusPageIncidentStatus,
-} from "@maple/domain/primitives"
+} from "@maple/primitives"
 import { type StatusPageSnapshot, statusFitsKind } from "@maple/domain/status-page"
 import { pageHref, type RenderOptions, renderDocument, renderHeader } from "./document"
-import { escapeHtml } from "./escape"
+import { escapeHtml } from "@maple/strings"
 import { IMPACT_LABEL, INCIDENT_STATUS_LABEL } from "./format"
 import { activeIncidents, upcomingMaintenance } from "./select"
 import { manageStyles } from "./styles"

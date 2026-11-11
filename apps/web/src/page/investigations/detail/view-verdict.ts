@@ -12,26 +12,26 @@ import { icon } from "@maple/views/ui/icon"
 import { inlineCode } from "@maple/views/ui/inline-code"
 import { statFigure } from "@maple/views/ui/stat-figure"
 import { statusDot } from "@maple/views/ui/status-dot"
+import { textLink } from "@maple/views/ui/text-link"
+import { type IssueSeverity, normalizeRepoFullName } from "@maple/domain/http"
+import { SEVERITY_LABEL } from "../../kit/issue-severity"
 import { confidenceMeter } from "../kit"
 import { elapsedBetween } from "./derive"
 import { typography, typographyClass } from "@maple/views/ui/typography"
 import { hstack, hstackClass, vstack, vstackClass } from "@maple/views/ui/stack"
 import { Array as Arr, String as Str } from "effect"
 
-// `VerdictCard` and `RunProgress`: the verdict and the run's progress.
-
 type Children = ReadonlyArray<Html | string>
 
 const verdictHeading = <M>(h: HtmlBuilder<M>, text: string): Html =>
 	kitHeading(h, { level: 2, variant: "title", className: "leading-7 [overflow-wrap:anywhere]" }, [text])
 
-const SEVERITY_LABEL = { critical: "Critical", high: "High", medium: "Medium", low: "Low" } as const
 const SEVERITY_TEXT_TONE = {
 	critical: "crit",
 	high: "crit",
 	medium: "warn",
 	low: "neutral",
-} as const satisfies Record<keyof typeof SEVERITY_LABEL, Tone>
+} as const satisfies Record<IssueSeverity, Tone>
 
 const shell = <M>(
 	h: HtmlBuilder<M>,
@@ -229,6 +229,7 @@ const diagnosed = <M>(h: HtmlBuilder<M>, investigation: V2Investigation): Html =
 						)
 					: muted(h, EMPTY_VALUE),
 			]),
+			...(report.suspectCommit === undefined ? [] : [suspectCommitStat(h, report.suspectCommit)]),
 			stat(
 				h,
 				"Time to diagnosis",
@@ -239,6 +240,34 @@ const diagnosed = <M>(h: HtmlBuilder<M>, investigation: V2Investigation): Html =
 	)
 }
 
+type SuspectCommit = NonNullable<NonNullable<V2Investigation["report"]>["suspectCommit"]>
+
+/** The commit the diagnosis blames, short, and linked to GitHub when the repository is known. */
+const suspectCommitStat = <M>(h: HtmlBuilder<M>, commit: SuspectCommit): Html => {
+	const short = Str.slice(0, 7)(commit.sha)
+	const repo = commit.repo === undefined ? null : normalizeRepoFullName(commit.repo)
+	return stat(h, "Suspect commit", [
+		repo === null
+			? typography(h, { mono: true }, [short])
+			: textLink(
+					h,
+					{
+						href: `https://github.com/${repo}/commit/${commit.sha}`,
+						isMono: true,
+						attributes: [
+							h.Target("_blank"),
+							h.Rel("noopener noreferrer"),
+							h.Title(`${repo}@${commit.sha}`),
+						],
+					},
+					[short],
+				),
+		...(repo === null
+			? []
+			: [typography(h, { size: "xs", tone: "muted", as: "div", truncate: true }, [repo])]),
+	])
+}
+
 const STALL_MS = 90_000
 
 const silenceLabel = (ms: number): string => {
@@ -246,7 +275,7 @@ const silenceLabel = (ms: number): string => {
 	return minutes < 1 ? "under a minute" : minutes === 1 ? "a minute" : `${minutes} minutes`
 }
 
-/** `RunProgress`: the pass's steps, the last one live; a silent run goes still and says so. */
+/** The pass's steps, the last one live; a silent run goes still and says so. */
 const runProgress = <M>(
 	h: HtmlBuilder<M>,
 	investigation: V2Investigation,

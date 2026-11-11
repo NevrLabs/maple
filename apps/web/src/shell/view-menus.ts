@@ -67,7 +67,7 @@ const keyboardShortcuts = (h: HtmlBuilder<Message>): Item => ({
 	onSelect: Message.ClickedKeyboardShortcuts(),
 })
 
-/** `ThemeToggle`: a plain row, not an item, so flipping the switch keeps the menu open. */
+/** A plain row, not an item, so flipping the switch keeps the menu open. */
 const themeToggle = (h: HtmlBuilder<Message>, model: Model): Html =>
 	hstack(h, { gap: "2", align: "center", className: "rounded-md px-2 py-2 text-xs select-none" }, [
 		icon(h, model.theme === "dark" ? "MoonIcon" : "SunIcon", {
@@ -155,7 +155,6 @@ const supportMenu = (h: HtmlBuilder<Message>, menu: Menu, isClerk: boolean): Rea
 		]),
 	),
 ]
-// NAMESPACES
 
 const checkIcon = (h: HtmlBuilder<Message>): Html => icon(h, "CheckIcon", { className: "ml-auto" })
 
@@ -273,7 +272,7 @@ const navSectionMenu = (
 	]
 }
 
-/** `UserMenu` (Clerk): who is signed in, the theme, Account, Settings, shortcuts, Log out. */
+/** The user menu (Clerk): who is signed in, the theme, Account, Settings, shortcuts, Log out. */
 const clerkUserMenu = (
 	h: HtmlBuilder<Message>,
 	model: Model,

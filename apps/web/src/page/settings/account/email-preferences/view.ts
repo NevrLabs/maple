@@ -8,9 +8,9 @@ import { icon } from "@maple/views/ui/icon"
 import { nativeOption, nativeSelect } from "@maple/views/ui/native-select"
 import { panel } from "@maple/views/ui/panel"
 import { accountSectionSkeleton } from "../../kit/account-skeleton"
-import { saveBar } from "../../kit/save-bar"
-import { settingsSection, settingsSections } from "../../kit/section"
-import { switchRow } from "../../kit/switch-row"
+import { saveBar } from "../../../kit/save-bar"
+import { settingsSection, settingsSections } from "../../../kit/settings-section"
+import { switchRow } from "../../../kit/switch-row"
 import { fieldIds } from "../fields"
 import { Message, type Model } from "./model"
 import {
@@ -151,7 +151,7 @@ const scopeField = (
 				items: model.facets[options.key],
 				ariaLabelledBy: ids.label,
 				ariaDescribedBy: ids.description,
-				placeholder: values.length === 0 ? `All ${options.plural}` : `Add ${options.noun}...`,
+				placeholder: values.length === 0 ? `All ${options.plural}` : `Add ${options.noun}…`,
 				emptyText: `No ${options.plural} detected`,
 				toView: (parts) => h.div([h.Class("sm:max-w-xs")], parts),
 			},

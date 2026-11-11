@@ -1,6 +1,6 @@
 import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api"
 import { Schema } from "effect"
-import { AiTriageIncidentKind } from "../ai-triage"
+import { AiTriageIncidentKind, AiTriageSuspectCommit } from "../ai-triage"
 import { IssueSeverity } from "../errors"
 import {
 	InvestigationConfidence,
@@ -13,7 +13,7 @@ import {
 	InvestigationTransitionError,
 	InvestigationStatus,
 } from "../investigations"
-import { TraceId, UserId } from "../../primitives"
+import { TraceId, UserId } from "@maple/primitives"
 import { AuthorizationV2 } from "./auth"
 import { wireExample, ListOf, ListQuery, Timestamp } from "./envelopes"
 import { V2ParameterInvalid } from "./errors"
@@ -28,8 +28,6 @@ import {
 } from "./resource-ids"
 
 export { ErrorIssuePublicId, InvestigationPublicId } from "./resource-ids"
-
-// Subject (snake_case wire form of the internal InvestigationSubject union)
 
 /** A page/entity context hint (structurally the web's AutoContext) — opaque JSON. */
 const InvestigationContextRef = Schema.Record(Schema.String, Schema.Unknown)
@@ -189,8 +187,15 @@ const V2AiTriageResult = Schema.Struct({
 	 */
 	ruledOut: Schema.optionalKey(Schema.Array(Schema.String)),
 	unchecked: Schema.optionalKey(Schema.Array(Schema.String)),
+	suspectCommit: Schema.optionalKey(
+		AiTriageSuspectCommit.annotate({
+			description:
+				"The commit the diagnosis holds responsible, when it could pin the cause to one: a 7 to 40 character lowercase SHA and, when known, the repository as `owner/name`.",
+		}),
+	),
 }).pipe(
 	Schema.encodeKeys({
+		suspectCommit: "suspect_commit",
 		suspectedCause: "suspected_cause",
 		severityAssessment: "severity_assessment",
 		affectedScope: "affected_scope",
@@ -273,8 +278,6 @@ const V2InvestigationSnapshot = Schema.Struct({
 	}),
 )
 
-// Resource
-
 const investigationExample = {
 	id: "inv_YofPTrK9782DWwcnXhpcCw",
 	object: "investigation",
@@ -309,6 +312,7 @@ const investigationExample = {
 		// since it was added and was never projected onto the wire.
 		ruled_out: ["Downstream dependency: every callee stayed under 90ms in the window."],
 		unchecked: [],
+		suspect_commit: { sha: "4f21a9c0d3e8b7f6a5c4d3e2f1a0b9c8d7e6f5a4", repo: "acme/checkout-api" },
 	},
 	// A diagnosed investigation, so the run is over and the feed is its record of
 	// how it got there. A running example would need a wall-clock `updated_at` to
@@ -400,8 +404,6 @@ export const V2Investigation = Schema.Struct({
 	examples: [wireExample(investigationExample)],
 })
 export type V2Investigation = Schema.Schema.Type<typeof V2Investigation>
-
-// Requests / queries
 
 export const V2InvestigationCreateParams = Schema.Struct({
 	subject: V2InvestigationCreateSubject,

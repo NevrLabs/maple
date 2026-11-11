@@ -25,8 +25,7 @@ import { swatch } from "../ui/swatch"
 import { chartFrameClass } from "../ui/chart-frame"
 import { hstack, vstack } from "../ui/stack"
 
-// Port of `QueryBuilderHeatmapChart` (packages/ui/src/components/charts/heatmap/
-// query-builder-heatmap-chart.tsx). The definition is ./definitions/heatmap.ts.
+// The query-builder heatmap. The definition is ./definitions/heatmap.ts.
 
 export interface HeatmapChartInputs {
 	readonly chartId: string
@@ -118,7 +117,7 @@ const emptyState = (h: H, inputs: HeatmapChartInputs): Html => {
 					vstack(h, { gap: "2.5", align: "center" }, [
 						h.div(
 							[
-								h.Class("grid grid-cols-8 gap-0.5 rounded-sm p-0.75"),
+								h.Class("grid grid-cols-8 gap-0.5 rounded-sm p-0.5"),
 								h.Style({ background: grout(inputs.theme) }),
 							],
 							Array.from({ length: 32 }, (_, i) =>

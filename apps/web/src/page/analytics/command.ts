@@ -1,3 +1,5 @@
+import { resolveWindowCommand } from "../kit/time-frame"
+import { reloadSpin } from "@maple/views/data/timing"
 import { getProductEventTraceSamples } from "@maple/web-data/warehouse/product-events"
 import {
 	getWebAnalyticsAiCrawlers,
@@ -11,34 +13,24 @@ import {
 	getWebAnalyticsTimeseries,
 	WebAnalyticsFilterFields,
 } from "@maple/web-data/warehouse/web-analytics"
-import { Clock, Duration, Effect, Schema } from "effect"
+import {
+	getSearchConsoleLandingPages,
+	getSearchConsoleOverview,
+	getSearchConsoleTimeseries,
+	getSearchConsoleTopPages,
+	getSearchConsoleTopQueries,
+} from "@maple/web-data/warehouse/search-console"
+import { Effect, Schema } from "effect"
 import { Command } from "foldkit"
-import { toLoadFailure } from "@maple/views/data/load-failure"
-import { resolveWindow } from "../../data/time-range"
+import { settleTo } from "@maple/views/data/load-failure"
+import { MapleInternalApiClient } from "../../platform/api-clients"
 import { loadSignalPresences } from "../kit/signal-presence"
-import { Message, RequestMode, SlotName } from "./message"
+import { Message, SlotName } from "./message"
 
-// The page's reads. Every fetch answers `CompletedFetch` with its slot and key (S6); the request
-// itself is the web-data function, with the input it was keyed on.
+// Every fetch answers `CompletedFetch` with its slot and key; the request itself is the
+// web-data function, with the input it was keyed on.
 
-export const ResolveWindow = Command.define("ResolveAnalyticsWindow", {
-	args: {
-		mode: RequestMode,
-		startTime: Schema.optional(Schema.String),
-		endTime: Schema.optional(Schema.String),
-		preset: Schema.String,
-		timeZone: Schema.String,
-	},
-	messages: [Message.CompletedResolveWindow],
-	execute: ({ mode, startTime, endTime, preset, timeZone }) =>
-		Effect.map(Clock.currentTimeMillis, (nowMs) =>
-			Message.CompletedResolveWindow({
-				window: resolveWindow({ startTime, endTime, preset, snap: mode === "Load", timeZone }, nowMs),
-				nowMs,
-				mode,
-			}),
-		),
-})
+export const ResolveWindow = resolveWindowCommand("ResolveAnalyticsWindow", Message.CompletedResolveWindow)
 
 const Filters = WebAnalyticsFilterFields
 const Window = { startTime: Schema.String, endTime: Schema.String }
@@ -47,11 +39,7 @@ const N = Schema.optional(Schema.Number)
 const toMessage =
 	(slot: SlotName, key: string) =>
 	<A, E, R>(effect: Effect.Effect<A, E, R>) =>
-		effect.pipe(
-			Effect.mapError(toLoadFailure),
-			Effect.result,
-			Effect.map((result) => Message.CompletedFetch({ slot, key, result })),
-		)
+		effect.pipe(settleTo((result) => Message.CompletedFetch({ slot, key, result })))
 
 const define = <Fields extends Schema.Struct.Fields, E, R>(
 	name: string,
@@ -112,6 +100,39 @@ export const FetchTraceSamples = define(
 	(data) => getProductEventTraceSamples({ data }).pipe(Effect.map((response) => response.data)),
 )
 
+// The Search tab. Status is the integration's own endpoint; the reads name one enabled property.
+export const FetchSearchStatus = define("FetchSearchConsoleStatus", {}, () =>
+	Effect.gen(function* () {
+		const client = yield* MapleInternalApiClient
+		return yield* client.integrations.searchConsoleStatus()
+	}),
+)
+
+const SearchWindow = { siteUrl: Schema.String, ...Window, completeThrough: Schema.String }
+const SearchOrder = {
+	sortBy: Schema.optional(Schema.Literals(["clicks", "impressions", "ctr", "position"])),
+	sortDir: Schema.optional(Schema.Literals(["asc", "desc"])),
+}
+const SearchList = { ...SearchWindow, ...SearchOrder, limit: N }
+
+export const FetchSearchOverview = define("FetchSearchConsoleOverview", SearchWindow, (data) =>
+	getSearchConsoleOverview({ data }),
+)
+export const FetchSearchTimeseries = define("FetchSearchConsoleTimeseries", SearchWindow, (data) =>
+	getSearchConsoleTimeseries({ data }),
+)
+export const FetchSearchQueries = define("FetchSearchConsoleTopQueries", SearchList, (data) =>
+	getSearchConsoleTopQueries({ data }),
+)
+export const FetchSearchPages = define("FetchSearchConsoleTopPages", SearchList, (data) =>
+	getSearchConsoleTopPages({ data }),
+)
+export const FetchSearchLanding = define(
+	"FetchSearchConsoleLandingPages",
+	{ ...SearchWindow, ...SearchOrder, limit: N, conversionEvent: Schema.optional(Schema.String) },
+	(data) => getSearchConsoleLandingPages({ data }),
+)
+
 export const LoadSignalPresence = Command.define("LoadAnalyticsSignalPresence", {
 	args: { orgId: Schema.String },
 	messages: [Message.CompletedLoadSignalPresence],
@@ -119,9 +140,4 @@ export const LoadSignalPresence = Command.define("LoadAnalyticsSignalPresence", 
 		Effect.map(loadSignalPresences(orgId), (result) => Message.CompletedLoadSignalPresence({ result })),
 })
 
-export const CompleteReloadSpin = Command.define("CompleteAnalyticsReloadSpin", {
-	args: { version: Schema.Number },
-	messages: [Message.CompletedReloadSpin],
-	execute: ({ version }) =>
-		Effect.as(Effect.sleep(Duration.millis(600)), Message.CompletedReloadSpin({ version })),
-})
+export const CompleteReloadSpin = reloadSpin("CompleteAnalyticsReloadSpin", Message.CompletedReloadSpin)

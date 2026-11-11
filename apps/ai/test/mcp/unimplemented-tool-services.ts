@@ -4,6 +4,7 @@ import { Layer } from "effect"
 import { AuditLogService } from "@maple/backend/services/audit/AuditLogService"
 import { AgentFeedbackService } from "@maple/backend/services/feedback/AgentFeedbackService"
 import { AlertsService } from "@maple/backend/services/alerts/AlertsService"
+import { AlertDestinationsService } from "@maple/backend/services/alerts/AlertDestinationsService"
 import { AlertReadModelsService } from "@maple/backend/services/alerts/AlertReadModelsService"
 import { AlertIncidentAckService } from "@maple/backend/services/alerts/AlertIncidentAckService"
 import { AlertIncidentPagesService } from "@maple/backend/services/alerts/AlertIncidentPagesService"
@@ -19,18 +20,22 @@ import { ErrorIssueMergeService } from "@maple/backend/services/errors/ErrorIssu
 import { ErrorIssueWorkflowService } from "@maple/backend/services/errors/ErrorIssueWorkflowService"
 import { ErrorPolicyService } from "@maple/backend/services/errors/ErrorPolicyService"
 import { ErrorsService } from "@maple/backend/services/errors/ErrorsService"
+import { InvestigationService } from "@maple/backend/services/errors/InvestigationService"
 import { IssueFixVerificationService } from "@maple/backend/services/errors/IssueFixVerificationService"
 import { RecommendationIssueService } from "@maple/backend/services/errors/RecommendationIssueService"
 import { IntegrationInventoryService } from "@maple/backend/services/integrations/IntegrationInventoryService"
 import { SourcesService } from "@maple/backend/services/org/SourcesService"
+import { ExternalDataSourceService } from "@maple/backend/services/data-sources/ExternalDataSourceService"
 import { RailwayMetricsService } from "@maple/backend/services/integrations/RailwayMetricsService"
 import { ScrapeTargetsService } from "@maple/backend/services/integrations/ScrapeTargetsService"
+import { SearchConsoleService } from "@maple/backend/services/integrations/SearchConsoleService"
 import { VcsCommitService } from "@maple/backend/services/integrations/vcs/VcsCommitService"
 import { VcsSourceService } from "@maple/backend/services/integrations/vcs/VcsSourceService"
 import { SetupAuditService } from "@maple/backend/services/org/SetupAuditService"
 import { UptimeMonitorsService } from "@maple/backend/services/uptime/UptimeMonitorsService"
 import { SlosService } from "@maple/backend/services/slos/SlosService"
 import { UsersReadService } from "@maple/backend/services/users/UsersReadService"
+import { AiSessionReadService } from "@maple/backend/services/ai-sessions/AiSessionReadService"
 import { IngestRuleService } from "@maple/backend/services/org/IngestRuleService"
 import { OrganizationFeatureFlagsService } from "@maple/backend/services/org/OrganizationFeatureFlagsService"
 import { StatusPagesService } from "@maple/backend/services/status-pages/StatusPagesService"
@@ -42,11 +47,13 @@ import { SecurityAuditStore } from "@maple/backend/services/security-audit/Secur
 import { DependencyScanReader } from "@maple/backend/services/dependency-scan/DependencyScanService"
 import { RuntimeReleaseCatalog } from "@maple/backend/services/security/RuntimeReleaseCatalog"
 import { RuntimeAdvisoryCatalog } from "@maple/backend/services/security/RuntimeAdvisoryCatalog"
+import type { McpToolRuntimeRequirements } from "../../src/mcp/tools/runtime-services"
 
 export const unimplementedMcpToolServices = Layer.mergeAll(
 	Layer.mock(AuditLogService)({}),
 	Layer.mock(AgentFeedbackService)({}),
 	Layer.mock(AlertsService)({}),
+	Layer.mock(AlertDestinationsService)({}),
 	Layer.mock(AlertReadModelsService)({}),
 	Layer.mock(AlertIncidentAckService)({}),
 	Layer.mock(AlertIncidentPagesService)({}),
@@ -62,18 +69,22 @@ export const unimplementedMcpToolServices = Layer.mergeAll(
 	Layer.mock(ErrorIssueMergeService)({}),
 	ErrorPolicyService.layer,
 	Layer.mock(ErrorsService)({}),
+	Layer.mock(InvestigationService)({}),
 	Layer.mock(IssueFixVerificationService)({}),
 	Layer.mock(RecommendationIssueService)({}),
 	Layer.mock(IntegrationInventoryService)({}),
 	Layer.mock(SourcesService)({}),
+	Layer.mock(ExternalDataSourceService)({}),
 	Layer.mock(RailwayMetricsService)({}),
 	Layer.mock(ScrapeTargetsService)({}),
+	Layer.mock(SearchConsoleService)({}),
 	Layer.mock(VcsCommitService)({}),
 	Layer.mock(VcsSourceService)({}),
 	Layer.mock(SetupAuditService)({}),
 	Layer.mock(SlosService)({}),
 	Layer.mock(UptimeMonitorsService)({}),
 	Layer.mock(UsersReadService)({}),
+	Layer.mock(AiSessionReadService)({}),
 	Layer.mock(IngestRuleService)({}),
 	Layer.mock(StatusPagesService)({}),
 	Layer.mock(StatusPageSnapshotBuilder)({}),
@@ -86,3 +97,7 @@ export const unimplementedMcpToolServices = Layer.mergeAll(
 	Layer.mock(RuntimeAdvisoryCatalog)({}),
 	WarehouseQueryService.layer,
 )
+
+/** A tool service the runtime gains without a stand-in here fails to compile, not at test time. */
+type Uncovered = Exclude<McpToolRuntimeRequirements, Layer.Success<typeof unimplementedMcpToolServices>>
+export const coversEveryToolService: [Uncovered] extends [never] ? true : Uncovered = true

@@ -23,6 +23,9 @@ import { AuthService } from "@maple/backend/services/auth/AuthService"
 import { CliDeviceAuthService } from "@maple/backend/services/auth/CliDeviceAuthService"
 import { CloudflareOAuthService } from "@maple/backend/services/auth/CloudflareOAuthService"
 import { LinearOAuthService } from "@maple/backend/services/auth/LinearOAuthService"
+import { GoogleOAuthService } from "@maple/backend/services/auth/GoogleOAuthService"
+import { SearchConsoleService } from "@maple/backend/services/integrations/SearchConsoleService"
+import { SearchConsoleImportService } from "@maple/backend/services/integrations/SearchConsoleImportService"
 import { McpConnectionsService } from "@maple/backend/services/auth/McpConnectionsService"
 import { McpOAuthService } from "@maple/backend/services/auth/McpOAuthService"
 import { PreviewSignInService } from "@maple/backend/services/auth/PreviewSignInService"
@@ -42,7 +45,6 @@ import { ErrorActorsService } from "@maple/backend/services/errors/ErrorActorsSe
 import { ErrorIssueReadModelsService } from "@maple/backend/services/errors/ErrorIssueReadModelsService"
 import { ErrorIssueMergeService } from "@maple/backend/services/errors/ErrorIssueMergeService"
 import { ErrorIssueWorkflowService } from "@maple/backend/services/errors/ErrorIssueWorkflowService"
-import { PullRequestLookupLive } from "@maple/backend/services/errors/pull-request-lookup-live"
 import { IssueFixVerificationService } from "@maple/backend/services/errors/IssueFixVerificationService"
 import { ErrorPolicyService } from "@maple/backend/services/errors/ErrorPolicyService"
 import { ErrorsService } from "@maple/backend/services/errors/ErrorsService"
@@ -53,6 +55,7 @@ import { CloudflareAnalyticsService } from "@maple/backend/services/integrations
 import { AwsConnectionService } from "@maple/backend/services/integrations/AwsConnectionService"
 import { AwsIngestService } from "@maple/backend/services/integrations/AwsIngestService"
 import { GcpConnectorService } from "@maple/backend/services/integrations/GcpConnectorService"
+import { ExternalDataSourceServiceLive } from "@maple/backend/services/data-sources/ExternalDataSourceService"
 import { PlanetScaleConnectionService } from "@maple/backend/services/integrations/PlanetScaleConnectionService"
 import { PlanetScaleDiscoveryService } from "@maple/backend/services/integrations/PlanetScaleDiscoveryService"
 import { PlanetScaleService } from "@maple/backend/services/integrations/PlanetScaleService"
@@ -71,11 +74,9 @@ import { StatusPagesService } from "@maple/backend/services/status-pages/StatusP
 import { StatusPagePublisher } from "@maple/backend/services/status-pages/StatusPagePublisher"
 import { StatusPageSnapshotBuilder } from "@maple/backend/services/status-pages/StatusPageSnapshotBuilder"
 import { ChatWorkspaceService } from "@maple/backend/services/integrations/ChatWorkspaceService"
-import { TinybirdOrgTokenService } from "@maple/backend/services/integrations/TinybirdOrgTokenService"
 import { PlanetScaleWebhookQueue } from "@maple/backend/services/integrations/planetscale/PlanetScaleWebhookQueue"
 import { CancellationReviewQueue } from "@maple/backend/services/cancellation-review/CancellationReviewQueue"
 import { VcsCommitService } from "@maple/backend/services/integrations/vcs/VcsCommitService"
-import { VcsRepository } from "@maple/backend/services/integrations/vcs/VcsRepository"
 import { VcsSyncQueue } from "@maple/backend/services/integrations/vcs/VcsSyncQueue"
 import { GithubConnectService } from "@maple/backend/services/integrations/vcs/vendor/github/GithubConnectService"
 import { ApiKeysService } from "@maple/backend/services/org/ApiKeysService"
@@ -84,7 +85,6 @@ import { IngestAttributeMappingService } from "@maple/backend/services/org/Inges
 import { IngestRuleService } from "@maple/backend/services/org/IngestRuleService"
 import { OnboardingChecklistService } from "@maple/backend/services/org/OnboardingChecklistService"
 import { SupportChannelService } from "@maple/backend/services/support/SupportChannelService"
-import { OnboardingService } from "@maple/backend/services/org/OnboardingService"
 import { OrgIngestKeysService } from "@maple/backend/services/org/OrgIngestKeysService"
 import { SourcesService } from "@maple/backend/services/org/SourcesService"
 import { SourceRemovalService } from "@maple/backend/services/integrations/SourceRemovalService"
@@ -99,6 +99,8 @@ import { SetupAuditService } from "@maple/backend/services/org/SetupAuditService
 import { SignalPresenceService } from "@maple/backend/services/org/SignalPresenceService"
 import { SessionReplayReadService } from "@maple/backend/services/session-replays/SessionReplayReadService"
 import { UsersReadService } from "@maple/backend/services/users/UsersReadService"
+import { McpReadService } from "@maple/backend/services/mcp/McpReadService"
+import { AiSessionReadService } from "@maple/backend/services/ai-sessions/AiSessionReadService"
 import { ProductEventsService } from "@maple/backend/services/product-events/ProductEventsService"
 
 import { AuditLogService } from "@maple/backend/services/audit/AuditLogService"
@@ -111,13 +113,15 @@ import { CiAnalyticsService } from "@maple/backend/services/pr-review/CiAnalytic
 import { CodeReviewTeamService } from "@maple/backend/services/pr-review/CodeReviewTeamService"
 import { PrReviewAnalyticsService } from "@maple/backend/services/pr-review/PrReviewAnalyticsService"
 
-/** Services consumed by HTTP routes; each service owns its implementation dependencies. */
+/**
+ * Services the HTTP routes read, at group build or per request; each service owns its
+ * implementation dependencies. A service only other services consume is theirs to provide.
+ */
 export const HttpServicesLive = Layer.mergeAll(
 	VcsProviderRegistry.layer,
 	OrgMembersService.layer,
 	PlanetScaleDiscoveryService.layer,
 	PlanetScaleOAuthService.layer,
-	VcsRepository.layer,
 	VcsSyncQueue.layer,
 	AuthService.layer,
 	ApiKeysService.layer,
@@ -129,14 +133,15 @@ export const HttpServicesLive = Layer.mergeAll(
 	DashboardPersistenceService.layer,
 	SharedDashboardService.layer,
 	LinearOAuthService.layer,
-	OnboardingService.layer,
+	GoogleOAuthService.layer,
+	SearchConsoleService.layer,
+	SearchConsoleImportService.layer,
 	OnboardingChecklistService.layer,
 	SupportChannelService.layer,
 	OrgIngestKeysService.layer,
 	SourcesService.layer,
 	SourceUsageService.layer,
 	OrgClickHouseSettingsService.layer,
-	TinybirdOrgTokenService.layer,
 	OrganizationService.layer,
 	MobileDevicesService.layer,
 	AgentFeedbackService.layer,
@@ -171,6 +176,8 @@ export const HttpServicesLive = Layer.mergeAll(
 	SupabaseLogsService.layer,
 	SupabaseInsightsService.layer,
 	GcpConnectorService.layer,
+	// External data sources with this deployment's drivers.
+	ExternalDataSourceServiceLive,
 	AwsConnectionService.layer,
 	AwsIngestService.layer,
 	OrgOpenRouterKeyService.layer,
@@ -211,6 +218,8 @@ export const HttpServicesLive = Layer.mergeAll(
 	SignalPresenceService.layer,
 	SessionReplayReadService.layer,
 	UsersReadService.layer,
+	McpReadService.layer,
+	AiSessionReadService.layer,
 	DigestService.layer,
 	WebAnalyticsDigestService.layer,
 	DemoService.layer,
@@ -222,7 +231,4 @@ export const HttpServicesLive = Layer.mergeAll(
 	VcsCommitService.layer,
 	VcsSourceService.layer,
 	ChatWorkspaceService.layer,
-).pipe(
-	Layer.provide(PullRequestLookupLive),
-	Layer.provideMerge(Layer.mergeAll(Env.layer, EdgeCacheServiceLive)),
-)
+).pipe(Layer.provideMerge(Layer.mergeAll(Env.layer, EdgeCacheServiceLive)))

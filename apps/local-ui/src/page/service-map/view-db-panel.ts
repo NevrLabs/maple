@@ -1,4 +1,4 @@
-import { resolveDbNodeStyle, withAlpha } from "@maple/ui/components/service-map/service-map-db-style"
+import { resolveDbNodeStyle, withAlpha } from "@maple/views/service-map/graph/service-map-db-style"
 import { formatRate } from "@maple/ui/lib/format"
 import { DB_ICON } from "@maple/views/service-map/map/node-card"
 import {
@@ -85,7 +85,7 @@ export const databasePanel = <M>(
 					h,
 					"Max latency",
 					metricValue(h, undefined, [latencyValue(h, { ms: max, scale: "p95" })]),
-					["slowest call in the window"],
+					["slowest call in this window"],
 				)
 	return sidePanelFrame(h, [
 		detailPanelHeader(

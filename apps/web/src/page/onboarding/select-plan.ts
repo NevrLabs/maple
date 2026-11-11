@@ -1,6 +1,6 @@
 import type { BillingCustomer } from "@maple/domain/http"
-import { hasLapsedPlan } from "../../lib/billing/plan-gating"
-import { TRIAL_DURATION_DAYS } from "../../lib/billing/plans"
+import { hasLapsedPlan } from "../kit/billing/plan-gating"
+import { TRIAL_DURATION_DAYS } from "../kit/billing/plans"
 import { Schema } from "effect"
 import { Command, type Update } from "foldkit"
 import type { Html, HtmlBuilder } from "foldkit/html"
@@ -58,7 +58,7 @@ const planHeading = (h: H, isReactivating: boolean): Html =>
 							pill: true,
 							size: "lg",
 							className:
-								"mb-6 gap-2 border-primary-a3 bg-primary-a1 px-3 text-2xs tracking-wider text-primary uppercase sm:text-2xs",
+								"mb-6 gap-2 border-primary-a3 bg-primary-a1 px-3 text-2xs tracking-caption text-primary uppercase sm:text-2xs",
 						},
 						[
 							icon(h, "RocketIcon", { size: 14, className: "size-3.5" }),

@@ -1,3 +1,4 @@
+import { dayKey, dayLabel } from "../kit/day-label"
 import {
 	countLabel,
 	EMPTY_VALUE,
@@ -31,7 +32,7 @@ import { statusDot } from "@maple/views/ui/status-dot"
 import { textLink } from "@maple/views/ui/text-link"
 import { typography, typographyClass } from "@maple/views/ui/typography"
 import { serviceDot } from "@maple/views/ui/values"
-import { Array as Arr, Option, Order } from "effect"
+import { Array as Arr, Order } from "effect"
 import {
 	th,
 	toolTable,
@@ -39,7 +40,7 @@ import {
 	toolTableFooter,
 	toolTableHead,
 	toolTableRow,
-} from "../agent-sessions/tools-kit/table"
+} from "../kit/tools/table"
 import { AppRoute, hrefOf } from "../../route"
 import { listRelativeTime } from "../kit/relative-time"
 import { clientIcon, kindTag } from "../mcp/view-kit"
@@ -47,7 +48,7 @@ import { statRail, statRailItem } from "../kit/stat-rail"
 import { type LinkTab, linkTabStrip } from "../kit/underline-tabs"
 import type { ActivityItem, ActivityKind, UserDetail, UserProfile, UserTab } from "./data"
 import { namespacesOf, perUserText, USER_TABS, userLabel } from "./data"
-import { WORKFLOW_LABEL, workflowRingIcon } from "../errors/kit/workflow"
+import { WORKFLOW_LABEL, workflowRingIcon } from "../kit/issue-workflow"
 import { userAvatar } from "./view-kit"
 
 // `/users/$userId`: one end user's identity, then everything Maple holds for them, by tab.
@@ -80,36 +81,6 @@ const timeFormat = (timeZone: string, options: Intl.DateTimeFormatOptions) =>
 
 const clockOf = (atMs: number, timeZone: string): string =>
 	timeFormat(timeZone, { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(atMs)
-
-const dayKey = (atMs: number, timeZone: string): string =>
-	timeFormat(timeZone, { year: "numeric", month: "2-digit", day: "2-digit" }).format(atMs)
-
-/** The local calendar day as a day count, so "yesterday" is one less even across a DST change. */
-const dayNumber = (atMs: number, timeZone: string): number => {
-	const parts = timeFormat(timeZone, { year: "numeric", month: "numeric", day: "numeric" }).formatToParts(
-		atMs,
-	)
-	const part = (type: Intl.DateTimeFormatPartTypes): number =>
-		Number(
-			Option.getOrElse(
-				Option.map(
-					Arr.findFirst(parts, (entry) => entry.type === type),
-					(entry) => entry.value,
-				),
-				() => "0",
-			),
-		)
-	return Date.UTC(part("year"), part("month") - 1, part("day")) / 86_400_000
-}
-
-/** "Today", "Yesterday", else "Mon 2 Nov". */
-export const dayLabel = (atMs: number, clock: Clock): string => {
-	const day = dayNumber(atMs, clock.timeZone)
-	const today = dayNumber(clock.nowMs, clock.timeZone)
-	if (day === today) return "Today"
-	if (day === today - 1) return "Yesterday"
-	return timeFormat(clock.timeZone, { weekday: "short", day: "numeric", month: "short" }).format(atMs)
-}
 
 // --- header -------------------------------------------------------------------------------------
 
@@ -262,7 +233,7 @@ const userStats = <M>(h: HtmlBuilder<M>, profile: UserProfile): Html =>
 				profile.requests === null
 					? "no per-user request data"
 					: profile.requests === 0
-						? "no requests in the window"
+						? "no requests in this window"
 						: profile.failedRate === null
 							? "failure rate not available"
 							: `${formatPercent(profile.failedRate)} failed`,
@@ -436,7 +407,7 @@ export const userRail = <M>(
 				h,
 				"Services touched",
 				Arr.isReadonlyArrayEmpty(profile.services)
-					? [typography(h, { size: "xs", tone: "subtle" }, ["no service named in the window"])]
+					? [typography(h, { size: "xs", tone: "subtle" }, ["no service named in this window"])]
 					: Arr.map(profile.services, (service) =>
 							hstack(h, { gap: "2", className: "min-h-7 min-w-0" }, [
 								serviceDot(h, { serviceName: service.service }),
@@ -493,7 +464,7 @@ const namespacesGroup = <M>(h: HtmlBuilder<M>, profile: UserProfile, scope: User
 	const total = Arr.reduce(namespaces, 0, (sum, namespace) => sum + namespace.signals)
 	if (namespaces.length === 0)
 		return detailRailGroup(h, "Namespaces", [
-			typography(h, { size: "xs", tone: "subtle" }, ["No namespace recorded in the window"]),
+			typography(h, { size: "xs", tone: "subtle" }, ["No namespace recorded in this window"]),
 		])
 	return detailRailGroup(
 		h,
@@ -648,7 +619,7 @@ const activityRow = <M>(h: HtmlBuilder<M>, item: ActivityItem, timeZone: string)
 
 /** One timeline across every signal, newest first, grouped by day. */
 const activityBody = <M>(h: HtmlBuilder<M>, items: ReadonlyArray<ActivityItem>, clock: Clock): Html => {
-	if (Arr.isReadonlyArrayEmpty(items)) return noRows(h, "No activity from this user in the window.")
+	if (Arr.isReadonlyArrayEmpty(items)) return noRows(h, "No activity from this user in this window")
 	const sorted = Arr.sort(
 		items,
 		Order.flip(Order.mapInput(Order.Number, (item: ActivityItem) => item.atMs)),
@@ -767,7 +738,7 @@ const eventsBody = <M>(h: HtmlBuilder<M>, detail: UserDetail, clock: Clock): Htm
 
 const sessionsTable = <M>(h: HtmlBuilder<M>, detail: UserDetail, clock: Clock): Html =>
 	Arr.isReadonlyArrayEmpty(detail.sessions)
-		? noRows(h, "No recorded sessions from this user in the window.")
+		? noRows(h, "No recorded sessions from this user in this window")
 		: toolTable(h, [
 				toolTableHead(h, [
 					th(h, { label: "Started", width: "w-28 shrink-0" }),
@@ -841,7 +812,7 @@ const errorsBody = <M>(h: HtmlBuilder<M>, detail: UserDetail, clock: Clock): Htm
 			"This warehouse's schema predates per-user errors. Apply the latest schema, and new errors name the user that hit them.",
 		)
 	if (Arr.isReadonlyArrayEmpty(detail.issues))
-		return noRows(h, `This user hit no errors in the window. ${ATTRIBUTION_NOTE}`)
+		return noRows(h, `This user hit no errors in this window. ${ATTRIBUTION_NOTE}`)
 	return vstack(h, { gap: "2" }, [
 		typography(h, { size: "xs", tone: "muted" }, [ATTRIBUTION_NOTE]),
 		toolTable(h, [
@@ -897,7 +868,7 @@ const tracesBody = <M>(h: HtmlBuilder<M>, detail: UserDetail, clock: Clock): Htm
 	indexedTabState(detail.profile.requests, detail.traces) === "unindexed"
 		? unavailableTab(h, "LayersIcon", "Requests are not indexed per user here", UNINDEXED_DESCRIPTION)
 		: Arr.isReadonlyArrayEmpty(detail.traces)
-			? noRows(h, "No requests from this user in the window.")
+			? noRows(h, "No requests from this user in this window")
 			: toolTable(h, [
 					toolTableHead(h, [
 						th(h, { label: "Time", width: "w-28 shrink-0" }),
@@ -936,7 +907,7 @@ const logsBody = <M>(h: HtmlBuilder<M>, detail: UserDetail, clock: Clock): Html 
 	indexedTabState(detail.profile.logs, detail.logs) === "unindexed"
 		? unavailableTab(h, "FileIcon", "Logs are not indexed per user here", UNINDEXED_DESCRIPTION)
 		: Arr.isReadonlyArrayEmpty(detail.logs)
-			? noRows(h, "No logs from this user in the window.")
+			? noRows(h, "No logs from this user in this window")
 			: toolTable(h, [
 					toolTableHead(h, [
 						th(h, { label: "Time", width: "w-28 shrink-0" }),
@@ -967,7 +938,7 @@ const logsBody = <M>(h: HtmlBuilder<M>, detail: UserDetail, clock: Clock): Html 
 
 const eventsTable = <M>(h: HtmlBuilder<M>, detail: UserDetail, clock: Clock): Html =>
 	Arr.isReadonlyArrayEmpty(detail.events)
-		? noRows(h, "No product events from this user in the window.")
+		? noRows(h, "No product events from this user in this window")
 		: toolTable(h, [
 				toolTableHead(h, [
 					th(h, { label: "Time", width: "w-28 shrink-0" }),
@@ -994,7 +965,7 @@ const eventsTable = <M>(h: HtmlBuilder<M>, detail: UserDetail, clock: Clock): Ht
 /** The user's MCP sessions on every MCP server; each row opens that server's session page. */
 const mcpBody = <M>(h: HtmlBuilder<M>, detail: UserDetail, clock: Clock): Html =>
 	Arr.isReadonlyArrayEmpty(detail.mcpSessions)
-		? noRows(h, "No MCP sessions from this user in the window.")
+		? noRows(h, "No MCP sessions from this user in this window")
 		: toolTable(h, [
 				toolTableHead(h, [
 					th(h, { label: "Started", width: "w-28 shrink-0" }),

@@ -1,10 +1,5 @@
 import { EMPTY_VALUE } from "@maple/ui/lib/empty-value"
-import {
-	type EndpointGroup,
-	type EndpointSort,
-	groupEndpoints,
-	leafLabel,
-} from "../../../components/services/endpoint-grouping"
+import { type EndpointGroup, type EndpointSort, groupEndpoints, leafLabel } from "./endpoint-grouping"
 import {
 	countLabel,
 	formatBytes,
@@ -19,6 +14,7 @@ import type { Html, HtmlBuilder } from "foldkit/html"
 import type { ThemeColors } from "@maple/views/charts/theme-colors"
 import { button } from "@maple/views/ui/button"
 import { pressable } from "@maple/views/ui/pressable"
+import { badge } from "@maple/views/ui/display"
 import { icon } from "@maple/views/ui/icon"
 import { tableCell, tableRow } from "@maple/views/ui/table"
 import { truncatedText } from "@maple/views/ui/truncated-text"
@@ -62,7 +58,6 @@ export type RowContext = Readonly<{
 	isOneMethod: boolean
 }>
 
-/** `methodTone`: only the mutating verbs are tinted. */
 const methodTone = (method: string): string =>
 	method === "POST" || method === "PUT" || method === "PATCH"
 		? "text-severity-warn"
@@ -211,15 +206,13 @@ const endpointRow = (
 						]),
 						...(isSlowest
 							? [
-									h.span(
-										[
-											h.Class(
-												cn(
-													"hidden shrink-0 rounded-sm bg-muted px-1.5 text-3xs md:inline",
-													TONE_TEXT.warn,
-												),
-											),
-										],
+									badge(
+										h,
+										{
+											variant: "muted",
+											size: "xs",
+											className: cn("hidden px-1.5 md:inline-flex", TONE_TEXT.warn),
+										},
 										["slowest"],
 									),
 								]
@@ -318,15 +311,13 @@ const endpointRow = (
 		],
 		cn(
 			"group/row h-11 cursor-pointer border-b text-ui last:border-b-0 has-[button:focus-visible]:ring-1 has-[button:focus-visible]:ring-ring has-[button:focus-visible]:ring-inset",
-			isSelected
-				? "bg-accent hover:bg-accent active:bg-accent"
-				: "hover:bg-surface-sunken active:bg-surface-sunken",
+			isSelected ? "bg-surface-strong" : "hover:bg-surface-sunken active:bg-surface-sunken",
 		),
 		[h.Key(endpoint.spanName), h.OnClick(Message.ClickedEndpoint({ spanName: endpoint.spanName }))],
 	)
 }
 
-/** `GroupHeaderRow`: the group's totals; p95/p99 are the worst in the group. */
+/** The group's totals; p95/p99 are the worst in the group. */
 const groupHeaderRow = (
 	h: H,
 	options: Readonly<{
@@ -409,7 +400,7 @@ const formatLatencyText = (ms: number) => (ms > 0 ? formatLatency(ms) : EMPTY_VA
 const sharesRoute = (endpoints: ReadonlyArray<Endpoint>, endpoint: Endpoint) =>
 	Arr.some(endpoints, (other) => other !== endpoint && other.route === endpoint.route)
 
-/** `GroupRows`: a collapsed bucket with its explainer, or a stem header and its rows. */
+/** A collapsed bucket with its explainer, or a stem header and its rows. */
 export const groupRows = (
 	h: H,
 	group: EndpointGroup<Endpoint>,

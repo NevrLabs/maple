@@ -1,16 +1,10 @@
 import { McpInvalidInputError, McpQueryBudgetError, McpQueryError, type McpToolRegistrar } from "./types"
 import { describeInvalidQuerySpec, resolveTokenAliases, tokensFor } from "../lib/query-spec-tokens"
 import { Effect, Schema, Array as Arr, Record as Rec, String as Str } from "effect"
-import { CurrentMcpTenant } from "../lib/query-warehouse"
+import { CurrentMcpTenant } from "../tenant"
 import { QueryEngineService } from "@maple/backend/services/warehouse/QueryEngineService"
-import {
-	MAX_BREAKDOWN_RANGE_SECONDS,
-	MetricType,
-	QueryEngineExecuteRequest,
-	QuerySpec,
-	parseWarehouseDateTime,
-	warehouseDateTime,
-} from "@maple/query-engine"
+import { MAX_BREAKDOWN_RANGE_SECONDS, parseWarehouseDateTime, warehouseDateTime } from "@maple/query-engine"
+import { MetricType, QueryEngineExecuteRequest, QuerySpec } from "@maple/domain/query-engine"
 import { describeQuerySpecDecodeError } from "@maple/domain/query-engine"
 import { ProductEventKind } from "@maple/domain/query-engine"
 import { QueryDataOutput } from "@maple/domain/mcp-outputs"
@@ -42,7 +36,8 @@ const queryDataSchema = Schema.Struct({
 		QUERY_BUILDER_DATA_SOURCES,
 		"'traces' for request/span analysis (latency, errors, throughput); 'logs' for log volume; " +
 			"'metrics' for a custom metric (needs metric_name and metric_type from list_metrics); " +
-			"'product_events' for track() events, page views and server events (names from list_product_events).",
+			"'product_events' for track() events, page views and server events (names from list_product_events). " +
+			"Signups and accounts in a connected system (Clerk, a database) are data sources: search_data_sources.",
 	),
 	kind: P.oneOf(
 		["timeseries", "breakdown"] as const satisfies ReadonlyArray<QueryResultContract>,
@@ -67,7 +62,6 @@ const queryDataSchema = Schema.Struct({
 	),
 	...WINDOW.fields,
 	service: P.service(),
-	// Traces-specific
 	span_name: P.optionalText(
 		"Filter by span name (traces only). Exact match first; when nothing matches exactly it is matched as a case-insensitive substring",
 	),
@@ -77,19 +71,15 @@ const queryDataSchema = Schema.Struct({
 	),
 	commit_shas: P.optionalList("Commit SHAs to filter (traces only)"),
 	apdex_threshold_ms: P.optionalNumber("Apdex threshold in ms (traces only; needed for metric=apdex)"),
-	// Logs-specific
 	severity: P.optionalOneOf(LOG_SEVERITIES, "Only this log severity (logs only)"),
-	// Product-events-specific
 	event_name: P.optionalList("Only these event names (product_events only)"),
 	event_kind: Schema.optional(Schema.Array(ProductEventKind)).annotate({
 		description: "Only these event kinds (product_events only)",
 	}),
 	host: P.optionalText("Only events fired on this site host (product_events only)"),
 	page_path: P.optionalText("Only events fired on this page path (product_events only)"),
-	// Metrics-specific
 	metric_name: P.optionalText("The metric, from list_metrics (source=metrics only)"),
 	metric_type: P.optionalOneOf(MetricType.literals, "Type of `metric_name`, as list_metrics reports it"),
-	// Shared attribute filtering
 	attribute_key: P.optionalText(
 		"Attribute to filter on, or to group by with group_by=attribute. Span (or log/metric label) and resource attributes both work; the scope is resolved automatically",
 	),
@@ -460,7 +450,6 @@ export function registerQueryDataTool(server: McpToolRegistrar) {
 		description: queryDataDescription,
 		parameters: queryDataSchema,
 		aliases: P.SERVICE_ALIASES,
-		output: QueryDataOutput,
 		hints: { readOnly: true },
 		phrases: ["Querying telemetry", "Running a query", "Pulling the numbers"],
 		handler: Effect.fn("McpTool.queryData")(function* (input) {

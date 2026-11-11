@@ -7,7 +7,7 @@ import * as Chart from "@maple/views/charts/chart"
 import * as InfraMetricChart from "@maple/views/charts/infra-metric-chart"
 import type { ThemeColors } from "@maple/views/charts/theme-colors"
 import { chartLoading } from "@maple/views/ui/chart-state"
-import { chartCard, chartCardMessage, CHART_HEIGHT } from "../../kit/chart-card"
+import { chartCard, chartCardMessage, CHART_HEIGHT } from "../../../kit/chart-card"
 import { type MetricChart, metricChartRows } from "../../kit/metric-charts"
 import { relativeTime } from "../../../kit/relative-time"
 import type { SupabaseProjectTimeseriesRow } from "../model"
@@ -124,7 +124,7 @@ const queriesBody = (h: H, insights: SupabaseProjectInsights, clock: Clock): Htm
 				panelEmpty(h, [
 					insights.queriesCheckedAt === null
 						? "Maple reads pg_stat_statements every 15 minutes; the first read has not run yet."
-						: "No statements recorded yet.",
+						: "No statements recorded yet",
 				]),
 			],
 		)

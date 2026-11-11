@@ -4,7 +4,7 @@ import {
 	type SessionToolCall,
 	type SessionToolUsage,
 } from "@maple/agent-sessions"
-import { buildSessionAxis, type SessionAxis } from "../../../lib/agent-sessions/session-axis"
+import { buildSessionAxis, type SessionAxis } from "../kit/session-axis"
 import { formatDuration, formatNumber } from "@maple/ui/lib/format"
 import { formatSessionDuration } from "@maple/ui/lib/replay-format"
 import { cn } from "@maple/ui/lib/utils"
@@ -25,12 +25,10 @@ import { disclosureChevron } from "./view-kit"
 import { sectionHeading } from "../../kit/section-heading"
 import { loadIndicator } from "./view-load"
 import { rail } from "./view-rail"
-import { errorChip, TOOL_CHIP } from "../kit/error-chip"
+import { errorChip } from "../../kit/error-chip"
 import { typography, typographyClass } from "@maple/views/ui/typography"
 import { hstack, vstack } from "@maple/views/ui/stack"
 import { Array as Arr } from "effect"
-
-// The session overview: checks and the tool ledger, the rail.
 
 type H = HtmlBuilder<Message>
 
@@ -45,8 +43,8 @@ const callWhen = (event: SessionToolCall, sessionStartMs: number): string => {
 }
 
 const callTitle = (toolName: string, event: SessionToolCall, sessionStartMs: number): string => {
-	const where = `${toolName} — ${callWhen(event, sessionStartMs)}`
-	return event.failed ? `${where} — ${event.errorLabel ?? "error"}` : where
+	const where = `${toolName} · ${callWhen(event, sessionStartMs)}`
+	return event.failed ? `${where} · ${event.errorLabel ?? "error"}` : where
 }
 
 const openSpan = (model: Model, spanId: string) =>
@@ -84,7 +82,7 @@ const ledgerHeader = (h: H, summary: SessionSummary): Html => {
 										iconName: "GearIcon",
 										count: failed,
 										noun: "failed call",
-										className: TOOL_CHIP,
+										tone: "warn",
 									}),
 								]
 							: []),
@@ -229,7 +227,7 @@ const ledgerRow = (
 					: truncatedText(h, {
 							text: tool.name,
 							mono: true,
-							className: cn(LEDGER_NAME, "pl-3.75 text-xs"),
+							className: cn(LEDGER_NAME, "pl-[calc(--spacing(4)-1px)] text-xs"),
 						}),
 				h.span(
 					[h.Class(cn(LEDGER_COUNT, typographyClass({ size: "xs", mono: true, numeric: true })))],
@@ -266,7 +264,7 @@ const ledgerRow = (
 			]),
 			...(isExpanded
 				? [
-						vstack(h, { gap: "2", className: "py-2 pr-3 pl-3.75" }, [
+						vstack(h, { gap: "2", className: "py-2 pr-3 pl-[calc(--spacing(4)-1px)]" }, [
 							...(tool.description === undefined
 								? []
 								: [

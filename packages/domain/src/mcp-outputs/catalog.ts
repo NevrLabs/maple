@@ -5,6 +5,13 @@
 import { ListMapleFeedbackOutput, SendMapleFeedbackOutput } from "./feedback"
 import { InspectInfraOutput, ListInfraOutput } from "./infra"
 import { ListSourcesOutput } from "./sources"
+import {
+	DescribeDataSourceOutput,
+	ListDataSourcesOutput,
+	QueryDataSourceOutput,
+	SearchDataSourcesOutput,
+} from "./data-sources"
+import { SearchConsolePagesOutput, SearchConsoleQueriesOutput } from "./search-console"
 import { InspectUserOutput, ListUsersOutput } from "./users"
 import {
 	InspectSecurityAuditRunOutput,
@@ -16,9 +23,7 @@ import { DeleteUptimeMonitorOutput, ListUptimeMonitorsOutput, UptimeMonitorMutat
 import { DeleteSloOutput, InspectSloOutput, ListSlosOutput, SloMutationOutput } from "./slo"
 import {
 	ApplyStatusPageConfigOutput,
-	GetStatusPageConfigOutput,
 	GetStatusPageOutput,
-	ListStatusPagesOutput,
 	StatusPageIncidentMutationOutput,
 } from "./status-pages"
 import {
@@ -80,6 +85,7 @@ import {
 	UpdateDashboardWidgetOutput,
 } from "./dashboards"
 import { ErrorDetailOutput, FindErrorsOutput } from "./errors"
+import { GetInvestigationOutput } from "./investigations"
 import {
 	ClaimErrorIssueOutput,
 	CommentOnErrorIssueOutput,
@@ -98,6 +104,7 @@ import {
 	UpdateErrorNotificationPolicyOutput,
 } from "./issues"
 import {
+	CompareOperationsOutput,
 	ComparePeriodsOutput,
 	DescribeWarehouseTablesOutput,
 	DiagnoseServiceOutput,
@@ -147,6 +154,7 @@ import {
 	InspectSpanOutput,
 	InspectTraceOutput,
 	MineLogPatternsOutput,
+	CompareLogPatternsOutput,
 	SearchLogsOutput,
 	SearchTracesOutput,
 } from "./traces"
@@ -159,6 +167,8 @@ export const McpToolOutputs = {
 	comment_on_error_issue: CommentOnErrorIssueOutput,
 	compare_commits: CompareCommitsOutput,
 	compare_periods: ComparePeriodsOutput,
+	compare_log_patterns: CompareLogPatternsOutput,
+	compare_operations: CompareOperationsOutput,
 	create_alert_rule: CreateAlertRuleOutput,
 	create_escalation_chain: EscalationChainMutationOutput,
 	create_maintenance_window: MaintenanceWindowMutationOutput,
@@ -168,7 +178,6 @@ export const McpToolOutputs = {
 	create_ingest_rule: IngestRuleMutationOutput,
 	create_scrape_target: ScrapeTargetMutationOutput,
 	create_dashboard: CreateDashboardOutput,
-	create_status_page_incident: StatusPageIncidentMutationOutput,
 	create_slo: SloMutationOutput,
 	create_uptime_monitor: UptimeMonitorMutationOutput,
 	db_query_volume: DbQueryVolumeOutput,
@@ -197,6 +206,7 @@ export const McpToolOutputs = {
 	get_alert_rule: GetAlertRuleOutput,
 	get_dashboard: GetDashboardOutput,
 	get_incident_timeline: GetIncidentTimelineOutput,
+	get_investigation: GetInvestigationOutput,
 	get_instrumentation_recommendations: GetInstrumentationRecommendationsOutput,
 	get_service_top_operations: GetServiceTopOperationsOutput,
 	get_session_traces: GetSessionTracesOutput,
@@ -232,16 +242,16 @@ export const McpToolOutputs = {
 	list_security_audit_runs: ListSecurityAuditRunsOutput,
 	list_security_findings: ListSecurityFindingsOutput,
 	list_slos: ListSlosOutput,
-	list_sources: ListSourcesOutput,
-	list_status_pages: ListStatusPagesOutput,
+	list_ingest_sources: ListSourcesOutput,
+	list_data_sources: ListDataSourcesOutput,
+	search_data_sources: SearchDataSourcesOutput,
+	describe_data_source: DescribeDataSourceOutput,
+	query_data_source: QueryDataSourceOutput,
 	list_uptime_monitors: ListUptimeMonitorsOutput,
 	list_users: ListUsersOutput,
 	get_status_page: GetStatusPageOutput,
-	get_status_page_config: GetStatusPageConfigOutput,
 	apply_status_page_config: ApplyStatusPageConfigOutput,
 	post_status_page_update: StatusPageIncidentMutationOutput,
-	resolve_status_page_incident: StatusPageIncidentMutationOutput,
-	schedule_status_page_maintenance: StatusPageIncidentMutationOutput,
 	list_metrics: ListMetricsOutput,
 	list_product_events: ListProductEventsOutput,
 	list_services: ListServicesOutput,
@@ -266,6 +276,8 @@ export const McpToolOutputs = {
 	sandbox_grep: SandboxGrepOutput,
 	sandbox_list_files: SandboxListFilesOutput,
 	sandbox_read_file: SandboxReadFileOutput,
+	search_console_pages: SearchConsolePagesOutput,
+	search_console_queries: SearchConsoleQueriesOutput,
 	search_logs: SearchLogsOutput,
 	search_sessions: SearchSessionsOutput,
 	search_source_code: SearchSourceCodeOutput,

@@ -27,9 +27,10 @@ import {
 	DashboardId,
 	ErrorIssueId,
 	EscalationChainId,
+	InvestigationId,
 	OnCallOverrideId,
 	OnCallScheduleId,
-} from "@maple/domain/primitives"
+} from "@maple/primitives"
 import { WarehouseTimeInput, type WarehouseDateTime } from "@maple/query-engine"
 import { McpInvalidInputError } from "../tools/types"
 import { resolveWindow } from "./time"
@@ -210,6 +211,7 @@ const RESOURCE_IDS = {
 	alertSilence: { prefix: PublicIdPrefixes.alertSilence, schema: AlertSilenceId, noun: "alert silence" },
 	dashboard: { prefix: PublicIdPrefixes.dashboard, schema: DashboardId, noun: "dashboard" },
 	errorIssue: { prefix: PublicIdPrefixes.errorIssue, schema: ErrorIssueId, noun: "error issue" },
+	investigation: { prefix: PublicIdPrefixes.investigation, schema: InvestigationId, noun: "investigation" },
 } as const
 
 export type ResourceIdKind = keyof typeof RESOURCE_IDS

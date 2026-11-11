@@ -18,6 +18,7 @@ import { sectionHeading } from "../../kit/section-heading"
 import { windowIdOfParam } from "../shared/maintenance-windows"
 import {
 	endsAtMs,
+	formatSilenceRange,
 	formatSilenceTime,
 	isCancelledSilence,
 	silenceScopeParts,
@@ -25,9 +26,8 @@ import {
 	startsAtMs,
 } from "../shared/silences"
 import { Message } from "./message"
-import { canManage, type Model } from "./model"
-
-// The Silences tab: what is silenced now, what is scheduled, and what ended recently.
+import { type Model } from "./model"
+import { canManageAlerts } from "../../kit/session-grants"
 
 type H = HtmlBuilder<Message>
 
@@ -40,7 +40,7 @@ const silencesEmptyState = (h: H): Html =>
 		[
 			emptyHeader(h, [
 				emptyMedia(h, { variant: "icon" }, [icon(h, "BellSlashIcon", { size: 18 })]),
-				emptyTitle(h, ["No silences"]),
+				emptyTitle(h, ["No silences yet"]),
 				emptyDescription(h, [
 					"Silence a rule, a service or an environment during a deploy or a planned migration. Rules keep checking and incidents still open, but no one is paged.",
 				]),
@@ -51,12 +51,11 @@ const silencesEmptyState = (h: H): Html =>
 
 const windowText = (silence: V2AlertSilence, nowMs: number, timeZone: string): string => {
 	const status = silenceStatusAt(silence, nowMs)
-	const start = formatSilenceTime(startsAtMs(silence), nowMs, timeZone)
 	const end = formatSilenceTime(endsAtMs(silence), nowMs, timeZone)
 	return status === "active"
 		? `Until ${end}`
 		: status === "scheduled"
-			? `${start} to ${end}`
+			? formatSilenceRange(startsAtMs(silence), endsAtMs(silence), nowMs, timeZone)
 			: isCancelledSilence(silence)
 				? `Cancelled ${end}`
 				: `Ended ${end}`
@@ -117,7 +116,7 @@ const silenceRow = (
 							],
 						),
 					]
-				: status !== "ended" && canManage(model)
+				: status !== "ended" && canManageAlerts(model)
 					? [
 							button(
 								h,

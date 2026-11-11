@@ -5,7 +5,7 @@ import { cn } from "@maple/ui/lib/utils"
 import * as Chart from "@maple/views/charts/chart"
 import * as Sparkline from "@maple/views/charts/sparkline"
 import { resolveColor, type ThemeColors } from "@maple/views/charts/theme-colors"
-import { METRIC_TYPE_COLORS, metricTypeBadge } from "@maple/web/page/metrics/shared"
+import { METRIC_TYPE_COLORS, metricTypeBadge } from "@maple/views/ui/metric-type"
 import { badge } from "@maple/views/ui/display"
 import { truncatedText } from "@maple/views/ui/truncated-text"
 import { selectableRow } from "@maple/views/ui/selectable-row"
@@ -121,7 +121,7 @@ const previewCard = (h: H, inputs: GridInputs, entry: MetricEntry): Html => {
 			isSelected: false,
 			href: hrefFor(`/metrics/${encodeURIComponent(entry.metricName)}`, inputs.query),
 			className:
-				"group flex h-[124px] flex-col gap-2 rounded-md border bg-card p-3 text-left hover:border-primary-a4 hover:bg-accent/40 active:border-primary-a4 active:bg-accent/40 focus-visible:outline-2 focus-visible:outline-ring",
+				"group flex h-[124px] flex-col gap-2 rounded-md border bg-card p-3 text-left hover:border-primary-a4 hover:bg-surface-sunken active:border-primary-a4 active:bg-surface-sunken focus-visible:outline-2 focus-visible:outline-ring",
 			attributes: [h.AriaLabel(`${entry.metricName}, ${entry.metricType} metric from ${services}`)],
 		},
 		[

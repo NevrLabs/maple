@@ -42,11 +42,11 @@ import {
 	IntegrationsUpstreamError,
 	IntegrationsValidationError,
 	OrgId,
-	RoleName,
 	UserId as UserIdSchema,
 } from "@maple/domain/http"
 import * as CH from "@maple/query-engine/ch"
 import * as PG from "@maple-dev/effect-orm/postgres"
+import { leaseClaimable, leaseStillOurs } from "./lease"
 import {
 	CloudflareAnalyticsState,
 	CloudflareHyperdriveConfigs,
@@ -57,7 +57,6 @@ import {
 } from "@maple/db/tables"
 import {
 	Array as Arr,
-	Cause,
 	Clock,
 	Context,
 	Effect,
@@ -65,6 +64,7 @@ import {
 	Match,
 	Metric,
 	Option,
+	Predicate,
 	Ref,
 	Result,
 	Schema,
@@ -72,7 +72,6 @@ import {
 	Record as Rec,
 } from "effect"
 import * as CloudflareAnalyticsMetrics from "@maple/backend/observability/CloudflareAnalyticsMetrics"
-import type { TenantContext } from "@maple/backend/services/auth/AuthService"
 import {
 	graphqlQuery,
 	listHyperdriveConfigs as listAccountHyperdriveConfigs,
@@ -82,8 +81,8 @@ import {
 	type CloudflareHyperdriveConfig,
 	type CloudflareZone,
 } from "@maple/backend/services/integrations/CloudflareApi"
-import type { SourceId, UserId } from "@maple/domain/primitives"
-import { pollStatus } from "@maple/domain/integration-inventory"
+import type { SourceId, UserId } from "@maple/primitives"
+import { pollStatus } from "./integration-inventory"
 import type { SourceResourceCount } from "@maple/domain/source-health"
 import { Database } from "@maple/backend/platform/DatabaseLive"
 import { makeDbExecute, makePersistenceErrorMapper } from "@maple/backend/platform/db-execute"
@@ -98,7 +97,7 @@ import {
 	type PollOutcome as SourcePollOutcome,
 	reportPoll,
 	stampedSourceId,
-} from "@maple/backend/services/org/integration-sources"
+} from "@maple/backend/services/integrations/integration-sources"
 import {
 	mapDnsGroups,
 	mapDurableObjectsGroups,
@@ -156,8 +155,10 @@ import {
 } from "./cloudflare-analytics/queries"
 import * as Integrations from "@maple/query-engine-integrations"
 import { summarizeCause } from "@maple/backend/platform/describe-cause"
+import { pollFleet } from "./poll-fleet"
 import { parseWarehouseDateTime } from "@maple/query-engine"
 import type { MapleDbError } from "@maple/db/client"
+import { systemTenant } from "@maple/backend/services/auth/system-tenant"
 
 /** The poller mirrors its writes onto the rows it loaded, so it holds them mutable. */
 type CloudflareAnalyticsStateRow = { -readonly [K in keyof StoredStateRow]: StoredStateRow[K] }
@@ -192,6 +193,8 @@ const SAFETY_LAG_MS = 10 * 60_000
 const MIN_HEAD_WINDOW_MS = 15 * 60_000
 /** How far back the first poll reaches (further bounded by the plan's `notOlderThan`). */
 const BACKFILL_MS = 24 * 60 * 60_000
+/** How far a backlogged head may lag before its oldest buckets are skipped (see `headFloor`). */
+const HEAD_MAX_LAG_MS = 3 * 24 * 60 * 60_000
 /**
  * Max window per GraphQL call. 12 buckets × worst-case ~200 (cacheStatus × status) groups stays
  * comfortably under Cloudflare's 5000-rows-per-selection cap.
@@ -212,21 +215,19 @@ const GRANT_CAP_CEILING = 150
 const GRANT_CAP_STEP = 5
 const LEASE_MS = 4 * 60_000
 /**
- * How long an org sits out after Cloudflare rate-limits it — Cloudflare's own message says "try
- * again after 5 minutes". Implemented by leaving the tick lease in place until then (see
- * `releaseLease`), so the backoff is persisted in the mechanism the poller already has and
- * survives isolate recycling without a new column.
+ * How long a connection sits out after any rate-limited poll. Held as the tick lease (see
+ * `releaseLease`), which stays under the `2 * LEASE_MS` corrupt-lease escape hatch.
  */
 const RATE_LIMIT_BACKOFF_MS = 5 * 60_000
 /**
- * How long an org sits out after ingest refuses its metrics (402 billing, 401/403 key refused).
- * Held the same way as the rate-limit backoff, so it stays under the `2 * LEASE_MS` escape hatch.
+ * Escalating backoff steps for ingest refusing the org's metrics (402 billing, 401/403 key
+ * refused), persisted on the anchor row (`backoffUntil`) so they outlast the lease escape hatch.
+ * Clears on the first accepted ingest. Rate limits never escalate: they take the lease hold.
  */
-const PLAN_BLOCKED_BACKOFF_MS = 7 * 60_000
+const INGEST_REFUSED_BACKOFF_STEPS_MS = [7 * 60_000, 15 * 60_000, 30 * 60_000, 60 * 60_000] as const
 const SETTINGS_TTL_MS = 24 * 60 * 60_000
 /** Zone discovery (REST pagination) runs hourly; poll ticks in between reuse the state rows. */
 const DISCOVERY_TTL_MS = 60 * 60_000
-const ORG_CONCURRENCY = 3
 
 const MISSING_SCOPES_ERROR =
 	"Cloudflare connection lacks the analytics scopes — reconnect the integration to update permissions"
@@ -239,7 +240,6 @@ const GRANT_REVOKED_REASON = "The Cloudflare grant was revoked. Reconnect Cloudf
 const floorToBucket = (ms: number) => ms - (ms % BUCKET_MS)
 
 const decodeUserIdSync = Schema.decodeUnknownSync(UserIdSchema)
-const decodeRoleNameSync = Schema.decodeUnknownSync(RoleName)
 const decodeOrgId = Schema.decodeUnknownSync(OrgId)
 const encodeJsonSync = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown))
 
@@ -264,8 +264,6 @@ const toWarehouseDateTime64 = (ms: number) => {
 	const pad = (n: number, w = 2) => Str.padStart(w, "0")(n.toString())
 	return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}.${pad(d.getUTCMilliseconds(), 3)}`
 }
-
-// Dataset registry — everything dataset-specific lives here; the poll pipeline is generic.
 
 interface PollWindow {
 	readonly start: number
@@ -580,8 +578,6 @@ const DATASET_BY_ID = new Map(Arr.map(DATASETS, (dataset) => [dataset.id, datase
 const ZONE_DATASETS = Arr.filter(DATASETS, (dataset) => dataset.scope === "zone")
 const ACCOUNT_DATASETS = Arr.filter(DATASETS, (dataset) => dataset.scope === "account")
 
-// GraphQL error classification
-
 /** Classify GraphQL-level errors (HTTP 200 + errors[]) into the poller's reaction. */
 type GraphqlErrorKind = "authz" | "disabled" | "quantiles-unavailable" | "rate-limited" | "other"
 
@@ -701,8 +697,6 @@ const graphqlErrorMessage = (errors: ReadonlyArray<CloudflareGraphqlError>): str
 		),
 	)
 
-// Window math
-
 interface ParsedSettings {
 	readonly notOlderThanMs: number | null
 	readonly maxDurationMs: number | null
@@ -758,22 +752,40 @@ const backfillFloor = (row: CloudflareAnalyticsStateRow, now: number): number =>
 }
 
 /**
+ * Oldest bucket a lagging head may read. With a known plan retention it reaches back to that
+ * retention (at most {@link HEAD_MAX_LAG_MS}), so a backlog past the 24h backfill floor keeps
+ * draining instead of skipping unread buckets. Unknown retention keeps the backfill floor.
+ */
+const headFloor = (row: CloudflareAnalyticsStateRow, now: number): number => {
+	const { notOlderThanMs } = parseStoredSettings(row.settingsJson)
+	if (notOlderThanMs == null) return backfillFloor(row, now)
+	return Math.max(
+		floorToBucket(now - SAFETY_LAG_MS - HEAD_MAX_LAG_MS),
+		floorToBucket(now - notOlderThanMs) + BUCKET_MS,
+	)
+}
+
+/**
  * HEAD window — the newest un-ingested slice, fetched FIRST every tick so a freshly-connected
  * integration surfaces near-live data within one tick. The first poll (null watermark) grabs just
  * the newest window; steady state is the `[watermark, horizon]` delta once it reaches
  * {@link MIN_HEAD_WINDOW_MS}. Null until then.
+ *
+ * A backlogged window ends on a multiple of the window size, so zones whose watermarks drifted
+ * apart (one chunk rate-limited, its siblings not) share windows again and batch into full documents.
  */
 const headWindow = (row: CloudflareAnalyticsStateRow, now: number): PollWindow | null => {
 	const effectiveEnd = floorToBucket(now - SAFETY_LAG_MS)
-	const floor = backfillFloor(row, now)
 	const window = maxWindowMs(row)
-	const watermarkMs = row.watermarkAt
-	let start = watermarkMs ?? floorToBucket(effectiveEnd - window)
-	if (start < floor) start = floor
-	start = floorToBucket(start)
-	const end = Math.min(start + window, effectiveEnd)
-	if (end - start < Math.min(MIN_HEAD_WINDOW_MS, window)) return null
-	return { start, end }
+	const start = floorToBucket(Math.max(row.watermarkAt ?? effectiveEnd - window, headFloor(row, now)))
+	const fullEnd = start + window
+	if (fullEnd >= effectiveEnd) {
+		return effectiveEnd - start < Math.min(MIN_HEAD_WINDOW_MS, window)
+			? null
+			: { start, end: effectiveEnd }
+	}
+	const grid = floorToBucket(window)
+	return { start, end: grid < BUCKET_MS ? fullEnd : fullEnd - (fullEnd % grid) }
 }
 
 /**
@@ -790,8 +802,6 @@ const backfillWindow = (row: CloudflareAnalyticsStateRow, now: number): PollWind
 	if (end <= start) return null
 	return { start, end }
 }
-
-// Round planning
 
 /** One dataset's slice of a batched GraphQL document. */
 interface WorkPart {
@@ -973,6 +983,49 @@ const grantCapOf = (rows: ReadonlyArray<CloudflareAnalyticsStateRow>): number =>
 const nextGrantCap = (cap: number, tick: { readonly rateLimited: boolean; readonly callsMade: number }) =>
 	clampGrantCap(tick.rateLimited ? Math.floor(cap / 2) : tick.callsMade >= cap ? cap + GRANT_CAP_STEP : cap)
 
+/** A connection's persisted poll backoff, as stored on its workers anchor row. */
+type ConnectionBackoff = Pick<StoredStateRow, "backoffUntil" | "backoffStreak" | "backoffReason">
+
+const CLEARED_BACKOFF: ConnectionBackoff = { backoffUntil: null, backoffStreak: 0, backoffReason: null }
+
+const isBackedOff = (backoff: ConnectionBackoff, now: number) =>
+	backoff.backoffUntil !== null && backoff.backoffUntil > now
+
+/** The next ingest_refused step: a repeat climbs the ladder (capped at its top), another reason starts over. */
+const escalateIngestRefusedBackoff = (previous: ConnectionBackoff, end: number): ConnectionBackoff => {
+	const steps = INGEST_REFUSED_BACKOFF_STEPS_MS
+	const streak = Math.min(
+		(previous.backoffReason === "ingest_refused" ? previous.backoffStreak : 0) + 1,
+		steps.length,
+	)
+	const step = steps[streak - 1] ?? steps[0]
+	return { backoffUntil: end + step, backoffStreak: streak, backoffReason: "ingest_refused" }
+}
+
+/** What one poll did to the connection's backoff. Null leaves the stored state untouched. */
+const backoffAfterPoll = (
+	previous: ConnectionBackoff,
+	poll: {
+		readonly deliveryBlocked: boolean
+		readonly rateLimited: boolean
+		readonly answeredCalls: number
+		readonly rowsIngested: number
+	},
+	end: number,
+): ConnectionBackoff | null => {
+	if (poll.deliveryBlocked) return escalateIngestRefusedBackoff(previous, end)
+	// `rate_limited` rows are no longer written but may still be stored; an answered call clears them.
+	const recovered =
+		previous.backoffReason === "ingest_refused"
+			? poll.rowsIngested > 0
+			: previous.backoffReason === "rate_limited" && poll.answeredCalls > 0
+	return recovered ? CLEARED_BACKOFF : null
+}
+
+/** Take one call from the grant's shared tick budget; false once `callLimit` is spent. */
+const takeCall = (budget: Ref.Ref<number>, callLimit: number) =>
+	Ref.modify(budget, (calls) => (calls >= callLimit ? [false, calls] : [true, calls + 1]))
+
 /**
  * Attribute a GraphQL error to the document part that owns it. Execution errors carry a `path`
  * whose string segments include the failing selection's alias; validation errors (e.g. a plan
@@ -1038,6 +1091,8 @@ type PollOutcome =
 	| { readonly kind: "rate-limited"; readonly message: string }
 	| { readonly kind: "plan-blocked"; readonly message: string }
 	| { readonly kind: "failed"; readonly failure: DatasetPollFailure }
+	/** A sibling's error nulled the document's data; this part did not fail and is re-queried alone. */
+	| { readonly kind: "voided" }
 
 /** Typed constructor so each failure site returns `PollOutcome` (widens the failure off `as const`). */
 const failedOutcome = (failure: DatasetPollFailure): PollOutcome => ({ kind: "failed", failure })
@@ -1324,13 +1379,6 @@ export class CloudflareAnalyticsService extends Context.Service<
 
 		const dbExecute = makeDbExecute(database, "CloudflareAnalyticsService", toPersistenceError)
 
-		const systemTenant = (orgId: OrgId): TenantContext => ({
-			orgId,
-			userId: SYSTEM_USER_ID,
-			roles: [decodeRoleNameSync("root")],
-			authMode: "self_hosted",
-		})
-
 		const loadStateRows = (orgId: OrgId, accountId?: string) =>
 			dbExecute((db): Effect.Effect<ReadonlyArray<CloudflareAnalyticsStateRow>, MapleDbError> =>
 				db.run(
@@ -1491,7 +1539,8 @@ export class CloudflareAnalyticsService extends Context.Service<
 
 		/**
 		 * Claim the connection's tick lease via its workers anchor row. Returns the claimed anchor
-		 * (it carries the zone-discovery timestamp) or null — no anchor yet, or another tick owns it.
+		 * (it carries the zone-discovery timestamp) or null: no anchor yet, another tick owns it,
+		 * or a backoff written after this tick planned is still running.
 		 */
 		const claimLease = (orgId: OrgId, accountId: string, now: number) =>
 			dbExecute((db): Effect.Effect<ReadonlyArray<CloudflareAnalyticsStateRow>, MapleDbError> =>
@@ -1503,15 +1552,9 @@ export class CloudflareAnalyticsService extends Context.Service<
 							$.accountId.eq(accountId),
 							$.dataset.eq(WORKERS_DATASET),
 							$.zoneId.eq(""),
-							PG.or(
-								$.leaseUntil.isNull(),
-								$.leaseUntil.lt(now),
-								// Corrupt-lease escape hatch: a live lease is always bounded by now+LEASE_MS,
-								// so anything beyond 2x that is impossible under normal operation (e.g. a
-								// clock jump or a crashed writer that left a bogus far-future value) and is
-								// safe to reclaim rather than let it wedge the org forever.
-								$.leaseUntil.gt(now + 2 * LEASE_MS),
-							),
+							// A live lease never exceeds now + LEASE_MS; one past 2x is corrupt and reclaimed.
+							leaseClaimable($.leaseUntil, now, 2 * LEASE_MS),
+							PG.or($.backoffUntil.isNull(), $.backoffUntil.lte(now)),
 						])
 						.returning(),
 				),
@@ -1525,6 +1568,7 @@ export class CloudflareAnalyticsService extends Context.Service<
 		 * Compare-and-set on `claimedUntil` (the value this tick's claim wrote): a tick that
 		 * outlived its own lease must not clear the successor's — releasing the successor's live
 		 * lease would let a third tick overlap it and replay the same windows into the gateway.
+		 * `backoff` rides the same CAS, so a tick that lost its lease (or was reset) writes nothing.
 		 */
 		const releaseLease = (
 			orgId: OrgId,
@@ -1532,17 +1576,18 @@ export class CloudflareAnalyticsService extends Context.Service<
 			now: number,
 			claimedUntil: number | null,
 			holdUntilMs?: number,
+			backoff?: ConnectionBackoff,
 		) =>
 			dbExecute((db) =>
 				db.run(
 					PG.update(CloudflareAnalyticsState)
-						.set({ leaseUntil: holdUntilMs ?? null, updatedAt: now })
+						.set({ ...backoff, leaseUntil: holdUntilMs ?? null, updatedAt: now })
 						.where(($) => [
 							$.orgId.eq(orgId),
 							$.accountId.eq(accountId),
 							$.dataset.eq(WORKERS_DATASET),
 							$.zoneId.eq(""),
-							claimedUntil == null ? $.leaseUntil.isNull() : $.leaseUntil.eq(claimedUntil),
+							leaseStillOurs($.leaseUntil, claimedUntil),
 						]),
 				),
 			)
@@ -1686,7 +1731,7 @@ export class CloudflareAnalyticsService extends Context.Service<
 			accountId: string,
 			rows: ReadonlyArray<CloudflareAnalyticsStateRow>,
 			now: number,
-			budget: { calls: number },
+			budget: Ref.Ref<number>,
 			callLimit: number,
 		) {
 			const first = rows[0]
@@ -1739,8 +1784,7 @@ export class CloudflareAnalyticsService extends Context.Service<
 					state.stopped
 						? Effect.succeed(state)
 						: Effect.gen(function* () {
-								if (budget.calls >= callLimit) return { ...state, stopped: true }
-								budget.calls += 1
+								if (!(yield* takeCall(budget, callLimit))) return { ...state, stopped: true }
 								const result = yield* graphqlQuery(
 									accessToken,
 									{
@@ -2015,33 +2059,18 @@ export class CloudflareAnalyticsService extends Context.Service<
 			const cleanParts = Arr.filter(item.parts, (part) => !classified.failedParts.has(part))
 			if (cleanParts.length === 0) return results
 			if (result.data == null) {
-				// Errors typically null the whole `data` — clean parts simply didn't advance; retry
-				// next round. A null data with NO errors is an upstream contract break.
+				// A null data with NO errors is an upstream contract break.
 				if (result.errors.length === 0) {
 					return yield* decodeError("batched")
 				}
-				// When every error that nulled `data` is expected per-plan gating, the clean sibling
-				// parts weren't the problem — Cloudflare just voids the whole batch when one selection
-				// is plan-gated. Don't fail them (and don't emit `AnalyticsPollError` telemetry); treat
-				// them like the errorless case above — they didn't advance, retry next round. The
-				// gated part itself is handled by its own classification (disabled/quantiles), and once
-				// it disables, later rounds stop voiding the batch.
-				if (Arr.every(result.errors, (error) => isPlanGatedMessage(error.message))) {
-					return results
-				}
-				for (const part of cleanParts) {
-					results.push({
-						part,
-						outcome: failedOutcome({
-							scope: part.dataset.scope,
-							datasetId: part.dataset.id,
-							kind: "other",
-							message: `GraphQL response carried no data: ${graphqlErrorMessage(result.errors)}`,
-							rowIds: Arr.map(part.rows, (row) => row.id),
-						}),
-					})
-				}
-				return results
+				// Every error is attributed to a failed part (an unattributed one fails every part), so
+				// Cloudflare voided the clean siblings' data on another part's account. The caller
+				// re-queries them without it; failing them here starved them for as long as it failed.
+				const voided = Arr.map(cleanParts, (part): PartResult => ({
+					part,
+					outcome: { kind: "voided" },
+				}))
+				return [...results, ...voided]
 			}
 
 			const mapContext = (row: CloudflareAnalyticsStateRow) => ({
@@ -2124,8 +2153,6 @@ export class CloudflareAnalyticsService extends Context.Service<
 			yield* Effect.annotateCurrentSpan(chunkOutcomeAttributes(results))
 			return results
 		})
-
-		// Hyperdrive config inventory (discovery-cadence, service-map consumer)
 
 		/**
 		 * Upsert the org's Hyperdrive configs by `(orgId, configId)` and soft-delete rows whose
@@ -2250,7 +2277,7 @@ export class CloudflareAnalyticsService extends Context.Service<
 			accountId: string,
 			// Shared across every account of the grant — Cloudflare meters the grant's holder, so
 			// a per-account budget would multiply a tick's calls by the account count.
-			budget: { calls: number },
+			budget: Ref.Ref<number>,
 			// The running total this account may spend up to; the rest is reserved for siblings
 			// polled after it (see `planAccountBudgets`).
 			callLimit: number,
@@ -2267,7 +2294,7 @@ export class CloudflareAnalyticsService extends Context.Service<
 			})
 			// The budget is the grant's running total; this account's own spend is the delta, so
 			// the org summary's `callsMade` stays a sum rather than counting siblings' calls again.
-			const callsAtStart = budget.calls
+			const callsAtStart = yield* Ref.get(budget)
 			// A skip used to be silent — the reason only ever landed in the returned summary, which
 			// nothing read for a plain tick. Annotating the poll span means every skip is now
 			// visible on the trace even when the tick rollup below doesn't (yet) escalate it.
@@ -2301,21 +2328,39 @@ export class CloudflareAnalyticsService extends Context.Service<
 
 			// Claim the tick lease; the anchor row is created lazily the first time a connection
 			// is polled. Leases are per account, so sibling accounts of one org tick independently.
-			let claimed = yield* claimLease(orgId, accountId, now)
-			if (claimed == null) {
-				yield* ensureAccountRows(orgId, accountId, now)
-				claimed = yield* claimLease(orgId, accountId, now)
+			const anchor = yield* claimLease(orgId, accountId, now).pipe(
+				Effect.filterOrElse(Predicate.isNotNull, () =>
+					ensureAccountRows(orgId, accountId, now).pipe(
+						Effect.andThen(claimLease(orgId, accountId, now)),
+					),
+				),
+			)
+			if (anchor === null) {
+				// A sibling tick may have written a backoff after this tick planned; name it.
+				const accountRows = yield* loadStateRows(orgId, accountId)
+				const stored = Arr.findFirst(
+					accountRows,
+					(row) => row.dataset === WORKERS_DATASET && row.zoneId === "" && isBackedOff(row, now),
+				)
+				if (Option.isNone(stored)) return yield* skip("lease held by another tick")
+				yield* Effect.annotateCurrentSpan({
+					"maple.cloudflare.poll_outcome": "backoff",
+					"maple.cloudflare.backoff_reason": stored.value.backoffReason ?? "",
+				})
+				return yield* skip(`backoff: ${stored.value.backoffReason ?? "unknown"}`)
 			}
-			if (claimed == null) return yield* skip("lease held by another tick")
-			const anchor = claimed
 
 			// Set when Cloudflare's GraphQL rate limiter refuses the account. Lives outside the body
-			// below so the lease-releasing finalizer can convert it into the backoff hold.
+			// below so the finalizer can turn it into a backoff or a lease hold.
 			const rateLimitedRef = yield* Ref.make(false)
 			// Set when ingest refuses this org's metrics (401/402/403). It ends the tick, since
 			// every remaining document would rediscover the same org-level condition, and the
-			// finalizer holds the lease so the next ticks skip the org too.
+			// finalizer escalates the connection's backoff so the next ticks skip it too.
 			const deliveryBlockedRef = yield* Ref.make(false)
+			// Analytics documents Cloudflare answered without rate limiting, and rows the gateway
+			// accepted: together they decide whether a stored backoff clears (`backoffAfterPoll`).
+			const answeredCallsRef = yield* Ref.make(0)
+			const rowsIngestedRef = yield* Ref.make(0)
 
 			return yield* Effect.gen(function* () {
 				const refusal = yield* Ref.get(orgRefusal)
@@ -2475,12 +2520,16 @@ export class CloudflareAnalyticsService extends Context.Service<
 				}
 				const ingestKey = keyResult.success
 
-				const rowsIngestedRef = yield* Ref.make(0)
 				// Set when Cloudflare rejects the token mid-loop — every further call would 401 too.
 				const revokedRef = yield* Ref.make(false)
 				// Genuine dataset failures this tick (authz/upstream/revoked/billing/other) — the seam pushes
 				// here so the org summary carries a failure count and the tick can escalate.
-				const datasetFailures: Array<DatasetPollFailure> = []
+				const datasetFailuresRef = yield* Ref.make<ReadonlyArray<DatasetPollFailure>>([])
+				// Rows that failed sit out the rest of the tick: re-asking a failing dataset every round
+				// while its siblings backfill costs a call and an exception event each time.
+				const failedRowIdsRef = yield* Ref.make<ReadonlySet<CloudflareAnalyticsStateRow["id"]>>(
+					new Set(),
+				)
 
 				// Round-based catch-up: every round advances each behind zone/dataset by one window;
 				// loop until caught up or the call budget is spent (backfill resumes next tick).
@@ -2488,11 +2537,76 @@ export class CloudflareAnalyticsService extends Context.Service<
 					Ref.get(revokedRef),
 					Ref.get(deliveryBlockedRef),
 					Ref.get(rateLimitedRef),
-				]).pipe(Effect.map((flags) => Arr.some(flags, Boolean) || budget.calls >= callLimit))
+					Ref.get(budget),
+				]).pipe(
+					Effect.map(
+						([revoked, deliveryBlocked, rateLimited, calls]) =>
+							revoked || deliveryBlocked || rateLimited || calls >= callLimit,
+					),
+				)
+				// One budgeted call; an exhausted budget answers with no results, like a skipped item.
+				const pollItem = (item: WorkItem) =>
+					Effect.gen(function* () {
+						if (!(yield* takeCall(budget, callLimit))) return []
+						return yield* pollDatasetChunk(
+							item,
+							{ orgId, accountId, accessToken, ingestKey, sourceId, liveScripts },
+							now,
+						).pipe(
+							Effect.tap((results) =>
+								Arr.some(results, ({ outcome }) => outcome.kind === "rate-limited")
+									? Effect.void
+									: Ref.update(answeredCallsRef, (count) => count + 1),
+							),
+							Effect.catchTags({
+								"@maple/http/errors/IntegrationsRevokedError": (error) =>
+									// Stop this connection's loop; the seam disables + records health
+									// connection-wide. The grant is NOT stamped revoked: a mid-poll
+									// 401/403 is account-scoped (access to this account was removed),
+									// and stamping would stop the grant's other accounts too. Disabling
+									// this account's rows is what keeps it from being re-polled.
+									Ref.set(revokedRef, true).pipe(
+										Effect.as(
+											allPartsFailed(item, "revoked", error.message, {
+												orgWide: true,
+												disable: true,
+											}),
+										),
+									),
+								"@maple/http/errors/IntegrationsUpstreamError": (error) =>
+									Effect.succeed(allPartsFailed(item, "upstream", error.message)),
+							}),
+						)
+					})
+
+				// Re-query the parts a failing sibling voided for as long as each pass drops a failed
+				// part, so it ends within one pass per part; voided parts left over wait for the next round.
+				const pollWithRequery = (item: WorkItem): ReturnType<typeof pollItem> =>
+					pollItem(item).pipe(
+						Effect.flatMap((results) => {
+							const voided = Arr.flatMap(results, ({ part, outcome }) =>
+								outcome.kind === "voided" ? [part] : [],
+							)
+							return stopped.pipe(
+								Effect.flatMap((stop) =>
+									stop || voided.length === 0 || voided.length === item.parts.length
+										? Effect.succeed(results)
+										: pollWithRequery({ ...item, parts: voided }).pipe(
+												Effect.map((more) => [...results, ...more]),
+											),
+								),
+							)
+						}),
+					)
+
 				// One round; succeeds with whether another round should run.
 				const round = Effect.gen(function* () {
 					if (yield* stopped) return false
-					const work = buildWorkItems(rows, now)
+					const failedRowIds = yield* Ref.get(failedRowIdsRef)
+					const work = buildWorkItems(
+						Arr.filter(rows, (row) => !failedRowIds.has(row.id)),
+						now,
+					)
 					if (work.length === 0) return false
 					const progressedRef = yield* Ref.make(false)
 
@@ -2502,31 +2616,15 @@ export class CloudflareAnalyticsService extends Context.Service<
 						(item) =>
 							Effect.gen(function* () {
 								if (yield* stopped) return
-								budget.calls += 1
-								const partResults = yield* pollDatasetChunk(
-									item,
-									{ orgId, accountId, accessToken, ingestKey, sourceId, liveScripts },
-									now,
-								).pipe(
-									Effect.catchTags({
-										"@maple/http/errors/IntegrationsRevokedError": (error) =>
-											// Stop this connection's loop; the seam disables + records health
-											// connection-wide. The grant is NOT stamped revoked: a mid-poll
-											// 401/403 is account-scoped (access to this account was removed),
-											// and stamping would stop the grant's other accounts too. Disabling
-											// this account's rows is what keeps it from being re-polled.
-											Ref.set(revokedRef, true).pipe(
-												Effect.as(
-													allPartsFailed(item, "revoked", error.message, {
-														orgWide: true,
-														disable: true,
-													}),
-												),
-											),
-										"@maple/http/errors/IntegrationsUpstreamError": (error) =>
-											Effect.succeed(allPartsFailed(item, "upstream", error.message)),
-									}),
-								)
+								// The round was planned up front: a row that failed earlier in it (its
+								// head window, say) must not be asked again for its backfill window.
+								const failedRowIds = yield* Ref.get(failedRowIdsRef)
+								const parts = Arr.flatMap(item.parts, (part) => {
+									const live = Arr.filter(part.rows, (row) => !failedRowIds.has(row.id))
+									return live.length === 0 ? [] : [{ ...part, rows: live }]
+								})
+								if (parts.length === 0) return
+								const partResults = yield* pollWithRequery({ ...item, parts })
 
 								// Mirror the DB writes onto the in-memory rows so the next round re-plans
 								// without a per-round SELECT.
@@ -2578,16 +2676,18 @@ export class CloudflareAnalyticsService extends Context.Service<
 												// backoff, and stamping `lastError` would surface our own pacing as a
 												// tenant-facing integration error.
 												"rate-limited": ({ message }) =>
-													Effect.logWarning(
-														"cloudflare-analytics rate limited by Cloudflare",
-														{
-															orgId,
-															dataset: part.dataset.id,
-															callsMade: budget.calls,
-															backoffMs: RATE_LIMIT_BACKOFF_MS,
-															error: message,
-														},
-													).pipe(
+													Ref.get(answeredCallsRef).pipe(
+														Effect.flatMap((answeredCalls) =>
+															Effect.logWarning(
+																"cloudflare-analytics rate limited by Cloudflare",
+																{
+																	orgId,
+																	dataset: part.dataset.id,
+																	answeredCalls,
+																	error: message,
+																},
+															),
+														),
 														Effect.andThen(
 															Effect.annotateCurrentSpan({
 																"maple.cloudflare.poll_outcome":
@@ -2615,7 +2715,6 @@ export class CloudflareAnalyticsService extends Context.Service<
 																{
 																	orgId,
 																	accountId,
-																	backoffMs: PLAN_BLOCKED_BACKOFF_MS,
 																	error: message,
 																},
 															),
@@ -2629,6 +2728,8 @@ export class CloudflareAnalyticsService extends Context.Service<
 														Effect.andThen(Ref.set(deliveryBlockedRef, true)),
 														Effect.andThen(Ref.set(orgRefusal, message)),
 													),
+												// Not advanced and not failed: re-queried above or next round.
+												voided: () => Effect.void,
 												// The one seam: record health to Postgres AND emit an observable signal.
 												failed: ({ failure }) =>
 													Effect.gen(function* () {
@@ -2655,7 +2756,14 @@ export class CloudflareAnalyticsService extends Context.Service<
 															)
 														}
 														yield* observeDatasetFailure(orgId, failure)
-														datasetFailures.push(failure)
+														yield* Ref.update(datasetFailuresRef, (failures) => [
+															...failures,
+															failure,
+														])
+														yield* Ref.update(
+															failedRowIdsRef,
+															(ids) => new Set([...ids, ...failure.rowIds]),
+														)
 													}),
 											}),
 										),
@@ -2685,7 +2793,7 @@ export class CloudflareAnalyticsService extends Context.Service<
 							? "rate_limited"
 							: pendingItems === 0
 								? "caught_up"
-								: budget.calls >= callLimit
+								: (yield* Ref.get(budget)) >= callLimit
 									? "budget_exhausted"
 									: "no_progress"
 				const lags = datasetLags(rows, now)
@@ -2719,15 +2827,19 @@ export class CloudflareAnalyticsService extends Context.Service<
 				)
 
 				const rowsIngested = yield* Ref.get(rowsIngestedRef)
+				const callsMade = (yield* Ref.get(budget)) - callsAtStart
+				const datasetFailures = yield* Ref.get(datasetFailuresRef)
 				// Metrics ship through the ingest gateway (see emitMetrics), so Autumn metering
 				// happens there — no self-report here.
-				yield* Effect.annotateCurrentSpan("maple.cloudflare.calls", budget.calls - callsAtStart)
-				yield* Effect.annotateCurrentSpan("maple.cloudflare.rows_ingested", rowsIngested)
-				yield* Effect.annotateCurrentSpan("maple.cloudflare.dataset_failures", datasetFailures.length)
+				yield* Effect.annotateCurrentSpan({
+					"maple.cloudflare.calls": callsMade,
+					"maple.cloudflare.rows_ingested": rowsIngested,
+					"maple.cloudflare.dataset_failures": datasetFailures.length,
+				})
 				return {
 					accountId,
 					skipped: null,
-					callsMade: budget.calls - callsAtStart,
+					callsMade,
 					rowsIngested,
 					failures: datasetFailures,
 					rateLimited,
@@ -2735,42 +2847,79 @@ export class CloudflareAnalyticsService extends Context.Service<
 				} satisfies PollConnectionSummary
 			}).pipe(
 				Effect.ensuring(
-					Effect.all([
-						Clock.currentTimeMillis,
-						Ref.get(rateLimitedRef),
-						Ref.get(deliveryBlockedRef),
-					]).pipe(
-						Effect.flatMap(([end, rateLimited, deliveryBlocked]) =>
-							// A rate-limited tick doesn't release the lease — it holds it for the backoff
-							// window, so the next cron tick skips this connection instead of re-depleting
-							// the account's GraphQL budget.
-							releaseLease(
+					Effect.gen(function* () {
+						const [end, rateLimited, deliveryBlocked, answeredCalls, rowsIngested] =
+							yield* Effect.all([
+								Clock.currentTimeMillis,
+								Ref.get(rateLimitedRef),
+								Ref.get(deliveryBlockedRef),
+								Ref.get(answeredCallsRef),
+								Ref.get(rowsIngestedRef),
+							])
+						const backoff = backoffAfterPoll(
+							anchor,
+							{ deliveryBlocked, rateLimited, answeredCalls, rowsIngested },
+							end,
+						)
+						if (backoff !== null) {
+							yield* Effect.annotateCurrentSpan({
+								"maple.cloudflare.backoff_reason": backoff.backoffReason ?? "cleared",
+								"maple.cloudflare.backoff_streak": backoff.backoffStreak,
+							})
+						}
+						// Any rate limit takes the short lease hold, so the next-but-one tick retries.
+						const rateLimitHold = rateLimited && !deliveryBlocked
+						yield* releaseLease(
+							orgId,
+							accountId,
+							end,
+							anchor.leaseUntil,
+							rateLimitHold ? end + RATE_LIMIT_BACKOFF_MS : undefined,
+							backoff ?? undefined,
+						)
+					}).pipe(
+						// The ensuring must never fail (that would mask whatever this tick actually did),
+						// but a failed write here can wedge the connection behind a lease until the
+						// corrupt-lease escape hatch reclaims it, so log loudly instead of ignoring it.
+						Effect.catchCause((cause) =>
+							Effect.logWarning("cloudflare-analytics lease release failed", {
 								orgId,
 								accountId,
-								end,
-								anchor.leaseUntil,
-								deliveryBlocked
-									? end + PLAN_BLOCKED_BACKOFF_MS
-									: rateLimited
-										? end + RATE_LIMIT_BACKOFF_MS
-										: undefined,
-							).pipe(
-								// The ensuring must never fail (that would mask whatever this tick actually
-								// did), but a lease release failure is not nothing — it silently wedges the
-								// connection behind a lease until the corrupt-lease escape hatch reclaims it,
-								// so log loudly instead of swallowing it via Effect.ignore.
-								Effect.catchCause((cause) =>
-									Effect.logWarning("cloudflare-analytics lease release failed", {
-										orgId,
-										accountId,
-										error: summarizeCause(cause),
-									}),
-								),
-							),
+								error: summarizeCause(cause),
+							}),
 						),
 					),
 				),
 			)
+		})
+
+		/** A connection sitting out its backoff: traced like a poll so the outcome is countable, no upstream call. */
+		const skipBackedOffConnection = Effect.fn("CloudflareAnalyticsService.pollConnection")(function* (
+			orgId: OrgId,
+			accountId: string,
+			backoff: ConnectionBackoff,
+			now: number,
+		) {
+			yield* Effect.annotateCurrentSpan({
+				orgId,
+				"maple.cloudflare.account_id": accountId,
+				"maple.cloudflare.skip_reason": "backoff",
+				"maple.cloudflare.poll_outcome": "backoff",
+				"maple.cloudflare.backoff_reason": backoff.backoffReason ?? "",
+				"maple.cloudflare.backoff_streak": backoff.backoffStreak,
+				"maple.cloudflare.backoff_remaining_ms": (backoff.backoffUntil ?? now) - now,
+				"maple.cloudflare.calls": 0,
+				"maple.cloudflare.rows_ingested": 0,
+			})
+			return {
+				accountId,
+				skipped: `backoff: ${backoff.backoffReason ?? "unknown"}`,
+				callsMade: 0,
+				rowsIngested: 0,
+				failures: [],
+				rateLimited: false,
+				issue: null,
+			} satisfies PollConnectionSummary
 		})
 
 		// The grant's source; null while the connection is not linked yet.
@@ -2870,7 +3019,7 @@ export class CloudflareAnalyticsService extends Context.Service<
 			}
 			const status = yield* oauth.getStatus(orgId)
 			// One budget for the whole grant, spent by the accounts in planned order.
-			const budget = { calls: 0 }
+			const budget = yield* Ref.make(0)
 			const orgRefusal = yield* Ref.make<string | null>(null)
 			const canPoll = (account: (typeof status.accounts)[number]) =>
 				!account.revoked && hasAnalyticsScopes(account.scope)
@@ -2892,25 +3041,46 @@ export class CloudflareAnalyticsService extends Context.Service<
 			const stateRows = pollable.length === 0 ? [] : yield* loadStateRows(orgId)
 			const grantCap = grantCapOf(stateRows)
 			const planNow = pollable.length === 0 ? 0 : yield* Clock.currentTimeMillis
+			// A backed-off account makes no call this tick and reserves no share of the budget.
+			const pollableIds = new Set(Arr.map(pollable, (account) => account.accountId))
+			const backoffs = new Map(
+				Arr.flatMap(stateRows, (row) =>
+					row.dataset === WORKERS_DATASET &&
+					row.zoneId === "" &&
+					pollableIds.has(row.accountId) &&
+					isBackedOff(row, planNow)
+						? [[row.accountId, row] as const]
+						: [],
+				),
+			)
 			const plan =
 				pollable.length === 0
 					? []
 					: planAccountBudgets(
-							Arr.map(pollable, (account) => account.accountId),
+							Arr.filter(
+								Arr.map(pollable, (account) => account.accountId),
+								(accountId) => !backoffs.has(accountId),
+							),
 							stateRows,
 							planNow,
 							grantCap,
 						)
 			const sourceId = stampedSourceId(linkedSource)
-			const polled = yield* Effect.forEach(plan, ({ accountId, callLimit }) =>
-				pollConnection(orgId, accountId, budget, callLimit, orgRefusal, sourceId),
+			const backedOff = yield* Effect.forEach(backoffs, ([accountId, backoff]) =>
+				skipBackedOffConnection(orgId, accountId, backoff, planNow),
 			)
+			const polled = [
+				...backedOff,
+				...(yield* Effect.forEach(plan, ({ accountId, callLimit }) =>
+					pollConnection(orgId, accountId, budget, callLimit, orgRefusal, sourceId),
+				)),
+			]
 			// A tick where every account skipped (e.g. still sitting out a backoff) says nothing
 			// about the limit, so the cap only moves after a tick that actually polled.
 			if (Arr.some(polled, (summary) => summary.skipped === null)) {
 				const nextCap = nextGrantCap(grantCap, {
 					rateLimited: Arr.some(polled, (summary) => summary.rateLimited),
-					callsMade: budget.calls,
+					callsMade: yield* Ref.get(budget),
 				})
 				yield* Effect.annotateCurrentSpan({
 					"maple.cloudflare.grant_cap": grantCap,
@@ -2983,64 +3153,22 @@ export class CloudflareAnalyticsService extends Context.Service<
 				),
 			)
 			const capable = Arr.map([...capableOrgIds], (orgId) => ({ orgId }))
-			// Concurrent fan-out below — must be a Ref rather than a mutable closure variable.
-			const rowsIngestedRef = yield* Ref.make(0)
-			const failuresRef = yield* Ref.make(0)
-			// Every org's full summary, including skips — the outage that motivated this had 100%
+			// Every org's full summary, including skips: the outage that motivated this had 100%
 			// of ticks skip silently for 31 hours because nothing outside pollOrg ever looked at
-			// `summary.skipped`. Keeping the whole summary (not just counters) lets the rollup below
-			// name which orgs are stuck and why.
-			const summariesRef = yield* Ref.make<Array<PollOrgSummary>>([])
-			yield* Effect.forEach(
-				capable,
-				(row) =>
-					pollOrg(decodeOrgId(row.orgId)).pipe(
-						Effect.tap((summary) =>
-							Effect.all(
-								[
-									Ref.update(rowsIngestedRef, (count) => count + summary.rowsIngested),
-									Ref.update(failuresRef, (count) => count + summary.failures.length),
-									Ref.update(summariesRef, (list) => [...list, summary]),
-								],
-								{ discard: true },
-							),
-						),
-						// Isolate genuine per-org failures/defects so one bad org can't fail the
-						// whole tick. Interrupts (isolate teardown) are NOT per-org failures —
-						// re-raise them so the tick cancels promptly instead of logging a phantom
-						// failure and marching through the remaining orgs. (Same pattern as
-						// AnomalyDetectionService / ErrorsService.)
-						Effect.catchCause((cause) =>
-							Cause.hasInterruptsOnly(cause)
-								? Effect.interrupt
-								: Effect.logWarning("cloudflare-analytics org poll failed", {
-										orgId: row.orgId,
-										error: summarizeCause(cause),
-									}).pipe(
-										// A crashed org must still appear in the rollup — otherwise perOrg
-										// silently omits it, `skipped` undercounts, and the zero-rows warning
-										// below can't see a crash-storm at all.
-										Effect.andThen(
-											Ref.update(summariesRef, (list) => [
-												...list,
-												{
-													orgId: decodeOrgId(row.orgId),
-													skipped:
-														"org poll failed — see the warning log for the cause",
-													callsMade: 0,
-													rowsIngested: 0,
-													failures: [],
-												} satisfies PollOrgSummary,
-											]),
-										),
-									),
-						),
-					),
-				{ concurrency: ORG_CONCURRENCY, discard: true },
-			)
-			const rowsIngested = yield* Ref.get(rowsIngestedRef)
-			const failures = yield* Ref.get(failuresRef)
-			const summaries = yield* Ref.get(summariesRef)
+			// `summary.skipped`. A crashed org still appears, so the rollup below can see a crash-storm.
+			const summaries = yield* pollFleet(capable, (row) => pollOrg(decodeOrgId(row.orgId)), {
+				message: "cloudflare-analytics org poll failed",
+				annotations: (row) => ({ orgId: row.orgId }),
+				fallback: (row): PollOrgSummary => ({
+					orgId: decodeOrgId(row.orgId),
+					skipped: "org poll failed, see the warning log for the cause",
+					callsMade: 0,
+					rowsIngested: 0,
+					failures: [],
+				}),
+			})
+			const rowsIngested = Arr.reduce(summaries, 0, (sum, summary) => sum + summary.rowsIngested)
+			const failures = Arr.reduce(summaries, 0, (sum, summary) => sum + summary.failures.length)
 			const skipped = Arr.filter(summaries, (summary) => summary.skipped != null).length
 			const perOrg = Arr.map(summaries, (summary) => ({
 				orgId: summary.orgId,
@@ -3187,12 +3315,12 @@ export class CloudflareAnalyticsService extends Context.Service<
 			const routeOptions = clickHouseReady ? {} : { route: "ingest" as const }
 			const [rows, statsRows] = yield* Effect.all(
 				[
-					warehouse.compiledQuery(systemTenant(orgId), compiled, {
+					warehouse.compiledQuery(systemTenant(orgId, SYSTEM_USER_ID), compiled, {
 						profile: "aggregation",
 						context: "cloudflareUsage",
 						...routeOptions,
 					}),
-					warehouse.compiledQuery(systemTenant(orgId), compiledStats, {
+					warehouse.compiledQuery(systemTenant(orgId, SYSTEM_USER_ID), compiledStats, {
 						profile: "aggregation",
 						context: "cloudflareUsageStats",
 						...routeOptions,
@@ -3383,6 +3511,7 @@ export class CloudflareAnalyticsService extends Context.Service<
 							lastErrorAt: null,
 							discoveredAt: null,
 							leaseUntil: null,
+							...CLEARED_BACKOFF,
 							updatedAt: now,
 						})
 						.where(($) => [

@@ -1,12 +1,11 @@
 import { Clock, Effect, Option, Schema, Array as Arr, Record as Rec } from "effect"
+import { formatWarehouseDateTime, CH } from "@maple/query-engine"
 import {
 	QueryEngineExecuteRequest,
 	TracesFacetDimension,
 	type AttributeFilter,
 	type AttributeFilterLeaf,
-	formatWarehouseDateTime,
-	CH,
-} from "@maple/query-engine"
+} from "@maple/domain/query-engine"
 import { TraceId, SpanId } from "@maple/domain"
 import {
 	DeploymentEnvironment,
@@ -160,23 +159,6 @@ export interface Trace {
 	rootSpan: TraceRootSpanSummary
 	rootSpanName: string
 	hasError: boolean
-}
-
-export interface TracesResponse {
-	data: Trace[]
-	meta: {
-		limit: number
-		offset: number
-		/**
-		 * Rows the warehouse page actually produced before the noise filter ran.
-		 * Pagination must advance by pages, not by `data.length`: a filtered page
-		 * returns fewer rows than it consumed, and `scannedCount === limit` — not
-		 * a full `data` array — is what means "more pages exist".
-		 */
-		scannedCount: number
-		/** Noise traces dropped from this page (`scannedCount - data.length`). */
-		hiddenCount: number
-	}
 }
 
 /** Fold the singular alias and the array spelling of a facet into one list. */
@@ -654,10 +636,6 @@ interface TracesFacets {
 		p50DurationMs: number
 		p95DurationMs: number
 	}
-}
-
-export interface TracesFacetsResponse {
-	data: TracesFacets
 }
 
 const GetTracesFacetsInputSchema = Schema.Struct({

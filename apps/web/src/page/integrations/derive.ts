@@ -8,23 +8,21 @@ import {
 	gcpConnectionState,
 	gcpScopeLabel,
 	gcpWorstState,
-} from "../../components/integrations/gcp-connector-state"
+} from "../infra-integrations/gcp/connector-state"
 import { DateTime, Option, Array as Arr } from "effect"
 import { AsyncData } from "foldkit"
 import {
 	metricsAuthOf,
 	metricsLastCollectedAt,
 	metricsLastError,
-} from "../../components/integrations/planetscale-setup-steps"
+} from "../infra-integrations/planetscale/setup-steps"
 import type { Keyed } from "@maple/views/data/keyed"
-import { chatIntegrationId, HUB_CATALOG, type IntegrationId } from "./catalog"
-import { hasBringYourOwnCloudAddOn } from "../../lib/billing/plan-gating"
+import { chatIntegrationId, type IntegrationId } from "./catalog"
+import { hasBringYourOwnCloudAddOn } from "../kit/billing/plan-gating"
 import type { Visibility } from "../settings/nav"
 import type { Model, Statuses } from "./model"
 
-// `useIntegrationStatuses` and `useIntegrationOverviews`, as pure folds.
-
-/** `Result.builder`: success (also while revalidating), initial (`null`), else the failure value. */
+/** Success (also while revalidating), initial (`null`), else the failure value. */
 export const fold = <A, E, R>(slot: Keyed<A, E>, onSuccess: (data: A) => R, onFailure: () => R): R | null =>
 	AsyncData.match(slot.data, {
 		onIdle: () => null,
@@ -221,7 +219,7 @@ const githubStatus = (statuses: Statuses) =>
 const connectedOrNot = (connected: boolean): CardStatus =>
 	connected ? { label: "Connected", variant: "ok" } : NOT_CONNECTED
 
-/** The header badge per integration (`useIntegrationStatuses`); `null` while loading. */
+/** The header badge per integration; `null` while loading. */
 export const cardStatusOf = (statuses: Statuses, id: IntegrationId, nowMs: number): CardStatus | null => {
 	switch (id) {
 		case "gcp":
@@ -309,12 +307,30 @@ export const cardStatusOf = (statuses: Statuses, id: IntegrationId, nowMs: numbe
 			)
 		case "github":
 			return githubStatus(statuses)
+		case "google-search-console":
+			return fold(
+				statuses.searchConsole,
+				(status): CardStatus =>
+					status.revoked
+						? { label: "Revoked", variant: "warn" }
+						: !status.connected
+							? status.configured
+								? NOT_CONNECTED
+								: NOT_CONFIGURED
+							: {
+									label: countLabel(
+										Arr.filter(status.sites, (site) => site.enabled).length,
+										"property",
+										"properties",
+									),
+									variant: "ok",
+								},
+				unavailableStatus,
+			)
 		default:
 			return chatStatus(statuses, id)
 	}
 }
-
-// OVERVIEWS
 
 const unavailableOverview = (): IntegrationOverview => UNAVAILABLE
 
@@ -601,6 +617,36 @@ const linearOverview = (statuses: Statuses) =>
 		unavailableOverview,
 	)
 
+const searchConsoleOverview = (statuses: Statuses) =>
+	fold(
+		statuses.searchConsole,
+		(status): IntegrationOverview => {
+			if (!status.connected) return status.configured ? CONNECT : UNCONFIGURED
+			const enabled = Arr.filter(status.sites, (site) => site.enabled)
+			const failing = Arr.filter(enabled, (site) => site.lastError !== null).length
+			const issue = status.revoked
+				? "Reconnect Google"
+				: enabled.length === 0
+					? "Choose properties"
+					: failing > 0
+						? `${countLabel(failing, "property", "properties")} failing`
+						: null
+			return {
+				kind: "connected",
+				...attentionOr(issue),
+				...(status.revoked ? { stateLabel: "Revoked" } : undefined),
+				context: status.accountEmail,
+				stat:
+					enabled.length > 0
+						? `${countLabel(enabled.length, "property", "properties")} selected`
+						: null,
+				lastSync: lastSyncOf(maxMs(Arr.map(enabled, (site) => site.lastSyncedAt))),
+				issue,
+			}
+		},
+		unavailableOverview,
+	)
+
 const githubOverview = (statuses: Statuses) =>
 	fold(
 		statuses.github,
@@ -668,7 +714,7 @@ const chatOverview = (statuses: Statuses, id: IntegrationId) =>
 		unavailableOverview,
 	)
 
-/** One integration's overview (`useIntegrationOverviews()[id]`); `null` while its status loads. */
+/** One integration's overview; `null` while its status loads. */
 export const overviewOf = (statuses: Statuses, nowMs: number, id: IntegrationId): IntegrationOverview => {
 	switch (id) {
 		case "gcp":
@@ -691,32 +737,20 @@ export const overviewOf = (statuses: Statuses, nowMs: number, id: IntegrationId)
 			return linearOverview(statuses)
 		case "github":
 			return githubOverview(statuses)
+		case "google-search-console":
+			return searchConsoleOverview(statuses)
 		default:
 			return chatOverview(statuses, id)
 	}
 }
 
-/** `IntegrationsSummary`: quiet until every overview resolved, and while nothing is connected. */
-export const summaryOf = (
-	statuses: Statuses,
-	nowMs: number,
-): { readonly connected: number; readonly attention: number } | null => {
-	const values = Arr.map(HUB_CATALOG, (entry) => overviewOf(statuses, nowMs, entry.id))
-	if (Arr.some(values, (value) => value === null)) return null
-	const connected = Arr.filter(values, (value): value is ConnectedOverview => value?.kind === "connected")
-	if (connected.length === 0) return null
-	return {
-		connected: connected.length,
-		attention: Arr.filter(connected, (value) => value.health === "attention").length,
-	}
-}
-
 /** `useVisibleSettingsSections()` on `/integrations`: the session's admin flag and the BYOC add-on. */
 export const settingsNavVisibility = (
-	model: Pick<Model, "grants" | "customer">,
+	model: Pick<Model, "grants" | "customer" | "hasDataSources">,
 	isClerk: boolean,
 ): Visibility => {
-	if (!isClerk) return { isClerk, grants: Policy.allPermissions, canAccessDataPlatform: true }
+	if (!isClerk)
+		return { isClerk, grants: Policy.allPermissions, canAccessDataPlatform: true, hasDataSources: true }
 	const hasByoc = AsyncData.getOrElse(
 		AsyncData.map(model.customer.data, hasBringYourOwnCloudAddOn),
 		() => false,
@@ -725,5 +759,6 @@ export const settingsNavVisibility = (
 		isClerk,
 		grants: model.grants,
 		canAccessDataPlatform: Policy.has(model.grants, "warehouse:manage") && hasByoc,
+		hasDataSources: model.hasDataSources,
 	}
 }

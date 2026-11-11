@@ -1,6 +1,7 @@
 import type { V2Recommendation } from "@maple/domain/http/v2"
 import { formatNumber } from "@maple/ui/lib/format"
 import type { Html, HtmlBuilder } from "foldkit/html"
+import { stripClass } from "@maple/views/ui/rule"
 import * as CopyButton from "@maple/views/ui/copy-button"
 import { icon } from "@maple/views/ui/icon"
 import { inlineCode } from "@maple/views/ui/inline-code"
@@ -12,7 +13,7 @@ import { sectionHeading } from "../kit/section-heading"
 import { typography, typographyClass } from "@maple/views/ui/typography"
 import { hstack } from "@maple/views/ui/stack"
 
-// The body of `RecommendationDetailPage`: Summary, ChangeBreakdown, CautionCallout and the fix block.
+// The recommendation page's body: summary, change breakdown, caution callout and the fix block.
 
 type H = HtmlBuilder<Message>
 
@@ -175,7 +176,7 @@ const mappingBlock = (h: H, model: Model, issue: V2Recommendation): Html => {
 					{
 						align: "center",
 						justify: "between",
-						className: "border-b border-border-subtle px-3 py-2",
+						className: stripClass("head", "border-border-subtle"),
 					},
 					[
 						typography(h, { size: "xs", tone: "muted" }, [

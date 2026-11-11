@@ -1,14 +1,8 @@
-import {
-	resolveDbNodeStyle,
-	resolvePlanetScaleDbStyle,
-	withAlpha,
-} from "@maple/ui/components/service-map/service-map-db-style"
-import {
-	getServiceMapNodeColor,
-	type ServiceNodeData,
-} from "@maple/ui/components/service-map/service-map-utils"
+import { resolveDbNodeStyle, resolvePlanetScaleDbStyle, withAlpha } from "../graph/service-map-db-style"
+import { getServiceMapNodeColor, type ServiceNodeData } from "../graph/service-map-utils"
 import { errorRateLevel } from "@maple/ui/lib/error-rate"
-import { EMPTY_VALUE, formatDuration, formatRate } from "@maple/ui/lib/format"
+import { EMPTY_VALUE, formatRate } from "@maple/ui/lib/format"
+import { formatLag } from "../../charts/planetscale-metric-series"
 import { latencyToneClass } from "@maple/ui/lib/latency-tone"
 import { formatLatency } from "@maple/ui/lib/format"
 import { utilizationLevel } from "@maple/ui/lib/utilization"
@@ -36,7 +30,7 @@ import { formatRuntime } from "./runtime"
 import { typography, typographyClass } from "../../ui/typography"
 import { hstack, vstack } from "../../ui/stack"
 
-// `ServiceNode`, `DatabaseNode`, `NamespaceAggregateNode` and the `ServiceMapNode` wrapper.
+// The service, database and namespace-aggregate node cards, and the wrapper that picks one.
 
 const handles = <M>(h: HtmlBuilder<M>, id: string): ReadonlyArray<Html> => [
 	flowHandle(h, id, "target", "left", HANDLE_CLASSES),
@@ -99,7 +93,7 @@ const serviceNode = <M>(h: HtmlBuilder<M>, id: string, data: ServiceNodeData): R
 			[
 				h.Class(
 					cn(
-						"flex w-56 cursor-pointer overflow-hidden rounded-r-lg border bg-card transition-[border-color,box-shadow] duration-150",
+						"flex w-56 cursor-pointer overflow-hidden rounded-r-lg border bg-card transition-shadow duration-150",
 						selected
 							? selectedBorderClass(errorRate)
 							: "border-border hover:border-border-strong active:border-border-strong",
@@ -154,8 +148,6 @@ const serviceNode = <M>(h: HtmlBuilder<M>, id: string, data: ServiceNodeData): R
 	]
 }
 
-const formatLag = (seconds: number): string => formatDuration(seconds * 1000)
-
 const planetscaleRow = <M>(
 	h: HtmlBuilder<M>,
 	stats: NonNullable<NonNullable<ServiceNodeData["planetscale"]>["stats"]>,
@@ -205,7 +197,7 @@ const databaseNode = <M>(h: HtmlBuilder<M>, id: string, data: ServiceNodeData): 
 			{
 				align: "stretch",
 				className:
-					"w-56 cursor-pointer overflow-hidden rounded-r-lg border bg-card transition-[border-color,box-shadow] duration-150",
+					"w-56 cursor-pointer overflow-hidden rounded-r-lg border bg-card transition-shadow duration-150",
 				attributes: [h.Style(tintedCard(color, 0.12, 0.4, selected))],
 			},
 			[
@@ -233,7 +225,7 @@ const databaseNode = <M>(h: HtmlBuilder<M>, id: string, data: ServiceNodeData): 
 						),
 						h.span(
 							[
-								h.Class("ml-auto shrink-0 text-4xs font-semibold uppercase tracking-wide"),
+								h.Class("ml-auto shrink-0 text-4xs font-semibold uppercase tracking-caption"),
 								h.Style({ color }),
 							],
 							[badge],
@@ -271,7 +263,7 @@ const namespaceAggregateNode = <M>(
 			{
 				align: "stretch",
 				className:
-					"w-56 cursor-pointer overflow-hidden rounded-r-lg border border-dashed bg-card transition-[border-color,box-shadow] duration-150",
+					"w-56 cursor-pointer overflow-hidden rounded-r-lg border border-dashed bg-card transition-shadow duration-150",
 				attributes: [
 					h.Style(tintedCard(color, 0.1, 0.55, selected)),
 					h.Title("Collapsed namespace. Click to expand"),
@@ -289,13 +281,13 @@ const namespaceAggregateNode = <M>(
 								tone: "foreground",
 								weight: "semibold",
 								truncate: true,
-								className: "uppercase tracking-wider",
+								className: "uppercase tracking-caption",
 							},
 							[label],
 						),
 						h.span(
 							[
-								h.Class("ml-auto shrink-0 text-4xs font-semibold uppercase tracking-wide"),
+								h.Class("ml-auto shrink-0 text-4xs font-semibold uppercase tracking-caption"),
 								h.Style({ color }),
 							],
 							[String(nsMemberCount ?? 0), " services"],
@@ -312,7 +304,7 @@ const namespaceAggregateNode = <M>(
 	]
 }
 
-/** `ServiceMapNode`: the card for the node's kind inside the focus-dim wrapper. */
+/** The card for the node's kind inside the focus-dim wrapper. */
 export const serviceMapNode = <M>(h: HtmlBuilder<M>, id: string, data: ServiceNodeData): Html =>
 	h.div(
 		[h.Class(cn("transition-opacity duration-200", data.dimmed && "opacity-25"))],

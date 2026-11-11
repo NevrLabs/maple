@@ -14,14 +14,14 @@ import {
 	Clock,
 } from "effect"
 import { OrgId, type PullRequestSummary, type WorkflowState } from "@maple/domain/http"
-import { ErrorIssueId } from "@maple/domain/primitives"
+import { ErrorIssueId } from "@maple/primitives"
 import * as Orm from "@maple-dev/effect-orm/database"
 import * as PG from "@maple-dev/effect-orm/postgres"
 import type { MapleDb } from "@maple/db/client"
 import { ErrorIssueEvents, ErrorIssues, ErrorIssueVerifications } from "@maple/db/tables"
 import { Database, type DatabaseApi } from "@maple/backend/platform/DatabaseLive"
 import { Env } from "@maple/backend/platform/Env"
-import { cleanupTestDbs, createTestDb, type TestDb } from "@maple/backend/platform/test-pglite"
+import { cleanupTestDbs, createTestDb, type TestDb } from "@maple/backend/testing/test-pglite"
 import { AuditLogService } from "@maple/backend/services/audit/AuditLogService"
 import { ErrorActorsService } from "./ErrorActorsService"
 import { ErrorIssueWorkflowService } from "./ErrorIssueWorkflowService"
@@ -437,7 +437,7 @@ describe("linkPullRequest hydration", () => {
 				const second = yield* service.linkPullRequest(ORG, null, issueId, PR_URL, "user")
 				expect(second.id).toBe(first.id)
 				expect(second.state).toBe("merged")
-				expect(yield* readVerification(issueId)).toBeDefined()
+				expect((yield* readVerification(issueId))?.status).toBe("waiting")
 			}).pipe(Effect.provide(layer))
 		}),
 	)
@@ -646,6 +646,62 @@ describe("onPullRequestEvent — merge", () => {
 				expect(second.verificationsOpened).toBe(0)
 
 				expect(yield* readAllVerifications(issueId)).toHaveLength(1)
+			}).pipe(Effect.provide(layer))
+		}),
+	)
+
+	// GitHub reports `merged: true` on every action after the merge, so a title
+	// edit or a redelivery months later arrives looking exactly like the merge.
+	it.effect("does not reopen a settled verification when the merged PR is edited later", () =>
+		Effect.gen(function* () {
+			const layer = makeLayer()
+			yield* Effect.gen(function* () {
+				const service = yield* IssueFixVerificationService
+				const issueId = yield* seedIssue({ severity: "low" })
+				yield* service.linkPullRequest(ORG, null, issueId, PR_URL, "agent")
+				yield* service.onPullRequestEvent(mergeEvent())
+				yield* service.applyVerdict(
+					yield* readVerification(issueId),
+					"verified",
+					"No occurrences.",
+					yield* Clock.currentTimeMillis,
+				)
+				expect((yield* readIssueState(issueId))?.workflowState).toBe("done")
+
+				const later = yield* service.onPullRequestEvent(
+					mergeEvent({ action: "edited", title: "Fix the checkout crash (typo)" }),
+				)
+				expect(later.verificationsOpened).toBe(0)
+				expect(yield* readAllVerifications(issueId)).toHaveLength(1)
+				expect((yield* readIssueState(issueId))?.workflowState).toBe("done")
+				const merges = Arr.filter(yield* readEventTypes(issueId), (type) => type === "pr_merged")
+				expect(merges).toHaveLength(1)
+			}).pipe(Effect.provide(layer))
+		}),
+	)
+
+	// The guard is per link, not per issue: detaching a PR and attaching it again
+	// is somebody asking for the check to run again.
+	it.effect("verifies again after the PR is unlinked and linked back", () =>
+		Effect.gen(function* () {
+			const layer = makeLayer()
+			yield* Effect.gen(function* () {
+				const service = yield* IssueFixVerificationService
+				const issueId = yield* seedIssue()
+				const link = yield* service.linkPullRequest(ORG, null, issueId, PR_URL, "agent")
+				yield* service.onPullRequestEvent(mergeEvent())
+				yield* service.applyVerdict(
+					yield* readVerification(issueId),
+					"not_fixed",
+					"Still firing.",
+					yield* Clock.currentTimeMillis,
+				)
+
+				yield* service.unlinkPullRequest(ORG, null, issueId, link.id)
+				yield* service.linkPullRequest(ORG, null, issueId, PR_URL, "user")
+				const again = yield* service.onPullRequestEvent(mergeEvent())
+				expect(again.verificationsOpened).toBe(1)
+				expect((yield* readIssueState(issueId))?.workflowState).toBe("verifying")
 			}).pipe(Effect.provide(layer))
 		}),
 	)
@@ -972,6 +1028,46 @@ describe("dueVerifications", () => {
 				// A running row is somebody else's work, not due work.
 				yield* service.markRunning(verification, null, yield* Clock.currentTimeMillis)
 				expect(yield* service.dueVerifications(dueAtMs + 1000, 10)).toHaveLength(0)
+			}).pipe(Effect.provide(layer))
+		}),
+	)
+
+	// A page with no order lets the same rows fill every tick while others wait.
+	it.effect("returns the least recently touched rows first, so a deferred row goes to the back", () =>
+		Effect.gen(function* () {
+			const layer = makeLayer()
+			yield* Effect.gen(function* () {
+				const service = yield* IssueFixVerificationService
+				const nowMs = yield* Clock.currentTimeMillis
+				const recent = yield* seedIssue()
+				const overdue = yield* seedIssue()
+				yield* service.linkPullRequest(ORG, null, recent, PR_URL, "agent")
+				yield* service.linkPullRequest(
+					ORG,
+					null,
+					overdue,
+					`https://github.com/${REPO}/pull/613`,
+					"agent",
+				)
+				yield* service.onPullRequestEvent(mergeEvent({ mergedAtMs: nowMs }))
+				yield* service.onPullRequestEvent(mergeEvent({ number: 613, mergedAtMs: nowMs - 30 * DAY }))
+				const dueAt = nowMs + 365 * DAY
+				const rows = yield* service.dueVerifications(dueAt, 10)
+				const defer = (issueId: ErrorIssueId, atMs: number) =>
+					Effect.forEach(
+						Arr.filter(rows, (row) => row.issueId === issueId),
+						(row) => service.deferVerification(row, atMs),
+					)
+
+				// Deferring one row puts the other ahead of it, whichever was opened first.
+				yield* defer(recent, dueAt)
+				expect(Arr.map(yield* service.dueVerifications(dueAt, 1), (row) => row.issueId)).toEqual([
+					overdue,
+				])
+				yield* defer(overdue, dueAt + 1)
+				expect(Arr.map(yield* service.dueVerifications(dueAt + 1, 1), (row) => row.issueId)).toEqual([
+					recent,
+				])
 			}).pipe(Effect.provide(layer))
 		}),
 	)

@@ -19,8 +19,8 @@ import { shownMarkdown } from "./transcript-rows"
 import { hstack, vstack } from "@maple/views/ui/stack"
 import { typography } from "@maple/views/ui/typography"
 
-// The span expansion's Messages tab. Its local state (open,
-// raw) lives in the page's `openRows` under the popover's key prefix, reset when the span changes.
+// The Messages tab's local state (open, raw) lives in the page's `openRows` under the popover's key
+// prefix, reset when the span changes.
 
 type H = HtmlBuilder<Message>
 
@@ -75,7 +75,7 @@ const panelBody = (
 	})
 }
 
-/** `PayloadCard`: a tool call or result inside a message, its body behind a json/raw switch. */
+/** A tool call or result inside a message, its body behind a json/raw switch. */
 export const payloadCard = (
 	h: H,
 	model: Model,
@@ -129,7 +129,7 @@ const payloadBody = (h: H, model: Model, text: string, copyLabel: string, key: s
 		{
 			gap: "1.5",
 			align: "start",
-			className: "border-border-subtle border-t bg-background/50 px-2.5 py-2",
+			className: "border-border-subtle border-t bg-surface-well px-2.5 py-2",
 		},
 		[
 			h.div(
@@ -173,7 +173,7 @@ const reasoningPart = (
 				? typography(h, { size: "xs", tone: "muted", as: "p", className: "italic" }, [
 						part.redacted
 							? "Redacted by the provider. The reasoning was returned sealed."
-							: "No reasoning text was captured.",
+							: "No reasoning text was captured",
 					])
 				: clampedBody(h, model, { text: part.text, textKey: `${key}:text`, clampLines: PANEL_CLAMP }),
 		],

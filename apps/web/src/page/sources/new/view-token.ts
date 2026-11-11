@@ -1,4 +1,4 @@
-import { isPublicSourcePlatform, isPushSourcePlatform } from "@maple/domain/primitives"
+import { isPublicSourcePlatform, isPushSourcePlatform } from "@maple/primitives"
 import type { Html, HtmlBuilder } from "foldkit/html"
 import { button, linkButton } from "@maple/views/ui/button"
 import { copyableField } from "@maple/views/ui/copyable-field"
@@ -14,7 +14,7 @@ import { showsUpRail } from "./view-push-rail"
 import { typography } from "@maple/views/ui/typography"
 import { vstack } from "@maple/views/ui/stack"
 
-// `TokenStep`: the Send data step. The one-time token, the setup snippet, then the first-data poll.
+// The Send data step. The one-time token, the setup snippet, then the first-data poll.
 
 type H = HtmlBuilder<Message>
 
@@ -45,7 +45,6 @@ const drawerFooter = (h: H, receiving: boolean): Html =>
 	flowFooter(h, {
 		back: null,
 		hint: receiving ? "Data is arriving." : "Saved. Safe to close; the source keeps listening.",
-		host: "drawer",
 		actions: [
 			button(
 				h,
@@ -62,7 +61,6 @@ const footer = (h: H, created: Created, receiving: boolean, host: FlowHost): Htm
 	host === "drawer"
 		? drawerFooter(h, receiving)
 		: flowFooter(h, {
-				host: "page",
 				back: null,
 				hint: receiving
 					? "Data is arriving. The source page shows what came in."

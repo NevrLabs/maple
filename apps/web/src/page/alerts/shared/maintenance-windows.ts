@@ -8,48 +8,21 @@ import {
 	V2AlertMaintenanceWindowUpdateParams,
 	type V2MaintenanceSchedule,
 } from "@maple/domain/http/v2"
-import { Effect, Option, Ref, Schema, Array as Arr, String as Str } from "effect"
-import { formatTimeInTimezone } from "@maple/web-data/lib/timezone-format"
+import { Effect, Option, Schema, Array as Arr, String as Str } from "effect"
+import { formatTimeInTimezone } from "@maple/ui/lib/timezone-format"
 import { toLoadFailure } from "@maple/views/data/load-failure"
 import { MapleApiV2Client } from "../../../platform/api-clients"
-import { alertsHref } from "./links"
+import { readAllPages } from "../../../platform/read-all-pages"
+import { alertsHref } from "../../kit/alert-links"
 import { formatSilenceTime } from "./silences"
-import { isoMs } from "./time"
-
-// Maintenance windows: the hub's reads and writes, and how a window's schedule reads in a row.
+import { toEpochMs } from "@maple/ui/lib/time-format"
 
 export const WINDOW_LIST_LIMIT = 100
-
-/** Pages read at most per list, far past what an org holds. */
-const MAX_LIST_PAGES = 20
-
-type Page<A> = Readonly<{ data: ReadonlyArray<A>; has_more: boolean; next_cursor: string | null }>
-
-/** Every row of a cursor-paginated list, following `next_cursor` until `has_more` is false. */
-const readAllPages = <A, E, R>(readPage: (cursor: string | null) => Effect.Effect<Page<A>, E, R>) =>
-	Effect.gen(function* () {
-		const progress = yield* Ref.make<{ rows: ReadonlyArray<A>; cursor: string | null; pages: number }>({
-			rows: [],
-			cursor: null,
-			pages: 0,
-		})
-		const step = Effect.gen(function* () {
-			const { rows, cursor, pages } = yield* Ref.get(progress)
-			const page = yield* readPage(cursor)
-			const next = page.has_more ? page.next_cursor : null
-			yield* Ref.set(progress, { rows: [...rows, ...page.data], cursor: next, pages: pages + 1 })
-			return next !== null && pages + 1 < MAX_LIST_PAGES
-		})
-		yield* step.pipe(Effect.repeat({ while: (hasMore) => hasMore }))
-		return (yield* Ref.get(progress)).rows
-	})
-
-const cursorQuery = (cursor: string | null) => (cursor === null ? undefined : { cursor })
 
 export const listMaintenanceWindows = Effect.gen(function* () {
 	const client = yield* MapleApiV2Client
 	return yield* readAllPages((cursor) =>
-		client.alertMaintenanceWindows.list({ query: { limit: WINDOW_LIST_LIMIT, ...cursorQuery(cursor) } }),
+		client.alertMaintenanceWindows.list({ query: { limit: WINDOW_LIST_LIMIT, cursor } }),
 	)
 }).pipe(Effect.mapError(toLoadFailure))
 
@@ -59,7 +32,7 @@ export const listWindowSilences = (id: AlertMaintenanceWindowId) =>
 		const client = yield* MapleApiV2Client
 		return yield* readAllPages((cursor) =>
 			client.alertSilences.list({
-				query: { limit: WINDOW_LIST_LIMIT, maintenance_window_id: id, ...cursorQuery(cursor) },
+				query: { limit: WINDOW_LIST_LIMIT, maintenance_window_id: id, cursor },
 			}),
 		)
 	}).pipe(Effect.mapError(toLoadFailure))
@@ -110,7 +83,7 @@ export const windowIdOfParam = (raw: string | undefined): Option.Option<AlertMai
 
 /** The Silences tab showing only this window's occurrences. */
 export const windowSilencesHref = (id: AlertMaintenanceWindowId): string =>
-	alertsHref({ tab: "silences", window: windowPublicId(id) })
+	alertsHref({ window: windowPublicId(id) }, "silences")
 
 export const WEEKDAYS: ReadonlyArray<{ value: MaintenanceWeekday; label: string }> = [
 	{ value: "mon", label: "Mon" },
@@ -159,7 +132,7 @@ export const formatWallClock = (startTime: string): string => {
 export const scheduleSummary = (schedule: V2MaintenanceSchedule, nowMs: number, timeZone: string): string =>
 	schedule.type === "weekly"
 		? `Weekly, ${formatDays(schedule.days)} at ${formatWallClock(schedule.start_time)} for ${formatDurationMinutes(schedule.duration_minutes)} (${schedule.time_zone})`
-		: `Once, ${formatSilenceTime(isoMs(schedule.starts_at), nowMs, timeZone)} to ${formatSilenceTime(isoMs(schedule.ends_at), nowMs, timeZone)}`
+		: `Once, ${formatSilenceTime(toEpochMs(schedule.starts_at), nowMs, timeZone)} to ${formatSilenceTime(toEpochMs(schedule.ends_at), nowMs, timeZone)}`
 
 /** The window's occurrence as the list reads it now. */
 export type OccurrenceState =
@@ -170,8 +143,8 @@ export type OccurrenceState =
 export const occurrenceStateAt = (window: V2AlertMaintenanceWindow, nowMs: number): OccurrenceState => {
 	const next = window.next_occurrence
 	if (next === null) return { _tag: "None" }
-	const startsAtMs = isoMs(next.starts_at)
-	const endsAtMs = isoMs(next.ends_at)
+	const startsAtMs = toEpochMs(next.starts_at)
+	const endsAtMs = toEpochMs(next.ends_at)
 	if (endsAtMs <= nowMs) return { _tag: "None" }
 	return startsAtMs <= nowMs ? { _tag: "Running", endsAtMs } : { _tag: "Next", startsAtMs, endsAtMs }
 }
@@ -192,7 +165,7 @@ export const occurrenceText = (window: V2AlertMaintenanceWindow, nowMs: number, 
 
 /** A one-off window whose end has passed: it can never run again. */
 export const isEndedOnce = (window: V2AlertMaintenanceWindow, nowMs: number): boolean =>
-	window.schedule.type === "once" && isoMs(window.schedule.ends_at) <= nowMs
+	window.schedule.type === "once" && toEpochMs(window.schedule.ends_at) <= nowMs
 
 /** Baseline exclusion only applies when the window names a service or an environment. */
 export const excludesBaselines = (window: V2AlertMaintenanceWindow): boolean =>
