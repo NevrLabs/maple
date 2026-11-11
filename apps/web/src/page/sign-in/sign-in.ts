@@ -6,8 +6,6 @@ import { modifyFields } from "foldkit/struct"
 import { MapleAuthApi } from "../../platform/auth-api"
 import type { AppRoute } from "../../route"
 
-// MODEL
-
 /** Why the root password was not accepted; the view turns it into copy. */
 export const SignInFailure = defineTaggedUnion({
 	Rejected: { message: Schema.String },
@@ -63,8 +61,6 @@ export const OutMessage = defineMessageUnion({
 })
 export type OutMessage = typeof OutMessage.Type
 
-// COMMAND
-
 const rejected = (error: { readonly message: string }) =>
 	Effect.succeed(
 		Message.FailedSignInWithRootPassword({ failure: SignInFailure.Rejected({ message: error.message }) }),
@@ -98,8 +94,6 @@ export const SignInWithRootPassword = Command.define("SignInWithRootPassword", {
 			),
 		),
 })
-
-// UPDATE
 
 type UpdateReturn = Update.ReturnWithOutMessage<Model, Message, OutMessage, MapleAuthApi>
 

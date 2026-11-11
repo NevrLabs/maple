@@ -205,9 +205,13 @@ const headerActions = (
 	overview: Option.Option<AlertsOverviewReady>,
 ): Html | undefined => {
 	if (tab === "inbox" || tab === "rules") {
-		if (!canManageAlerts(model) || isViewerSession()) return undefined
+		// PATCHES #5: a self-hosted viewer session never sees the create actions (upstream's
+		// non-managing members still do — the create surfaces gate the action itself).
+		if (isViewerSession()) return undefined
 		// The first-run empty state offers the templates and "Start from scratch" to who can create.
-		return Option.exists(overview, (data) => isFirstRun(model, data, tab)) ? undefined : newRuleButton(h, model)
+		return canManageAlerts(model) && Option.exists(overview, (data) => isFirstRun(model, data, tab))
+			? undefined
+			: newRuleButton(h, model)
 	}
 	if (!canManageAlerts(model)) return undefined
 	const serviceName = model.search.serviceName
