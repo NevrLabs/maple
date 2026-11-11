@@ -1,0 +1,62 @@
+# NevrLabs selfhost fork gates for the candidate branch. Branch-scoped push trigger
+# (the fork registers no workflows from its default branch — see noovoleum-images).
+# Re-run by amending this file or via workflow_dispatch once registered.
+name: selfhost gates
+on:
+    push:
+        branches:
+            - selfhost-homelab-up-20261111
+        paths:
+            - .github/workflows/gates.yml
+    workflow_dispatch:
+
+permissions:
+    contents: read
+
+jobs:
+    gates:
+        runs-on: ubuntu-latest
+        timeout-minutes: 45
+        steps:
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+
+            - uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
+              with:
+                  install_args: bun node
+
+            # NOT --frozen-lockfile on purpose: the merged tree's package.json set drifts from
+            # upstream's bun.lock. The regenerated lock rides back as an artifact and is
+            # committed to the branch after a green run.
+            - name: Install (lockfile regenerating)
+              run: bun install
+
+            - uses: actions/upload-artifact@ea165f8d65b73e78b56c8285be539f88c9a3bb32 # v4
+              if: always()
+              with:
+                  name: bun-lock
+                  path: bun.lock
+                  if-no-files-found: error
+
+            # Web typecheck resolves @maple-dev/effect-sdk/* subpath types from the build.
+            - name: Build SDK prerequisite
+              run: bun x turbo build --filter=@maple-dev/effect-sdk
+
+            - name: Typecheck workspaces
+              run: |
+                  set -e
+                  for ws in packages/domain packages/query-engine packages/query-engine-integrations packages/backend packages/views apps/web; do
+                      echo "== typecheck $ws"
+                      bun run --cwd "$ws" typecheck
+                  done
+
+            - name: Suite — query-engine-integrations (SQL catalog incl. baseline)
+              run: bun run --cwd packages/query-engine-integrations test
+
+            - name: Suite — backend setup audit (PGlite)
+              run: bun run --cwd packages/backend test src/services/org
+
+            - name: Suite — backend warehouse driver
+              run: bun run --cwd packages/backend test src/services/warehouse
+
+            - name: Suite — web merge surfaces
+              run: bun run --cwd apps/web test src/page/services/list src/page/alerts/hub src/page/sign-in src/page/settings src/shell src/route src/platform
