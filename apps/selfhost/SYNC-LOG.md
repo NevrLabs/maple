@@ -3,6 +3,24 @@
 One section per sync run, newest last. Fork line: `selfhost-homelab-*` branches carry the
 selfhost patches (catalogue: `apps/selfhost/PATCHES.md`); `main` tracks upstream as a mirror.
 
+## Charter (owner handoff 2026-11-11)
+
+Terminus owns this fork: maintenance, upstream sync, stability, and its direction. Standing rules:
+- Every change is logged: sync runs here, behavioral fork changes as numbered PATCHES.md entries.
+- Daily upstream probe (T3 scheduled task); a material range starts a run, no range = no output.
+- Fork `main` = pure upstream mirror (fast-forward only). Work rides `selfhost-homelab-up-<date>[-n]`.
+- A run is complete only with green `selfhost gates` whose headSha == branch head.
+- Owner gates (never self-authorized): CT130 deployment/image rollout, prod DB writes, and any
+  upstream contribution — candidates are proposed to the owner first (see "Upstream candidates").
+
+## Upstream candidates (proposed to owner, not yet decided)
+
+| Patch | Upstream still affected? | Why it helps upstream |
+|---|---|---|
+| #16 TRC-01 all-kind parents | yes — orphan join reads `service_map_spans` (drops Internal) | false "missing parent" on any Internal-parented span |
+| #15 first-mount chart sizing | yes — still mounts at 320px then corrects | halves canvas work on sparkline-heavy pages |
+| #17 capability-denied CF datasets | yes — no capability predicate (`cloudflareDatasetUnavailable` is fork-only) | Free-plan zones keep a permanent stale error |
+
 ## Run 1 — 2026-11-11 — upstream e231894bc → current upstream/main
 
 Status: **COMPLETE — merged, gated, pushed.** Branch `selfhost-homelab-up-20261111` head `89c63d733`.
