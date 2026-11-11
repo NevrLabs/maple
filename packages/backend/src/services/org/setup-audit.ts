@@ -412,14 +412,14 @@ const nativeSpanProfiles = (warehouse: Pick<WarehouseAuditInputs, "spanShape" | 
 				}
 	})
 }
-const hasNativeSpans = (
-	warehouse: { readonly nativeSpanShape?: WarehouseAuditInputs["nativeSpanShape"] },
-	serviceName: string,
-) => warehouse.nativeSpanShape?.find((s) => s.serviceName === serviceName)?.spanCount !== 0
-const nativeAuditPass = (
-	warehouse: { readonly nativeSpanShape?: WarehouseAuditInputs["nativeSpanShape"] },
-): AuditEvaluation =>
-	warehouse.nativeSpanShape?.some((s) => s.spanCount === 0)
+const hasNativeSpans = (warehouse: object, serviceName: string) =>
+	(warehouse as { readonly nativeSpanShape?: WarehouseAuditInputs["nativeSpanShape"] }).nativeSpanShape?.find(
+		(s) => s.serviceName === serviceName,
+	)?.spanCount !== 0
+const nativeAuditPass = (warehouse: object): AuditEvaluation =>
+	(warehouse as { readonly nativeSpanShape?: WarehouseAuditInputs["nativeSpanShape"] }).nativeSpanShape?.some(
+		(s) => s.spanCount === 0,
+	)
 		? {
 				status: "pass",
 				detail: "Synthetic uptime spans do not establish native application tracing; only native spans are checked.",
