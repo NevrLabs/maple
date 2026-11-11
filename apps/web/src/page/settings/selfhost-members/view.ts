@@ -9,7 +9,7 @@ import { avatarFallback } from "@maple/views/ui/display"
 import { skeleton } from "@maple/views/ui/skeleton"
 import { table, tableBody, tableCell, tableHead, tableHeader, tableRow } from "@maple/views/ui/table"
 import { truncatedText } from "@maple/views/ui/truncated-text"
-import { adminOnlyNote, sectionNote, settingsSection, settingsSections } from "../kit/section"
+import { adminOnlyNote, sectionNote, settingsSection, settingsSections } from "../../kit/settings-section"
 import { Message, type Model, type UserAction, type UserRow } from "./model"
 
 type H = HtmlBuilder<Message>

@@ -1,5 +1,5 @@
 import * as Policy from "@maple/domain/policy"
-import { oidcProvider } from "../../lib/services/common/auth-mode"
+import { oidcProvider } from "../../platform/auth-mode"
 import { Array, Option } from "effect"
 import type { NavShellRow, NavShellSection } from "../kit/nav-shell"
 import { legacySettingsTabValues, settingsTabValues } from "../../route/search"

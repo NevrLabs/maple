@@ -2,7 +2,7 @@ import { cn } from "@maple/ui/lib/utils"
 import { selfhostIdentity } from "../platform/selfhost-session"
 import { MAPLE_REGION_LABELS } from "@maple/domain/organization-regions"
 import { initialsFrom } from "@maple/ui/lib/initials"
-import { hasMultipleRegions } from "../lib/region"
+import { hasMultipleRegions } from "../platform/region"
 import { Option, Record, Array as Arr, String as Str } from "effect"
 import { AsyncData } from "foldkit"
 import type { ChildAttribute, Html, HtmlBuilder } from "foldkit/html"
@@ -26,6 +26,10 @@ import { orgAvatar } from "./clerk-org-switcher-view"
 import { typography } from "@maple/views/ui/typography"
 import { identityLabel } from "@maple/views/ui/identity-label"
 import { hstack } from "@maple/views/ui/stack"
+import { statusDot } from "@maple/views/ui/status-dot"
+import { tooltipTrigger } from "@maple/views/ui/tooltip-host"
+import { oncallTabHref } from "../page/alerts/shared/oncall-schedules"
+import { isPillShown, onCallDetail, onCallLabel, type OnCallStatus, onCallStatusOf } from "./oncall"
 
 export const GROUP_LABEL = "h-6 text-muted-foreground"
 
@@ -53,7 +57,7 @@ export const triggerFor = (h: HtmlBuilder<Message>, model: Model, menu: Menu) =>
 export const pinnedNamespaceOf = (model: Model): Option.Option<string> =>
 	Option.flatMap(model.maybeOrgId, (orgId) => Record.get(model.pinnedNamespaces, orgId))
 
-/** `SelfHostedOrgSwitcher`'s trigger: the server tile, "Self Hosted" and the pinned namespace. */
+/** The self-hosted org switcher's trigger: the server tile, "Self-hosted" and the pinned namespace. */
 const orgSwitcher = (h: HtmlBuilder<Message>, model: Model): Html =>
 	sidebarMenu(h, undefined, [
 		sidebarMenuItem(h, undefined, [
@@ -76,7 +80,7 @@ const orgSwitcher = (h: HtmlBuilder<Message>, model: Model): Html =>
 						[icon(h, "ServerIcon", { size: 16 })],
 					),
 					identityLabel(h, [
-						typography(h, { weight: "medium", truncate: true }, ["Self Hosted"]),
+						typography(h, { weight: "medium", truncate: true }, ["Self-hosted"]),
 						...Option.match(pinnedNamespaceOf(model), {
 							onNone: () => [],
 							onSome: (namespace) => [
@@ -215,7 +219,6 @@ export const shellSidebarHeader = (
 		clerk === null ? orgSwitcher(h, model) : clerkOrgSwitcher(h, model, clerk),
 		searchRow(h, tip),
 	])
-// FOOTER
 
 const footerNavRow = (
 	h: HtmlBuilder<Message>,
@@ -245,6 +248,67 @@ const footerNavRow = (
 		),
 	])
 
+/** The pill's state; nothing while the schedules read, after a failed read, or with none. */
+export const shellOnCallStatus = (model: Model): OnCallStatus =>
+	Option.match(AsyncData.getData(model.onCall), {
+		onNone: (): OnCallStatus => ({ _tag: "NoSchedules" }),
+		onSome: (snapshot) => onCallStatusOf(snapshot, model.onCallNowMs),
+	})
+
+/**
+ * One 32px footer row: a status dot and "On call until Mon 09:00" (or a muted "Not on call"),
+ * linking to the schedules. The zone, the date and the schedule names are its tooltip and
+ * accessible name. On the collapsed rail it is a calendar glyph, badged with the dot.
+ */
+const onCallPill = (
+	h: HtmlBuilder<Message>,
+	status: OnCallStatus,
+	tip: RailTip,
+	isRail: boolean,
+): ReadonlyArray<Html> => {
+	if (!isPillShown(status)) return []
+	const label = onCallLabel(status)
+	const detail = onCallDetail(status)
+	const isOnCall = status._tag === "OnCall"
+	const dot = (className?: string) =>
+		statusDot(h, { tone: isOnCall ? "ok" : "neutral", size: "lg", className })
+	const glyphBox = (className: string, children: ReadonlyArray<Html>) =>
+		hstack(h, { align: "center", justify: "center", className }, children)
+	return [
+		sidebarMenuItem(h, undefined, [
+			sidebarMenuButton(
+				h,
+				{
+					className: isOnCall ? undefined : "text-muted-foreground",
+					// A shortcut, not a nav row: a plain anchor, so it never claims `aria-current="page"`.
+					href: oncallTabHref(),
+					hasTooltip: true,
+					attributes: [
+						// The rail's tooltip names the glyph; the open sidebar's adds what the row leaves out.
+						...(isRail
+							? tip(detail)
+							: detail === label
+								? []
+								: tooltipTrigger(h, detail, { side: "right" })),
+						...(isRail || detail !== label ? [h.AriaLabel(detail)] : []),
+					],
+				},
+				isRail
+					? [
+							glyphBox("relative size-4 shrink-0", [
+								icon(h, "CalendarIcon", { className: "size-4" }),
+								// On call only: a grey badge on a grey glyph says nothing.
+								...(isOnCall
+									? [dot("absolute -top-0.5 -right-0.5 ring-2 ring-sidebar")]
+									: []),
+							]),
+						]
+					: [glyphBox("size-4 shrink-0", [dot()]), h.span([], [label])],
+			),
+		]),
+	]
+}
+
 /** The user avatar: the Clerk image over the initials on a warm tile keyed by the name. */
 export const userAvatar = (
 	h: HtmlBuilder<Message>,
@@ -263,9 +327,9 @@ export const userAvatar = (
 		initials,
 	)
 
-/** `GuestMenu`'s trigger and `SupportMenu`'s, side by side in the account cluster. */
-/** `UserMenu`'s name: Clerk's full name, else the email, else "User"; self-hosted is the session's own name
- * (NevrLabs selfhost: the OIDC user's name or email; "Root" for the break-glass password). */
+/** The guest menu's and the support menu's triggers, side by side in the account cluster. */
+/** The user menu's name: Clerk's full name, else the email, else "User"; self-hosted is "Root". */
+/** NevrLabs selfhost: the session's own name (OIDC user's name or email; "Root" for the break-glass password). */
 export const userNameOf = (clerk: ShellClerk | null): string =>
 	clerk === null
 		? selfhostIdentity().name
@@ -275,7 +339,12 @@ export const userNameOf = (clerk: ShellClerk | null): string =>
 			})
 
 const initialsOf = (clerk: ShellClerk | null): string =>
-	clerk === null ? (selfhostIdentity().isBreakGlass ? "RT" : initialsFrom(userNameOf(clerk))) : initialsFrom(userNameOf(clerk))
+	// NevrLabs selfhost: "RT" only for the break-glass root, not for an OIDC user whose initials differ.
+	clerk === null
+		? selfhostIdentity().isBreakGlass
+			? "RT"
+			: initialsFrom(userNameOf(clerk))
+		: initialsFrom(userNameOf(clerk))
 
 /** `user.imageUrl`, empty without a Clerk user. */
 export const userImageOf = (clerk: ShellClerk | null): string =>
@@ -335,12 +404,14 @@ export const shellSidebarFooter = (
 			[
 				h.AriaHidden(true),
 				h.Class(
-					"pointer-events-none -mx-2 -mt-2 -mb-2 h-px transition-[background-color,box-shadow] [[data-overflow-y-end]+[data-slot=sidebar-footer]>&]:bg-sidebar-border [[data-overflow-y-end]+[data-slot=sidebar-footer]>&]:shadow-overflow-up",
+					"pointer-events-none -mx-2 -mt-2 -mb-2 h-px transition-shadow [[data-overflow-y-end]+[data-slot=sidebar-footer]>&]:bg-sidebar-border [[data-overflow-y-end]+[data-slot=sidebar-footer]>&]:shadow-overflow-up",
 				),
 			],
 			[],
 		),
 		sidebarMenu(h, undefined, [
+			// A row of the footer's list, so it keeps the list's 4px rhythm.
+			...onCallPill(h, shellOnCallStatus(model), tip, !model.isSidebarOpen && !model.isMobile),
 			footerNavRow(h, currentPath, { href: "/sources", title: "Sources", icon: "ConnectionIcon" }, tip),
 			// `/integrations` renders inside the settings rail, so Settings owns it.
 			footerNavRow(
