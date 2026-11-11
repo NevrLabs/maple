@@ -573,8 +573,9 @@ export class UptimeMonitorsService extends Context.Service<UptimeMonitorsService
 							new UptimeMonitorPersistenceError({
 								message: `Stored interval or destinations of uptime monitor ${row.id} are invalid`,
 								cause: error,
-							}),
-				Effect.zip(openHeaders(row, row.configJson)),
+						}),
+					),
+					Effect.zip(openHeaders(row, row.configJson)),
 				Effect.map(([{ intervalSeconds, destinationIds }, config]): UptimeMonitorRecord => ({
 					id: row.id,
 					orgId: row.orgId,
