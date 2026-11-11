@@ -2,6 +2,36 @@
 
 Keep this list minimal; every entry is a merge conflict risk.
 
+## Upstream merge reconciliation (2026-11-11)
+
+Merge `374d54caf`: fork input `fd23f5f06`, upstream `1e96be8a1b` (98 commits since `e231894bc`).
+PATCHES #1–#17 remain intentional; nothing was superseded without verification.
+
+Upstream moved the setup-audit engine: checks now live in `packages/backend/src/services/org/setup-audit.ts`
+(`packages/domain/src/setup-audit.ts` is wire types only) and the audit query layer was rebuilt on the
+`Datasources` abstraction. Ports:
+- #16 native-scope applicability re-ported: `auditNativeSpanProfileByServiceQuery` (Datasources style),
+  `WarehouseAuditInputs.nativeSpanShape`, the `nativeSpanProfiles`/`hasNativeSpans`/`nativeAuditPass`
+  helpers, and native filtering on LOG-01, the LOG-02 traced set, the swallowed-errors check and
+  STAT-04. The all-kind orphan join is re-ported onto the new builder: parents read `Datasources.traces`
+  with deduped `(TraceId, SpanId)` identities, keeping upstream's `trace_list_mv` external-parent join
+  and TRC-04; the SQL baseline is hand-combined and verified by the catalog test on the builder.
+- #17 re-ported onto the grouped CFG-INTEG-02: capability-denied datasets stay listed (note
+  "unavailable — Cloudflare dataset settings deny collection"), excluded from the failing set, with the
+  unavailable count in the detail and a pass-with-detail when nothing else fails. The fork's
+  unavailable-dataset test rides the new note format (`includes`).
+- #1 re-ported across `WarehouseSqlClientFactory`: `selfhostWrite` + factory both feed `resolveRoute`;
+  the ClickHouse client's `insert` accepts `JSONEachRow` only for `kind=clickhouse` configs.
+- #2 moves with the `platform/` package: `sameOrigin` resolution now wraps upstream's `envUrl` in
+  `apps/web/src/platform/{api-base-url,electric-sync-url}.ts`.
+- #3 registration survives the `providerItem` nav refactor and the `Integration`/`INTEGRATION_IDS`
+  unification (infra-surfaces carries `proxmox`); `InfraProxmoxSearch` keeps its route slot.
+- #5 viewer gating added to the new alerts `headerActions` (inbox/rules branch) and the settings
+  `TAB_TAGS` members ternary; selfhost-members imports the moved `platform/api-base-url`.
+- #13 `tier` rides upstream's `openHeaders` record refactor in UptimeMonitorsService.
+- #14 liveness wires into the `kit/service-health` + `kit/facets` extraction (`livenessStep` in
+  `requestAll`, `CompletedFetchLiveness`/`ClickedShowDead`, model field, derive imports combined).
+
 ## Upstream merge reconciliation (2026-11-08)
 
 Merge base `d2b1413e`; fork input `2c94e431`; upstream `e231894bc`.

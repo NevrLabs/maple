@@ -18,10 +18,12 @@ Status: **IN PROGRESS**
   packages/backend, packages/domain. Upstream also touched `apps/selfhost` (46 files).
 - Phases:
   1. [x] Evidence: topology, catalogue, PR count, builder capacity
-  2. [ ] Mirror: fast-forward fork `main` → upstream/main
-  3. [ ] Candidate branch `selfhost-homelab-up-20261111` from `fd23f5f06`, merge upstream/main
-  4. [ ] Conflict resolution against PATCHES #1–#17 (preserve numbering; no patch superseded
-        without verification)
+  2. [x] Mirror: fork `main` fast-forwarded `d2b1413ea5` → `1e96be8a1b`, pushed
+  3. [x] Candidate branch `selfhost-homelab-up-20261111` from `fd23f5f06`, merge commit `374d54caf`
+        (parents `fd23f5f06` + `1e96be8a1`); 24 conflicted files resolved, zero markers left
+  4. [x] Conflict resolution against PATCHES #1–#17 — see the 2026-11-11 section in PATCHES.md
+        (setup-audit engine move ported: #16/#17 re-applied on the new engine; #1/#2/#3/#5/#13/#14
+        adapted to upstream refactors; SQL baseline hand-combined, to be verified by catalog test)
   5. [ ] Gates on fxbuilder/fxcompute-01 (never on Zephyr): install, typecheck, backend +
         affected suites
   6. [ ] Push candidate + PATCHES.md/SYNC-LOG updates
