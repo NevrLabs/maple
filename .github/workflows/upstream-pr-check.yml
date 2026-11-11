@@ -1,0 +1,58 @@
+# NevrLabs fork: verify an upstream-contribution branch (check/* = pr/* + this file) on its upstream base before the PR
+# is opened. Runs on the fork's free Actions; upstream CI runs again on the PR itself.
+name: upstream pr check
+on:
+    push:
+        branches: ["check/**"]
+
+permissions:
+    contents: read
+
+jobs:
+    check:
+        runs-on: ubuntu-latest
+        timeout-minutes: 40
+        env:
+            CLICKHOUSE_E2E: "1"
+            CLICKHOUSE_E2E_URL: http://127.0.0.1:8123
+            CLICKHOUSE_E2E_USER: maple
+            CLICKHOUSE_E2E_PASSWORD: maple
+        services:
+            clickhouse:
+                image: clickhouse/clickhouse-server:26.2
+                env:
+                    CLICKHOUSE_USER: maple
+                    CLICKHOUSE_PASSWORD: maple
+                    CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+                ports:
+                    - 8123:8123
+                options: >-
+                    --health-cmd "clickhouse-client --user maple --password maple --query 'SELECT 1'"
+                    --health-interval 5s
+                    --health-timeout 5s
+                    --health-retries 20
+        steps:
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+              with:
+                  fetch-depth: 3
+            - uses: ./.github/actions/setup
+            # Upstream's own tree is not oxfmt-clean, so check only what the PR changes
+            # (HEAD~1 = the PR commit; HEAD = this workflow file).
+            - name: Format (changed files)
+              run: bunx oxfmt --check $(git diff --name-only HEAD~2 HEAD~1 | grep -E '\.(ts|tsx|json)$')
+            - name: Typecheck touched workspaces
+              run: |
+                  set -e
+                  for ws in packages/domain packages/query-engine-integrations packages/backend packages/views; do
+                      echo "== typecheck $ws"; bun run --cwd "$ws" typecheck
+                  done
+            - name: SQL catalog (baseline)
+              run: bun run --cwd packages/query-engine-integrations test
+            - name: Backend setup audit + Cloudflare
+              run: bun run --cwd packages/backend test src/services/org src/services/integrations/CloudflareAnalyticsService.test.ts
+            - name: Views charts
+              run: bun run --cwd packages/views test src/charts
+            - name: ClickHouse e2e (setup audit)
+              run: |
+                  f=src/services/warehouse/setup-audit.clickhouse.e2e.test.ts
+                  if [ -f "packages/backend/$f" ]; then bun run --cwd packages/backend test "$f"; else echo "no e2e on this branch"; fi
