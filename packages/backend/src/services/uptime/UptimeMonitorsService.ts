@@ -604,6 +604,7 @@ export class UptimeMonitorsService extends Context.Service<UptimeMonitorsService
 					createdAt: row.createdAt,
 					updatedAt: row.updatedAt,
 				})),
+		)
 
 		const requireMonitor = Effect.fn("UptimeMonitorsService.requireMonitor")(function* (
 				orgId: OrgId,
