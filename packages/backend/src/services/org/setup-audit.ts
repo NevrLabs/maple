@@ -1864,7 +1864,7 @@ const ingestCoverageChecks: ReadonlyArray<AuditCheck> = [
 					[...bridgelessEntities, ...outsideEntities],
 				)
 			}
-			if (outside.length === 0) return PASS
+			if (outside.length === 0) return nativeAuditPass(warehouse)
 			return {
 				...fail(
 					`${plural(outside.length, "service")} ${conj(outside.length, "logs", "log")} mostly outside any span (last ${warehouse.logCorrelationHours}h). The bridge works, since some logs carry trace context, but those lines cannot be reached from a trace.`,

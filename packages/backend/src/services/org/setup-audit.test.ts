@@ -1398,7 +1398,11 @@ describe("integration checks", () => {
 		expect(result.detail).toContain("1 unavailable")
 		expect(result.affected).toEqual(
 			expect.arrayContaining([
-				expect.objectContaining({ name: "http_requests · example.com", note: "real upstream error" }),
+				expect.objectContaining({
+					name: "http_requests · example.com",
+					// The grouped note leads with the error and appends the success age.
+					note: expect.stringContaining("real upstream error"),
+				}),
 				expect.objectContaining({
 					name: "firewall_events · example.com",
 					note: expect.stringContaining("unavailable"),
