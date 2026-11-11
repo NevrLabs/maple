@@ -46,3 +46,32 @@ NOT deployed: CT130 still runs images `up-fd23f5f0` (deployment is a separate ow
   shallower indentation than upstream's surrounding code (merge-resolution artifact, compiles).
 - Out of scope this run (separate owner gates): image builds, CT130 deployment, pod-memory
   and noovoleum-images branch rebases.
+
+## Run 2 — 2026-11-11 — upstream 1e96be8a1b → 5d9f5cff8
+
+Status: **COMPLETE — merged, gated, pushed.** Branch `selfhost-homelab-up-20261111-2` head
+includes merge `e0c32562c` (parents `9feca3e9` + `5d9f5cff8`). NOT deployed: CT130 still runs
+images `up-fd23f5f0`; run 1's deployment remains the pending owner decision and run 2 is a
+superset of run 1 (it contains run 1's tip as a parent).
+
+- Driver: standing monitor handoff, first-action probe `fd23f5f06..upstream/main` = 105, of
+  which 98 were already merged in run 1 → material new range = 7 commits since `1e96be8a1b`.
+- Frozen at run start: fork main `1e96be8a1b` (mirror), run-1 branch tip `9feca3e9`,
+  upstream/main `5d9f5cff8`, deployed line `fd23f5f06` (untouched).
+- Incoming range: 7 commits, 154 files (+982/−516): security findings tabs on Overview
+  (#2487), cancellation-review report page (#2486), lockfile fixture hygiene (#2485),
+  members confirm-strip wrap (#2484), UI contrast tokens (#2483), landing docs (#2480/#2482).
+- Mirror: origin `main` fast-forwarded `1e96be8a1b` → `5d9f5cff8`, pushed.
+- Merge `e0c32562c`: clean auto-merge, zero conflicts. Post-merge patch-survival checks on the
+  three fork-overlap surfaces: `route/search.ts` keeps `oidc_error` + `dead` beside upstream's
+  `SecurityFindingStatusTab`; `lab/registry.ts` keeps `/lab/bench/ui-lag` beside upstream's new
+  `/lab/members`; alerts hub viewer gate (#5) intact — upstream's only hub delta is a contrast
+  class in `view-empty.ts`; `settings/members/view.ts` confirm-strip fix landed. No
+  `package.json` changes upstream; none of the PATCHES #1–#17 upstream files touched.
+- Gates — GitHub Actions fork workflow `selfhost gates`, green run
+  https://github.com/NevrLabs/maple/actions/runs/43023839314 at `e0c32562c` (dispatch headSha
+  verified == branch head both at queue time and on the completed run).
+- bun.lock: artifact from the green run byte-identical to the committed lock (no dependency
+  graph change) — no lock commit this run.
+- Deployment: out of scope (owner gate). If the owner deploys, run 2 supersedes run 1 as the
+  candidate; pre-cutover baseline/rollback procedures unchanged.
