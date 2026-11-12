@@ -143,7 +143,10 @@ export const AuditResources = {
 	scrape_target: { prefix: PublicIdPrefixes.scrapeTarget, verbs: ["created", "updated", "deleted"] },
 	uptime_monitor: { prefix: PublicIdPrefixes.uptimeMonitor, verbs: ["created", "updated", "deleted"] },
 	slo: { prefix: PublicIdPrefixes.slo, verbs: ["created", "updated", "deleted"] },
-	/** A public status page; component reorders and break-glass token changes are page-level. */
+	/**
+	 * A public status page; component reorders, break-glass token and custom domain changes are
+	 * page-level (the hostname is in `metadata`).
+	 */
 	status_page: {
 		prefix: PublicIdPrefixes.statusPage,
 		verbs: [
@@ -155,6 +158,10 @@ export const AuditResources = {
 			"config_applied",
 			"break_glass_rotated",
 			"break_glass_revoked",
+			"custom_domain_set",
+			"custom_domain_removed",
+			"password_set",
+			"password_removed",
 		],
 	},
 	status_page_component: {
@@ -186,6 +193,8 @@ export const AuditResources = {
 	 */
 	telemetry: { verbs: ["read", "sql_executed"] },
 	/** Org-singleton BYO-ClickHouse connection; holds warehouse credentials. */
+	/** Org-singleton Vercel team connection; the team and what the drains forward are in `metadata`. */
+	vercel_integration: { verbs: ["connected", "updated", "disconnected"] },
 	warehouse_settings: { verbs: ["updated", "deleted", "schema_applied"] },
 	/** Short-lived device credentials for the mobile widget; keyed by installation. */
 	widget_credential: { verbs: ["minted", "revoked"] },
@@ -251,6 +260,7 @@ export const AuditResourceLabels = {
 	session_replay: "Session replay",
 	support_channel: "Support channel",
 	telemetry: "Telemetry",
+	vercel_integration: "Vercel integration",
 	warehouse_settings: "Warehouse connection",
 	widget_credential: "Widget credential",
 } as const satisfies Record<AuditResourceType, string>
@@ -382,6 +392,10 @@ export const AuditActionLabels = {
 	"status_page.config_applied": "Applied status page config",
 	"status_page.break_glass_rotated": "Rotated status page break-glass token",
 	"status_page.break_glass_revoked": "Revoked status page break-glass token",
+	"status_page.custom_domain_set": "Set status page custom domain",
+	"status_page.custom_domain_removed": "Removed status page custom domain",
+	"status_page.password_set": "Set status page password",
+	"status_page.password_removed": "Removed status page password",
 	"status_page_component.created": "Created status page component",
 	"status_page_component.updated": "Updated status page component",
 	"status_page_component.deleted": "Deleted status page component",
@@ -397,6 +411,9 @@ export const AuditActionLabels = {
 	"support_channel.invite_sent": "Sent support channel invite",
 	"telemetry.read": "Read telemetry",
 	"telemetry.sql_executed": "Ran SQL query",
+	"vercel_integration.connected": "Connected Vercel",
+	"vercel_integration.updated": "Updated Vercel forwarding",
+	"vercel_integration.disconnected": "Disconnected Vercel",
 	"warehouse_settings.updated": "Updated warehouse connection",
 	"warehouse_settings.deleted": "Disconnected warehouse",
 	"warehouse_settings.schema_applied": "Applied warehouse schema",

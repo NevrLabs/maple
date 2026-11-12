@@ -42,6 +42,7 @@ const IntegrationFlag = Schema.NullOr(Schema.Boolean)
 export const Integrations = Schema.Struct({
 	cloudflare: IntegrationFlag,
 	railway: IntegrationFlag,
+	vercel: IntegrationFlag,
 	planetscale: IntegrationFlag,
 	gcp: IntegrationFlag,
 	supabase: IntegrationFlag,
@@ -130,6 +131,8 @@ export type ShellClerk = Readonly<{
 	maybeOrganization: Option.Option<ClerkOrganization>
 	memberships: ReadonlyArray<ClerkOrganization>
 	customer: BillingCustomer | undefined
+	/** The viewer's role in the active org (`org:admin`), once Clerk has read their membership. */
+	maybeRole: Option.Option<string>
 }>
 
 /** A rail item's tooltip: right of the item, centred. */

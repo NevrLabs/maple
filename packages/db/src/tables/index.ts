@@ -46,6 +46,7 @@ import { IssueEscalationPolicies, IssueEscalations } from "./escalations"
 import { AlertEscalationRuns, AlertMemberNotifications, EscalationChains } from "./escalation-chains"
 import { OnCallOverrides, OnCallSchedules } from "./oncall-schedules"
 import { AwsConnections } from "./aws-connections"
+import { CostSources } from "./cost-sources"
 import { GcpConnectors } from "./gcp-connectors"
 import { GcpResources } from "./gcp-resources"
 import { Investigations } from "./investigations"
@@ -92,6 +93,7 @@ import {
 	StatusPageComponents,
 	StatusPageIncidentComponents,
 	StatusPageCleanups,
+	StatusPageCustomDomains,
 	StatusPageIncidentUpdates,
 	StatusPageIncidents,
 	StatusPages,
@@ -111,6 +113,7 @@ import {
 	PrReviewEdits,
 	PrReviewSettings,
 } from "./vcs"
+import { VercelConnections, VercelDeployments, VercelProjects } from "./vercel"
 
 export * from "./agent-feedback"
 export * from "./ai-triage"
@@ -137,6 +140,7 @@ export * from "./escalations"
 export * from "./escalation-chains"
 export * from "./oncall-schedules"
 export * from "./aws-connections"
+export * from "./cost-sources"
 export * from "./gcp-connectors"
 export * from "./gcp-resources"
 export * from "./investigations"
@@ -167,6 +171,7 @@ export * from "./support-channels"
 export * from "./uptime"
 export * from "./slos"
 export * from "./vcs"
+export * from "./vercel"
 
 /** Every table the application database has, for schema checks and DDL. */
 export const allTables: ReadonlyArray<PgSchemaTable<string, ColumnDefs>> = [
@@ -222,6 +227,7 @@ export const allTables: ReadonlyArray<PgSchemaTable<string, ColumnDefs>> = [
 	GcpConnectors,
 	GcpResources,
 	AwsConnections,
+	CostSources,
 	Investigations,
 	LiveActivities,
 	McpOAuthClients,
@@ -281,6 +287,7 @@ export const allTables: ReadonlyArray<PgSchemaTable<string, ColumnDefs>> = [
 	StatusPageIncidentUpdates,
 	StatusPageIncidentComponents,
 	StatusPageCleanups,
+	StatusPageCustomDomains,
 	VcsInstallations,
 	VcsRepositories,
 	VcsCommits,
@@ -292,4 +299,7 @@ export const allTables: ReadonlyArray<PgSchemaTable<string, ColumnDefs>> = [
 	PrReviewReplies,
 	PrReviewEdits,
 	PrReviewSettings,
+	VercelConnections,
+	VercelProjects,
+	VercelDeployments,
 ]

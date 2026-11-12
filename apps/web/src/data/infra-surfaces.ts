@@ -54,6 +54,7 @@ export const loadInfraPresence = (
 export const INTEGRATION_IDS = [
 	"cloudflare",
 	"railway",
+	"vercel",
 	"planetscale",
 	"gcp",
 	"supabase",
@@ -67,6 +68,7 @@ export type IntegrationFlags = Readonly<{ [K in (typeof INTEGRATION_IDS)[number]
 export const PENDING_INTEGRATIONS: IntegrationFlags = {
 	cloudflare: null,
 	railway: null,
+	vercel: null,
 	planetscale: null,
 	gcp: null,
 	supabase: null,

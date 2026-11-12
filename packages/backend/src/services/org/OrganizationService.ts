@@ -90,6 +90,8 @@ const PURGE_ORDER: ReadonlyArray<TableName> = [
 	"StatusPageIncidentUpdates",
 	"StatusPageIncidents",
 	"StatusPageComponents",
+	// Its Cloudflare hostname and route were queued for removal with the pages above.
+	"StatusPageCustomDomains",
 	"StatusPages",
 	// A surviving monitor keeps Maple probing the org's endpoints, and its heartbeat token
 	// keeps accepting pings. The state rows also go with the monitor by foreign key.
@@ -114,6 +116,8 @@ const PURGE_ORDER: ReadonlyArray<TableName> = [
 	"GcpConnectors",
 	// Also removed with its connector, by the foreign key.
 	"GcpResources",
+	// Before the connections they point at: a surviving row would keep the cost sync pulling.
+	"CostSources",
 	// A surviving row would keep Maple signing tokens for, and assuming, the customer's role.
 	"AwsConnections",
 	"ErrorIssueEvents",
@@ -158,6 +162,10 @@ const PURGE_ORDER: ReadonlyArray<TableName> = [
 	// The encrypted Railway token would keep the poller reading an account for a deleted org.
 	"RailwayConnections",
 	"RailwayEnvironments",
+	// The encrypted Vercel token, and the team inventory read with it.
+	"VercelConnections",
+	"VercelProjects",
+	"VercelDeployments",
 	// The Supabase grant itself is in oauth_connections; these hold the org binding and projects.
 	"SupabaseProjectInsights",
 	"SupabaseProjects",

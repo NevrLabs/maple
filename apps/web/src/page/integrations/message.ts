@@ -16,6 +16,9 @@ import {
 	SearchConsoleIntegrationStatus,
 	SupabaseIntegrationStatus,
 	VcsRepositoryId,
+	VercelDiscoverResponse,
+	VercelIntegrationStatus,
+	VercelProjectScope,
 } from "@maple/domain/http"
 import {
 	V2AwsConnection,
@@ -36,6 +39,7 @@ import {
 import {
 	AwsConnectionId,
 	AwsMetricNamespace,
+	AwsModule,
 	ChatWorkspaceId,
 	GcpConnectorId,
 	GcpLogRuntime,
@@ -47,6 +51,7 @@ import { LoadFailure } from "@maple/views/data/load-failure"
 import * as CopyButton from "@maple/views/ui/copy-button"
 import * as Dialog from "@maple/views/ui/dialog"
 import * as Popover from "@maple/views/ui/popover"
+import * as RadioGroup from "@maple/views/ui/radio-group"
 import * as Field from "@maple/views/ui/field"
 import * as Menu from "@maple/views/ui/menu"
 import * as Select from "@maple/views/ui/select"
@@ -63,6 +68,7 @@ import {
 	LogVolume,
 	RemovedConnector,
 } from "../infra-integrations/gcp/integration/gcp-schema"
+import { VercelConfigureTarget, VercelSignal } from "../infra-integrations/vercel/integration/vercel-schema"
 import {
 	AwsRemovedStack,
 	AwsSetupMethod,
@@ -72,6 +78,7 @@ import {
 export const StatusName = Schema.Literals([
 	"cloudflare",
 	"railway",
+	"vercel",
 	"planetscale",
 	"planetscaleDatabases",
 	"gcp",
@@ -95,6 +102,7 @@ export const Message = defineMessageUnion({
 	CompletedReadClock: { nowMs: Schema.Number },
 	CompletedLoadCloudflare: result(CloudflareIntegrationStatus),
 	CompletedLoadRailway: result(RailwayIntegrationStatus),
+	CompletedLoadVercel: result(VercelIntegrationStatus),
 	CompletedLoadPlanetscale: result(V2PlanetScaleIntegration),
 	CompletedLoadPlanetscaleDatabases: result(V2PlanetScaleDatabaseList),
 	CompletedLoadGcp: result(V2GcpIntegration),
@@ -120,6 +128,8 @@ export const Message = defineMessageUnion({
 	CompletedLoadCustomer: result(BillingCustomer),
 	/** `trackProduct("integration_connected")` was handed to the session SDK. */
 	CompletedTrackConnected: {},
+	/** `trackProduct("integration_disconnected")` was handed to the session SDK. */
+	CompletedTrackDisconnected: {},
 	/** The shared session read answered with its grants. */
 	CompletedLoadSession: { grants: Schema.Array(Policy.PermissionName), hasDataSources: Schema.Boolean },
 	/** A catalog row or card, or the header's back button. */
@@ -246,6 +256,41 @@ export const Message = defineMessageUnion({
 	ClickedRailwayRotateCancel: {},
 	/** Every 15 s while environments wait for their first sync. */
 	TickedRailwaySettle: {},
+	/** Every 15 s while a fresh connection waits for its first sync. */
+	TickedVercelSettle: {},
+	ClickedVercelSync: {},
+	CompletedVercelSync: { failure: Schema.NullOr(LoadFailure) },
+	/** An issue alert's "Re-apply drains": an empty settings save. */
+	ClickedVercelReapply: {},
+	ClickedVercelConfigure: { target: VercelConfigureTarget },
+	GotVercelConfigureDialogMessage: { message: Dialog.Message },
+	GotVercelTokenMessage: { message: Field.Message },
+	/** The token step's form submit: look the token up, or save it as the new token. */
+	SubmittedVercelToken: {},
+	CompletedVercelDiscover: {
+		forTeam: Schema.NullOr(Schema.String),
+		response: Schema.NullOr(VercelDiscoverResponse),
+		error: Schema.NullOr(Schema.String),
+	},
+	GotVercelTeamMessage: { message: RadioGroup.Message },
+	SubmittedVercelTeam: {},
+	ClickedVercelConfigureBack: {},
+	ToggledVercelSignal: { signal: VercelSignal },
+	ChangedVercelScope: { scope: VercelProjectScope },
+	ToggledVercelProject: { id: Schema.String },
+	ChangedVercelProjectQuery: { value: Schema.String },
+	ChangedVercelSampling: { value: Schema.String },
+	SubmittedVercelConnect: {},
+	CompletedVercelConnect: {
+		mode: Schema.Literals(["connect", "token"]),
+		teamName: Schema.NullOr(Schema.String),
+		error: Schema.NullOr(Schema.String),
+	},
+	/** The settings step's "Save and apply": straight to Vercel, or through the confirmation. */
+	ClickedVercelSave: {},
+	GotVercelConfirmDialogMessage: { message: Dialog.Message },
+	ConfirmedVercelSave: {},
+	CompletedVercelSave: { isReapply: Schema.Boolean, error: Schema.NullOr(Schema.String) },
 	GotAwsAccountIdMessage: { message: Field.Message },
 	SubmittedAwsAccount: {},
 	SucceededAwsCreate: { connection: V2AwsConnection },
@@ -291,6 +336,14 @@ export const Message = defineMessageUnion({
 		connection: Schema.NullOr(V2AwsConnection),
 		error: Schema.NullOr(Schema.String),
 	},
+	ToggledAwsModule: { id: AwsConnectionId, module: AwsModule },
+	CompletedAwsModules: {
+		id: AwsConnectionId,
+		connection: Schema.NullOr(V2AwsConnection),
+		error: Schema.NullOr(Schema.String),
+	},
+	/** The connect flow's opt-in for a module on the account about to be connected. */
+	ToggledAwsNewModule: { module: AwsModule },
 	ClickedSupabaseSync: {},
 	/** Every minute while the connected Supabase card is shown, so its window and ages advance. */
 	TickedSupabaseClock: {},

@@ -63,6 +63,14 @@ export const IMPACT_LABEL = {
 	critical: "Critical",
 } as const satisfies Record<StatusPageIncidentImpact, string>
 
+/** An impact's colour: the dot beside it and the rule of its post. */
+export const IMPACT_TONE = {
+	none: "neutral",
+	minor: "warn",
+	major: "warn",
+	critical: "crit",
+} as const satisfies Record<StatusPageIncidentImpact, Tone>
+
 /** The statuses an incident or a maintenance moves through, the closing one last. */
 export const STATUSES_OF_KIND = {
 	incident: ["investigating", "identified", "monitoring", "resolved"],
@@ -86,11 +94,17 @@ export const monitorStatusOf = (
 		{ onNone: () => null, onSome: (monitor) => monitor.state.status ?? null },
 	)
 
+/** What of an incident moves component statuses: an unsaved draft has these too. */
+export type StatusInput = Pick<
+	V2StatusPageIncident,
+	"published" | "kind" | "status" | "impact" | "component_ids"
+>
+
 /** What a visitor sees for one component: monitor, override and published active incidents. */
 export const componentStatus = (
 	component: V2StatusPageComponent,
 	monitors: ReadonlyArray<V2UptimeMonitor>,
-	incidents: ReadonlyArray<V2StatusPageIncident>,
+	incidents: ReadonlyArray<StatusInput>,
 ): StatusPageComponentStatus =>
 	deriveComponentStatus({
 		monitorStatus: monitorStatusOf(monitors, component.monitor_id),
@@ -108,6 +122,52 @@ export const componentStatus = (
 		),
 	})
 
+/** The page banner: the worst non-informational component, as the public page derives it. */
+export const pageStatus = (
+	components: ReadonlyArray<V2StatusPageComponent>,
+	monitors: ReadonlyArray<V2UptimeMonitor>,
+	incidents: ReadonlyArray<StatusInput>,
+): StatusPageComponentStatus =>
+	worstStatus(
+		Arr.map(
+			Arr.filter(components, (component) => !isInformationalGroup(component.group)),
+			(component) => componentStatus(component, monitors, incidents),
+		),
+	)
+
+/** One status a visitor would see change: the page banner (`componentId` null) or a component. */
+export type StatusChange = Readonly<{
+	componentId: V2StatusPageComponent["id"] | null
+	label: string
+	from: StatusPageComponentStatus
+	to: StatusPageComponentStatus
+}>
+
+/** What visitors would see change from `before` to `after`: the banner first, then components in page order. */
+export const statusChanges = (input: {
+	readonly components: ReadonlyArray<V2StatusPageComponent>
+	readonly monitors: ReadonlyArray<V2UptimeMonitor>
+	readonly before: ReadonlyArray<StatusInput>
+	readonly after: ReadonlyArray<StatusInput>
+}): ReadonlyArray<StatusChange> =>
+	Arr.filter(
+		[
+			{
+				componentId: null,
+				label: "Page banner",
+				from: pageStatus(input.components, input.monitors, input.before),
+				to: pageStatus(input.components, input.monitors, input.after),
+			},
+			...Arr.map(input.components, (component) => ({
+				componentId: component.id,
+				label: component.name,
+				from: componentStatus(component, input.monitors, input.before),
+				to: componentStatus(component, input.monitors, input.after),
+			})),
+		],
+		(change) => change.from !== change.to,
+	)
+
 export const summarizePage = (input: {
 	readonly page: V2StatusPage
 	readonly components: ReadonlyArray<V2StatusPageComponent>
@@ -115,9 +175,7 @@ export const summarizePage = (input: {
 	readonly monitors: ReadonlyArray<V2UptimeMonitor>
 }): StatusPageSummary => ({
 	page: input.page,
-	overall: worstStatus(
-		Arr.map(Arr.filter(input.components, (component) => !isInformationalGroup(component.group)), (component) => componentStatus(component, input.monitors, input.incidents)),
-	),
+	overall: pageStatus(input.components, input.monitors, input.incidents),
 	componentCount: input.components.length,
 	openIncidents: Arr.filter(input.incidents, isOpenIncident).length,
 })

@@ -3,7 +3,14 @@ import { Option, String as Str } from "effect"
 import { fromString } from "foldkit/url"
 import { describe, expect, test } from "vitest"
 import { DATA_INTEGRATIONS } from "./data-integrations"
-import { AppRoute, flaggedRouteRedirect, hrefOf, routeRedirect, urlToAppRoute } from "./index"
+import {
+	AppRoute,
+	flaggedRouteRedirect,
+	hrefOf,
+	routeRedirect,
+	securityRouteRedirect,
+	urlToAppRoute,
+} from "./index"
 
 const parse = (path: string) => urlToAppRoute(Option.getOrThrow(fromString(`http://maple.test${path}`)))
 
@@ -219,12 +226,57 @@ describe("routes", () => {
 
 	test("an org outside the statusPages rollout is sent home from every status page route", () => {
 		for (const path of ["/status-pages", "/status-pages/new", "/status-pages/stp_abc"]) {
-			expect(flaggedRouteRedirect(parse(path), { statusPages: false })).toEqual(
+			expect(flaggedRouteRedirect(parse(path), { statusPages: false, cloudCost: true })).toEqual(
 				Option.some({ url: "/", isReplace: true }),
 			)
-			expect(flaggedRouteRedirect(parse(path), { statusPages: true })).toEqual(Option.none())
+			expect(flaggedRouteRedirect(parse(path), { statusPages: true, cloudCost: false })).toEqual(
+				Option.none(),
+			)
 		}
-		expect(flaggedRouteRedirect(parse("/services"), { statusPages: false })).toEqual(Option.none())
+		expect(flaggedRouteRedirect(parse("/services"), { statusPages: false, cloudCost: false })).toEqual(
+			Option.none(),
+		)
+	})
+
+	test("an org outside the cloudCost rollout is sent home from /cost, filters and all", () => {
+		for (const path of ["/cost", "/cost?groupBy=region&region=%5B%22eu-west-1%22%5D"]) {
+			expect(flaggedRouteRedirect(parse(path), { statusPages: true, cloudCost: false })).toEqual(
+				Option.some({ url: "/", isReplace: true }),
+			)
+			expect(flaggedRouteRedirect(parse(path), { statusPages: false, cloudCost: true })).toEqual(
+				Option.none(),
+			)
+		}
+	})
+
+	test("a cost view's grouping, order, range and filters survive the URL", () => {
+		const search = {
+			timePreset: "3mo",
+			groupBy: "region",
+			sort: "change",
+			cloud_service: ["Amazon Elastic Compute Cloud"],
+			region: [""],
+		} as const
+		expect(parse(hrefOf(AppRoute.Cost({ search })))).toEqual(AppRoute.Cost({ search }))
+	})
+
+	test("someone who cannot read security is sent home from every Security route", () => {
+		const paths = [
+			"/security",
+			"/security/code",
+			"/security/code/findings",
+			"/security/code/runs",
+			"/security/dependencies",
+			"/security/exposure",
+			"/security/runtimes",
+		]
+		for (const path of paths) {
+			expect(securityRouteRedirect(parse(path), false)).toEqual(
+				Option.some({ url: "/", isReplace: true }),
+			)
+			expect(securityRouteRedirect(parse(path), true)).toEqual(Option.none())
+		}
+		expect(securityRouteRedirect(parse("/services"), false)).toEqual(Option.none())
 	})
 
 	test("a literal sibling wins over a param route", () => {

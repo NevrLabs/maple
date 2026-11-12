@@ -144,6 +144,9 @@ export type SearchConsoleSiteUrl = Schema.Schema.Type<typeof SearchConsoleSiteUr
 export const AwsConnectionId = MapleUuidId("@maple/AwsConnectionId", "AWS Connection ID")
 export type AwsConnectionId = Schema.Schema.Type<typeof AwsConnectionId>
 
+export const CostSourceId = MapleUuidId("@maple/CostSourceId", "Cost Source ID")
+export type CostSourceId = Schema.Schema.Type<typeof CostSourceId>
+
 // Twelve digits, as AWS prints it. It is interpolated into role ARNs and setup scripts.
 export const AwsAccountId = Schema.String.check(Schema.isPattern(/^[0-9]{12}$/u)).pipe(
 	Schema.brand("@maple/AwsAccountId"),
@@ -437,6 +440,31 @@ export const StatusPageAutoIncidents = Schema.Literals(["off", "draft", "publish
 })
 export type StatusPageAutoIncidents = Schema.Schema.Type<typeof StatusPageAutoIncidents>
 
+/**
+ * Who can read a status page: anyone, visitors who know its password, or only signed-in members
+ * of its org inside Maple (never served at the edge).
+ */
+export const StatusPageVisibility = Schema.Literals(["public", "password", "internal"]).annotate({
+	identifier: "@maple/StatusPageVisibility",
+	title: "Status Page Visibility",
+})
+export type StatusPageVisibility = Schema.Schema.Type<typeof StatusPageVisibility>
+
+/**
+ * Where a page's custom domain stands: waiting for the customer's DNS (CNAME and ownership),
+ * waiting for its certificate, serving the page, or stopped with an error to fix.
+ */
+export const StatusPageCustomDomainStatus = Schema.Literals([
+	"pending_dns",
+	"pending_ssl",
+	"active",
+	"failed",
+]).annotate({
+	identifier: "@maple/StatusPageCustomDomainStatus",
+	title: "Status Page Custom Domain Status",
+})
+export type StatusPageCustomDomainStatus = Schema.Schema.Type<typeof StatusPageCustomDomainStatus>
+
 export const StatusPageUpdateSource = Schema.Literals([
 	"dashboard",
 	"api",
@@ -502,6 +530,7 @@ export const PULL_SOURCE_PLATFORMS = [
 	"cloudflare",
 	"gcp",
 	"railway",
+	"vercel",
 	"planetscale",
 	"github",
 	"aws",

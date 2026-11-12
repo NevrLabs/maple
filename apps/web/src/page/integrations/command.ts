@@ -53,6 +53,9 @@ export const STATUS_READS = {
 	railway: statusRead("LoadIntegrationsRailwayStatus", Message.CompletedLoadRailway, (refresh) =>
 		Effect.flatMap(IntegrationStatuses, (statuses) => statuses.railway({ refresh })),
 	),
+	vercel: statusRead("LoadIntegrationsVercelStatus", Message.CompletedLoadVercel, () =>
+		Effect.flatMap(MapleInternalApiClient, (client) => client.integrations.vercelStatus()),
+	),
 	planetscale: statusRead(
 		"LoadIntegrationsPlanetscaleStatus",
 		Message.CompletedLoadPlanetscale,
@@ -110,6 +113,16 @@ export const TrackConnected = Command.define("TrackIntegrationConnected", {
 	execute: ({ provider }) =>
 		trackProduct("integration_connected", { provider }).pipe(
 			Effect.as(Message.CompletedTrackConnected()),
+		),
+})
+
+/** A confirmed disconnect is the `integration_disconnected` product event. */
+export const TrackDisconnected = Command.define("TrackIntegrationDisconnected", {
+	args: { provider: Schema.String },
+	messages: [Message.CompletedTrackDisconnected],
+	execute: ({ provider }) =>
+		trackProduct("integration_disconnected", { provider }).pipe(
+			Effect.as(Message.CompletedTrackDisconnected()),
 		),
 })
 

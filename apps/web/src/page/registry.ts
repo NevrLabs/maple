@@ -69,6 +69,8 @@ import * as InfraPlanetscale from "./infra-integrations/planetscale/list"
 import * as InfraRailway from "./infra-integrations/railway/list"
 import * as InfraProxmox from "./infra-integrations/proxmox/list"
 import * as InfraRailwayService from "./infra-integrations/railway/service"
+import * as InfraVercel from "./infra-integrations/vercel/list"
+import * as InfraVercelProject from "./infra-integrations/vercel/project"
 import * as InfraSupabase from "./infra-integrations/supabase/list"
 import * as InfraSupabaseProject from "./infra-integrations/supabase/project"
 import * as Integrations from "./integrations"
@@ -78,6 +80,7 @@ import * as LogsList from "./logs/list"
 import * as LogPage from "./logs/log"
 import * as MetricsBrowse from "./metrics/browse"
 import * as Analytics from "./analytics"
+import * as Cost from "./cost"
 import * as MetricDetail from "./metrics/detail"
 import * as Overview from "./overview"
 import * as Recommendation from "./recommendations"
@@ -100,6 +103,7 @@ import * as SourceDetail from "./sources/detail"
 import * as StatusPageBuilder from "./status-pages/builder"
 import * as StatusPageEditor from "./status-pages/editor"
 import * as StatusPagesList from "./status-pages/list"
+import * as StatusPageViewer from "./status-pages/viewer"
 import * as TraceDetail from "./traces/detail"
 import * as TracesList from "./traces/list"
 
@@ -132,6 +136,7 @@ export const pages = [
 	StatusPagesList.page,
 	StatusPageBuilder.page,
 	StatusPageEditor.page,
+	StatusPageViewer.page,
 	AlertEditor.page,
 	ServiceMap.page,
 	InfraHosts.page,
@@ -149,6 +154,8 @@ export const pages = [
 	InfraRailway.page,
 	InfraProxmox.page,
 	InfraRailwayService.page,
+	InfraVercel.page,
+	InfraVercelProject.page,
 	InfraSupabase.page,
 	InfraSupabaseProject.page,
 	InfraPlanetscale.page,
@@ -195,6 +202,7 @@ export const pages = [
 	UserDetail.page,
 	Share.page,
 	Analytics.page,
+	Cost.page,
 ]
 
 /** Public routes a page renders bare, outside the shell (`/share/$token`). */

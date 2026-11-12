@@ -1186,6 +1186,239 @@ SELECT
         GROUP BY containerName, hostName) AS containers
         FORMAT JSON
 
+-- builder:cost:costBreakdownQuery:byUsageTypeEffectiveByChange  [539cbf8f]
+SELECT
+          latest.usageType AS key,
+          ifNull(sumIf(latest.cost, latest.date >= '2026-10-01 00:00:00'), 0) AS cost,
+          ifNull(sumIf(latest.cost, NOT (latest.date >= '2026-10-01 00:00:00')), 0) AS previousCost,
+          greatest(ifNull(sumIf(latest.cost, latest.date >= '2026-10-01 00:00:00'), 0) - ifNull(sumIf(latest.cost, NOT (latest.date >= '2026-10-01 00:00:00')), 0), ifNull(sumIf(latest.cost, NOT (latest.date >= '2026-10-01 00:00:00')), 0) - ifNull(sumIf(latest.cost, latest.date >= '2026-10-01 00:00:00'), 0)) AS changeSize
+        FROM (SELECT
+          cost_daily.Date AS date,
+          cost_daily.SourceId AS sourceId,
+          cost_daily.Provider AS provider,
+          cost_daily.AccountId AS account,
+          cost_daily.CloudService AS cloudService,
+          cost_daily.ServiceCategory AS serviceCategory,
+          cost_daily.UsageType AS usageType,
+          cost_daily.Region AS region,
+          cost_daily.ResourceId AS resource,
+          cost_daily.ServiceName AS service,
+          cost_daily.ChargeCategory AS chargeCategory,
+          cost_daily.Currency AS currency,
+          max(cost_daily.EffectiveCost) AS cost,
+          max(cost_daily.Estimated) AS estimated
+        FROM cost_daily
+        INNER JOIN (SELECT
+          cost_daily.SourceId AS sourceId,
+          cost_daily.Date AS date,
+          max(cost_daily.IngestedAt) AS ingestedAt
+        FROM cost_daily
+        WHERE cost_daily.OrgId = 'org_sql_catalog'
+          AND cost_daily.Date >= '2026-09-01 00:00:00'
+          AND cost_daily.Date <= '2026-10-30 00:00:00'
+          AND cost_daily.SourceId IN ('0f6f2c1e-7a55-4c0e-9a3b-0d2c7e5b9a11')
+        GROUP BY sourceId, date) AS newest ON ((cost_daily.SourceId = newest.sourceId AND cost_daily.Date = newest.date) AND cost_daily.IngestedAt = newest.ingestedAt)
+        WHERE cost_daily.OrgId = 'org_sql_catalog'
+          AND cost_daily.Date >= '2026-09-01 00:00:00'
+          AND cost_daily.Date <= '2026-10-30 00:00:00'
+          AND cost_daily.SourceId IN ('0f6f2c1e-7a55-4c0e-9a3b-0d2c7e5b9a11')
+          AND cost_daily.ChargeCategory != 'none'
+          AND cost_daily.Region IN ('us-east-1', 'global')
+          AND cost_daily.Currency = 'USD'
+        GROUP BY date, sourceId, provider, account, cloudService, serviceCategory, usageType, region, resource, service, chargeCategory, currency) AS latest
+        GROUP BY key
+        ORDER BY changeSize DESC, key ASC
+        LIMIT 25
+        FORMAT JSON
+
+-- builder:cost:costCurrenciesQuery:filtered  [0cb5938a]
+SELECT
+          latest.currency AS currency,
+          max(if(latest.date >= '2026-10-01 00:00:00', 1, 0)) AS inWindow,
+          ifNull(sumIf(latest.cost, latest.date >= '2026-10-01 00:00:00'), 0) AS cost,
+          ifNull(sumIf(latest.cost, NOT (latest.date >= '2026-10-01 00:00:00')), 0) AS previousCost
+        FROM (SELECT
+          cost_daily.Date AS date,
+          cost_daily.SourceId AS sourceId,
+          cost_daily.Provider AS provider,
+          cost_daily.AccountId AS account,
+          cost_daily.CloudService AS cloudService,
+          cost_daily.ServiceCategory AS serviceCategory,
+          cost_daily.UsageType AS usageType,
+          cost_daily.Region AS region,
+          cost_daily.ResourceId AS resource,
+          cost_daily.ServiceName AS service,
+          cost_daily.ChargeCategory AS chargeCategory,
+          cost_daily.Currency AS currency,
+          max(cost_daily.BilledCost) AS cost,
+          max(cost_daily.Estimated) AS estimated
+        FROM cost_daily
+        INNER JOIN (SELECT
+          cost_daily.SourceId AS sourceId,
+          cost_daily.Date AS date,
+          max(cost_daily.IngestedAt) AS ingestedAt
+        FROM cost_daily
+        WHERE cost_daily.OrgId = 'org_sql_catalog'
+          AND cost_daily.Date >= '2026-09-01 00:00:00'
+          AND cost_daily.Date <= '2026-10-30 00:00:00'
+          AND cost_daily.SourceId IN ('0f6f2c1e-7a55-4c0e-9a3b-0d2c7e5b9a11')
+        GROUP BY sourceId, date) AS newest ON ((cost_daily.SourceId = newest.sourceId AND cost_daily.Date = newest.date) AND cost_daily.IngestedAt = newest.ingestedAt)
+        WHERE cost_daily.OrgId = 'org_sql_catalog'
+          AND cost_daily.Date >= '2026-09-01 00:00:00'
+          AND cost_daily.Date <= '2026-10-30 00:00:00'
+          AND cost_daily.SourceId IN ('0f6f2c1e-7a55-4c0e-9a3b-0d2c7e5b9a11')
+          AND cost_daily.ChargeCategory != 'none'
+          AND cost_daily.Region IN ('us-east-1', 'global')
+        GROUP BY date, sourceId, provider, account, cloudService, serviceCategory, usageType, region, resource, service, chargeCategory, currency) AS latest
+        GROUP BY currency
+        ORDER BY inWindow DESC, cost DESC, previousCost DESC, currency ASC
+        FORMAT JSON
+
+-- builder:cost:costSourceCoverageQuery:default  [8dac47d3]
+SELECT
+          cost_daily.SourceId AS sourceId,
+          min(cost_daily.Date) AS firstDate,
+          max(cost_daily.Date) AS lastDate,
+          max(cost_daily.IngestedAt) AS lastPulledAt
+        FROM cost_daily
+        WHERE cost_daily.OrgId = 'org_sql_catalog'
+          AND cost_daily.Date >= '2026-10-01 00:00:00'
+          AND cost_daily.Date <= '2026-10-30 00:00:00'
+          AND cost_daily.SourceId IN ('0f6f2c1e-7a55-4c0e-9a3b-0d2c7e5b9a11')
+        GROUP BY sourceId
+        ORDER BY sourceId ASC
+        FORMAT JSON
+
+-- builder:cost:costTimeseriesQuery:byCloudServiceTopKeys  [92e3d568]
+SELECT
+          latest.date AS date,
+          if(latest.cloudService IN ('Amazon Elastic Compute Cloud - Compute', 'Amazon Elastic Load Balancing'), latest.cloudService, '__other__') AS key,
+          if(latest.cloudService IN ('Amazon Elastic Compute Cloud - Compute', 'Amazon Elastic Load Balancing'), 0, 1) AS other,
+          ifNull(sum(latest.cost), 0) AS cost,
+          max(latest.estimated) AS estimated
+        FROM (SELECT
+          cost_daily.Date AS date,
+          cost_daily.SourceId AS sourceId,
+          cost_daily.Provider AS provider,
+          cost_daily.AccountId AS account,
+          cost_daily.CloudService AS cloudService,
+          cost_daily.ServiceCategory AS serviceCategory,
+          cost_daily.UsageType AS usageType,
+          cost_daily.Region AS region,
+          cost_daily.ResourceId AS resource,
+          cost_daily.ServiceName AS service,
+          cost_daily.ChargeCategory AS chargeCategory,
+          cost_daily.Currency AS currency,
+          max(cost_daily.BilledCost) AS cost,
+          max(cost_daily.Estimated) AS estimated
+        FROM cost_daily
+        INNER JOIN (SELECT
+          cost_daily.SourceId AS sourceId,
+          cost_daily.Date AS date,
+          max(cost_daily.IngestedAt) AS ingestedAt
+        FROM cost_daily
+        WHERE cost_daily.OrgId = 'org_sql_catalog'
+          AND cost_daily.Date >= '2026-10-01 00:00:00'
+          AND cost_daily.Date <= '2026-10-30 00:00:00'
+          AND cost_daily.SourceId IN ('0f6f2c1e-7a55-4c0e-9a3b-0d2c7e5b9a11')
+        GROUP BY sourceId, date) AS newest ON ((cost_daily.SourceId = newest.sourceId AND cost_daily.Date = newest.date) AND cost_daily.IngestedAt = newest.ingestedAt)
+        WHERE cost_daily.OrgId = 'org_sql_catalog'
+          AND cost_daily.Date >= '2026-10-01 00:00:00'
+          AND cost_daily.Date <= '2026-10-30 00:00:00'
+          AND cost_daily.SourceId IN ('0f6f2c1e-7a55-4c0e-9a3b-0d2c7e5b9a11')
+          AND cost_daily.ChargeCategory != 'none'
+          AND cost_daily.Region IN ('us-east-1', 'global')
+          AND cost_daily.Currency = 'USD'
+        GROUP BY date, sourceId, provider, account, cloudService, serviceCategory, usageType, region, resource, service, chargeCategory, currency) AS latest
+        GROUP BY date, key, other
+        ORDER BY date ASC, key ASC, other ASC
+        FORMAT JSON
+
+-- builder:cost:costTotalsQuery:filtered  [479224e0]
+SELECT
+          ifNull(sumIf(latest.cost, latest.date >= '2026-10-01 00:00:00'), 0) AS cost,
+          ifNull(sumIf(latest.cost, NOT (latest.date >= '2026-10-01 00:00:00')), 0) AS previousCost,
+          uniqIf(latest.date, (latest.date >= '2026-10-01 00:00:00' AND latest.estimated = 1)) AS estimatedDays,
+          if(anyIf(latest.currency, latest.date >= '2026-10-01 00:00:00') != '', anyIf(latest.currency, latest.date >= '2026-10-01 00:00:00'), any(latest.currency)) AS currency,
+          uniq(latest.currency) AS currencies
+        FROM (SELECT
+          cost_daily.Date AS date,
+          cost_daily.SourceId AS sourceId,
+          cost_daily.Provider AS provider,
+          cost_daily.AccountId AS account,
+          cost_daily.CloudService AS cloudService,
+          cost_daily.ServiceCategory AS serviceCategory,
+          cost_daily.UsageType AS usageType,
+          cost_daily.Region AS region,
+          cost_daily.ResourceId AS resource,
+          cost_daily.ServiceName AS service,
+          cost_daily.ChargeCategory AS chargeCategory,
+          cost_daily.Currency AS currency,
+          max(cost_daily.BilledCost) AS cost,
+          max(cost_daily.Estimated) AS estimated
+        FROM cost_daily
+        INNER JOIN (SELECT
+          cost_daily.SourceId AS sourceId,
+          cost_daily.Date AS date,
+          max(cost_daily.IngestedAt) AS ingestedAt
+        FROM cost_daily
+        WHERE cost_daily.OrgId = 'org_sql_catalog'
+          AND cost_daily.Date >= '2026-09-01 00:00:00'
+          AND cost_daily.Date <= '2026-10-30 00:00:00'
+          AND cost_daily.SourceId IN ('0f6f2c1e-7a55-4c0e-9a3b-0d2c7e5b9a11')
+        GROUP BY sourceId, date) AS newest ON ((cost_daily.SourceId = newest.sourceId AND cost_daily.Date = newest.date) AND cost_daily.IngestedAt = newest.ingestedAt)
+        WHERE cost_daily.OrgId = 'org_sql_catalog'
+          AND cost_daily.Date >= '2026-09-01 00:00:00'
+          AND cost_daily.Date <= '2026-10-30 00:00:00'
+          AND cost_daily.SourceId IN ('0f6f2c1e-7a55-4c0e-9a3b-0d2c7e5b9a11')
+          AND cost_daily.ChargeCategory != 'none'
+          AND cost_daily.Region IN ('us-east-1', 'global')
+        GROUP BY date, sourceId, provider, account, cloudService, serviceCategory, usageType, region, resource, service, chargeCategory, currency) AS latest
+        FORMAT JSON
+
+-- builder:cost:costTotalsQuery:inOneCurrency  [6f3d120d]
+SELECT
+          ifNull(sumIf(latest.cost, latest.date >= '2026-10-01 00:00:00'), 0) AS cost,
+          ifNull(sumIf(latest.cost, NOT (latest.date >= '2026-10-01 00:00:00')), 0) AS previousCost,
+          uniqIf(latest.date, (latest.date >= '2026-10-01 00:00:00' AND latest.estimated = 1)) AS estimatedDays,
+          if(anyIf(latest.currency, latest.date >= '2026-10-01 00:00:00') != '', anyIf(latest.currency, latest.date >= '2026-10-01 00:00:00'), any(latest.currency)) AS currency,
+          uniq(latest.currency) AS currencies
+        FROM (SELECT
+          cost_daily.Date AS date,
+          cost_daily.SourceId AS sourceId,
+          cost_daily.Provider AS provider,
+          cost_daily.AccountId AS account,
+          cost_daily.CloudService AS cloudService,
+          cost_daily.ServiceCategory AS serviceCategory,
+          cost_daily.UsageType AS usageType,
+          cost_daily.Region AS region,
+          cost_daily.ResourceId AS resource,
+          cost_daily.ServiceName AS service,
+          cost_daily.ChargeCategory AS chargeCategory,
+          cost_daily.Currency AS currency,
+          max(cost_daily.BilledCost) AS cost,
+          max(cost_daily.Estimated) AS estimated
+        FROM cost_daily
+        INNER JOIN (SELECT
+          cost_daily.SourceId AS sourceId,
+          cost_daily.Date AS date,
+          max(cost_daily.IngestedAt) AS ingestedAt
+        FROM cost_daily
+        WHERE cost_daily.OrgId = 'org_sql_catalog'
+          AND cost_daily.Date >= '2026-09-01 00:00:00'
+          AND cost_daily.Date <= '2026-10-30 00:00:00'
+          AND cost_daily.SourceId IN ('0f6f2c1e-7a55-4c0e-9a3b-0d2c7e5b9a11')
+        GROUP BY sourceId, date) AS newest ON ((cost_daily.SourceId = newest.sourceId AND cost_daily.Date = newest.date) AND cost_daily.IngestedAt = newest.ingestedAt)
+        WHERE cost_daily.OrgId = 'org_sql_catalog'
+          AND cost_daily.Date >= '2026-09-01 00:00:00'
+          AND cost_daily.Date <= '2026-10-30 00:00:00'
+          AND cost_daily.SourceId IN ('0f6f2c1e-7a55-4c0e-9a3b-0d2c7e5b9a11')
+          AND cost_daily.ChargeCategory != 'none'
+          AND cost_daily.Region IN ('us-east-1', 'global')
+          AND cost_daily.Currency = 'USD'
+        GROUP BY date, sourceId, provider, account, cloudService, serviceCategory, usageType, region, resource, service, chargeCategory, currency) AS latest
+        FORMAT JSON
+
 -- builder:errors:errorCooccurringFingerprintsQuery:default  [e257ab78]
 SELECT
           toString(error_events_by_time.FingerprintHash) AS fingerprintHash,
@@ -6486,7 +6719,8 @@ SELECT
         LIMIT 50
         FORMAT JSON
 
--- builder:service-infra:serviceRuntimesSQL:default  [4d718731]
+-- builder:service-infra:serviceRuntimesSQL:default  [a14d0031]
+SELECT * FROM (
 SELECT
           metrics_gauge.ServiceName AS metricServiceName,
           metrics_gauge.MetricName AS metricName,
@@ -6495,7 +6729,8 @@ SELECT
           metrics_gauge.Attributes['aws.dimension.cluster_name'] AS cluster,
           metrics_gauge.ResourceAttributes['railway.service.id'] AS railwayServiceId,
           metrics_gauge.ResourceAttributes['railway.environment.id'] AS railwayEnvironmentId,
-          max(metrics_gauge.ResourceAttributes['railway.environment.name']) AS railwayEnvironmentName
+          max(metrics_gauge.ResourceAttributes['railway.environment.name']) AS railwayEnvironmentName,
+          '' AS vercelProjectId
         FROM metrics_gauge
         WHERE metrics_gauge.OrgId = 'org_sql_catalog'
           AND metrics_gauge.TimeUnix >= '2026-01-01 10:30:00'
@@ -6503,9 +6738,29 @@ SELECT
           AND metrics_gauge.ServiceName IN ('api', 'cloudflare-worker/api', 'checkout', 'cloudflare-worker/checkout')
           AND metrics_gauge.MetricName IN ('gcp.cloud_run.container.instance.count', 'gcp.cloud_functions.instance.count', 'aws.ecs.cpu_utilization', 'aws.lambda.duration', 'railway.cpu.usage', 'cloudflare.worker.cpu_time')
         GROUP BY metricServiceName, metricName, account, region, cluster, railwayServiceId, railwayEnvironmentId
-        ORDER BY metricServiceName ASC, metricName ASC
-        LIMIT 10000
-        FORMAT JSON
+UNION ALL
+SELECT
+          traces.ServiceName AS metricServiceName,
+          'vercel.project' AS metricName,
+          '' AS account,
+          '' AS region,
+          '' AS cluster,
+          '' AS railwayServiceId,
+          '' AS railwayEnvironmentId,
+          '' AS railwayEnvironmentName,
+          multiIf(traces.ResourceAttributes['vercel.projectId'] != '', traces.ResourceAttributes['vercel.projectId'], traces.ResourceAttributes['vercel.project_id'] != '', traces.ResourceAttributes['vercel.project_id'], traces.ResourceAttributes['vercel.project.id']) AS vercelProjectId
+        FROM traces
+        WHERE traces.OrgId = 'org_sql_catalog'
+          AND traces.Timestamp >= '2026-01-01 10:30:00'
+          AND traces.Timestamp <= '2026-01-03 14:15:00'
+          AND traces.ServiceName IN ('api', 'checkout')
+          AND (mapContains(traces.ResourceAttributes, 'vercel.projectId') OR mapContains(traces.ResourceAttributes, 'vercel.project_id') OR mapContains(traces.ResourceAttributes, 'vercel.project.id'))
+          AND multiIf(traces.ResourceAttributes['vercel.projectId'] != '', traces.ResourceAttributes['vercel.projectId'], traces.ResourceAttributes['vercel.project_id'] != '', traces.ResourceAttributes['vercel.project_id'], traces.ResourceAttributes['vercel.project.id']) != ''
+        GROUP BY metricServiceName, vercelProjectId
+)
+ORDER BY metricServiceName ASC, metricName ASC
+LIMIT 10000
+FORMAT JSON
 
 -- builder:service-infra:serviceWorkloadsSQL:default  [e9f241ba]
 SELECT
@@ -6558,7 +6813,7 @@ SELECT
         GROUP BY hourTs
         FORMAT JSON
 
--- builder:service-map-rollup:serviceMapEdgesRollupSQL:default  [639f3369]
+-- builder:service-map-rollup:serviceMapEdgesRollupSQL:default  [aae9e2b8]
 SELECT
           p.OrgId AS OrgId,
           toStartOfHour(p.Timestamp) AS Hour,
@@ -6580,7 +6835,7 @@ SELECT
           service_map_spans.ServiceName AS ServiceName,
           service_map_spans.DeploymentEnv AS DeploymentEnv
         FROM service_map_spans
-        WHERE service_map_spans.SpanKind IN ('Client', 'Producer')
+        WHERE (service_map_spans.SpanKind IN ('Client', 'Producer') OR (service_map_spans.SpanKind = 'Server' AND service_map_spans.ServiceName IN ('vercel.edge-network')))
           AND service_map_spans.Timestamp >= toDateTime('2026-01-01 10:30:00')
           AND service_map_spans.Timestamp < toDateTime('2026-01-03 14:15:00')
           AND service_map_spans.OrgId = 'org_sql_catalog'
@@ -7343,7 +7598,7 @@ SELECT
         LIMIT 10
         FORMAT JSON
 
--- builder:service-map:serviceDependenciesForServiceQuery:default  [211f518c]
+-- builder:service-map:serviceDependenciesForServiceQuery:default  [752efbf9]
 SELECT
           edges.sourceService AS sourceService,
           edges.targetService AS targetService,
@@ -7385,7 +7640,7 @@ SELECT
           service_map_spans.ServiceName AS ServiceName,
           service_map_spans.DeploymentEnv AS DeploymentEnv
         FROM service_map_spans
-        WHERE service_map_spans.SpanKind IN ('Client', 'Producer')
+        WHERE (service_map_spans.SpanKind IN ('Client', 'Producer') OR (service_map_spans.SpanKind = 'Server' AND service_map_spans.ServiceName IN ('vercel.edge-network')))
           AND service_map_spans.Timestamp >= toDateTime('2026-01-01 10:30:00')
           AND service_map_spans.Timestamp < toDateTime('2026-01-03 14:15:00')
           AND service_map_spans.OrgId = 'org_sql_catalog'
@@ -7412,7 +7667,7 @@ SELECT
         LIMIT 200
         FORMAT JSON
 
--- builder:service-map:serviceDependenciesInvolvingServiceQuery:default  [cc329604]
+-- builder:service-map:serviceDependenciesInvolvingServiceQuery:default  [c67e0d85]
 SELECT
           edges.sourceService AS sourceService,
           edges.targetService AS targetService,
@@ -7454,7 +7709,7 @@ SELECT
           service_map_spans.ServiceName AS ServiceName,
           service_map_spans.DeploymentEnv AS DeploymentEnv
         FROM service_map_spans
-        WHERE service_map_spans.SpanKind IN ('Client', 'Producer')
+        WHERE (service_map_spans.SpanKind IN ('Client', 'Producer') OR (service_map_spans.SpanKind = 'Server' AND service_map_spans.ServiceName IN ('vercel.edge-network')))
           AND service_map_spans.Timestamp >= toDateTime('2026-01-01 10:30:00')
           AND service_map_spans.Timestamp < toDateTime('2026-01-03 14:15:00')
           AND service_map_spans.OrgId = 'org_sql_catalog'
@@ -7481,7 +7736,7 @@ SELECT
         LIMIT 200
         FORMAT JSON
 
--- builder:service-map:serviceDependenciesSQL:default  [5467ed65]
+-- builder:service-map:serviceDependenciesSQL:default  [a3800538]
 SELECT
           edges.sourceService AS sourceService,
           edges.targetService AS targetService,
@@ -7522,7 +7777,7 @@ SELECT
           service_map_spans.ServiceName AS ServiceName,
           service_map_spans.DeploymentEnv AS DeploymentEnv
         FROM service_map_spans
-        WHERE service_map_spans.SpanKind IN ('Client', 'Producer')
+        WHERE (service_map_spans.SpanKind IN ('Client', 'Producer') OR (service_map_spans.SpanKind = 'Server' AND service_map_spans.ServiceName IN ('vercel.edge-network')))
           AND service_map_spans.Timestamp >= toDateTime('2026-01-01 10:30:00')
           AND service_map_spans.Timestamp < toDateTime('2026-01-03 14:15:00')
           AND service_map_spans.OrgId = 'org_sql_catalog'
@@ -7548,7 +7803,7 @@ SELECT
         LIMIT 200
         FORMAT JSON
 
--- builder:service-map:serviceDependenciesSQL:env-scoped  [1fd187fd]
+-- builder:service-map:serviceDependenciesSQL:env-scoped  [0f1a4626]
 SELECT
           edges.sourceService AS sourceService,
           edges.targetService AS targetService,
@@ -7590,7 +7845,7 @@ SELECT
           service_map_spans.ServiceName AS ServiceName,
           service_map_spans.DeploymentEnv AS DeploymentEnv
         FROM service_map_spans
-        WHERE service_map_spans.SpanKind IN ('Client', 'Producer')
+        WHERE (service_map_spans.SpanKind IN ('Client', 'Producer') OR (service_map_spans.SpanKind = 'Server' AND service_map_spans.ServiceName IN ('vercel.edge-network')))
           AND service_map_spans.Timestamp >= toDateTime('2026-01-01 10:30:00')
           AND service_map_spans.Timestamp < toDateTime('2026-01-03 14:15:00')
           AND service_map_spans.OrgId = 'org_sql_catalog'
@@ -7759,7 +8014,7 @@ SELECT
         LIMIT 200
         FORMAT JSON
 
--- builder:service-map:serviceMapEdgeJoinQuery:rollup-hour  [639f3369]
+-- builder:service-map:serviceMapEdgeJoinQuery:rollup-hour  [aae9e2b8]
 SELECT
           p.OrgId AS OrgId,
           toStartOfHour(p.Timestamp) AS Hour,
@@ -7781,7 +8036,7 @@ SELECT
           service_map_spans.ServiceName AS ServiceName,
           service_map_spans.DeploymentEnv AS DeploymentEnv
         FROM service_map_spans
-        WHERE service_map_spans.SpanKind IN ('Client', 'Producer')
+        WHERE (service_map_spans.SpanKind IN ('Client', 'Producer') OR (service_map_spans.SpanKind = 'Server' AND service_map_spans.ServiceName IN ('vercel.edge-network')))
           AND service_map_spans.Timestamp >= toDateTime('2026-01-01 10:30:00')
           AND service_map_spans.Timestamp < toDateTime('2026-01-03 14:15:00')
           AND service_map_spans.OrgId = 'org_sql_catalog'
@@ -7801,7 +8056,7 @@ SELECT
         GROUP BY OrgId, Hour, SourceService, TargetService, DeploymentEnv
         FORMAT JSON
 
--- builder:service-map:serviceMapEdgeJoinQuery:scoped-to-service  [ebdcfe82]
+-- builder:service-map:serviceMapEdgeJoinQuery:scoped-to-service  [c274e1fd]
 SELECT
           p.OrgId AS OrgId,
           toStartOfHour(p.Timestamp) AS Hour,
@@ -7823,7 +8078,7 @@ SELECT
           service_map_spans.ServiceName AS ServiceName,
           service_map_spans.DeploymentEnv AS DeploymentEnv
         FROM service_map_spans
-        WHERE service_map_spans.SpanKind IN ('Client', 'Producer')
+        WHERE (service_map_spans.SpanKind IN ('Client', 'Producer') OR (service_map_spans.SpanKind = 'Server' AND service_map_spans.ServiceName IN ('vercel.edge-network')))
           AND service_map_spans.Timestamp >= toDateTime('2026-01-01 10:30:00')
           AND service_map_spans.Timestamp < toDateTime('2026-01-03 14:15:00')
           AND service_map_spans.OrgId = 'org_sql_catalog'
@@ -16585,7 +16840,7 @@ SELECT
         ORDER BY bucket ASC
         FORMAT JSON
 
--- pipe:service_dependencies:default:baseline  [1fd187fd]
+-- pipe:service_dependencies:default:baseline  [0f1a4626]
 SELECT
           edges.sourceService AS sourceService,
           edges.targetService AS targetService,
@@ -16627,7 +16882,7 @@ SELECT
           service_map_spans.ServiceName AS ServiceName,
           service_map_spans.DeploymentEnv AS DeploymentEnv
         FROM service_map_spans
-        WHERE service_map_spans.SpanKind IN ('Client', 'Producer')
+        WHERE (service_map_spans.SpanKind IN ('Client', 'Producer') OR (service_map_spans.SpanKind = 'Server' AND service_map_spans.ServiceName IN ('vercel.edge-network')))
           AND service_map_spans.Timestamp >= toDateTime('2026-01-01 10:30:00')
           AND service_map_spans.Timestamp < toDateTime('2026-01-03 14:15:00')
           AND service_map_spans.OrgId = 'org_sql_catalog'

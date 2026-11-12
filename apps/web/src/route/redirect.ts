@@ -156,13 +156,34 @@ export const routeRedirect = (route: AppRoute): Option.Option<Redirect> =>
 		() => Option.none(),
 	)
 
-const isStatusPageRoute = AppRoute.isAnyOf(["StatusPages", "StatusPageNew", "StatusPage"])
+const isStatusPageRoute = AppRoute.isAnyOf(["StatusPages", "StatusPageNew", "StatusPage", "StatusPageView"])
 
-/** A route an org outside its rollout cannot open goes home (`/status-pages` without `statusPages`). */
+const isCostRoute = AppRoute.isAnyOf(["Cost"])
+
+/**
+ * A route an org outside its rollout cannot open goes home (`/status-pages` without `statusPages`,
+ * `/cost` without `cloudCost`).
+ */
 export const flaggedRouteRedirect = (
 	route: AppRoute,
-	flags: Pick<OrganizationFeatureFlags, "statusPages">,
+	flags: Pick<OrganizationFeatureFlags, "statusPages" | "cloudCost">,
 ): Option.Option<Redirect> =>
-	!flags.statusPages && isStatusPageRoute(route)
+	(!flags.statusPages && isStatusPageRoute(route)) || (!flags.cloudCost && isCostRoute(route))
 		? redirect(AppRoute.Home({ search: {} }), true)
 		: Option.none()
+
+const isSecurityRoute = AppRoute.isAnyOf([
+	"Security",
+	"SecurityCode",
+	"SecurityCodeFindings",
+	"SecurityCodeRuns",
+	"SecurityExposure",
+	"SecurityRuntimes",
+	"SecurityDependencies",
+	"SecurityRun",
+	"SecurityFinding",
+])
+
+/** The Security Center is for org admins and engineers: anyone else opening it goes home. */
+export const securityRouteRedirect = (route: AppRoute, canReadSecurity: boolean): Option.Option<Redirect> =>
+	!canReadSecurity && isSecurityRoute(route) ? redirect(AppRoute.Home({ search: {} }), true) : Option.none()

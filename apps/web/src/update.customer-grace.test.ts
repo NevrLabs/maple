@@ -57,6 +57,7 @@ const snapshot: ClerkSnapshot = {
 		isRegionOpen: false,
 		flags: {
 			aiAutoTriage: false,
+			cloudCost: false,
 			dataSources: false,
 			releases: false,
 			securityAudit: false,
@@ -64,6 +65,7 @@ const snapshot: ClerkSnapshot = {
 		},
 	}),
 	memberships: [],
+	maybeRole: Option.none(),
 	maybePendingTask: Option.none(),
 }
 

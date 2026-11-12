@@ -6,6 +6,7 @@ existing copies onto it (see `apps/web/CLAUDE.md`).
 
 ## packages/views/src/ui
 
+- `packages/views/src/ui/accent-card.ts` `accentCard`: A card-filled box with a 2px leading rule in a tone: a quoted message, or a post as it will read.
 - `packages/views/src/ui/action-bar.ts` `actionBar`: `ActionBar`: the one sticky bar a form, editor or step flow pins to the bottom of its scroll area: a floating card, so it reads the same in a page, a capped settings column and...
 - `packages/views/src/ui/alert.ts` `alert`, `alertTitle`, `alertDescription`, `alertAction`: The Alert callout: a toned box with an icon, title, description and an action.
 - `packages/views/src/ui/anchor.ts` `computePosition`, `measurePosition`: Base UI's anchor positioning (`internals/useAnchorPositioning.mjs` over Floating UI) for the cases the kit uses: offset, flip, shift with `limitShift`, size and the `transformOr...
@@ -79,6 +80,7 @@ existing copies onto it (see `apps/web/CLAUDE.md`).
 - `packages/views/src/ui/icon-button.ts` `iconButton`: An icon-only Button that always carries a name and, by default, a tooltip.
 - `packages/views/src/ui/icon.ts` `icon`, `iconNode`, `rowIcon`, `iconColor`: A generated icon with its size, class, style and attributes.
 - `packages/views/src/ui/identity-label.ts` `identityLabel`: `IdentityLabel`: the name-over-detail text beside an avatar in an account or org trigger, a grid of truncating lines that fills the rest of the row.
+- `packages/views/src/ui/info-hint.ts` `infoHint`: `InfoHint`: a small question mark beside a label that explains it in the app's tooltip, on hover or keyboard focus.
 - `packages/views/src/ui/inline-code.ts` `inlineCodeClassName`, `inlineCode`: `InlineCode`: inline monospace for identifiers and commands inside prose.
 - `packages/views/src/ui/inline-rename-input.ts` `inlineRenameInput`: `InlineRenameInput`: the text input that stands in for a title while it is renamed, an underline with no box.
 - `packages/views/src/ui/input-group.ts` `inputGroup`, `inputGroupAddon`, `inputGroupText`, `inputGroupButton`, `inputGroupInput`: One bordered control holding addons and an unstyled input.
@@ -158,6 +160,7 @@ existing copies onto it (see `apps/web/CLAUDE.md`).
 - `packages/views/src/ui/stack.ts` `hstackClass`, `vstackClass`, `hstack`, `vstack`: `HStack` and `VStack`: a flex row (items centred by default) or column with its gap on the spacing scale, instead of a hand-written `flex items-center gap-2` string.
 - `packages/views/src/ui/stat-figure.ts` `statFigure`: A headline number with a muted unit.
 - `packages/views/src/ui/status-dot.ts` `statusDot`: A static, decorative status dot.
+- `packages/views/src/ui/step-trail.ts` `stepTrail`: A step flow's place, over a dialog's title: `1 WRITE / 2 REVIEW`.
 - `packages/views/src/ui/swatch.ts` `swatch`: A small square colour key beside a legend, tooltip or table label; `dashed` draws an outline in `color` instead of a fill.
 - `packages/views/src/ui/switch.ts` `switchControl`, `labelId`, `view` (stateful: Model, init, update): Base UI `Switch`: on or off, with a thumb and a visually hidden checkbox.
 - `packages/views/src/ui/table-skeleton.ts` `tableSkeleton`: The loading placeholder for row tables.
@@ -171,6 +174,7 @@ existing copies onto it (see `apps/web/CLAUDE.md`).
 - `packages/views/src/ui/toast.ts` `titleId`, `descriptionId`, `nextToastId`, `add`, `close`, `isExpanded` (stateful: Model, init, update): The toast manager of `@maple/ui/toast` (Base UI Toast) as a Submodel the app root owns: one list, newest first, with Base UI's limit, timeouts, measured heights and enter/exit t...
 - `packages/views/src/ui/toggle-group.ts` `view`, `controlledView` (stateful: Model, init, update): Base UI `ToggleGroup`: the pressed values and the roving tab stop (the composite's highlighted index).
 - `packages/views/src/ui/toggle.ts` `togglePrimitive`, `toggle`, `segmentItemHeight` (stateful: Model, init, update): Base UI `Toggle`'s uncontrolled state (`defaultPressed`): pressed or not.
+- `packages/views/src/ui/tone-bars.ts` `toneBars`: `ToneBars`.
 - `packages/views/src/ui/tone-box.ts` `toneBoxClass`: `toneBoxClass`: a box (badge, pill, chip) tinted in one tone: its `-a2` fill, `-a3` edge and the tone's text, for an element whose shape another kit piece draws.
 - `packages/views/src/ui/tooltip-host.ts` `tooltipTrigger`, `triggerEvents`, `whileEngaged`, `isEngaged`, `view` (stateful: Model, init, update): The app's one tooltip: any element carrying `tooltipTrigger` opens it, through events delegated on `document`, so stateless kit helpers get Base UI's tooltip without a Model of...
 - `packages/views/src/ui/tooltip.ts` `view` (stateful: Model, init, update): Base UI `Tooltip` (`@maple/ui/tooltip`): opens after the pointer rests on a trigger (600 ms), closes when it leaves (no close delay), on a press of the trigger and on Escape.
@@ -219,7 +223,8 @@ existing copies onto it (see `apps/web/CLAUDE.md`).
 - `apps/web/src/page/kit/form-section.ts` `formSection`, `formScrollArea`, `formCard`, `formActionBar`, `managersOnlyPage`: One row of a form card, what it sets on the left (a title and an optional hint) and its controls on the right; the two stack in a card under 36rem wide (a phone, or a form besid...
 - `apps/web/src/page/kit/grid-list-row.ts` `gridListRow`: One `<li>` of a bordered grid list (the alerts inbox, rules and resolved lists), padded, tinted on hover and press, positioned so a stretched row link covers it.
 - `apps/web/src/page/kit/guided-setup.ts` `keyFor`, `setupBlocks`, `serverKey`, `promptKey`, `frameworkIconStrip`, `frameworkPicker`, `setupAgentPrompt`, `agentPromptButton`, `connectInstructions`: The SDK setup guide: the stack picker, then the Install / Instrument / coding-agent tabs filled in with the org's ingest keys.
-- `apps/web/src/page/kit/infinite-pages.ts` `laterPagesFields`, `freshLaterPages`, `fetchingNext`, `appendedPage`, `pagedRows`: An infinite list's pages after the first: owned by one first page (`generation`), one fetch in flight at a time, stopped by a failed page.
+- `apps/web/src/page/kit/health-gap-notice.ts` `healthGapOf`, `healthGapText`, `healthGapNotice`: Service health is the overview joined with firing alerts and baseline anomalies.
+- `apps/web/src/page/kit/infinite-pages.ts` `laterPagesFields`, `freshLaterPages`, `fetchingNext`, `appendedPage`, `pagedRows`: An infinite list's pages after the first: owned by one first page (`generation`), one fetch in flight at a time, paused by a failed page until a retry.
 - `apps/web/src/page/kit/infra-correlation/command.ts` `operationOf`: The four `*InfraTimeseries` reads the panel's charts make, through the read cache under the atom key (`requestKey(org, "<function>", { data })`), so a reopened panel reuses them.
 - `apps/web/src/page/kit/infra-correlation/correlations.ts` `getActiveInfraCorrelations`: Declarative trace/log -> infrastructure correlation config.
 - `apps/web/src/page/kit/infra-correlation/update.ts` `chartIdOf`, `requestsOf` (stateful: Model, init, update): A chart's slot and chart id, `<kind>-<metric>` (the linked-cursor id).
@@ -295,10 +300,11 @@ existing copies onto it (see `apps/web/CLAUDE.md`).
 - `apps/web/src/page/kit/stat-rail.ts` `statRail`, `statRailItem`, `statRailItemSkeleton`, `statRailLoading`: A rail of stat tiles (label, value, delta, spark) and its loading skeletons.
 - `apps/web/src/page/kit/switch-row.ts` `switchRow`: A settings row whose control is a switch: the row is the switch's field, so a checked switch marks the row, label and description filled.
 - `apps/web/src/page/kit/table-sort.ts` `sortStateOf`, `nextSort`, `isNumericString`, `compareValues`, `urlSortPatch`, `sortRows`, `sortRowsByField`, `sortRowsBy`: The click-to-sort state as Model data, and the comparator.
+- `apps/web/src/page/kit/threshold-scale.ts` `thresholdScale`: `ThresholdScale`: a good / needs-work / poor track split at two thresholds, with a marker at the reading (a Web Vital's p75 against web.dev's thresholds).
 - `apps/web/src/page/kit/time-controls.ts` `isPresetValue`, `searchPreset`, `timeControls`, `timeRangeTriggerContent`, `canWidenTimeRange`: The time range header controls: the picker trigger, the reset for a custom range, and Reload.
 - `apps/web/src/page/kit/time-frame-step.ts` `liftFrame`, `resolveFrame`, `routeFrame`: A page's `GotFrameMessage` handler: runs the frame's update, then lets the page act on a resolved window (request its data) or a new time search (navigate), keeping the frame's...
 - `apps/web/src/page/kit/time-frame.ts` `resolveWindowCommand`, `controls`, `resolve` (stateful: Model, init, update): A page's time scope (the infra pages embed it whole): the resolved window, Reload (re-resolves unsnapped and spins 600 ms) and the header's time controls.
-- `apps/web/src/page/kit/time-range-picker.ts` `searchPatchOf`, `dashboardTimeRangeOf`, `rejectedToast`, `unpicked`, `isActivePreset`, `isOpenKey`, `openOnHotkey`, `view` (stateful: Model, init, update): The header's time range popover: the preset rail and quick select.
+- `apps/web/src/page/kit/time-range-picker.ts` `searchPatchOf`, `dashboardTimeRangeOf`, `rejectedToast`, `unpicked`, `isActivePreset`, `quickSelectOf`, `isOpenKey`, `openOnHotkey`, `view` (stateful: Model, init, update): The header's time range popover: the preset rail and quick select.
 - `apps/web/src/page/kit/timezone-select-view.ts` `zoneListView`: The timezone select's list: the search input, "No timezone matches that." and the grouped zone list with clock and offset.
 - `apps/web/src/page/kit/timezone-zones.ts` `shortZoneName`, `formatUtcOffset`, `formatClock`, `zoneLabel`, `matchesZoneQuery`, `zoneRows`, `readZoneRows`: The zone list logic of the timezone select.
 - `apps/web/src/page/kit/tools/error-parts.ts` `maskChip`, `errorTextHeading`, `errorTextLine`, `windowRangeLabel`, `failureStatusLine`: The pieces the Errors table (and the error modal) draw a failure with.
