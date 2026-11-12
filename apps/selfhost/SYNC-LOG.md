@@ -99,3 +99,50 @@ superset of run 1 (it contains run 1's tip as a parent).
   graph change) — no lock commit this run.
 - Deployment: out of scope (owner gate). If the owner deploys, run 2 supersedes run 1 as the
   candidate; pre-cutover baseline/rollback procedures unchanged.
+
+## Run 3 — 2026-11-12 — upstream 5d9f5cff8 → 4a0ddd7d3
+
+Status: **BLOCKED at gates — merged + pushed, NOT gated.** Branch `selfhost-homelab-up-20261112`
+head `6f0746814` (merge `0d404a596`, parents `eb9a870d5` + `4a0ddd7d3`). Not a gated tip: the
+next run branches from run 2's tip (`a7390dd5d`) unless this run's gates go green first.
+
+- Frozen at run start: fork main `5d9f5cff8` (mirror), run-2 tip `a7390dd5d`, upstream/main
+  `4a0ddd7d3`, deployed line `fd23f5f06` (untouched).
+- Incoming range: 20 commits, 606 files (+132k/−2.2k): cloud cost module (cost_daily, AWS Cost
+  Explorer adapter, `/cost` page), Vercel + AI Gateway integration, status-page incident dialogs /
+  RSS / custom domains / internal visibility, hex-tile service map, Security Center role gate,
+  uptime "no recent check ≠ up", alert preview read scopes. package.json changes:
+  `apps/status`, `packages/domain` (bun.lock regenerates in the gate).
+- Mirror: origin `main` fast-forwarded `5d9f5cff8` → `4a0ddd7d3`, pushed.
+- Merge `0d404a596`: 12 conflicts, all resolved hunk-by-hunk (no whole-file side picks):
+  - #3 Proxmox registration beside upstream's new Vercel provider: `infra-surfaces.ts`
+    (INTEGRATION_IDS + PENDING both), `nav.ts`, `route/{app-route,routers,search}.ts`,
+    `view.lazy.test.ts` — both entries kept; routers' Proxmox pipe close restored.
+  - #11 informational tier: upstream centralised the banner in `pageStatus` (web derive, now also
+    feeding the new `statusChanges` preview) and moved `overallStatus` to
+    `StatusPagePublicSnapshot`. The informational filter moved INTO `pageStatus` and the new
+    `overallStatus` signature, so editor badge, page-list summary and the incident-dialog change
+    preview all exclude informational groups; `select.ts` keeps `rowStatus` on the public type.
+  - #11 fork test blocks (`domain/status-page.test.ts`, `status-page/render.test.ts`) rebuilt from
+    upstream + the fork delta (upstream appended custom-domain / branding / link-preview / times
+    suites at the same EOF).
+  - Survival sweep: every fork-added line on the 35 overlap files is present post-merge except
+    the three #11 filter lines, which now live in the shared functions above (verified by
+    reading). Auto-merged overlaps checked by token: `oidc_error`/`dead` search params,
+    `ui-lag` lab entry, liveness, uptime tier, setup-audit native/unavailable helpers, format cache.
+- Gates workflow amended (`6f0746814`): adds `packages/status-page` typecheck, a #11 status-tier
+  suite (domain status-page, status-page package, backend uptime alerts + status-pages) and the
+  web `status-pages` + `view.lazy` surfaces.
+- **Blocker (gates could not run):**
+  - GitHub Actions: `gh workflow run 'selfhost gates' --ref selfhost-homelab-up-20261112` →
+    `HTTP 422: Actions has been disabled for this repository`, while
+    `GET /repos/NevrLabs/maple/actions/permissions` reports `enabled:true` and the workflow is
+    `active`. Every run on the owner's account has been stuck `queued` since 2026-11-11T20:29Z
+    (fork #16 pre-check 43096320674; IEatCodeDaily/hermes-agent runs from 01:40Z) — an
+    account-level Actions restriction (billing/spending limit or flag), not a repo setting.
+  - Alternate route fxbuilder (dumbpipe circuit): `ssh fxbuilder` → `timed out` (2 probes,
+    02:0xZ). Local build on Eternus refused by policy.
+- Resume: once Actions dispatches again (owner checks account billing/Actions status), run
+  `gh workflow run 'selfhost gates' -R NevrLabs/maple --ref selfhost-homelab-up-20261112`, verify
+  headSha == branch head, cmp the bun-lock artifact, then flip this section to COMPLETE.
+
