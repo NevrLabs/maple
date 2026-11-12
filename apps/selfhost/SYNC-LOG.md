@@ -11,15 +11,21 @@ Terminus owns this fork: maintenance, upstream sync, stability, and its directio
 - Fork `main` = pure upstream mirror (fast-forward only). Work rides `selfhost-homelab-up-<date>[-n]`.
 - A run is complete only with green `selfhost gates` whose headSha == branch head.
 - Owner gates (never self-authorized): CT130 deployment/image rollout, prod DB writes, and any
-  upstream contribution — candidates are proposed to the owner first (see "Upstream candidates").
+  upstream contribution — candidates are proposed to the owner first (see "Upstream contributions").
 
-## Upstream candidates (proposed to owner, not yet decided)
+## Upstream contributions (owner approved filing 2026-11-11)
 
-| Patch | Upstream still affected? | Why it helps upstream |
-|---|---|---|
-| #16 TRC-01 all-kind parents | yes — orphan join reads `service_map_spans` (drops Internal) | false "missing parent" on any Internal-parented span |
-| #15 first-mount chart sizing | yes — still mounts at 320px then corrects | halves canvas work on sparkline-heavy pages |
-| #17 capability-denied CF datasets | yes — no capability predicate (`cloudflareDatasetUnavailable` is fork-only) | Free-plan zones keep a permanent stale error |
+Each PR rides a clean `pr/<name>` branch off upstream/main carrying only the generic fix (no
+selfhost code; #16's native-scope half stays fork-only). Before filing, `check/<name>` = PR commit +
+fork-only `.github/workflows/upstream-pr-check.yml` runs format (changed files only — upstream's
+own tree is not oxfmt-clean), typechecks, SQL catalog, audit/Cloudflare suites and the real-CH e2e.
+When a PR merges upstream, the next sync absorbs it: drop or shrink the matching PATCHES entry.
+
+| Patch | Upstream PR | Branch / head | Pre-check |
+|---|---|---|---|
+| #15 first-mount sparkline sizing | https://github.com/MapleTechLabs/maple/pull/2498 | `pr/sparkline-first-mount-height` `5ed2676c5` | green 43048183588 |
+| #17 capability-denied CF datasets | https://github.com/MapleTechLabs/maple/pull/2499 | `pr/cloudflare-capability-denied` `1656567f0` | green 43048191135 |
+| #16 TRC-01 all-kind parents | pending pre-check | `pr/trc01-all-kind-parents` `b830a0cff` | first run caught a stale upstream SQL-text pin (fixed); re-check 43096320674 |
 
 ## Run 1 — 2026-11-11 — upstream e231894bc → current upstream/main
 
