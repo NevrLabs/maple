@@ -304,7 +304,7 @@ describe("AlertsService uptime rules", () => {
 		const testDb = createTestDb(trackedDbs)
 		return Effect.gen(function* () {
 			yield* TestClock.setTime(DEFAULT_CLOCK_EPOCH_MS)
-			const alerts = yield* AlertsService
+			const alerts = yield* alertServices
 			const orgId = asOrgId("org_uptime_tiers")
 			const core = yield* seedUptimeMonitor(testDb, {
 				orgId, name: "Postgres", serviceName: "postgresql", destinationIds: [],
@@ -355,7 +355,7 @@ describe("AlertsService uptime rules", () => {
 		const testDb = createTestDb(trackedDbs)
 		return Effect.gen(function* () {
 			yield* TestClock.setTime(DEFAULT_CLOCK_EPOCH_MS)
-			const alerts = yield* AlertsService
+			const alerts = yield* alertServices
 			const orgId = asOrgId("org_uptime_tier_rules")
 			const seed = (name: string, tier: "core" | "info") =>
 				seedUptimeMonitor(testDb, {
