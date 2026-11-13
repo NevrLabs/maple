@@ -426,3 +426,17 @@ query-engine-integrations SQL baseline, `setup-audit.clickhouse.e2e.test.ts`, Ci
 dataset when Cloudflare allows it; stale errors cleared on a valid connection; CFG-INTEG-02 lists
 unavailable datasets while available datasets with real errors still fail. No plan-name checks.
 **Verify after rebase:** CloudflareAnalyticsService + SetupAuditService tests, domain CFG-INTEG-02 tests.
+
+## 18. `/infra/atlas`: MongoDB Atlas replica set page (web)
+
+**Why:** Atlas's Prometheus integration already lands 30 `mongodb_*` gauges per member in `metrics_gauge`
+(one series per `service.instance.id`), but no page read them. **Change:** new route
+`apps/web/src/page/infra-integrations/atlas/` built on the Proxmox anatomy (#3): stat rail (members up,
+connections, ops/s, lock queue, resident memory) and one row per member (role, zone, connections plus a
+6 h sparkline, ops/s with the op mix, resident/cache, oplog, asserts/s); cards below `md`. Reads through
+`executeRawSql` with `$__orgFilter` like Proxmox (`runSql` exported from `proxmox/data.ts`); counters are
+cumulative gauges, so rates are the 15-minute delta over its span, floored at 0 on a restart. Sidebar row
+under Infrastructure gated by `atlas` integration presence (one `mongodb_up` sample in the last hour).
+Registered in `infra-surfaces.ts`, `shell/{model,nav,data}.ts`, `route/{search,app-route,routers}.ts`,
+`page/registry.ts`. **Verify after rebase:** `atlas.scene.test.ts` (includes `rawSqlIssue` on all four
+statements), shell/route/view.lazy tests; `/infra/atlas` shows 3 members with one Primary.

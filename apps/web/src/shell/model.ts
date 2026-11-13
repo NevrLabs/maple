@@ -49,6 +49,8 @@ export const Integrations = Schema.Struct({
 	aws: IntegrationFlag,
 	/** NevrLabs selfhost: Proxmox VE metrics in the last hour (no connect flow; PVE pushes OTel). */
 	proxmox: IntegrationFlag,
+	/** NevrLabs selfhost: MongoDB Atlas metrics in the last hour (Atlas Prometheus integration, scraped). */
+	atlas: IntegrationFlag,
 })
 
 export const Model = Schema.Struct({

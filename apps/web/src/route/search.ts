@@ -938,6 +938,9 @@ export const InfraProxmoxSearch = Schema.Struct({
 	q: Schema.optional(Schema.String),
 })
 
+// NevrLabs selfhost: `/infra/atlas` (no view state yet).
+export const InfraAtlasSearch = Schema.Struct({})
+
 // sessionTimeRangeSearchMiddleware()
 /** The overview's health filters on the projects table. */
 export const VercelProjectScope = Schema.Literals(["erroring", "failedDeploys", "slow", "coldStarts"])

@@ -46,6 +46,13 @@ export const LAB_ENTRIES: ReadonlyArray<LabEntry> = [
 		session: "none",
 	},
 	{
+		path: "/lab/atlas",
+		title: "MongoDB Atlas",
+		description: "The /infra/atlas page over a live replica-set snapshot (3 members). ?state=live|loading|offline|empty",
+		kind: "lab",
+		session: "none",
+	},
+	{
 		path: "/lab/cloudflare",
 		title: "Cloudflare",
 		description:

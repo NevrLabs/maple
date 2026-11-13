@@ -478,6 +478,11 @@ const routers = {
 		search(Search.InfraProxmoxSearch),
 		Route.mapTo(AppRoute.InfraProxmox),
 	),
+	InfraAtlas: pipe(
+		path("infra", "atlas"),
+		search(Search.InfraAtlasSearch),
+		Route.mapTo(AppRoute.InfraAtlas),
+	),
 	InfraVercel: pipe(
 		path("infra", "vercel"),
 		search(Search.InfraVercelSearch),
@@ -598,6 +603,7 @@ export const urlToAppRoute = Route.parseUrlWithFallback(
 		routers.InfraPlanetscale,
 		routers.InfraRailway,
 		routers.InfraProxmox,
+		routers.InfraAtlas,
 		routers.InfraVercel,
 		routers.InfraSupabase,
 		routers.McpServerSession,

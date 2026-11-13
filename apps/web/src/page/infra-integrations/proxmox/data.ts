@@ -245,7 +245,7 @@ export const assembleSnapshot = (rows: SnapshotRows): ProxmoxSnapshot => {
 	}
 }
 
-const runSql = (sql: string, window: Readonly<{ startTime: string; endTime: string }>) =>
+export const runSql = (sql: string, window: Readonly<{ startTime: string; endTime: string }>) =>
 	Effect.gen(function* () {
 		const client = yield* MapleInternalApiClient
 		const response = yield* client.queryEngine.executeRawSql({

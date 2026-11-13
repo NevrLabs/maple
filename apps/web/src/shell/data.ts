@@ -2,6 +2,7 @@ import { formatWarehouseDateTime, snapRangeForCache } from "@maple/query-engine"
 import { InfraPresenceRequest } from "@maple/domain/http"
 import { Clock, Effect, Option, Record, Schema, Array as Arr } from "effect"
 import { Command } from "foldkit"
+import { loadAtlasPresence } from "../page/infra-integrations/atlas/data"
 import { loadProxmoxPresence } from "../page/infra-integrations/proxmox/data"
 import { lastHourWindow } from "../data/infra-surfaces"
 import { MapleInternalApiClient } from "../platform/api-clients"
@@ -42,7 +43,7 @@ export const LoadInfraSurfaces = Command.define("LoadInfraSurfaces", {
 			return Message.SucceededLoadInfraSurfaces({
 				orgId,
 				maybeSurfaces: Option.fromNullOr(response.surfaces),
-				integrations: { ...Record.map(response.integrations, (isConnected) => isConnected === true), proxmox: yield* loadProxmoxPresence(now).pipe(Effect.orElseSucceed(() => false)) },
+				integrations: { ...Record.map(response.integrations, (isConnected) => isConnected === true), proxmox: yield* loadProxmoxPresence(now).pipe(Effect.orElseSucceed(() => false)), atlas: yield* loadAtlasPresence(now).pipe(Effect.orElseSucceed(() => false)) },
 			})
 		}).pipe(failed(Message.FailedLoadInfraSurfaces({ orgId }))),
 })
