@@ -162,3 +162,26 @@ MacBook (owner-directed while Actions is blocked), not on Actions. NOT deployed.
 - Actions remains blocked at account level (`HTTP 422 Actions has been disabled`); the next run
   can gate on the MacBook again or on Actions once it dispatches.
 
+## Run 4 — 2026-11-13 — upstream 4a0ddd7d3 → 55baa2595
+
+Status: **COMPLETE — merged, gated (MacBook), pushed.** Branch `selfhost-homelab-up-20261113`,
+gated head = merge `3573605e7` (parents `9eb101a4c` run-3 tip + `55baa2595`). NOT deployed.
+
+- Frozen at run start: fork main `4a0ddd7d3`, run-3 tip `9eb101a4c`, upstream/main `55baa2595`.
+- Incoming range: 25 commits, 204 files (+53.8k/−0.9k): Cost page filters/sources/OpenRouter,
+  ingest log batches on self-managed ClickHouse 25.x (#2500), clickhouse-http invalid UTF-8 →
+  U+FFFD (#2511), AWS connection card + read-only role pin, billing AI credits, browser-session
+  error noise, effect-sdk export-outage log, Home log-volume read split. No package.json changes.
+- Mirror: origin `main` fast-forwarded `4a0ddd7d3` → `55baa2595`, pushed.
+- Merge `3573605e7`: auto-merged, 0 conflicts. Overlap with the fork delta = 7 web files
+  (`lab/registry.ts`, `page/registry.ts`, `route/{app-route,routers,search}.ts`, `update.ts`,
+  `view.lazy.test.ts`); every fork-added line on them is present post-merge (line sweep).
+- Gates: `gh workflow run` → `HTTP 422 Actions has been disabled` (unchanged). MacBook
+  `scripts/mac-gates.sh` (== gates.yml steps), ledger `~/ci/maple-gates/3573605e7…/ledger`,
+  head asserted == `3573605e7`: **all green**, `DONE 3573605e7`. Typechecks ×7 green; suites:
+  qe-integrations 508/508, backend org 415/415, backend warehouse 169 passed / 515 skipped,
+  domain status-page 45/45, status-page 85/85, backend uptime alerts + status-pages 140/140,
+  web merge surfaces 944/944.
+- bun.lock: regenerated lock byte-identical to the committed one (sha256 `9eb3e99e…`) — no
+  lock commit.
+
