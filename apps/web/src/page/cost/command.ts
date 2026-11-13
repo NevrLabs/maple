@@ -1,4 +1,4 @@
-import { CostBreakdownSortBy, CostFilters } from "@maple/domain/http"
+import { CostBreakdownSortBy, CostFilters, OpenRouterKeyUpdateRequest } from "@maple/domain/http"
 import { reloadSpin } from "@maple/views/data/timing"
 import { settleTo } from "@maple/views/data/load-failure"
 import {
@@ -7,10 +7,13 @@ import {
 	getCostTimeseries,
 	getCostTotals,
 } from "@maple/web-data/warehouse/cost"
-import { Schema } from "effect"
+import { Effect, Schema } from "effect"
 import { Command } from "foldkit"
+import { readGrants } from "../../data/session-tenant"
+import { MapleInternalApiClient } from "../../platform/api-clients"
 import { COST_GROUP_BYS } from "../../route/search"
 import { resolveWindowCommand } from "../kit/time-frame"
+import { perDimension } from "./derive"
 import { Message } from "./message"
 
 // Each read answers with the key it was sent under; its input is what the key was built from.
@@ -82,4 +85,62 @@ export const FetchCostBreakdown = Command.define("FetchCostBreakdown", {
 		getCostBreakdown({
 			data: { ...windowOf(input), groupBy: input.groupBy, sortBy: input.sortBy, limit: input.limit },
 		}).pipe(settleTo((result) => Message.CompletedLoadBreakdown({ key, result }))),
+})
+
+/** Per dimension, the filters its own facet reads under: every other dimension's, never its own. */
+export const FacetsInput = Schema.Struct({
+	startTime: Schema.String,
+	endTime: Schema.String,
+	filters: Schema.Struct(perDimension(() => Schema.optional(CostFilters))),
+	limit: Schema.Number,
+})
+export type FacetsInput = typeof FacetsInput.Type
+
+/** The filter rail's values: one breakdown per dimension, read side by side. */
+export const FetchCostFacets = Command.define("FetchCostFacets", {
+	args: { key: Schema.String, input: FacetsInput },
+	messages: [Message.CompletedLoadFacets],
+	execute: ({ key, input }) =>
+		Effect.all(
+			perDimension((groupBy) =>
+				Effect.map(
+					getCostBreakdown({
+						data: {
+							...windowOf({
+								startTime: input.startTime,
+								endTime: input.endTime,
+								filters: input.filters[groupBy],
+							}),
+							groupBy,
+							sortBy: "cost",
+							limit: input.limit,
+						},
+					}),
+					(response) => response.rows,
+				),
+			),
+			{ concurrency: "unbounded" },
+		).pipe(settleTo((result) => Message.CompletedLoadFacets({ key, result }))),
+})
+
+export const ReadCostGrants = Command.define("ReadCostGrants", {
+	messages: [Message.CompletedReadGrants],
+	execute: Effect.map(readGrants, (grants) => Message.CompletedReadGrants({ grants })),
+})
+
+/** Saves the org's OpenRouter management key, which makes (or keeps) its cost source. */
+export const SaveOpenRouterCostKey = Command.define("SaveOpenRouterCostKey", {
+	args: { apiKey: Schema.String },
+	messages: [Message.CompletedSaveKey],
+	execute: ({ apiKey }) =>
+		Effect.flatMap(MapleInternalApiClient, (client) =>
+			client.openRouterCost.set({ payload: new OpenRouterKeyUpdateRequest({ apiKey }) }),
+		).pipe(settleTo((result) => Message.CompletedSaveKey({ result }))),
+})
+
+export const RemoveOpenRouterCostKey = Command.define("RemoveOpenRouterCostKey", {
+	messages: [Message.CompletedRemoveKey],
+	execute: Effect.flatMap(MapleInternalApiClient, (client) => client.openRouterCost.remove()).pipe(
+		settleTo((result) => Message.CompletedRemoveKey({ result })),
+	),
 })

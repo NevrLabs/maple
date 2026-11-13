@@ -1,10 +1,17 @@
-import { Option } from "effect"
+import { CostSourcesResponse, OPENROUTER_KEY_MAX_LENGTH } from "@maple/domain/http"
+import * as Policy from "@maple/domain/policy"
+import { Array as Arr, Option, Result, String as Str } from "effect"
 import { AsyncData, Command } from "foldkit"
 import * as Chart from "@maple/views/charts/chart"
 import { chartEnvHandlers } from "@maple/views/charts/chart-env"
 import { LoadChartRuntime } from "@maple/views/charts/chart-runtime"
 import * as Keyed from "@maple/views/data/keyed"
+import { failureMessage } from "@maple/views/data/load-failure"
 import { requestKey } from "@maple/views/data/request-key"
+import * as Dialog from "@maple/views/ui/dialog"
+import * as Field from "@maple/views/ui/field"
+import * as FilterSections from "@maple/views/ui/filters/filter-sections"
+import { isClerkAuthEnabled } from "../../platform/auth-mode"
 import type { Resources } from "../../platform/resources"
 import { AppRoute, hrefOf } from "../../route"
 import { type PageContext, PageOutMessage, type PageReturn } from "../contract"
@@ -17,16 +24,25 @@ import {
 	type BreakdownInput,
 	CompleteReloadSpin,
 	FetchCostBreakdown,
+	FetchCostFacets,
+	type FacetsInput,
 	FetchCostSources,
 	FetchCostTimeseries,
 	FetchCostTotals,
+	ReadCostGrants,
+	RemoveOpenRouterCostKey,
 	ResolveWindow,
+	SaveOpenRouterCostKey,
 	type TimeseriesInput,
 	type WindowInput,
 } from "./command"
 import {
 	DEFAULT_GROUP_BY,
+	facetFilters,
+	perDimension,
 	groupByOf,
+	onlyFilter,
+	toggledFilter,
 	hasSynced,
 	isUnderADay,
 	requestFilters,
@@ -36,7 +52,7 @@ import {
 	withoutFilters,
 } from "./derive"
 import { Message } from "./message"
-import type { Model, Search } from "./model"
+import type { AddStep, Model, Search } from "./model"
 
 type Return = PageReturn<Model, Message>
 type Cmd = Command.Command<Message, never, Resources>
@@ -46,6 +62,8 @@ export const DEFAULT_PRESET: PresetValue = "30d"
 /** The keys that get their own series in the chart; the rest fold into "Other". */
 export const SERIES_LIMIT = 8
 const BREAKDOWN_LIMIT = 100
+/** The values each rail section can offer, by cost. */
+const FACET_LIMIT = 100
 
 const resolveCommand = (model: Model, context: PageContext, mode: Keyed.RequestMode): Cmd =>
 	ResolveWindow({
@@ -64,7 +82,7 @@ const navigate = (model: Model, search: Search): Return => ({
 	}),
 })
 
-const requestSources = (model: Model, context: PageContext, mode: Keyed.RequestMode): Return =>
+const requestSources = (model: Model, context: PageContext, mode: Keyed.ReadMode): Return =>
 	applySteps<Model, Message>(model, [
 		keyed(
 			model.sources,
@@ -76,7 +94,7 @@ const requestSources = (model: Model, context: PageContext, mode: Keyed.RequestM
 	])
 
 /** The window's reads, once a source has cost to read: an org with none sends no warehouse query. */
-const requestData = (model: Model, context: PageContext, mode: Keyed.RequestMode): Return => {
+const requestData = (model: Model, context: PageContext, mode: Keyed.ReadMode): Return => {
 	const sources = Option.getOrUndefined(AsyncData.getData(model.sources.data))
 	if (model.window === null || sources === undefined || !hasSynced(sources.sources)) return { model }
 	const filters = requestFilters(model.search)
@@ -94,7 +112,20 @@ const requestData = (model: Model, context: PageContext, mode: Keyed.RequestMode
 		sortBy: sortOf(model.search),
 		limit: BREAKDOWN_LIMIT,
 	}
+	const facets: FacetsInput = {
+		startTime: model.window.startTime,
+		endTime: model.window.endTime,
+		filters: perDimension((dimension) => facetFilters(model.search, dimension)),
+		limit: FACET_LIMIT,
+	}
 	return applySteps<Model, Message>(model, [
+		keyed(
+			model.facets,
+			requestKey(context.orgId, "costFacets", { data: facets }),
+			mode,
+			(next) => ({ facets: next }),
+			(key) => FetchCostFacets({ key, input: facets }),
+		),
 		keyed(
 			model.totals,
 			requestKey(context.orgId, "costTotals", { data: window }),
@@ -128,20 +159,98 @@ export const init = (route: { readonly search: Search }, context: PageContext): 
 		totals: Keyed.idle(),
 		timeseries: Keyed.idle(),
 		breakdown: Keyed.idle(),
+		facets: Keyed.idle(),
+		filterSections: FilterSections.init(),
 		timePicker: TimeRangePicker.init("cost-time-range"),
 		chart: Chart.init(),
 		themeColors: null,
 		chartRuntime: { _tag: "Loading" },
 		refreshVersion: 0,
 		isReloading: false,
+		// Without Clerk there are no roles: everyone may do everything.
+		grants: isClerkAuthEnabled ? null : Policy.allPermissions,
+		addDialog: Dialog.init("cost-add-source", "dialog"),
+		addStep: "pick",
+		keyDraft: Field.init(),
+		keyError: null,
+		removeDialog: Dialog.init("cost-remove-source", "alert-dialog"),
+		sourceWrite: "Idle",
 	}
 	return chain<Model, Message>(
-		{ model, commands: [resolveCommand(model, context, "Load"), LoadChartRuntime()] },
+		{
+			model,
+			commands: [
+				resolveCommand(model, context, "Load"),
+				LoadChartRuntime(),
+				Command.mapMessage(FilterSections.ReadRemembered(), (message) =>
+					Message.GotFilterSectionsMessage({ message }),
+				),
+				...(isClerkAuthEnabled ? [ReadCostGrants()] : []),
+			],
+		},
 		(next) => requestSources(next, context, "Load"),
 	)
 }
 
 const searchHref = (search: Search) => hrefOf(AppRoute.Cost({ search }))
+
+const toast = (type: "success" | "error", title: string, description = "") =>
+	PageOutMessage.RequestedToast({ type, title, description })
+
+const liftAddDialog = (model: Model, step: ReturnType<typeof Dialog.update>): Return => ({
+	model: { ...model, addDialog: step.model },
+	commands: Command.mapMessages(step.commands ?? [], (message) => Message.GotAddDialogMessage({ message })),
+})
+
+const liftRemoveDialog = (model: Model, step: ReturnType<typeof Dialog.update>): Return => ({
+	model: { ...model, removeDialog: step.model },
+	commands: Command.mapMessages(step.commands ?? [], (message) =>
+		Message.GotRemoveDialogMessage({ message }),
+	),
+})
+
+/** Nothing typed and no refusal on show: how the dialog opens and what it leaves behind. */
+const clearedKey = (model: Model): Model => ({ ...model, keyDraft: Field.init(), keyError: null })
+
+const openAdd = (model: Model, addStep: AddStep): Return =>
+	model.sourceWrite !== "Idle"
+		? { model }
+		: liftAddDialog({ ...clearedKey(model), addStep }, Dialog.open(model.addDialog))
+
+/**
+ * The sources and the window's reads again, after a write's own step: the reads name the org's
+ * sources, so a removed one's cost would stay on the page until then. Superseding, so a reload
+ * that started before the write cannot answer for them.
+ */
+const withReread = (step: Return, context: PageContext): Return =>
+	chain<Model, Message>(
+		chain<Model, Message>(step, (next) => requestSources(next, context, "Supersede")),
+		(next) => requestData(next, context, "Supersede"),
+	)
+
+/**
+ * The list on show without the OpenRouter source, which a removal just deleted: its row is gone
+ * at once, so no refresh, late or failed, leaves actions on a source that no longer exists.
+ */
+const withoutOpenRouterSource = (model: Model): Model => ({
+	...model,
+	sources: {
+		...model.sources,
+		data: AsyncData.map(
+			model.sources.data,
+			(response) =>
+				new CostSourcesResponse({
+					sources: Arr.filter(response.sources, (source) => source.provider !== "openrouter"),
+				}),
+		),
+	},
+})
+
+/** Whether the org has an OpenRouter source, which a saved key then replaces the key of. */
+const hasOpenRouterSource = (model: Model): boolean =>
+	Option.exists(AsyncData.getData(model.sources.data), ({ sources }) =>
+		Arr.some(sources, (source) => source.provider === "openrouter"),
+	)
 
 export const routeChanged = (
 	model: Model,
@@ -173,7 +282,19 @@ export const update = (model: Model, message: Message, context: PageContext): Re
 			requestData({ ...model, window, nowMs }, context, mode),
 		// The sources' answer decides whether there is anything to read; a failed one reads nothing.
 		CompletedLoadSources: ({ key, result }) =>
-			requestData({ ...model, sources: Keyed.accept(model.sources, key, result) }, context, "Load"),
+			requestData(
+				{
+					...model,
+					sources: Keyed.accept(model.sources, key, result),
+					// The list read after a write is in: its rows are the real ones again.
+					sourceWrite:
+						model.sourceWrite === "Settling" && key === model.sources.key
+							? "Idle"
+							: model.sourceWrite,
+				},
+				context,
+				"Load",
+			),
 		CompletedLoadTotals: ({ key, result }) => ({
 			model: { ...model, totals: Keyed.accept(model.totals, key, result) },
 		}),
@@ -191,6 +312,8 @@ export const update = (model: Model, message: Message, context: PageContext): Re
 					commands: [
 						resolveCommand(reloaded, context, "Refresh"),
 						CompleteReloadSpin({ version: reloaded.refreshVersion }),
+						// A session read that failed left no grants: Reload asks again.
+						...(isClerkAuthEnabled ? [ReadCostGrants()] : []),
 					],
 				},
 				(next) => requestSources(next, context, "Refresh"),
@@ -218,6 +341,20 @@ export const update = (model: Model, message: Message, context: PageContext): Re
 			}),
 		ClickedSort: ({ sort }) =>
 			navigate(model, { ...model.search, sort: sort === "cost" ? undefined : sort }),
+		CompletedLoadFacets: ({ key, result }) => ({
+			model: { ...model, facets: Keyed.accept(model.facets, key, result) },
+		}),
+		ToggledFacetValue: (filter) => navigate(model, toggledFilter(model.search, filter)),
+		ClickedOnlyFacetValue: (filter) => navigate(model, onlyFilter(model.search, filter)),
+		GotFilterSectionsMessage: ({ message: inner }) => {
+			const next = FilterSections.update(model.filterSections, inner)
+			return {
+				model: { ...model, filterSections: next.model },
+				commands: Command.mapMessages(next.commands ?? [], (sections) =>
+					Message.GotFilterSectionsMessage({ message: sections }),
+				),
+			}
+		},
 		ClickedRemoveFilter: (filter) => navigate(model, withoutFilter(model.search, filter)),
 		ClickedClearFilters: () => navigate(model, withoutFilters(model.search)),
 		GotTimePickerMessage: ({ message: inner }) =>
@@ -244,6 +381,93 @@ export const update = (model: Model, message: Message, context: PageContext): Re
 					Message.GotChartMessage({ message: chart }),
 				),
 			}
+		},
+		CompletedReadGrants: ({ grants }) => ({ model: { ...model, grants } }),
+		ClickedAddSource: () => openAdd(model, "pick"),
+		ClickedAddOpenRouter: () => ({ model: { ...clearedKey(model), addStep: "openrouter" } }),
+		ClickedBackToProviders: () =>
+			model.sourceWrite === "Idle" ? { model: { ...clearedKey(model), addStep: "pick" } } : { model },
+		ClickedReplaceKey: () => openAdd(model, "openrouter"),
+		// A save in flight keeps the dialog: its answer decides whether it closes.
+		GotAddDialogMessage: ({ message: inner }) => {
+			if (model.sourceWrite === "Saving") return { model }
+			const step = Dialog.update(model.addDialog, inner)
+			const lifted = liftAddDialog(model, step)
+			return step.outMessage?._tag === "Closed"
+				? { ...lifted, model: clearedKey(lifted.model) }
+				: lifted
+		},
+		GotKeyDraftMessage: ({ message: inner }) =>
+			model.sourceWrite === "Saving"
+				? { model }
+				: {
+						model: {
+							...model,
+							keyDraft: Field.update(model.keyDraft, inner).model,
+							// The refusal was about the key that was there.
+							keyError: inner._tag === "ChangedValue" ? null : model.keyError,
+						},
+					},
+		SubmittedKey: () => {
+			const apiKey = Str.trim(model.keyDraft.value)
+			if (apiKey === "" || model.sourceWrite !== "Idle") return { model }
+			// The request refuses a longer key before it is sent, which would leave the save unanswered.
+			if (apiKey.length > OPENROUTER_KEY_MAX_LENGTH) {
+				return { model: { ...model, keyError: "That is too long to be an OpenRouter key." } }
+			}
+			return {
+				model: { ...model, sourceWrite: "Saving", keyError: null },
+				commands: [SaveOpenRouterCostKey({ apiKey })],
+			}
+		},
+		// A refused key keeps the dialog open with the reason under the field.
+		CompletedSaveKey: ({ result }) =>
+			Result.match(result, {
+				onFailure: (failure): Return => ({
+					model: { ...model, sourceWrite: "Idle", keyError: failureMessage(failure) },
+				}),
+				onSuccess: (): Return => {
+					const closed = liftAddDialog(
+						clearedKey({ ...model, sourceWrite: "Settling" }),
+						Dialog.close(model.addDialog),
+					)
+					const outMessage = hasOpenRouterSource(model)
+						? toast(
+								"success",
+								"OpenRouter key replaced",
+								"The next sync runs within a few minutes.",
+							)
+						: toast("success", "OpenRouter added", "The first sync runs within a few minutes.")
+					return withReread({ ...closed, outMessage }, context)
+				},
+			}),
+		ClickedRemoveSource: () =>
+			model.sourceWrite !== "Idle"
+				? { model }
+				: liftRemoveDialog(model, Dialog.open(model.removeDialog)),
+		GotRemoveDialogMessage: ({ message: inner }) =>
+			model.sourceWrite === "Removing"
+				? { model }
+				: liftRemoveDialog(model, Dialog.update(model.removeDialog, inner)),
+		ClickedConfirmRemove: () =>
+			model.sourceWrite !== "Idle"
+				? { model }
+				: { model: { ...model, sourceWrite: "Removing" }, commands: [RemoveOpenRouterCostKey()] },
+		CompletedRemoveKey: ({ result }) => {
+			const closed = liftRemoveDialog(
+				Result.isSuccess(result)
+					? withoutOpenRouterSource({ ...model, sourceWrite: "Settling" })
+					: { ...model, sourceWrite: "Idle" },
+				Dialog.close(model.removeDialog),
+			)
+			return Result.match(result, {
+				onFailure: (failure): Return => ({
+					...closed,
+					outMessage: toast("error", "Couldn't remove the source", failureMessage(failure)),
+				}),
+				onSuccess: (): Return =>
+					withReread({ ...closed, outMessage: toast("success", "OpenRouter removed") }, context),
+			})
 		},
 		...chartEnvHandlers(model),
 	})
