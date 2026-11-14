@@ -23,7 +23,7 @@ When a PR merges upstream, the next sync absorbs it: drop or shrink the matching
 
 | Patch | Upstream PR | Branch / head | Pre-check |
 |---|---|---|---|
-| #15 first-mount sparkline sizing | https://github.com/MapleTechLabs/maple/pull/2498 | `pr/sparkline-first-mount-height` `5ed2676c5` | green 43048183588 |
+| #15 first-mount sparkline sizing | https://github.com/MapleTechLabs/maple/pull/2498 — **merged** (`8a6f7b50c`), absorbed run 5 | `pr/sparkline-first-mount-height` `5ed2676c5` | green 43048183588 |
 | #17 capability-denied CF datasets | https://github.com/MapleTechLabs/maple/pull/2499 | `pr/cloudflare-capability-denied` `1656567f0` | green 43048191135 |
 | #16 TRC-01 all-kind parents | pending pre-check | `pr/trc01-all-kind-parents` `b830a0cff` | first run caught a stale upstream SQL-text pin (fixed); re-check 43096320674 |
 
@@ -185,3 +185,33 @@ gated head = merge `3573605e7` (parents `9eb101a4c` run-3 tip + `55baa2595`). NO
 - bun.lock: regenerated lock byte-identical to the committed one (sha256 `9eb3e99e…`) — no
   lock commit.
 
+## Run 5 — 2026-11-14 — upstream 55baa2595 → cf227e825
+
+Status: **COMPLETE — merged, gated (MacBook), pushed.** Branch `selfhost-homelab-up-20261114`,
+gated head = merge `35695db00` (parents `b2448b871` #18 Atlas tip + `cf227e825`). NOT deployed.
+
+- Frozen at run start: fork main `55baa2595`, selfhost tip `b2448b871` (run-4 docs + PATCHES #18),
+  upstream/main `cf227e825`.
+- Incoming range: 44 commits, 745 files (+115.9k/−3.9k): analyst role (policy, auth, MCP/chat, shell,
+  members, Overview), Security hub audit trail + detections, cost sources (GitHub, Vercel, Cloudflare,
+  PlanetScale, Anthropic, OpenAI), Geist UI refresh + chart chrome/zoom, ingest per-request cost bounds,
+  scoped-key/role hardening, db migration-branch join, #2498 (our #15). package.json changes in cli,
+  alchemy-maple, browser, domain, effect-sdk, views (version bumps).
+- Mirror: origin `main` fast-forwarded `55baa2595` → `cf227e825`, pushed, read back.
+- Merge `35695db00`: 2 conflicts, both resolved by hand:
+  - `apps/web/src/page/alerts/hub/view.ts` `headerActions`: upstream's analyst gate (`audience ===
+    "analyst"` → no actions on any tab) first, then #5's `isViewerSession()` gate on inbox/rules kept.
+  - `packages/views/src/charts/chart-mounts.ts`: upstream side taken — #15's sizing half merged upstream
+    as #2498 (identical logic, upstream formatting); file now == upstream. PATCHES #15 shrunk.
+- Survival sweep (`55baa2595` → `b2448b871`): 25 overlap files; only MISSING lines are the two #15
+  chart-mounts lines above (superseded by #2498). #18 Atlas registrations, #14 liveness, #13 tier,
+  #1 SQL baseline, format.ts cache all present.
+- Gates: `gh workflow run` → `HTTP 422 Actions has been disabled` (unchanged). MacBook
+  `scripts/mac-gates.sh`, ledger `~/ci/maple-gates/35695db00…/ledger`, head asserted == `35695db00`:
+  **all green**, `DONE 35695db00`. Typechecks ×7 green; suites: qe-integrations 507/507, backend org
+  415/415, backend warehouse 169 passed / 515 skipped, domain status-page 45/45, status-page 85/85,
+  backend uptime alerts + status-pages 140/140, web merge surfaces 971/971.
+- bun.lock: regenerated lock byte-identical to the committed merged lock (sha256 `ffc56d7e…`) — no
+  lock commit.
+- Note: upstream's new `analyst` role overlaps conceptually with #5's selfhost `viewer`; both gates
+  coexist. Candidate for later: map viewer onto analyst and drop the fork gate.
