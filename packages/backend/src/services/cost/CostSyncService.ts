@@ -18,6 +18,7 @@ import {
 	Schedule,
 	Schema,
 	Array as Arr,
+	Number as Num,
 	String as Str,
 } from "effect"
 import { Database } from "@maple/backend/platform/DatabaseLive"
@@ -29,9 +30,19 @@ import { leaseClaimable, leaseStillOurs } from "../integrations/lease"
 import { pollFleet } from "../integrations/poll-fleet"
 import type { CostProviderAdapter, CostProviderError } from "./CostProvider"
 import { reconcileAwsCostSources } from "./aws-cost-sources"
+import { COST_CONNECTION_PROVIDERS, reconcileCostConnectionSources } from "./cost-connection-sources"
+import { reconcileGithubCostSources } from "./github-cost-sources"
 import { reconcileOpenRouterCostSources } from "./openrouter-cost-sources"
+import { reconcilePlanetScaleCostSources } from "./planetscale-cost-sources"
+import { reconcileVercelCostSources } from "./vercel-cost-sources"
 import { AwsCostProvider } from "./providers/aws/AwsCostProvider"
+import { AnthropicCostProvider } from "./providers/anthropic/AnthropicCostProvider"
+import { CloudflareCostProvider } from "./providers/cloudflare/CloudflareCostProvider"
+import { GithubCostProvider } from "./providers/github/GithubCostProvider"
+import { OpenAiCostProvider } from "./providers/openai/OpenAiCostProvider"
 import { OpenRouterCostProvider } from "./providers/openrouter/OpenRouterCostProvider"
+import { PlanetScaleCostProvider } from "./providers/planetscale/PlanetScaleCostProvider"
+import { VercelCostProvider } from "./providers/vercel/VercelCostProvider"
 import {
 	advanceCostSync,
 	batchWholeDays,
@@ -165,6 +176,12 @@ export class CostSyncService extends Context.Service<CostSyncService, CostSyncSe
 			const adapters = {
 				aws: yield* AwsCostProvider,
 				openrouter: yield* OpenRouterCostProvider,
+				github: yield* GithubCostProvider,
+				vercel: yield* VercelCostProvider,
+				cloudflare: yield* CloudflareCostProvider,
+				planetscale: yield* PlanetScaleCostProvider,
+				anthropic: yield* AnthropicCostProvider,
+				openai: yield* OpenAiCostProvider,
 			} satisfies Record<CostProvider, CostProviderAdapter>
 			const dbExecute = makeDbExecute(
 				database,
@@ -204,9 +221,61 @@ export class CostSyncService extends Context.Service<CostSyncService, CostSyncSe
 				})
 			})
 
-			/** One function per provider; each owns the sources of its own connection table. */
+			/** GitHub sources whose installation can no longer be read (see `reconcileGithubCostSources`). */
+			const reconcileGithub = Effect.fn("CostSyncService.reconcileGithub")(function* () {
+				const reconciled = yield* dbExecute((db) => reconcileGithubCostSources(db))
+				yield* Effect.annotateCurrentSpan({
+					"maple.cost.provider": "github",
+					"maple.cost.sources_removed": reconciled.removed,
+				})
+			})
+
+			/** Vercel sources whose connection is gone are removed (see `reconcileVercelCostSources`). */
+			const reconcileVercel = Effect.fn("CostSyncService.reconcileVercel")(function* () {
+				const reconciled = yield* dbExecute((db) => reconcileVercelCostSources(db))
+				yield* Effect.annotateCurrentSpan({
+					"maple.cost.provider": "vercel",
+					"maple.cost.sources_removed": reconciled.removed,
+				})
+			})
+
+			/** The sources of every provider read with a pasted credential, in step with `cost_connections`. */
+			const reconcileConnections = Effect.fn("CostSyncService.reconcileConnections")(function* (
+				now: number,
+			) {
+				const reconciled = yield* dbExecute((db) =>
+					Effect.forEach(COST_CONNECTION_PROVIDERS, (provider) =>
+						reconcileCostConnectionSources(db, now, provider),
+					),
+				)
+				yield* Effect.annotateCurrentSpan({
+					"maple.cost.sources_created": Num.sumAll(Arr.map(reconciled, (entry) => entry.created)),
+					"maple.cost.sources_removed": Num.sumAll(Arr.map(reconciled, (entry) => entry.removed)),
+				})
+			})
+
+			/** PlanetScale sources whose connection is gone or reads another organization by now. */
+			const reconcilePlanetScale = Effect.fn("CostSyncService.reconcilePlanetScale")(function* () {
+				const reconciled = yield* dbExecute((db) => reconcilePlanetScaleCostSources(db))
+				yield* Effect.annotateCurrentSpan({
+					"maple.cost.provider": "planetscale",
+					"maple.cost.sources_removed": reconciled.removed,
+				})
+			})
+
+			/** One function per provider or connection table; each owns the sources of its own. */
 			const reconcile = (now: number) =>
-				Effect.all([reconcileAws(now), reconcileOpenRouter(now)], { discard: true })
+				Effect.all(
+					[
+						reconcileAws(now),
+						reconcileOpenRouter(now),
+						reconcileGithub(),
+						reconcileVercel(),
+						reconcileConnections(now),
+						reconcilePlanetScale(),
+					],
+					{ discard: true },
+				)
 
 			/** Enabled sources with a pull due and no backoff, healthy ones first. */
 			const loadDue = (now: number) => {
@@ -668,6 +737,12 @@ export class CostSyncService extends Context.Service<CostSyncService, CostSyncSe
 			Layer.mergeAll(
 				AwsCostProvider.layer,
 				OpenRouterCostProvider.layer,
+				GithubCostProvider.layer,
+				VercelCostProvider.layer,
+				CloudflareCostProvider.layer,
+				PlanetScaleCostProvider.layer,
+				AnthropicCostProvider.layer,
+				OpenAiCostProvider.layer,
 				WarehouseQueryService.layer,
 				OrganizationFeatureFlagsService.layer,
 			),

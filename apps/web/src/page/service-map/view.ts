@@ -234,7 +234,7 @@ export const view = Submodel.defineView<Model, Message, PageViewInputs>((model, 
 	h.div(
 		[h.Class("contents"), h.OnMount(ResolveThemeColors({ tokens: DB_CHART_TOKENS }))],
 		[
-			dashboardPage(h, { title: "Service map", actions: headerActions(h, model) }, [
+			dashboardPage(h, { title: "Service map", width: "full", actions: headerActions(h, model) }, [
 				Option.match(AsyncData.getError(model.facets.data), {
 					onSome: (failure) =>
 						errorState(h, {
@@ -248,7 +248,7 @@ export const view = Submodel.defineView<Model, Message, PageViewInputs>((model, 
 							[
 								...dbEdgesTimedOutNotice(h, model),
 								h.div(
-									[h.Class("-mx-4 -mb-4 h-[calc(100vh-10rem)]")],
+									[h.Class("-mx-4 -mb-4 h-[calc(100vh-9rem)]")],
 									[mapArea(h, model, inputs)],
 								),
 							],

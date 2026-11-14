@@ -77,6 +77,14 @@ export const LAB_ENTRIES: ReadonlyArray<LabEntry> = [
 		session: "none",
 	},
 	{
+		path: "/lab/list-keys",
+		title: "List keys",
+		description:
+			"The services, metrics table, investigations, dashboards and alerts Inbox lists over fixture rows, each taking the row keys: J / K / arrows move the focus, Enter opens, Escape clears (`?page=services|metrics|investigations|dashboards|alerts`).",
+		kind: "lab",
+		session: "none",
+	},
+	{
 		path: "/lab/alerts-hub",
 		title: "Alerts hub",
 		description:
@@ -144,7 +152,7 @@ export const LAB_ENTRIES: ReadonlyArray<LabEntry> = [
 		path: "/lab/anomaly-alerts",
 		title: "Anomaly alerts",
 		description:
-			"Anomaly rules in the rule editor (scoped and the protected default), an anomaly rule's incident with the detector's evidence, the Inbox's Anomalies view and the Overview's alert banner with open anomalies (`?state=`).",
+			"Anomaly rules in the rule editor (scoped and the protected default), an anomaly rule's incident with the detector's evidence, the Inbox's Anomalies view and the Overview's alert banner with open anomalies (`?state=`). The hub and the incident as an admin, a member or an analyst, who gets no Acknowledge (`?role=member|analyst`).",
 		kind: "lab",
 		session: "none",
 	},
@@ -201,6 +209,14 @@ export const LAB_ENTRIES: ReadonlyArray<LabEntry> = [
 		title: "Vercel integration",
 		description:
 			"Integrations → Vercel not connected, the connect steps, and a connected team healthy, with a broken drain and with a rejected token, over fixtures.",
+		kind: "lab",
+		session: "none",
+	},
+	{
+		path: "/lab/analytics-search",
+		title: "Web analytics: Search",
+		description:
+			"The Search tab's tiles, trend, queries and pages over a young site's Search Console data; sorting, the tiles and the filters work. Conversions, loading, an empty window, failing (all reads, or some), importing, revoked, no property and not connected too, and the Overview tab's pointer to Search (`?state=`).",
 		kind: "lab",
 		session: "none",
 	},
@@ -486,7 +502,7 @@ export const LAB_ENTRIES: ReadonlyArray<LabEntry> = [
 		path: "/lab/errors",
 		title: "Errors list",
 		description:
-			"The `/errors` list over a fixture holding every row state at once: surging critical with an open incident, live and diagnosed investigations, a truncating message, a fingerprint gone quiet, an unset severity.",
+			"The `/errors` list over a fixture holding every row state at once: surging critical with an open incident, live and diagnosed investigations, a truncating message, a fingerprint gone quiet, an unset severity. As a member or an analyst, who gets no checkbox, picker or bulk bar (?role=member|analyst).",
 		kind: "lab",
 		session: "none",
 	},
@@ -494,7 +510,7 @@ export const LAB_ENTRIES: ReadonlyArray<LabEntry> = [
 		path: "/lab/error-issue",
 		title: "Error issue",
 		description:
-			"The error issue page over one surging, regressed high-severity TypeError: the occurrence chart and its tooltip, the Get it fixed panel, the stat rail and the rail.",
+			"The error issue page over one surging, regressed high-severity TypeError: the occurrence chart and its tooltip, the Get it fixed panel, the stat rail and the rail. As a member or an analyst, who reads it and gets no triage control (?role=member|analyst&tab=overview|occurrences|activity).",
 		kind: "lab",
 		session: "none",
 	},
@@ -502,7 +518,7 @@ export const LAB_ENTRIES: ReadonlyArray<LabEntry> = [
 		path: "/lab/alerts",
 		title: "Alerts",
 		description:
-			"The `/alerts` Inbox, Rules and Routing tabs and the incident page over one fixture org: two firing, one held, four blind spots, a delivery retry and a diagnosed investigation.",
+			"The `/alerts` Inbox, Rules and Routing tabs and the incident page over one fixture org: two firing, one held, four blind spots, a delivery retry and a diagnosed investigation. As an admin, a member or an analyst, who gets no Acknowledge (`?role=member|analyst`).",
 		kind: "lab",
 		session: "none",
 	},
@@ -518,7 +534,7 @@ export const LAB_ENTRIES: ReadonlyArray<LabEntry> = [
 		path: "/lab/status-pages",
 		title: "Status pages",
 		description:
-			"The status pages list, the look picker and the form fields (hint and error) over fixture pages.",
+			"The status pages list, the look picker and the form fields (hint and error) over fixture pages, or a page's editor open on an incident (`?page=list|editor`). As an admin, a member or an analyst, who gets no control that posts, edits or deletes an incident (`?role=member|analyst`).",
 		kind: "lab",
 		session: "none",
 	},
@@ -595,6 +611,14 @@ export const LAB_ENTRIES: ReadonlyArray<LabEntry> = [
 		session: "none",
 	},
 	{
+		path: "/lab/analyst-home",
+		title: "Analyst overview",
+		description:
+			"The Overview an analyst gets, in the analyst's shell: nothing wrong, incidents open and checks failing, nothing set up, loading and one read failing (`?state=clear|attention|empty|loading|failed`).",
+		kind: "lab",
+		session: "none",
+	},
+	{
 		path: "/lab/shell",
 		title: "Shell states",
 		description:
@@ -621,6 +645,13 @@ export const LAB_ENTRIES: ReadonlyArray<LabEntry> = [
 		path: "/lab/bench/service-detail",
 		title: "Service detail charts",
 		description: "The service-detail MetricsGrid with synthetic rows.",
+		kind: "bench",
+		session: "none",
+	},
+	{
+		path: "/lab/bench/service-detail-markers",
+		title: "Service detail markers",
+		description: "The service-detail MetricsGrid with deploy markers; hover a label for its commit card.",
 		kind: "bench",
 		session: "none",
 	},

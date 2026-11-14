@@ -5,10 +5,19 @@ import {
 	CostSourcesResponse,
 	CostTimeseriesResponse,
 	CostTotalsResponse,
-	OpenRouterCostKeyRemoved,
-	OpenRouterCostKeySaved,
+	GithubCostInstallations,
+	GithubCostSourceAdded,
+	GithubCostSourceRemoved,
+	PlanetScaleCostSourceAdded,
+	PlanetScaleCostSourceRemoved,
+	PlanetScaleCostStatus,
+	VercelCostSourceAdded,
+	VercelCostSourceRemoved,
+	VercelCostStatus,
 } from "@maple/domain/http"
 import * as Policy from "@maple/domain/policy"
+import { VcsInstallationId } from "@maple/domain/vcs"
+import { CostSourceId } from "@maple/primitives"
 import { Schema } from "effect"
 import { defineMessageUnion } from "foldkit/message"
 import * as Chart from "@maple/views/charts/chart"
@@ -22,6 +31,7 @@ import { TimeWindow } from "../../data/time-range"
 import { COST_GROUP_BYS } from "../../route/search"
 import { perDimension } from "./derive"
 import * as TimeRangePicker from "../kit/time-range-picker"
+import { CredentialProvider } from "./providers"
 
 /** A read's answer; `key` is what it was requested under, so a stale one is dropped. */
 const result = <A, AI>(schema: Schema.Codec<A, AI>) => ({
@@ -62,18 +72,49 @@ export const Message = defineMessageUnion({
 	CompletedReadGrants: { grants: Schema.Array(Policy.PermissionName) },
 	/** Opens the add-source dialog on the providers. */
 	ClickedAddSource: {},
-	ClickedAddOpenRouter: {},
+	/** Picks a provider added by pasting a credential: the dialog moves to its form. */
+	PickedProvider: { provider: CredentialProvider },
+	/** Turns the dialog to Vercel and reads the org's connection; also the step's Try again. */
+	ClickedAddVercel: {},
+	CompletedLoadVercelStatus: result(VercelCostStatus),
+	ClickedConfirmAddVercel: {},
+	CompletedAddVercel: { result: Schema.Result(VercelCostSourceAdded, LoadFailure) },
+	/** Turns the dialog to PlanetScale and reads the org's connection; also the step's Try again. */
+	ClickedAddPlanetScale: {},
+	CompletedLoadPlanetScaleStatus: result(PlanetScaleCostStatus),
+	ClickedConfirmAddPlanetScale: {},
+	CompletedAddPlanetScale: { result: Schema.Result(PlanetScaleCostSourceAdded, LoadFailure) },
 	ClickedBackToProviders: {},
-	/** Opens the dialog on the key form, for the source that exists. */
-	ClickedReplaceKey: {},
+	/** Opens the dialog on the provider's form, for the source that exists. */
+	ClickedReplaceCredential: { provider: CredentialProvider },
 	GotAddDialogMessage: { message: Dialog.Message },
-	GotKeyDraftMessage: { message: Field.Message },
-	SubmittedKey: {},
-	CompletedSaveKey: { result: Schema.Result(OpenRouterCostKeySaved, LoadFailure) },
-	ClickedRemoveSource: {},
+	GotCredentialDraftMessage: { message: Field.Message },
+	SubmittedCredential: {},
+	CompletedSaveCredential: {
+		provider: CredentialProvider,
+		result: Schema.Result(Schema.Void, LoadFailure),
+	},
+	/** Opens the dialog on the org's GitHub installations, and reads them. */
+	ClickedAddGithub: {},
+	CompletedLoadGithubInstallations: {
+		request: Schema.Number,
+		result: Schema.Result(GithubCostInstallations, LoadFailure),
+	},
+	ClickedAddGithubInstallation: { installationId: VcsInstallationId },
+	CompletedAddGithubSource: {
+		installationId: VcsInstallationId,
+		result: Schema.Result(GithubCostSourceAdded, LoadFailure),
+	},
+	ClickedRemoveSource: { sourceId: CostSourceId },
 	GotRemoveDialogMessage: { message: Dialog.Message },
 	ClickedConfirmRemove: {},
-	CompletedRemoveKey: { result: Schema.Result(OpenRouterCostKeyRemoved, LoadFailure) },
+	CompletedRemoveCredential: {
+		provider: CredentialProvider,
+		result: Schema.Result(Schema.Void, LoadFailure),
+	},
+	CompletedRemoveGithubSource: { result: Schema.Result(GithubCostSourceRemoved, LoadFailure) },
+	CompletedRemoveVercel: { result: Schema.Result(VercelCostSourceRemoved, LoadFailure) },
+	CompletedRemovePlanetScale: { result: Schema.Result(PlanetScaleCostSourceRemoved, LoadFailure) },
 	...ChartEnvMessages,
 })
 export type Message = typeof Message.Type

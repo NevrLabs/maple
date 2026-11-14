@@ -9,6 +9,13 @@ export * from "./dependency-scan"
 export * from "./ai-triage"
 export * from "./openrouter-key"
 export * from "./openrouter-cost"
+export * from "./cost-connections"
+export * from "./cloudflare-cost"
+export * from "./anthropic-cost"
+export * from "./openai-cost"
+export * from "./github-cost"
+export * from "./planetscale-cost"
+export * from "./vercel-cost"
 export * from "./service-map-world"
 export * from "./incident-triage"
 export * from "./cancellation-review"
@@ -21,6 +28,8 @@ export * from "./anomalies"
 export * from "./api-keys"
 export * from "./device-credentials"
 export * from "./audit-log"
+export * from "./audit-trail"
+export * from "./analyst-access"
 export * from "./alerts"
 export * from "./escalation-chains"
 export * from "./oncall-schedules"
@@ -35,13 +44,14 @@ export * from "./billing"
 export * from "./billing-account"
 export * from "./chat"
 export * as CurrentTenant from "./current-tenant"
-// The tenant-resolution failures themselves, flat: `@maple/auth` raises all
-// three and has no use for the namespace. (`UnauthorizedError` already reaches
-// the barrel through `./warehouse`.)
+// The tenant-resolution failures themselves, flat: `@maple/auth` raises the
+// first three and has no use for the namespace, and the 4xx registry reads only
+// flat exports. (`UnauthorizedError` already reaches the barrel through `./warehouse`.)
 export {
 	AuthorizationUnavailableError,
 	OrganizationAccessDeniedError,
 	OrganizationWrongRegionError,
+	LimitedRoleError,
 	type TenantContext,
 } from "./current-tenant"
 export * from "./dashboard-sections"

@@ -1,7 +1,7 @@
 import type { CostSourceStatus, CostSourceSummary } from "@maple/domain/http"
 import { formatNumber, pluralize } from "@maple/ui/lib/format"
 import { cn } from "@maple/ui/lib/utils"
-import { Array as Arr } from "effect"
+import { Array as Arr, String as Str } from "effect"
 import type { Html, HtmlBuilder } from "foldkit/html"
 import { button, linkButton } from "@maple/views/ui/button"
 import { badge } from "@maple/views/ui/display"
@@ -11,10 +11,13 @@ import { stripClass } from "@maple/views/ui/rule"
 import { hstack, vstack } from "@maple/views/ui/stack"
 import { typography } from "@maple/views/ui/typography"
 import { relativeTime } from "../kit/relative-time"
+import { CREDENTIAL_SOURCES } from "./credential-sources"
 import { formatDay, requestsCost } from "./derive"
 import { Message } from "./message"
-import { COST_PROVIDERS } from "./providers"
+import { COST_PROVIDERS, type CostProviderEntry } from "./providers"
+import { PLANETSCALE_INTEGRATION_HREF } from "./view-add-planetscale"
 import { AWS_INTEGRATION_HREF } from "./view-add-source"
+import { VERCEL_INTEGRATION_HREF } from "./view-add-vercel"
 
 type H = HtmlBuilder<Message>
 
@@ -30,32 +33,85 @@ const STATUS = {
 	Readonly<{ label: string; variant: "ok" | "info" | "muted" | "crit" }>
 >
 
-/** What a row offers: an AWS source is its connection's, an OpenRouter one is its key. */
-const actions = (h: H, source: CostSourceSummary, isBusy: boolean): ReadonlyArray<Html> =>
-	source.provider === "openrouter"
-		? [
-				button(
+/** The account as its row names it: a Vercel team's slug, else the id the provider knows it by. */
+const accountOf = (source: CostSourceSummary): string => source.accountName ?? source.accountId
+
+/**
+ * What a row's action is called to assistive technology: the action on the provider's source,
+ * and the account too when the org has several sources of that provider, which would else all
+ * read the same ("Remove GitHub source acme-labs").
+ */
+const actionName = (action: string, source: CostSourceSummary, isRepeated: boolean): string =>
+	isRepeated ? `${action} ${accountOf(source)}` : action
+
+/** A row's action. Its accessible name says whose source it acts on: two rows can offer the same one. */
+const rowButton = (h: H, label: string, name: string, onClick: Message, isBusy: boolean): Html =>
+	button(
+		h,
+		{
+			variant: "ghost",
+			size: "sm",
+			isDisabled: isBusy,
+			attributes: [h.AriaLabel(name), h.OnClick(onClick)],
+		},
+		[label],
+	)
+
+/** Where the source's connection is changed: an account's Cost module, a team's token, an organization's authorization. */
+const connectionLink = (h: H, name: string, href: string): Html =>
+	linkButton(h, { variant: "ghost", size: "sm", href, attributes: [h.AriaLabel(name)] }, [
+		"Manage connection",
+	])
+
+/**
+ * What a row offers: an AWS source is its connection's, a pasted credential's is replaced or
+ * removed here, and a GitHub one only leaves, since it reads through the GitHub connection. A
+ * Vercel one leaves here too, and links to its connection, where the token it reads with is replaced,
+ * as a PlanetScale one does to the connection it is authorized on.
+ */
+const actions = (
+	h: H,
+	source: CostSourceSummary,
+	options: Readonly<{ isBusy: boolean; isRepeated: boolean }>,
+): ReadonlyArray<Html> => {
+	const { name } = COST_PROVIDERS[source.provider]
+	const named = (action: string) => actionName(action, source, options.isRepeated)
+	const remove = rowButton(
+		h,
+		"Remove",
+		named(`Remove ${name} source`),
+		Message.ClickedRemoveSource({ sourceId: source.id }),
+		options.isBusy,
+	)
+	const manage = (href: string) => connectionLink(h, named(`Manage ${name} connection`), href)
+	switch (source.provider) {
+		case "openrouter":
+		case "cloudflare":
+		case "anthropic":
+		case "openai": {
+			const { label } = CREDENTIAL_SOURCES[source.provider].replace
+			return [
+				rowButton(
 					h,
-					{
-						variant: "ghost",
-						size: "sm",
-						isDisabled: isBusy,
-						attributes: [h.OnClick(Message.ClickedReplaceKey())],
-					},
-					["Replace key"],
+					label,
+					// "Replace key" as "Replace OpenRouter key".
+					named(Str.replace("Replace", `Replace ${name}`)(label)),
+					Message.ClickedReplaceCredential({ provider: source.provider }),
+					options.isBusy,
 				),
-				button(
-					h,
-					{
-						variant: "ghost",
-						size: "sm",
-						isDisabled: isBusy,
-						attributes: [h.OnClick(Message.ClickedRemoveSource())],
-					},
-					["Remove"],
-				),
+				remove,
 			]
-		: [linkButton(h, { variant: "ghost", size: "sm", href: AWS_INTEGRATION_HREF }, ["Manage connection"])]
+		}
+		case "github":
+			return [remove]
+		case "vercel":
+			return [manage(VERCEL_INTEGRATION_HREF), remove]
+		case "planetscale":
+			return [manage(PLANETSCALE_INTEGRATION_HREF), remove]
+		case "aws":
+			return [manage(AWS_INTEGRATION_HREF)]
+	}
+}
 
 /** What the provider billed the account for Maple's requests this month; nothing where requests are free. */
 const requestsFact = (source: CostSourceSummary): ReadonlyArray<string> => {
@@ -111,9 +167,9 @@ const sourceRow = (
 	source: CostSourceSummary,
 	nowMs: number,
 	timeZone: string,
-	options: Readonly<{ isBusy: boolean; canManage: boolean }>,
+	options: Readonly<{ isBusy: boolean; canManage: boolean; isRepeated: boolean }>,
 ): Html => {
-	const provider = COST_PROVIDERS[source.provider]
+	const provider: CostProviderEntry = COST_PROVIDERS[source.provider]
 	const status = STATUS[source.status]
 	return hstack(
 		h,
@@ -132,18 +188,12 @@ const sourceRow = (
 					hstack(h, { gap: "2", wrap: true }, [
 						typography(h, { size: "sm", weight: "medium" }, [provider.name]),
 						typography(h, { size: "xs", tone: "muted", mono: true, numeric: true }, [
-							source.accountId,
+							accountOf(source),
 						]),
 						badge(h, { variant: status.variant, size: "sm" }, [status.label]),
 					]),
 					...(options.canManage
-						? [
-								hstack(
-									h,
-									{ gap: "1", className: "-my-1 shrink-0" },
-									actions(h, source, options.isBusy),
-								),
-							]
+						? [hstack(h, { gap: "1", className: "-my-1 shrink-0" }, actions(h, source, options))]
 						: []),
 				]),
 				hstack(
@@ -153,6 +203,10 @@ const sourceRow = (
 						typography(h, { size: "xs", tone: "muted" }, [fact]),
 					),
 				),
+				// What the provider's source says about its own figures, whatever its status.
+				...(provider.sourceNote === undefined
+					? []
+					: [typography(h, { size: "xs", tone: "muted", as: "p" }, [provider.sourceNote])]),
 				...note(h, source),
 			]),
 		],
@@ -166,7 +220,7 @@ export const sourcesSection = (
 	nowMs: number,
 	timeZone: string,
 	options: Readonly<{
-		/** A key write is in flight: the actions wait for it. */
+		/** A credential write is in flight: the actions wait for it. */
 		isBusy: boolean
 		/** The viewer may add, replace and remove sources; without it no such action is offered. */
 		canManage: boolean
@@ -193,6 +247,12 @@ export const sourcesSection = (
 		vstack(
 			h,
 			{ as: "ul", gap: "0" },
-			Arr.map(sources, (source) => sourceRow(h, source, nowMs, timeZone, options)),
+			Arr.map(sources, (source) =>
+				sourceRow(h, source, nowMs, timeZone, {
+					...options,
+					// Several sources of one provider: their actions name the account too.
+					isRepeated: Arr.filter(sources, (other) => other.provider === source.provider).length > 1,
+				}),
+			),
 		),
 	])

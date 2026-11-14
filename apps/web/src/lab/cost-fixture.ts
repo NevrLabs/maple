@@ -1,3 +1,4 @@
+import { CostProvider } from "@maple/domain/cost"
 import {
 	CostBreakdownResponse,
 	type CostBreakdownSortBy,
@@ -5,9 +6,11 @@ import {
 	CostSourcesResponse,
 	CostTimeseriesResponse,
 	CostTotalsResponse,
+	GithubCostInstallations,
 } from "@maple/domain/http"
-import { Array as Arr, Number as Num, Order, Record as Rec, Schema, String as Str } from "effect"
+import { Array as Arr, Number as Num, Option, Order, Record as Rec, Schema, String as Str } from "effect"
 import type { CostGroupBy } from "../page/cost/derive"
+import { CredentialProvider, isCredentialProvider } from "../page/cost/providers"
 
 // Synthetic cost for `/lab/cost`: invented services, regions and amounts on one made-up account.
 // Nothing here is read by the product.
@@ -35,13 +38,12 @@ const line = (
 	service_category,
 	region,
 	usage_type,
+	resource: "",
 	account: LAB_ACCOUNT,
 	daily,
 	drift,
 })
 
-/** A saved OpenRouter key, as OpenRouter masks it. */
-export const LAB_OPENROUTER_KEY = "sk-or-v1-4f2...c81"
 /** The OpenRouter account the lab's source reads: a personal account's user id. */
 const LAB_OPENROUTER_ACCOUNT = "user_2labExampleAccount0000000000"
 
@@ -51,7 +53,145 @@ const modelLine = (model: string, servedBy: string, daily: number, drift: number
 	service_category: "AI and Machine Learning",
 	region: "global",
 	usage_type: servedBy,
+	resource: "",
 	account: LAB_OPENROUTER_ACCOUNT,
+	daily,
+	drift,
+})
+
+/** The GitHub organization the lab's source reads, and the installation it reads through. */
+const LAB_GITHUB_ORG = "example-org"
+const LAB_GITHUB_INSTALLATION = "0190f2b3-0000-4000-8000-00000000e061"
+/** A second organization the lab's reader can add. */
+const LAB_GITHUB_OTHER_ORG = "example-labs"
+const LAB_GITHUB_OTHER_INSTALLATION = "0190f2b3-0000-4000-8000-00000000e062"
+
+/** `repository` is the row's resource; a seat product names none. */
+const githubLine = (
+	product: string,
+	sku: string,
+	repository: string,
+	daily: number,
+	drift: number,
+): Line => ({
+	cloud_service: product,
+	provider: "github",
+	service_category: "Developer Tools",
+	region: "global",
+	usage_type: sku,
+	resource: repository,
+	account: LAB_GITHUB_ORG,
+	daily,
+	drift,
+})
+
+/** The Vercel team the lab's source reads: its id is the account, its slug what the page shows. */
+export const LAB_VERCEL_TEAM = {
+	id: "team_labExample000000000000",
+	name: "Example Team",
+	slug: "example-team",
+}
+
+const productLine = (
+	product: string,
+	category: string,
+	region: string,
+	sku: string,
+	project: string,
+	daily: number,
+	drift: number,
+): Line => ({
+	cloud_service: product,
+	provider: "vercel",
+	service_category: category,
+	region,
+	usage_type: sku,
+	resource: project,
+	account: LAB_VERCEL_TEAM.id,
+	daily,
+	drift,
+})
+
+/** The Cloudflare account the lab's source reads: rows carry its id, the page shows its name. */
+const LAB_CLOUDFLARE_ACCOUNT = { id: "1a2b3c4d5e6f1a2b3c4d5e6f1a2b3c4d", name: "Example Account" }
+
+const cloudflareLine = (
+	product: string,
+	category: string,
+	metric: string,
+	daily: number,
+	drift: number,
+): Line => ({
+	cloud_service: product,
+	provider: "cloudflare",
+	service_category: category,
+	region: "global",
+	usage_type: metric,
+	resource: "",
+	account: LAB_CLOUDFLARE_ACCOUNT.id,
+	daily,
+	drift,
+})
+
+/** The Anthropic organization the lab's source reads: rows carry its id, the page shows its name. */
+const LAB_ANTHROPIC_ORGANIZATION = { id: "0b1c2d3e-0000-4000-8000-00000000a070", name: "Example Labs" }
+
+/** A model's or tool's daily Anthropic spend in one workspace, named the way the sync names it. */
+const anthropicLine = (
+	service: string,
+	usage: string,
+	workspace: string,
+	daily: number,
+	drift: number,
+): Line => ({
+	cloud_service: service,
+	provider: "anthropic",
+	service_category: "AI and Machine Learning",
+	region: "global",
+	usage_type: usage,
+	resource: workspace,
+	account: LAB_ANTHROPIC_ORGANIZATION.id,
+	daily,
+	drift,
+})
+
+/** The OpenAI organization the lab's source reads: OpenAI names it by its id alone. */
+const LAB_OPENAI_ORGANIZATION = "org-LabExampleOrganization00"
+
+/** A model's daily OpenAI spend in one project. */
+const openAiLine = (
+	model: string,
+	lineItem: string,
+	project: string,
+	daily: number,
+	drift: number,
+): Line => ({
+	cloud_service: `openai/${model}`,
+	provider: "openai",
+	service_category: "AI and Machine Learning",
+	region: "global",
+	usage_type: lineItem,
+	resource: project,
+	account: LAB_OPENAI_ORGANIZATION,
+	daily,
+	drift,
+})
+
+/** The PlanetScale organization the lab's source reads. */
+export const LAB_PLANETSCALE_ORGANIZATION = "example-data"
+
+/**
+ * A day's share of a branch's monthly invoice line: the database is the service, the SKU the
+ * usage type, the database's branch the resource.
+ */
+const branchLine = (database: string, branch: string, sku: string, daily: number, drift: number): Line => ({
+	cloud_service: database,
+	provider: "planetscale",
+	service_category: "Databases",
+	region: "global",
+	usage_type: sku,
+	resource: `${database}/${branch}`,
+	account: LAB_PLANETSCALE_ORGANIZATION,
 	daily,
 	drift,
 })
@@ -79,6 +219,65 @@ const LINES: ReadonlyArray<Line> = [
 	modelLine("example/large-model", "Example Cloud", 6.2, 0.1),
 	modelLine("example/fast-model", "Example Inference", 12.9, -0.15),
 	modelLine("example/embedding-model", "Example Labs", 1.8, 0.0),
+	githubLine("Actions", "Actions Linux", "example-api", 9.4, 0.25),
+	githubLine("Actions", "Actions storage", "example-site", 0.7, 0.05),
+	githubLine("Copilot", "Copilot Business", "", 6.3, 0.0),
+	githubLine("Packages", "Packages storage", "example-api", 0.4, -0.1),
+	cloudflareLine("Workers", "Compute", "Workers Requests", 9.4, 0.25),
+	cloudflareLine("Durable Objects", "Compute", "Durable Objects Compute Duration", 5.1, 0.12),
+	cloudflareLine("R2", "Storage", "R2 Storage", 3.6, 0.05),
+	cloudflareLine("D1", "Databases", "D1 Rows Read", 1.2, -0.08),
+	anthropicLine(
+		"anthropic/claude-opus-5-5",
+		"Claude Opus 5.5 Usage - Output Tokens",
+		"wrkspc_example_agents",
+		24.6,
+		0.35,
+	),
+	anthropicLine(
+		"anthropic/claude-opus-5-5",
+		"Claude Opus 5.5 Usage - Input Tokens",
+		"wrkspc_example_agents",
+		8.1,
+		0.2,
+	),
+	anthropicLine(
+		"anthropic/claude-haiku-5-5",
+		"Claude Haiku 5.5 Usage - Input Tokens",
+		"default",
+		1.9,
+		-0.05,
+	),
+	anthropicLine("Web search", "Web search", "wrkspc_example_agents", 0.8, 0.1),
+	openAiLine("gpt-5", "gpt-5, output", "proj_ExampleSupport", 14.2, 0.12),
+	openAiLine("gpt-5", "gpt-5, input", "proj_ExampleSupport", 5.3, 0.08),
+	openAiLine("text-embedding-3-large", "text-embedding-3-large, input", "proj_ExampleSearch", 0.9, 0.0),
+	productLine("Example Function Duration", "Compute", "iad1", "function-duration", "example-web", 9.4, 0.2),
+	productLine(
+		"Example Function Duration",
+		"Compute",
+		"fra1",
+		"function-duration",
+		"example-docs",
+		3.1,
+		0.05,
+	),
+	productLine("Example Data Transfer", "Networking", "global", "data-transfer", "example-web", 6.7, 0.12),
+	productLine(
+		"Example Image Optimization",
+		"Web",
+		"global",
+		"image-optimization",
+		"example-docs",
+		2.2,
+		-0.08,
+	),
+	// The plan's monthly fee, as Vercel spreads it over the days: it belongs to no project.
+	productLine("Example Pro Plan", "Other", "global", "", "", 0.67, 0.0),
+	branchLine("example-orders", "main", "PS_20_AWS_ARM", 9.7, 0.0),
+	branchLine("example-orders", "main", "egress", 0.6, 0.2),
+	branchLine("example-orders", "staging", "PS_10_AWS_ARM", 1.1, 0.0),
+	branchLine("example-search", "main", "PS_10_AWS_ARM", 1.3, 0.0),
 ]
 
 /** The day `offset` days before the lab's today, as `YYYY-MM-DD`. */
@@ -94,7 +293,15 @@ const chargeAt = (entry: Line, index: number, offset: number): number => {
 
 const matches = (entry: Line, filters: CostFilters | undefined): boolean =>
 	Arr.every(
-		["cloud_service", "provider", "service_category", "region", "usage_type", "account"] as const,
+		[
+			"cloud_service",
+			"provider",
+			"service_category",
+			"region",
+			"usage_type",
+			"resource",
+			"account",
+		] as const,
 		(dimension) => {
 			const values = filters?.[dimension] ?? []
 			return values.length === 0 || Arr.contains(values, entry[dimension])
@@ -104,15 +311,14 @@ const matches = (entry: Line, filters: CostFilters | undefined): boolean =>
 type Request = Readonly<{
 	days: number
 	filters: CostFilters | undefined
-	/** The lab's reader removed OpenRouter: its lines are in no read, whatever the filters say. */
-	withoutOpenRouter?: boolean
+	/** Providers the lab's reader removed: their lines are in no read, whatever the filters say. */
+	without?: ReadonlyArray<CostProvider>
 }>
 
 /** Each matching line with its charge on every day of the window (oldest first) and of the period before. */
 const windowOf = (request: Request) =>
 	Arr.flatMap(LINES, (entry, index) =>
-		matches(entry, request.filters) &&
-		!(request.withoutOpenRouter === true && entry.provider === "openrouter")
+		matches(entry, request.filters) && !Arr.contains(request.without ?? [], entry.provider)
 			? [
 					{
 						entry,
@@ -226,6 +432,7 @@ type SourceWire = (typeof CostSourcesResponse.Encoded)["sources"][number]
 const source = (over: Partial<SourceWire>): SourceWire => ({
 	id: "0190f2b3-0000-7000-8000-00000000c057",
 	provider: "aws",
+	connectionRef: "0190f2b3-0000-7000-8000-00000000a057",
 	accountId: LAB_ACCOUNT,
 	status: "ok",
 	watermarkDate: dayAt(1),
@@ -242,42 +449,257 @@ const source = (over: Partial<SourceWire>): SourceWire => ({
 const openRouterSource = source({
 	id: "0190f2b3-0000-7000-8000-00000000c060",
 	provider: "openrouter",
+	connectionRef: "0190f2b3-0000-7000-8000-00000000a060",
 	accountId: LAB_OPENROUTER_ACCOUNT,
 	backfillDate: dayAt(29),
 	lastSyncedAt: LAB_NOW_MS - 3 * 3_600_000,
 	requestsThisMonth: 0,
 })
 
+/** The GitHub source: this month and the three before it, and no billed requests. */
+const githubSource = source({
+	id: "0190f2b3-0000-7000-8000-00000000c061",
+	provider: "github",
+	connectionRef: LAB_GITHUB_INSTALLATION,
+	accountId: LAB_GITHUB_ORG,
+	backfillDate: "2026-08-01",
+	lastSyncedAt: LAB_NOW_MS - 5 * 3_600_000,
+	requestsThisMonth: 0,
+})
+
+/** The Vercel source: eleven months of history, all one request serves, and no billed requests. */
+const vercelSource = source({
+	id: "0190f2b3-0000-7000-8000-00000000c063",
+	provider: "vercel",
+	connectionRef: "0190f2b3-0000-7000-8000-00000000a063",
+	accountId: LAB_VERCEL_TEAM.id,
+	accountName: LAB_VERCEL_TEAM.slug,
+	backfillDate: "2025-12-01",
+	lastSyncedAt: LAB_NOW_MS - 2 * 3_600_000,
+	requestsThisMonth: 0,
+})
+
+/** The Cloudflare source: history back to the eleventh month before this one, and no billed requests. */
+const cloudflareSource = source({
+	id: "0190f2b3-0000-7000-8000-00000000c064",
+	provider: "cloudflare",
+	connectionRef: "0190f2b3-0000-7000-8000-00000000a064",
+	accountId: LAB_CLOUDFLARE_ACCOUNT.id,
+	accountName: LAB_CLOUDFLARE_ACCOUNT.name,
+	backfillDate: "2025-12-01",
+	lastSyncedAt: LAB_NOW_MS - 2 * 3_600_000,
+	requestsThisMonth: 0,
+})
+
+/** The Anthropic source: this month and the three before it, and no billed requests. */
+const anthropicSource = source({
+	id: "0190f2b3-0000-7000-8000-00000000c066",
+	provider: "anthropic",
+	connectionRef: "0190f2b3-0000-7000-8000-00000000a066",
+	accountId: LAB_ANTHROPIC_ORGANIZATION.id,
+	accountName: LAB_ANTHROPIC_ORGANIZATION.name,
+	backfillDate: "2026-08-01",
+	lastSyncedAt: LAB_NOW_MS - 70 * 60_000,
+	requestsThisMonth: 0,
+})
+
+/** The OpenAI source: the same history, named by its organization id. */
+const openAiSource = source({
+	id: "0190f2b3-0000-7000-8000-00000000c067",
+	provider: "openai",
+	connectionRef: "0190f2b3-0000-7000-8000-00000000a067",
+	accountId: LAB_OPENAI_ORGANIZATION,
+	accountName: LAB_OPENAI_ORGANIZATION,
+	backfillDate: "2026-08-01",
+	lastSyncedAt: LAB_NOW_MS - 80 * 60_000,
+	requestsThisMonth: 0,
+})
+
+/** The source each credential provider's add brings in. */
+const CREDENTIAL_SOURCE_OF = {
+	openrouter: openRouterSource,
+	cloudflare: cloudflareSource,
+	anthropic: anthropicSource,
+	openai: openAiSource,
+} as const satisfies Record<CredentialProvider, SourceWire>
+
+/** The PlanetScale source: invoices back to the twelfth month before this one, and no billed requests. */
+const planetScaleSource = source({
+	id: "0190f2b3-0000-7000-8000-00000000c065",
+	provider: "planetscale",
+	connectionRef: "0190f2b3-0000-7000-8000-00000000a065",
+	accountId: LAB_PLANETSCALE_ORGANIZATION,
+	backfillDate: "2025-11-01",
+	lastSyncedAt: LAB_NOW_MS - 90 * 60_000,
+	requestsThisMonth: 0,
+})
+
+/** A source that was just added: it waits for its first sync. */
+const justAdded = (entry: SourceWire): SourceWire => ({
+	...entry,
+	status: "pending",
+	watermarkDate: null,
+	backfillDate: null,
+	historyComplete: false,
+	lastSyncedAt: null,
+})
+
+/** The organizations the lab's reader can add and remove, each with the source it gets. */
+const LAB_GITHUB_ORGS = [
+	{ installationId: LAB_GITHUB_INSTALLATION, login: LAB_GITHUB_ORG, sourceId: githubSource.id },
+	{
+		installationId: LAB_GITHUB_OTHER_INSTALLATION,
+		login: LAB_GITHUB_OTHER_ORG,
+		sourceId: "0190f2b3-0000-7000-8000-00000000c062",
+	},
+]
+
+/** The organization of a lab installation, as the add's answer names it. */
+export const labGithubLogin = (installationId: string): string =>
+	Arr.findFirst(LAB_GITHUB_ORGS, (org) => org.installationId === installationId).pipe(
+		Option.match({ onNone: () => installationId, onSome: (org) => org.login }),
+	)
+
 /**
- * `sources` after the lab's reader added OpenRouter (true: it waits for its first sync) or removed
- * it (false); null leaves them as the state has them.
+/**
+ * What happened to a pasted-credential source: `added` (or its credential replaced), `removed`, or
+ * `readded` after a removal, which is a new source with none of the old one's cost.
+ */
+export const LabCredentialChange = Schema.Literals(["added", "removed", "readded"])
+export type LabCredentialChange = typeof LabCredentialChange.Type
+
+/** The change a save (`isSource`) or a removal makes to a provider's `previous` one. */
+export const credentialChangeAfter = (
+	previous: LabCredentialChange | undefined,
+	isSource: boolean,
+): LabCredentialChange =>
+	!isSource ? "removed" : previous === "removed" || previous === "readded" ? "readded" : "added"
+
+/**
+ * What the lab's reader did since the state loaded. `credentials`: a pasted-credential provider's
+ * change, absent for none; `vercel` and `planetScale`: added (true), removed (false) or neither
+ * (null). `github`: an installation's id to whether it is a source now.
+ */
+export type LabSourceChanges = Readonly<{
+	credentials: Readonly<Partial<Record<CredentialProvider, LabCredentialChange>>>
+	github: Readonly<Record<string, boolean>>
+	vercel: boolean | null
+	planetScale: boolean | null
+}>
+
+/**
+ * The providers whose cost is in no read any more. GitHub's cost is all `example-org`'s: it leaves
+ * when that source is removed, and stays out while a source added again waits for its first sync.
+ */
+export const labRemovedProviders = (changes: LabSourceChanges): ReadonlyArray<CostProvider> =>
+	Arr.filter(
+		CostProvider.literals,
+		(provider) =>
+			(isCredentialProvider(provider) &&
+				(changes.credentials[provider] === "removed" ||
+					changes.credentials[provider] === "readded")) ||
+			(provider === "github" && Rec.has(changes.github, LAB_GITHUB_INSTALLATION)) ||
+			// A team added again is a new source: it has no cost until a sync the lab does not model.
+			(provider === "vercel" && changes.vercel !== null) ||
+			// The same holds for a PlanetScale organization added again.
+			(provider === "planetscale" && changes.planetScale !== null),
+	)
+
+/**
+ * `sources` after what the lab's reader did: a source that was added waits for its first sync, one
+ * that was removed is gone.
  */
 export const labSourcesWith = (
 	sources: CostSourcesResponse,
-	openRouter: boolean | null,
+	changes: LabSourceChanges,
 ): CostSourcesResponse => {
-	if (openRouter === null) return sources
-	const others = Arr.filter(sources.sources, (entry) => entry.provider !== "openrouter")
-	if (!openRouter) return new CostSourcesResponse({ sources: others })
-	return others.length === sources.sources.length
-		? decodeSources({
-				sources: [
-					...Schema.encodeSync(CostSourcesResponse)(sources).sources,
-					{
-						...openRouterSource,
-						status: "pending",
-						watermarkDate: null,
-						backfillDate: null,
-						historyComplete: false,
-						lastSyncedAt: null,
-					},
-				],
-			})
-		: sources
+	const kept = Arr.filter(Schema.encodeSync(CostSourcesResponse)(sources).sources, (entry) =>
+		isCredentialProvider(entry.provider)
+			? changes.credentials[entry.provider] === undefined ||
+				changes.credentials[entry.provider] === "added"
+			: entry.provider === "vercel"
+				? changes.vercel === null
+				: entry.provider === "planetscale"
+					? changes.planetScale === null
+					: entry.provider !== "github" || !Rec.has(changes.github, entry.connectionRef),
+	)
+	const has = (provider: CostProvider) => Arr.some(kept, (entry) => entry.provider === provider)
+	return decodeSources({
+		sources: [
+			...kept,
+			...Arr.map(
+				Arr.filter(
+					CredentialProvider.literals,
+					(provider) =>
+						changes.credentials[provider] === "readded" ||
+						(changes.credentials[provider] === "added" && !has(provider)),
+				),
+				(provider) => justAdded(CREDENTIAL_SOURCE_OF[provider]),
+			),
+			...(changes.vercel === true ? [justAdded(vercelSource)] : []),
+			...(changes.planetScale === true ? [justAdded(planetScaleSource)] : []),
+			...Arr.map(
+				Arr.filter(LAB_GITHUB_ORGS, (org) => changes.github[org.installationId] === true),
+				(org) =>
+					justAdded({
+						...githubSource,
+						id: org.sourceId,
+						connectionRef: org.installationId,
+						accountId: org.login,
+					}),
+			),
+		],
+	})
+}
+
+type InstallationWire = (typeof GithubCostInstallations.Encoded)["installations"][number]
+
+/**
+ * The org's GitHub installations as the dialog lists them: the organization that is a source, one
+ * that can be added, a user account and a suspended installation. `sources` decides which are added.
+ */
+export const labGithubInstallations = (sources: CostSourcesResponse): GithubCostInstallations => {
+	const added = Arr.filter(sources.sources, (entry) => entry.provider === "github")
+	const organization = (installationId: string, accountLogin: string): InstallationWire => ({
+		installationId,
+		accountLogin,
+		state: Arr.some(added, (entry) => entry.connectionRef === installationId) ? "added" : "available",
+		settingsUrl: `https://github.com/organizations/${accountLogin}/settings/installations/1000001`,
+	})
+	return Schema.decodeSync(GithubCostInstallations)({
+		installations: [
+			organization(LAB_GITHUB_INSTALLATION, LAB_GITHUB_ORG),
+			organization(LAB_GITHUB_OTHER_INSTALLATION, LAB_GITHUB_OTHER_ORG),
+			{
+				installationId: "0190f2b3-0000-4000-8000-00000000e063",
+				accountLogin: "example-user",
+				state: "user_account",
+				settingsUrl: "https://github.com/settings/installations/1000003",
+			},
+			{
+				installationId: "0190f2b3-0000-4000-8000-00000000e064",
+				accountLogin: "example-archive",
+				state: "inactive",
+				settingsUrl:
+					"https://github.com/organizations/example-archive/settings/installations/1000004",
+			},
+		],
+	})
 }
 
 export const LAB_SOURCES = {
-	synced: decodeSources({ sources: [source({}), openRouterSource] }),
+	synced: decodeSources({
+		sources: [
+			source({}),
+			openRouterSource,
+			githubSource,
+			vercelSource,
+			cloudflareSource,
+			planetScaleSource,
+			anthropicSource,
+			openAiSource,
+		],
+	}),
 	none: decodeSources({ sources: [] }),
 	pending: decodeSources({
 		sources: [
@@ -315,6 +737,7 @@ export const LAB_SOURCES = {
 				requestsThisMonth: 0,
 			}),
 			openRouterSource,
+			vercelSource,
 		],
 	}),
 } as const

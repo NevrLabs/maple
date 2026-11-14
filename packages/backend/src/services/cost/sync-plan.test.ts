@@ -359,6 +359,301 @@ describe("planCostSync for a provider that serves 30 completed days", () => {
 	})
 })
 
+describe("planCostSync for a provider that serves a year of completed days", () => {
+	const CLOUDFLARE_NEW: CostSyncState = { ...NEW, provider: "cloudflare" }
+	const cloudflarePulled = (
+		now: number,
+		backfillDate: string,
+		ago: { readonly head: number; readonly settle: number },
+	): CostSyncState => ({
+		...pulled(now, backfillDate, ago),
+		provider: "cloudflare",
+		// The newest day it serves is the day before the pull.
+		watermarkDate: utcToday(now - ago.head - DAY_MS),
+	})
+
+	it("starts at the previous month and ends yesterday", () => {
+		const now = at("2026-11-20T12:00:00Z")
+		assert.deepStrictEqual(planCostSync(CLOUDFLARE_NEW, now), {
+			mode: "settle",
+			startDay: "2026-10-01",
+			endDay: "2026-11-19",
+		})
+	})
+
+	it("takes the four newest served days as its head", () => {
+		const now = at("2026-11-20T12:00:00Z")
+		const state = cloudflarePulled(now, "2026-10-01", { head: DAY_MS, settle: 2 * DAY_MS })
+		assert.deepStrictEqual(planCostSync(state, now), {
+			mode: "head",
+			startDay: "2026-11-16",
+			endDay: "2026-11-19",
+		})
+	})
+
+	it("walks history a month per step down to the eleventh month back, and no further", () => {
+		const now = at("2026-11-20T12:00:00Z")
+		const current = { head: HOUR_MS, settle: HOUR_MS }
+		assert.strictEqual(historyFloor("cloudflare", "2026-11-20"), "2025-12-01")
+		assert.deepStrictEqual(planCostSync(cloudflarePulled(now, "2026-01-01", current), now), {
+			mode: "backfill",
+			startDay: "2025-12-01",
+			endDay: "2025-12-31",
+		})
+		assert.deepStrictEqual(planCostSync(cloudflarePulled(now, "2025-12-01", current), now), {
+			mode: "idle",
+		})
+	})
+
+	it("keeps its floor inside the year Cloudflare serves on every day of a month", () => {
+		// One year back from the pull is the oldest day served: the floor is never before it.
+		assert.isTrue(historyFloor("cloudflare", "2026-11-01") >= "2025-11-01")
+		assert.isTrue(historyFloor("cloudflare", "2026-11-30") >= "2025-11-30")
+		assert.strictEqual(historyFloor("cloudflare", "2027-01-31"), "2026-02-01")
+	})
+
+	it("resumes at the floor after a hold longer than what the provider serves", () => {
+		const now = at("2026-11-20T12:00:00Z")
+		const state = cloudflarePulled(now, "2025-01-01", { head: 500 * DAY_MS, settle: 500 * DAY_MS })
+		assert.deepStrictEqual(planCostSync(state, now), {
+			mode: "settle",
+			startDay: "2025-12-01",
+			endDay: "2026-11-19",
+		})
+	})
+})
+
+describe("planCostSync for a provider that serves a few months up to today", () => {
+	const GITHUB_NEW: CostSyncState = { ...NEW, provider: "github" }
+	const githubPulled = (
+		now: number,
+		backfillDate: string,
+		ago: { readonly head: number; readonly settle: number },
+	): CostSyncState => ({ ...pulled(now, backfillDate, ago), provider: "github" })
+
+	it("starts at the previous month and ends today", () => {
+		const now = at("2026-11-20T12:00:00Z")
+		assert.deepStrictEqual(planCostSync(GITHUB_NEW, now), {
+			mode: "settle",
+			startDay: "2026-10-01",
+			endDay: "2026-11-20",
+		})
+	})
+
+	it("walks history a month at a time down to the first day three months back, and no further", () => {
+		const now = at("2026-11-20T12:00:00Z")
+		const current = { head: HOUR_MS, settle: HOUR_MS }
+		assert.strictEqual(historyFloor("github", "2026-11-20"), "2026-08-01")
+		assert.deepStrictEqual(planCostSync(githubPulled(now, "2026-10-01", current), now), {
+			mode: "backfill",
+			startDay: "2026-09-01",
+			endDay: "2026-09-30",
+		})
+		assert.deepStrictEqual(planCostSync(githubPulled(now, "2026-09-01", current), now), {
+			mode: "backfill",
+			startDay: "2026-08-01",
+			endDay: "2026-08-31",
+		})
+		assert.deepStrictEqual(planCostSync(githubPulled(now, "2026-08-01", current), now), { mode: "idle" })
+	})
+
+	it("crosses a year's start with its floor", () => {
+		assert.strictEqual(historyFloor("github", "2027-02-14"), "2026-11-01")
+	})
+
+	it("resumes at the floor after a hold longer than its history", () => {
+		const now = at("2026-11-20T12:00:00Z")
+		const held = {
+			...githubPulled(now, "2026-01-01", { head: 200 * DAY_MS, settle: 200 * DAY_MS }),
+			watermarkDate: "2026-05-04",
+		}
+		assert.deepStrictEqual(planCostSync(held, now), {
+			mode: "settle",
+			startDay: "2026-08-01",
+			endDay: "2026-11-20",
+		})
+	})
+})
+
+describe("planCostSync for a provider that serves a year in one request", () => {
+	const VERCEL_NEW: CostSyncState = { ...NEW, provider: "vercel" }
+	const vercelPulled = (
+		now: number,
+		backfillDate: string,
+		ago: { readonly head: number; readonly settle: number },
+	): CostSyncState => ({ ...pulled(now, backfillDate, ago), provider: "vercel" })
+
+	it("starts with the previous month through today, like a provider with a longer history", () => {
+		const now = at("2026-11-20T12:00:00Z")
+		assert.deepStrictEqual(planCostSync(VERCEL_NEW, now), {
+			mode: "settle",
+			startDay: "2026-10-01",
+			endDay: "2026-11-20",
+		})
+	})
+
+	it("keeps its history floor at the first day of the month eleven months back", () => {
+		assert.deepStrictEqual(
+			[historyFloor("vercel", "2026-11-20"), historyFloor("vercel", "2024-12-31")],
+			["2025-12-01", "2024-01-01"],
+		)
+	})
+
+	it("never asks for more than a year, whatever day and however long it was held", () => {
+		// The longest window there is: a source held since before the floor, on a leap year's last day.
+		const now = at("2024-12-31T12:00:00Z")
+		const held = vercelPulled(now, "2023-06-01", { head: 400 * DAY_MS, settle: 400 * DAY_MS })
+		const plan = planCostSync(held, now)
+		assert.deepStrictEqual(plan, { mode: "settle", startDay: "2024-01-01", endDay: "2024-12-31" })
+		assert.strictEqual(plan.mode === "idle" ? 0 : daysOfWindow(plan).length, 366)
+	})
+
+	it("walks history a month per step and stops at the floor", () => {
+		const now = at("2026-11-20T12:00:00Z")
+		const current = { head: HOUR_MS, settle: HOUR_MS }
+		assert.deepStrictEqual(planCostSync(vercelPulled(now, "2026-02-01", current), now), {
+			mode: "backfill",
+			startDay: "2026-01-01",
+			endDay: "2026-01-31",
+		})
+		assert.deepStrictEqual(planCostSync(vercelPulled(now, "2026-01-01", current), now), {
+			mode: "backfill",
+			startDay: "2025-12-01",
+			endDay: "2025-12-31",
+		})
+		assert.deepStrictEqual(planCostSync(vercelPulled(now, "2025-12-01", current), now), { mode: "idle" })
+	})
+})
+
+describe("planCostSync for a provider that bills by the month, a year back", () => {
+	const PLANETSCALE_NEW: CostSyncState = { ...NEW, provider: "planetscale" }
+	const planetScalePulled = (
+		now: number,
+		backfillDate: string,
+		ago: { readonly head: number; readonly settle: number },
+	): CostSyncState => ({ ...pulled(now, backfillDate, ago), provider: "planetscale" })
+
+	it("first pulls the previous month's invoice and the open month through today", () => {
+		assert.deepStrictEqual(planCostSync(PLANETSCALE_NEW, at("2026-11-12T12:00:00Z")), {
+			mode: "settle",
+			startDay: "2026-10-01",
+			endDay: "2026-11-12",
+		})
+	})
+
+	it("takes the whole open month as its head: a new line changes the share of every day of it", () => {
+		const now = at("2026-11-12T12:00:00Z")
+		const state = planetScalePulled(now, "2026-10-01", { head: DAY_MS, settle: 2 * DAY_MS })
+		assert.deepStrictEqual(planCostSync(state, now), {
+			mode: "head",
+			startDay: "2026-11-01",
+			endDay: "2026-11-12",
+		})
+	})
+
+	it("keeps the closed month in its head through the tenth: a branch deleted on its last day is discounted after", () => {
+		const first = at("2026-12-01T12:00:00Z")
+		assert.deepStrictEqual(
+			planCostSync(planetScalePulled(first, "2026-10-01", { head: DAY_MS, settle: 2 * DAY_MS }), first),
+			{ mode: "head", startDay: "2026-11-01", endDay: "2026-12-01" },
+		)
+		const tenth = at("2026-12-10T12:00:00Z")
+		assert.deepStrictEqual(
+			planCostSync(planetScalePulled(tenth, "2026-10-01", { head: DAY_MS, settle: 2 * DAY_MS }), tenth),
+			{ mode: "head", startDay: "2026-11-01", endDay: "2026-12-10" },
+		)
+		// From the eleventh the closed month is the settle's, which takes it once more.
+		const eleventh = at("2026-12-11T12:00:00Z")
+		assert.deepStrictEqual(
+			planCostSync(
+				planetScalePulled(eleventh, "2026-10-01", { head: DAY_MS, settle: 2 * DAY_MS }),
+				eleventh,
+			),
+			{ mode: "head", startDay: "2026-12-01", endDay: "2026-12-11" },
+		)
+		assert.deepStrictEqual(
+			planCostSync(
+				planetScalePulled(eleventh, "2026-10-01", { head: DAY_MS, settle: 8 * DAY_MS }),
+				eleventh,
+			),
+			{ mode: "settle", startDay: "2026-11-01", endDay: "2026-12-11" },
+		)
+	})
+
+	it("takes the month before the watermark's when pulls stopped over a month end before it closed", () => {
+		// October was last settled on November 2, still open. Pulls failed from the 9th to December 2.
+		const now = at("2026-12-03T12:00:00Z")
+		const stalled: CostSyncState = {
+			...PLANETSCALE_NEW,
+			watermarkDate: "2026-11-08",
+			backfillDate: "2026-09-01",
+			lastSyncedAt: at("2026-11-08T12:00:00Z"),
+			lastSettledAt: at("2026-11-02T12:00:00Z"),
+		}
+		// The watermark is inside the usual start, so no gap is seen: October would keep what
+		// November 2 saw of it.
+		assert.deepStrictEqual(planCostSync(stalled, now), {
+			mode: "settle",
+			startDay: "2026-10-01",
+			endDay: "2026-12-03",
+		})
+		// Settled after October closed, the same stall leaves October alone.
+		assert.deepStrictEqual(planCostSync({ ...stalled, lastSettledAt: at("2026-11-11T00:00:00Z") }, now), {
+			mode: "settle",
+			startDay: "2026-11-01",
+			endDay: "2026-12-03",
+		})
+		// A provider whose head is its trailing days plans as before.
+		assert.deepStrictEqual(planCostSync({ ...stalled, provider: "aws" }, now), {
+			mode: "settle",
+			startDay: "2026-11-01",
+			endDay: "2026-12-03",
+		})
+	})
+
+	it("never reaches under its floor for the month before the watermark's", () => {
+		const now = at("2026-12-03T12:00:00Z")
+		const stalled: CostSyncState = {
+			...PLANETSCALE_NEW,
+			watermarkDate: "2025-12-20",
+			backfillDate: "2025-12-01",
+			lastSyncedAt: at("2025-12-20T12:00:00Z"),
+			lastSettledAt: at("2025-12-05T12:00:00Z"),
+		}
+		assert.deepStrictEqual(planCostSync(stalled, now), {
+			mode: "settle",
+			startDay: "2025-12-01",
+			endDay: "2026-12-03",
+		})
+	})
+
+	it("walks history one invoice at a time and stops at the month twelve months back", () => {
+		const now = at("2026-11-12T12:00:00Z")
+		assert.strictEqual(historyFloor("planetscale", utcToday(now)), "2025-11-01")
+		assert.deepStrictEqual(
+			planCostSync(planetScalePulled(now, "2026-10-01", { head: HOUR_MS, settle: HOUR_MS }), now),
+			{ mode: "backfill", startDay: "2026-09-01", endDay: "2026-09-30" },
+		)
+		assert.deepStrictEqual(
+			planCostSync(planetScalePulled(now, "2025-11-01", { head: HOUR_MS, settle: HOUR_MS }), now),
+			{ mode: "idle" },
+		)
+	})
+
+	it("resumes at its floor after a hold of more than a year", () => {
+		const now = at("2026-11-12T12:00:00Z")
+		const state: CostSyncState = {
+			...planetScalePulled(now, "2025-01-01", { head: 400 * DAY_MS, settle: 400 * DAY_MS }),
+			watermarkDate: "2025-10-08",
+		}
+		assert.deepStrictEqual(planCostSync(state, now), {
+			mode: "settle",
+			startDay: "2025-11-01",
+			endDay: "2026-11-12",
+		})
+	})
+})
+
 describe("planCostSync request budgets", () => {
 	const now = at("2026-11-11T12:00:00Z")
 	const current = { head: HOUR_MS, settle: HOUR_MS }

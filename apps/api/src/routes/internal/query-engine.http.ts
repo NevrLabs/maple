@@ -1,5 +1,6 @@
 // BOUNDARY: This module owns unparsed external values and narrows them before domain use.
 import { HttpApiBuilder } from "effect/http-api"
+import { securityTenant } from "./security-tenant"
 import { mergeSupabaseSeries } from "./supabase-infra-series"
 import { apiTrafficResponse, mergeSupabaseCallers, mergeSupabaseProjects } from "./supabase-insights-merge"
 import {
@@ -21,7 +22,6 @@ import {
 	PlanetScaleInfraTimeseriesResponse,
 	RailwayInfraRowsResponse,
 	VercelAiGatewayResponse,
-	VercelAuditLogResponse,
 	VercelInfraDependenciesResponse,
 	VercelInfraFunctionsResponse,
 	VercelInfraFunctionTimeseriesResponse,
@@ -997,18 +997,6 @@ export const HttpQueryEngineLive = HttpApiBuilder.group(MapleInternalApi, "query
 							referrers,
 							countries,
 							events,
-						})
-					}),
-				)
-				.handle("vercelAuditLog", ({ payload }) =>
-					Effect.gen(function* () {
-						const tenant = yield* CurrentTenant.Context
-						const rows = yield* runQuery(Queries.vercelAuditLog, tenant, payload)
-						return new VercelAuditLogResponse({
-							events: Arr.map(rows, (row) => ({
-								...row,
-								timestamp: DateTime.formatIso(row.timestamp),
-							})),
 						})
 					}),
 				)
@@ -2556,7 +2544,7 @@ export const HttpQueryEngineLive = HttpApiBuilder.group(MapleInternalApi, "query
 				// No raw fallback, like the crawler tab: a cluster without migration 0050 answers 502.
 				.handle("securityExposure", ({ payload }) =>
 					Effect.gen(function* () {
-						const tenant = yield* CurrentTenant.Context
+						const tenant = yield* securityTenant
 						yield* warehouse.warmRoute(tenant)
 						const [signatures, exposed, sources, timeline] = yield* Effect.all(
 							[
@@ -2608,7 +2596,7 @@ export const HttpQueryEngineLive = HttpApiBuilder.group(MapleInternalApi, "query
 				)
 				.handle("securityRuntimes", ({ payload }) =>
 					Effect.gen(function* () {
-						const tenant = yield* CurrentTenant.Context
+						const tenant = yield* securityTenant
 						yield* warehouse.warmRoute(tenant)
 						const rows = yield* runQuery(Queries.runtimeVersions, tenant, payload)
 						const products = Arr.flatMap(rows, (row): ReadonlyArray<RuntimeProduct> => {

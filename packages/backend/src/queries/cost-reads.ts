@@ -1,7 +1,7 @@
 // Cloud cost reads for the dashboard: the registry queries over `cost_daily`, narrowed to the
 // org's connected sources and shaped for the wire, and the sources' own sync state from Postgres.
 import * as PG from "@maple-dev/effect-orm/postgres"
-import { CostSources, type CostSourceRow } from "@maple/db/tables"
+import { CostConnections, CostSources, type CostSourceRow, VercelConnections } from "@maple/db/tables"
 import {
 	CloudCostDisabledError,
 	CloudCostPersistenceError,
@@ -39,6 +39,7 @@ import {
 	requestsThisMonth,
 	utcToday,
 } from "@maple/backend/services/cost/sync-plan"
+import { isCostConnectionProvider } from "@maple/backend/services/cost/cost-connection-sources"
 import type { OrganizationFeatureFlagsServiceApi } from "@maple/backend/services/org/OrganizationFeatureFlagsService"
 
 export interface CostReadsDeps extends QueryRunnerDeps {
@@ -119,13 +120,19 @@ const estimatedFromOf = (rows: ReadonlyArray<TimeseriesRow>) =>
 		),
 	)
 
-const toSourceSummary = (row: CostSourceRow, nowMs: number): CostSourceSummary => {
+const toSourceSummary = (
+	row: CostSourceRow,
+	nowMs: number,
+	accountName: string | undefined,
+): CostSourceSummary => {
 	const historyComplete =
 		row.backfillDate !== null && row.backfillDate <= historyFloor(row.provider, utcToday(nowMs))
 	return {
 		id: row.id,
 		provider: row.provider,
+		connectionRef: row.connectionRef,
 		accountId: row.accountId,
+		...(accountName === undefined ? undefined : { accountName }),
 		status: !row.enabled
 			? "paused"
 			: row.lastError !== null
@@ -200,6 +207,10 @@ export const makeCostReads = (deps: CostReadsDeps) => {
 						metric: payload.metric,
 						filters: payload.filters,
 						sourceIds: Arr.map(sources, (source) => source.id),
+						// A sync stamps its source at every step it writes.
+						written: Arr.reduce(sources, 0, (latest, source) =>
+							Math.max(latest, source.updatedAt),
+						),
 					}
 		})
 
@@ -308,7 +319,41 @@ export const makeCostReads = (deps: CostReadsDeps) => {
 	const sources = Effect.fn("CostReads.sources")(function* (tenant: TenantContext) {
 		const rows = yield* sourcesInRollout(tenant.orgId)
 		const nowMs = yield* Clock.currentTimeMillis
-		return { sources: Arr.map(rows, (row) => toSourceSummary(row, nowMs)) }
+		// A Vercel source's account is its team's id, which is stable; the team's slug names it.
+		const teams = Arr.some(rows, (row) => row.provider === "vercel")
+			? yield* dbExecute((db) =>
+					db.run(
+						PG.from(VercelConnections)
+							.select("id", "teamSlug")
+							.where(($) => [$.orgId.eq(tenant.orgId)]),
+					),
+				)
+			: []
+		// A pasted credential's account is an id the vendor gave it; the name it was saved with reads better.
+		const pasted = Arr.some(rows, (row) => isCostConnectionProvider(row.provider))
+			? yield* dbExecute((db) =>
+					db.run(
+						PG.from(CostConnections)
+							.select("id", "accountLabel")
+							.where(($) => [$.orgId.eq(tenant.orgId)]),
+					),
+				)
+			: []
+		const nameOf = (row: CostSourceRow) =>
+			row.provider === "vercel"
+				? Arr.findFirst(teams, (team) => team.id === row.connectionRef).pipe(
+						Option.map((team) => team.teamSlug),
+						Option.getOrUndefined,
+					)
+				: isCostConnectionProvider(row.provider)
+					? Arr.findFirst(pasted, (connection) => connection.id === row.connectionRef).pipe(
+							Option.map((connection) => connection.accountLabel),
+							// A label is whatever the vendor answered: an empty one names nothing.
+							Option.filter((label) => label !== ""),
+							Option.getOrUndefined,
+						)
+					: undefined
+		return { sources: Arr.map(rows, (row) => toSourceSummary(row, nowMs, nameOf(row))) }
 	})
 
 	return { totals, timeseries, breakdown, sources } as const

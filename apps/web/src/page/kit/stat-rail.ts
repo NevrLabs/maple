@@ -45,6 +45,36 @@ export const statRail = <M>(
 		children,
 	)
 
+/**
+ * `statRail`'s grid for a page with a filter rail: two or four columns by the page's width, not
+ * the viewport's. `divide-*` would double the outer border at row ends, so each tile rules its
+ * own inner right and top edges per column count. Its tiles take `METRIC_TILE`.
+ */
+export const metricGrid = <M>(
+	h: HtmlBuilder<M>,
+	options: Readonly<{ isBusy?: boolean }>,
+	children: ReadonlyArray<Html>,
+): Html =>
+	h.div(
+		[
+			...(options.isBusy === true ? [h.AriaBusy(true)] : []),
+			h.Class(
+				cn(
+					"grid grid-cols-2 overflow-hidden rounded-md border bg-card @min-[880px]/page:grid-cols-4",
+					"[&>*]:border-border [&>*:nth-child(odd)]:border-r @min-[880px]/page:[&>*:not(:nth-child(4n))]:border-r",
+					"@max-[879px]/page:[&>*:nth-child(n+3)]:border-t @min-[880px]/page:[&>*:nth-child(n+5)]:border-t",
+				),
+			),
+		],
+		children,
+	)
+
+/** A `metricGrid` tile's narrow-page padding and value size, spread into `statRailItem`. */
+export const METRIC_TILE = {
+	className: "@max-[560px]/page:px-4 @max-[560px]/page:py-3",
+	valueClassName: "@max-[560px]/page:text-xl",
+} as const
+
 export type StatRailItemOptions<M> = Readonly<{
 	eyebrow: string
 	/** What the eyebrow means: a question mark beside it that explains it on hover (`infoHint`). */
@@ -67,8 +97,6 @@ export type StatRailItemOptions<M> = Readonly<{
 	ariaLabel?: string
 	size?: "md" | "sm"
 	hint?: Html | string
-	/** Title the tile like a chart card (the uppercase label eyebrow), for rails above chart grids. */
-	isCardTitle?: boolean
 }>
 
 export const statRailItem = <M>(h: HtmlBuilder<M>, options: StatRailItemOptions<M>): Html => {
@@ -91,7 +119,6 @@ export const statRailItem = <M>(h: HtmlBuilder<M>, options: StatRailItemOptions<
 						h.Class(
 							cn(
 								"truncate text-2xs font-medium",
-								options.isCardTitle === true && "uppercase tracking-caption",
 								isSelected ? "text-primary" : "text-muted-foreground",
 							),
 						),

@@ -33,6 +33,7 @@ import {
 } from "../query-engine"
 import { AuditedRead } from "./audit-log"
 import { SessionAuthorization } from "./current-tenant"
+import { DependencyScanForbiddenError } from "./dependency-scan"
 import { HttpTaggedError } from "./error-policy"
 import { warehouseHttpErrors } from "./warehouse"
 import {
@@ -44,6 +45,7 @@ import {
 	PathsInclude,
 } from "@maple/query-model"
 import { WireRow } from "../wire"
+import { AnalystAccess } from "./analyst-access"
 
 /**
  * A timeseries bucket width.
@@ -1104,21 +1106,6 @@ export class VercelWebAnalyticsResponse extends Schema.Class<VercelWebAnalyticsR
 	referrers: Schema.Array(VercelWebAnalyticsTop),
 	countries: Schema.Array(VercelWebAnalyticsTop),
 	events: Schema.Array(VercelWebAnalyticsTop),
-}) {}
-
-export const VercelAuditEvent = Schema.Struct({
-	/** ISO-8601. */
-	timestamp: Schema.String,
-	action: Schema.String,
-	actor: Schema.String,
-	actorType: Schema.String,
-	/** Empty for team-level events. */
-	projectId: Schema.String,
-})
-export type VercelAuditEvent = typeof VercelAuditEvent.Type
-
-export class VercelAuditLogResponse extends Schema.Class<VercelAuditLogResponse>("VercelAuditLogResponse")({
-	events: Schema.Array(VercelAuditEvent),
 }) {}
 
 // Google Cloud infrastructure page (/infra/gcp): `gcp.*` metrics from the Google Cloud poller.
@@ -3276,7 +3263,11 @@ export type CostSourceStatus = typeof CostSourceStatus.Type
 export const CostSourceSummary = Schema.Struct({
 	id: CostSourceId,
 	provider: CostProvider,
+	/** The id of the provider's connection the source reads through, which its row actions name. */
+	connectionRef: Schema.String,
 	accountId: Schema.String,
+	/** How a reader knows the account, where its id is not it: a Vercel team's slug beside its team id. */
+	accountName: Schema.optionalKey(Schema.String),
 	status: CostSourceStatus,
 	/** The newest and oldest UTC day pulled, `YYYY-MM-DD`; null before the first pull. */
 	watermarkDate: Schema.NullOr(Schema.String),
@@ -4129,6 +4120,9 @@ const queryEngineEndpointErrors = [
 	...warehouseHttpErrors,
 ] as const
 
+// The Security Center's telemetry tabs are for engineers and admins, like its findings.
+const securityEndpointErrors = [...queryEngineEndpointErrors, DependencyScanForbiddenError] as const
+
 const costEndpointErrors = [
 	CloudCostDisabledError,
 	CloudCostPersistenceError,
@@ -4418,13 +4412,6 @@ export class QueryEngineApiGroup extends HttpApiGroup.make("queryEngine")
 		HttpApiEndpoint.post("vercelWebAnalytics", "/vercel-web-analytics", {
 			payload: VercelInfraWindowRequest,
 			success: VercelWebAnalyticsResponse,
-			error: queryEngineEndpointErrors,
-		}),
-	)
-	.add(
-		HttpApiEndpoint.post("vercelAuditLog", "/vercel-audit-log", {
-			payload: VercelInfraProjectsRequest,
-			success: VercelAuditLogResponse,
 			error: queryEngineEndpointErrors,
 		}),
 	)
@@ -4986,14 +4973,14 @@ export class QueryEngineApiGroup extends HttpApiGroup.make("queryEngine")
 		HttpApiEndpoint.post("securityExposure", "/security-exposure", {
 			payload: SecurityExposureRequest,
 			success: SecurityExposureResponse,
-			error: queryEngineEndpointErrors,
+			error: securityEndpointErrors,
 		}),
 	)
 	.add(
 		HttpApiEndpoint.post("securityRuntimes", "/security-runtimes", {
 			payload: SecurityRuntimesRequest,
 			success: SecurityRuntimesResponse,
-			error: queryEngineEndpointErrors,
+			error: securityEndpointErrors,
 		}),
 	)
 	.add(
@@ -5068,5 +5055,7 @@ export class QueryEngineApiGroup extends HttpApiGroup.make("queryEngine")
 	)
 	.prefix("/internal/query-engine")
 	.middleware(SessionAuthorization)
+	// Every endpoint here only reads, so an analyst may call it.
+	.annotate(AnalystAccess, "read")
 	// Every endpoint here reads telemetry for the dashboard.
 	.annotate(AuditedRead, "telemetry.read") {}

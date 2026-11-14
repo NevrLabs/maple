@@ -533,6 +533,9 @@ pub enum TelemetrySignal {
     /// `POST /v1/events` (NDJSON, gateway-written). Lands in `product_events`
     /// next to the browser rows the `session_events` MV materializes there.
     ProductEvents,
+    /// Audit events from provider feeds (a Vercel audit drain, GCP audit logs),
+    /// gateway-written into `audit_trail_events`, never as OTLP logs.
+    AuditTrail,
 }
 
 impl TelemetrySignal {
@@ -549,6 +552,7 @@ impl TelemetrySignal {
             Self::SessionReplays => "session_replays",
             Self::SessionEvents => "session_events",
             Self::ProductEvents => "product_events",
+            Self::AuditTrail => "audit_trail",
         }
     }
 }
@@ -3068,6 +3072,7 @@ fn signal_tag(signal: TelemetrySignal) -> u8 {
         TelemetrySignal::SessionReplays => 4,
         TelemetrySignal::SessionEvents => 5,
         TelemetrySignal::ProductEvents => 6,
+        TelemetrySignal::AuditTrail => 7,
     }
 }
 
@@ -3079,6 +3084,7 @@ fn signal_from_tag(tag: u8) -> Option<TelemetrySignal> {
         4 => Some(TelemetrySignal::SessionReplays),
         5 => Some(TelemetrySignal::SessionEvents),
         6 => Some(TelemetrySignal::ProductEvents),
+        7 => Some(TelemetrySignal::AuditTrail),
         _ => None,
     }
 }
@@ -3289,8 +3295,12 @@ impl ExportWorker {
         // Shed, not drop-and-forget: a shed frame still advances the cursor and
         // releases its org bytes below, because leaving it in the WAL would keep
         // the very backlog this is cutting.
+        // An audit event is a record, not a reading that ages out: a late one is still
+        // evidence, and its volume is bounded per org at the accept path.
         let is_stale = |frame: &QueuedFrame| {
-            !max_age.is_zero() && now.duration_since(frame.enqueued_at) > max_age
+            !max_age.is_zero()
+                && frame.signal != TelemetrySignal::AuditTrail
+                && now.duration_since(frame.enqueued_at) > max_age
         };
         let mut shed_frames = 0usize;
         let mut shed_rows = 0usize;
@@ -5713,6 +5723,71 @@ mod tests {
         drop(std::fs::remove_dir_all(queue_dir));
     }
 
+    // Audit rows are built by the gateway, not derived from OTLP: they have to
+    // reach the warehouse under their own datasource, never as a log.
+    #[tokio::test]
+    async fn audit_trail_rows_reach_tinybird_under_their_own_datasource() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = Router::new()
+            .route("/v0/events", post(fake_tinybird_import))
+            .with_state(tx);
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let queue_dir = unique_test_dir("fake-tinybird-audit-trail");
+        let mut cfg = test_cfg();
+        cfg.endpoint = format!("http://{addr}");
+        cfg.queue_dir = queue_dir.clone();
+        cfg.wal_shards = 1;
+        cfg.batch_max_wait = Duration::from_millis(1);
+        let pipeline = TelemetryPipeline::new(
+            cfg,
+            Client::builder()
+                .timeout(Duration::from_secs(5))
+                .build()
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+        let event: serde_json::Map<String, Value> = serde_json::from_str(
+            r#"{"id":"evt_1","teamId":"team_1","action":"project.created","timestamp":1700000000000}"#,
+        )
+        .unwrap();
+        let row = crate::audit_trail::vercel_event(&event, 1_700_000_060_000)
+            .expect("an event with an action")
+            .to_row("org_e2e", 1_700_000_060_000);
+        let stats = pipeline
+            .accept_rows_to(
+                "org_e2e",
+                crate::audit_trail::DATASOURCE.to_owned(),
+                vec![row],
+                TelemetrySignal::AuditTrail,
+                ExportDestination::Tinybird,
+            )
+            .await
+            .unwrap();
+        assert_eq!(stats.rows, 1);
+
+        let import = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("fake Tinybird should receive an import")
+            .expect("fake Tinybird channel should stay open");
+        assert_eq!(import.datasource, "audit_trail_events");
+        let stored: Value = serde_json::from_str(import.body.trim()).unwrap();
+        assert_eq!(stored["OrgId"], "org_e2e");
+        assert_eq!(stored["Provider"], "vercel");
+        assert_eq!(stored["Action"], "project.created");
+
+        wait_for_export_drain(queue_dir.clone(), 0, ExportDestination::Tinybird).await;
+        drop(std::fs::remove_dir_all(queue_dir));
+    }
+
     #[tokio::test]
     #[expect(
         clippy::too_many_lines,
@@ -6457,6 +6532,7 @@ mod tests {
         assert_eq!(TelemetrySignal::SessionReplays.as_str(), "session_replays");
         assert_eq!(TelemetrySignal::SessionEvents.as_str(), "session_events");
         assert_eq!(TelemetrySignal::ProductEvents.as_str(), "product_events");
+        assert_eq!(TelemetrySignal::AuditTrail.as_str(), "audit_trail");
     }
 
     #[test]
@@ -6470,6 +6546,7 @@ mod tests {
             TelemetrySignal::SessionReplays,
             TelemetrySignal::SessionEvents,
             TelemetrySignal::ProductEvents,
+            TelemetrySignal::AuditTrail,
         ] {
             assert_eq!(signal_from_tag(signal_tag(signal)), Some(signal));
         }
@@ -6729,6 +6806,56 @@ mod tests {
             "a shed frame must still advance the lane cursor, or it keeps the \
              backlog it was shed to cut"
         );
+
+        drop(std::fs::remove_dir_all(queue_dir));
+    }
+
+    #[tokio::test]
+    async fn an_audit_event_past_the_max_queue_age_is_still_exported() {
+        let (primary_url, mut primary_rx) = spawn_fake_tinybird().await;
+
+        let queue_dir = unique_test_dir("queue-age-audit-trail");
+        let mut cfg = test_cfg();
+        cfg.endpoint = primary_url;
+        cfg.queue_dir = queue_dir.clone();
+        cfg.wal_shards = 1;
+        cfg.batch_max_wait = Duration::from_millis(1);
+        // Any frame that survives a channel hop is already older than this.
+        cfg.queue_max_age = Duration::from_nanos(1);
+
+        let pipeline = TelemetryPipeline::new(
+            cfg,
+            Client::builder()
+                .timeout(Duration::from_secs(5))
+                .build()
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+        let event: serde_json::Map<String, Value> = serde_json::from_str(
+            r#"{"id":"evt_1","teamId":"team_1","action":"project.created","timestamp":1700000000000}"#,
+        )
+        .unwrap();
+        let row = crate::audit_trail::vercel_event(&event, 1_700_000_060_000)
+            .expect("an event with an action")
+            .to_row("org_late", 1_700_000_060_000);
+        pipeline
+            .accept_rows_to(
+                "org_late",
+                crate::audit_trail::DATASOURCE.to_owned(),
+                vec![row],
+                TelemetrySignal::AuditTrail,
+                ExportDestination::Tinybird,
+            )
+            .await
+            .unwrap();
+
+        tokio::time::timeout(Duration::from_secs(2), primary_rx.recv())
+            .await
+            .expect("an audit event past the max queue age must still be exported")
+            .expect("fake Tinybird channel should stay open");
+        assert_eq!(pipeline.drain_wal(Duration::from_secs(5)).await, 0);
 
         drop(std::fs::remove_dir_all(queue_dir));
     }

@@ -180,6 +180,9 @@ const isSecurityRoute = AppRoute.isAnyOf([
 	"SecurityExposure",
 	"SecurityRuntimes",
 	"SecurityDependencies",
+	"SecurityAuditLog",
+	"SecurityDetections",
+	"SecurityDetectionNew",
 	"SecurityRun",
 	"SecurityFinding",
 ])

@@ -568,7 +568,14 @@ export const AnomaliesSearch = Schema.Struct({
 export const CodeReviewSearch = Schema.Struct(CodeReviewSearchFields)
 
 /** The dimensions `/cost` groups by and filters on (a subset of `CostDimension`). */
-export const COST_GROUP_BYS = ["cloud_service", "provider", "service_category", "region", "account"] as const
+export const COST_GROUP_BYS = [
+	"cloud_service",
+	"provider",
+	"service_category",
+	"region",
+	"resource",
+	"account",
+] as const
 
 /**
  * `/cost`: the day range, the grouping (`cloud_service` when absent), the table's order (`cost`
@@ -582,6 +589,7 @@ export const CostSearch = Schema.Struct({
 	provider: OptionalStringArrayParam,
 	service_category: OptionalStringArrayParam,
 	region: OptionalStringArrayParam,
+	resource: OptionalStringArrayParam,
 	account: OptionalStringArrayParam,
 })
 
@@ -1092,6 +1100,32 @@ export const SecurityDependenciesSearch = Schema.Struct({
 	/** The repositories or advisories table; absent shows the matrix, or a repository's upgrade plan. */
 	view: Schema.optional(Schema.Literals(["repositories", "advisories"])),
 })
+
+/** The Security hub's audit log filters; each absent one shows everything. */
+export const SecurityAuditLogSearch = Schema.Struct({
+	/** The platform the events came from (`maple`, `vercel`, `gcp`). */
+	provider: StringParam,
+	category: StringParam,
+	outcome: StringParam,
+	/** An actor's id or email on the platform the event came from. */
+	actor: StringParam,
+})
+export type SecurityAuditLogSearch = typeof SecurityAuditLogSearch.Type
+
+/**
+ * `/security/detections/new`: `detectionId` edits that detection. The rest prefill a new one: a
+ * ready-made `template`, or the audit log's filters. The form drops a value it has no name for.
+ */
+export const SecurityDetectionNewSearch = Schema.Struct({
+	detectionId: StringParam,
+	template: StringParam,
+	provider: StringParam,
+	category: StringParam,
+	outcome: StringParam,
+	/** The platform's own action name, matched exactly. */
+	action: StringParam,
+})
+export type SecurityDetectionNewSearch = typeof SecurityDetectionNewSearch.Type
 
 export type SecurityFindingsSearch = typeof SecurityFindingsSearch.Type
 export type SecurityRunsSearch = typeof SecurityRunsSearch.Type

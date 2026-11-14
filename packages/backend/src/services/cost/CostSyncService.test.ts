@@ -28,7 +28,22 @@ import { WarehouseQueryService } from "@maple/backend/services/warehouse/Warehou
 import { type CostProviderAdapter, CostProviderError, type CostPullRow } from "./CostProvider"
 import { CostSyncService } from "./CostSyncService"
 import { AwsCostProvider } from "./providers/aws/AwsCostProvider"
+import { AnthropicCostProvider } from "./providers/anthropic/AnthropicCostProvider"
+import { CloudflareCostProvider } from "./providers/cloudflare/CloudflareCostProvider"
+import { OpenAiCostProvider } from "./providers/openai/OpenAiCostProvider"
+import { insertInstallation } from "./providers/github/fake-github"
+import { GithubCostProvider } from "./providers/github/GithubCostProvider"
 import { OpenRouterCostProvider } from "./providers/openrouter/OpenRouterCostProvider"
+import {
+	PlanetScaleCostProvider,
+	type PlanetScaleCostProviderApi,
+	PlanetScaleCostReadError,
+} from "./providers/planetscale/PlanetScaleCostProvider"
+import {
+	VercelCostProvider,
+	type VercelCostProviderApi,
+	VercelCostReadError,
+} from "./providers/vercel/VercelCostProvider"
 import { BACKFILL_REQUEST_BUDGET, daysOfWindow, MONTHLY_REQUEST_BUDGET } from "./sync-plan"
 
 const trackedDbs: TestDb[] = []
@@ -43,6 +58,13 @@ const CONNECTION_A = "0190f2b3-0000-7000-8000-0000000000a1"
 const CONNECTION_B = "0190f2b3-0000-7000-8000-0000000000b1"
 const CONNECTION_C = "0190f2b3-0000-7000-8000-0000000000c1"
 const OPENROUTER_KEY_A = "0190f2b3-0000-7000-8000-0000000000d1"
+const CLOUDFLARE_TOKEN_A = "0190f2b3-0000-7000-8000-0000000000e1"
+const INSTALLATION_A = "0190f2b3-0000-4000-8000-0000000000e1"
+const INSTALLATION_B = "0190f2b3-0000-4000-8000-0000000000e2"
+const INSTALLATION_C = "0190f2b3-0000-4000-8000-0000000000e3"
+const INSTALLATION_D = "0190f2b3-0000-4000-8000-0000000000e4"
+const PLANETSCALE_CONNECTION_A = "0190f2b3-0000-7000-8000-0000000000f1"
+const VERCEL_CONNECTION_A = "0190f2b3-0000-7000-8000-0000000000e1"
 /** What every fake pull reports as billable. */
 const REQUESTS_PER_PULL = 2
 
@@ -197,6 +219,28 @@ const harness = (options: FakeProviderOptions = {}) => {
 				}
 			}),
 	})
+	// The sync only pulls; `read` and `check` are what an add asks with, answered the same way here.
+	const planetScalePull = adapterOf("planetscale")
+	const asReadError = ({ message, reason }: CostProviderError) =>
+		new PlanetScaleCostReadError({ message, reason, kind: "other" })
+	const planetScaleAdapter: PlanetScaleCostProviderApi = {
+		...planetScalePull,
+		read: (source, window) => Effect.mapError(planetScalePull.pull(source, window), asReadError),
+		check: () => Effect.succeed([]),
+	}
+	// The sync only pulls; `read` is what an add checks with, answered the same way here.
+	const vercelPull = adapterOf("vercel")
+	const vercelAdapter: VercelCostProviderApi = {
+		...vercelPull,
+		read: (source, window) =>
+			vercelPull
+				.pull(source, window)
+				.pipe(
+					Effect.mapError(
+						({ message, reason }) => new VercelCostReadError({ message, reason, kind: "other" }),
+					),
+				),
+	}
 	const writes: Array<ReadonlyArray<typeof WrittenRow.Type>> = []
 	const datasources: string[] = []
 	const tenants: string[] = []
@@ -240,6 +284,12 @@ const harness = (options: FakeProviderOptions = {}) => {
 			Layer.mergeAll(
 				Layer.succeed(AwsCostProvider, adapterOf("aws")),
 				Layer.succeed(OpenRouterCostProvider, adapterOf("openrouter")),
+				Layer.succeed(CloudflareCostProvider, adapterOf("cloudflare")),
+				Layer.succeed(AnthropicCostProvider, adapterOf("anthropic")),
+				Layer.succeed(OpenAiCostProvider, adapterOf("openai")),
+				Layer.succeed(GithubCostProvider, adapterOf("github")),
+				Layer.succeed(VercelCostProvider, vercelAdapter),
+				Layer.succeed(PlanetScaleCostProvider, planetScaleAdapter),
 				warehouse,
 				featureFlags,
 			),
@@ -282,6 +332,84 @@ const harness = (options: FakeProviderOptions = {}) => {
 			 VALUES ($1, $2, 'sealed', 'iv', 'tag', 'sk-or-v1-abc...123', 'user_account_a', now(), now(), 'user_a')`,
 			[key.id, key.orgId ?? "org_a"],
 		)
+	/** An org's pasted credential for a provider that keeps it in `cost_connections`. */
+	const saveCostConnection = (connection: {
+		readonly id: string
+		readonly provider: string
+		readonly orgId?: string
+	}) =>
+		sql(
+			`INSERT INTO cost_connections
+			   (id, org_id, provider, secret_ciphertext, secret_iv, secret_tag, account_id, account_label, created_at, updated_at, updated_by)
+			 VALUES ($1, $2, $3, 'sealed', 'iv', 'tag', 'account_a', 'Example Account', now(), now(), 'user_a')`,
+			[connection.id, connection.orgId ?? "org_a", connection.provider],
+		)
+	/** A GitHub App installation of an organization, and (unless `source` is false) its cost source. */
+	const installGithub = (installation: {
+		readonly id: string
+		readonly login: string
+		readonly orgId?: string
+		readonly source?: boolean
+	}) =>
+		Effect.gen(function* () {
+			const orgId = installation.orgId ?? "org_a"
+			yield* insertInstallation(testDb, {
+				id: installation.id,
+				orgId,
+				login: installation.login,
+				externalId: installation.id,
+			})
+			if (installation.source === false) return
+			yield* sql(
+				`INSERT INTO cost_sources (id, org_id, provider, connection_ref, account_id, created_at, updated_at)
+				 VALUES (gen_random_uuid()::text, $1, 'github', $2, $3, now(), now())`,
+				[orgId, installation.id, installation.login],
+			)
+		})
+	/** An org's PlanetScale connection, and with `asCostSource` the source the org added for it. */
+	const connectPlanetScale = (connection: {
+		readonly id: string
+		readonly asCostSource: boolean
+		readonly organization?: string
+	}) =>
+		Effect.promise(async () => {
+			const organization = connection.organization ?? "acme"
+			const sourceId = await insertTestSource(testDb, { orgId: "org_a", platform: "planetscale" })
+			await executeSql(
+				testDb,
+				`INSERT INTO planetscale_connections
+				   (id, org_id, source_id, ps_organization, connected_by_user_id, created_at, updated_at)
+				 VALUES ($1, 'org_a', $2, $3, 'user_a', now(), now())`,
+				[connection.id, sourceId, organization],
+			)
+			if (!connection.asCostSource) return
+			await executeSql(
+				testDb,
+				`INSERT INTO cost_sources (id, org_id, provider, connection_ref, account_id, created_at, updated_at)
+				 VALUES ('0190f2b3-0000-7000-8000-0000000000f4', 'org_a', 'planetscale', $1, $2, now(), now())`,
+				[connection.id, organization],
+			)
+		})
+	/** An org's Vercel connection, and with `asCostSource` the source the org added for it. */
+	const connectVercel = (connection: { readonly id: string; readonly asCostSource: boolean }) =>
+		Effect.promise(async () => {
+			const sourceId = await insertTestSource(testDb, { orgId: "org_a", platform: "vercel" })
+			await executeSql(
+				testDb,
+				`INSERT INTO vercel_connections
+				   (id, org_id, source_id, team_id, team_slug, team_name, token_ciphertext, token_iv, token_tag,
+				    connected_by_user_id, project_scope, created_at, updated_at)
+				 VALUES ($1, 'org_a', $2, 'team_1', 'acme', 'Acme', 'sealed', 'iv', 'tag', 'user_a', 'all', now(), now())`,
+				[connection.id, sourceId],
+			)
+			if (!connection.asCostSource) return
+			await executeSql(
+				testDb,
+				`INSERT INTO cost_sources (id, org_id, provider, connection_ref, account_id, created_at, updated_at)
+				 VALUES ('0190f2b3-0000-7000-8000-0000000000f1', 'org_a', 'vercel', $1, 'team_1', now(), now())`,
+				[connection.id],
+			)
+		})
 	const sourceRefs = Effect.promise(() =>
 		testDb.pglite.query<{ org: string; ref: string; account: string }>(
 			"SELECT org_id AS org, connection_ref AS ref, account_id AS account FROM cost_sources ORDER BY org_id, connection_ref",
@@ -322,6 +450,10 @@ const harness = (options: FakeProviderOptions = {}) => {
 		sql,
 		connect,
 		saveOpenRouterKey,
+		saveCostConnection,
+		connectVercel,
+		connectPlanetScale,
+		installGithub,
 		sourceRefs,
 		sourceState,
 		sourceStateOf,
@@ -426,6 +558,386 @@ describe("CostSyncService OpenRouter sources", () => {
 			yield* TestClock.adjust("1 hour")
 			yield* poll
 			assert.deepStrictEqual(yield* h.sourceRefs, [["org_a", CONNECTION_A, "123456789012"]])
+		}).pipe(Effect.provide(h.layer))
+	})
+})
+
+describe("CostSyncService sources of a pasted credential", () => {
+	it.effect(
+		"makes a Cloudflare source for a saved token and pulls up to yesterday, then walks a year back",
+		() => {
+			const h = harness()
+			return Effect.gen(function* () {
+				yield* TestClock.setTime(NOW)
+				yield* h.saveCostConnection({ id: CLOUDFLARE_TOKEN_A, provider: "cloudflare" })
+				const summary = yield* poll
+				assert.deepStrictEqual(yield* h.sourceRefs, [["org_a", CLOUDFLARE_TOKEN_A, "account_a"]])
+				assert.deepStrictEqual([summary.due, summary.synced], [1, 1])
+				// Last month and this one through yesterday: Cloudflare has no rows for today.
+				assert.deepStrictEqual(h.windows()[0], ["2026-10-01", "2026-11-10"])
+				assert.isTrue(Arr.every(h.writtenRows(), (row) => row.Provider === "cloudflare"))
+
+				// History then walks down a month per step and stops at the eleventh month back.
+				yield* Effect.forEach(Arr.range(1, 12), () =>
+					Effect.andThen(TestClock.adjust("5 minutes"), poll),
+				)
+				const state = yield* h.sourceStateOf("org_a", CLOUDFLARE_TOKEN_A)
+				assert.deepStrictEqual(
+					[state?.watermark, state?.backfill, state?.error],
+					["2026-11-10", "2025-12-01", null],
+				)
+				assert.deepStrictEqual(Arr.last(h.windows()), Option.some(["2025-12-01", "2025-12-31"]))
+				assert.isTrue(Arr.every(h.windows(), ([startDay]) => startDay >= "2025-12-01"))
+			}).pipe(Effect.provide(h.layer))
+		},
+	)
+
+	it.effect("removes the source with its token, and leaves the org's other sources alone", () => {
+		const h = harness()
+		return Effect.gen(function* () {
+			yield* TestClock.setTime(NOW)
+			yield* h.saveCostConnection({ id: CLOUDFLARE_TOKEN_A, provider: "cloudflare" })
+			yield* h.saveOpenRouterKey({ id: OPENROUTER_KEY_A })
+			yield* h.connect({ id: CONNECTION_A })
+			yield* poll
+			assert.deepStrictEqual(yield* h.sourceRefs, [
+				["org_a", CONNECTION_A, "123456789012"],
+				["org_a", OPENROUTER_KEY_A, "user_account_a"],
+				["org_a", CLOUDFLARE_TOKEN_A, "account_a"],
+			])
+
+			yield* h.sql("DELETE FROM cost_connections")
+			yield* TestClock.adjust("1 hour")
+			yield* poll
+			assert.deepStrictEqual(yield* h.sourceRefs, [
+				["org_a", CONNECTION_A, "123456789012"],
+				["org_a", OPENROUTER_KEY_A, "user_account_a"],
+			])
+		}).pipe(Effect.provide(h.layer))
+	})
+
+	it.effect(
+		"makes one source per org, and none for a credential of a provider it does not reconcile",
+		() => {
+			const h = harness()
+			return Effect.gen(function* () {
+				yield* TestClock.setTime(NOW)
+				yield* h.saveCostConnection({ id: CLOUDFLARE_TOKEN_A, provider: "cloudflare" })
+				yield* h.saveCostConnection({
+					id: "0190f2b3-0000-7000-8000-0000000000e2",
+					provider: "cloudflare",
+					orgId: "org_b",
+				})
+				// A row for a provider that keeps its credential elsewhere is not this table's to reconcile.
+				yield* h.saveCostConnection({ id: "0190f2b3-0000-7000-8000-0000000000e3", provider: "aws" })
+				yield* poll
+				assert.deepStrictEqual(yield* h.sourceRefs, [
+					["org_a", CLOUDFLARE_TOKEN_A, "account_a"],
+					["org_b", "0190f2b3-0000-7000-8000-0000000000e2", "account_a"],
+				])
+			}).pipe(Effect.provide(h.layer))
+		},
+	)
+})
+
+describe("CostSyncService GitHub sources", () => {
+	it.effect("pulls the previous month through today, then walks history back three months", () => {
+		const h = harness()
+		return Effect.gen(function* () {
+			yield* TestClock.setTime(NOW)
+			yield* h.installGithub({ id: INSTALLATION_A, login: "example-org" })
+			const summary = yield* poll
+			assert.deepStrictEqual([summary.due, summary.synced], [1, 1])
+			assert.deepStrictEqual(h.windows()[0], ["2026-10-01", "2026-11-11"])
+			assert.isTrue(Arr.every(h.writtenRows(), (row) => row.Provider === "github"))
+
+			// History is walked a month at a time over the next ticks, and stops at the floor.
+			yield* Effect.forEach(Arr.range(1, 6), () => Effect.andThen(TestClock.adjust("5 minutes"), poll))
+			assert.deepStrictEqual(h.windows().slice(1), [
+				["2026-09-01", "2026-09-30"],
+				["2026-08-01", "2026-08-31"],
+			])
+			const state = yield* h.sourceStateOf("org_a", INSTALLATION_A)
+			assert.deepStrictEqual(
+				[state?.watermark, state?.backfill, state?.error],
+				["2026-11-11", "2026-08-01", null],
+			)
+		}).pipe(Effect.provide(h.layer))
+	})
+
+	it.effect("makes no source for an installation, and removes one that can no longer be read", () => {
+		const h = harness()
+		return Effect.gen(function* () {
+			yield* TestClock.setTime(NOW)
+			yield* h.installGithub({ id: INSTALLATION_A, login: "example-org" })
+			yield* h.installGithub({ id: INSTALLATION_B, login: "example-paused" })
+			yield* h.installGithub({ id: INSTALLATION_C, login: "example-gone" })
+			yield* h.installGithub({ id: INSTALLATION_D, login: "example-plain", source: false })
+			yield* h.connect({ id: CONNECTION_A })
+			yield* poll
+			// The installation nobody added stays without a source.
+			assert.deepStrictEqual(yield* h.sourceRefs, [
+				["org_a", INSTALLATION_A, "example-org"],
+				["org_a", INSTALLATION_B, "example-paused"],
+				["org_a", INSTALLATION_C, "example-gone"],
+				["org_a", CONNECTION_A, "123456789012"],
+			])
+
+			yield* h.sql("UPDATE vcs_installations SET status = 'suspended' WHERE id = $1", [INSTALLATION_B])
+			yield* h.sql("DELETE FROM vcs_installations WHERE id = $1", [INSTALLATION_C])
+			yield* TestClock.adjust("1 hour")
+			yield* poll
+			assert.deepStrictEqual(yield* h.sourceRefs, [
+				["org_a", INSTALLATION_A, "example-org"],
+				["org_a", CONNECTION_A, "123456789012"],
+			])
+
+			// An installation that turned into a user account's has no billing report to read.
+			yield* h.sql("UPDATE vcs_installations SET account_type = 'user' WHERE id = $1", [INSTALLATION_A])
+			yield* TestClock.adjust("1 hour")
+			yield* poll
+			assert.deepStrictEqual(yield* h.sourceRefs, [["org_a", CONNECTION_A, "123456789012"]])
+		}).pipe(Effect.provide(h.layer))
+	})
+
+	it.effect("removes a source whose ref is another org's installation, without pulling through it", () => {
+		const h = harness()
+		return Effect.gen(function* () {
+			yield* TestClock.setTime(NOW)
+			yield* h.installGithub({
+				id: INSTALLATION_A,
+				login: "example-org",
+				orgId: "org_b",
+				source: false,
+			})
+			// The join is by org: to org_a the installation does not exist.
+			yield* h.sql(
+				`INSERT INTO cost_sources (id, org_id, provider, connection_ref, account_id, created_at, updated_at)
+				 VALUES (gen_random_uuid()::text, 'org_a', 'github', $1, 'example-org', now(), now())`,
+				[INSTALLATION_A],
+			)
+			yield* poll
+			assert.deepStrictEqual(yield* h.sourceRefs, [])
+			assert.deepStrictEqual(h.pulls, [])
+		}).pipe(Effect.provide(h.layer))
+	})
+})
+
+describe("CostSyncService Vercel sources", () => {
+	it.effect("makes no source for a Vercel connection the org did not add as one", () => {
+		const h = harness()
+		return Effect.gen(function* () {
+			yield* TestClock.setTime(NOW)
+			yield* h.connectVercel({ id: VERCEL_CONNECTION_A, asCostSource: false })
+			const summary = yield* poll
+			assert.deepStrictEqual([yield* h.sourceRefs, summary.due, h.pulls.length], [[], 0, 0])
+		}).pipe(Effect.provide(h.layer))
+	})
+
+	it.effect("pulls an added source from the previous month through today, then a month of history", () => {
+		const h = harness()
+		return Effect.gen(function* () {
+			yield* TestClock.setTime(NOW)
+			yield* h.connectVercel({ id: VERCEL_CONNECTION_A, asCostSource: true })
+			const summary = yield* poll
+			assert.deepStrictEqual([summary.due, summary.synced], [1, 1])
+			// Today is served, and each window is one request far under Vercel's year.
+			assert.deepStrictEqual(h.windows(), [
+				["2026-10-01", "2026-11-11"],
+				["2026-09-01", "2026-09-30"],
+				["2026-08-01", "2026-08-31"],
+			])
+			const state = yield* h.sourceStateOf("org_a", VERCEL_CONNECTION_A)
+			assert.deepStrictEqual(
+				[state?.watermark, state?.backfill, state?.error],
+				["2026-11-11", "2026-08-01", null],
+			)
+			assert.isTrue(Arr.every(h.writtenRows(), (row) => row.Provider === "vercel"))
+		}).pipe(Effect.provide(h.layer))
+	})
+
+	it.effect("walks history down to eleven months before this one, and no further", () => {
+		const h = harness()
+		return Effect.gen(function* () {
+			yield* TestClock.setTime(NOW)
+			yield* h.connectVercel({ id: VERCEL_CONNECTION_A, asCostSource: true })
+			yield* h.sql(
+				`UPDATE cost_sources SET watermark_date = '2026-11-11', backfill_date = '2026-01-01',
+				        last_synced_at = now(), last_settled_at = now()`,
+			)
+			yield* poll
+			assert.deepStrictEqual(h.windows(), [["2025-12-01", "2025-12-31"]])
+			// The floor is reached: a year back from today would start a day past what one request serves.
+			yield* TestClock.adjust("5 minutes")
+			assert.strictEqual((yield* poll).due, 0)
+		}).pipe(Effect.provide(h.layer))
+	})
+
+	it.effect(
+		"pulls a source whose token was replaced at the next tick, though it synced minutes ago",
+		() => {
+			const h = harness()
+			return Effect.gen(function* () {
+				yield* TestClock.setTime(NOW)
+				yield* h.connectVercel({ id: VERCEL_CONNECTION_A, asCostSource: true })
+				// History walked to the floor and the head pulled just now: nothing is due for a day.
+				yield* h.sql(
+					`UPDATE cost_sources SET watermark_date = '2026-11-11', backfill_date = '2025-12-01',
+				        last_synced_at = now(), last_settled_at = now()`,
+				)
+				assert.strictEqual((yield* poll).due, 0)
+				// What a new token for the team writes to the source (`releaseVercelCostSources`).
+				yield* h.sql(
+					`UPDATE cost_sources SET last_synced_at = NULL, next_attempt_at = NULL, lease_until = NULL,
+				        last_error = NULL, last_error_reason = NULL, consecutive_failures = 0`,
+				)
+				yield* TestClock.adjust("5 minutes")
+				const summary = yield* poll
+				assert.deepStrictEqual([summary.due, summary.synced], [1, 1])
+				// The trailing days again, read with the new token; history is not walked twice.
+				assert.deepStrictEqual(h.windows(), [["2026-11-08", "2026-11-11"]])
+			}).pipe(Effect.provide(h.layer))
+		},
+	)
+
+	it.effect(
+		"removes the source of a connection that is gone, and leaves the org's AWS source alone",
+		() => {
+			const h = harness()
+			return Effect.gen(function* () {
+				yield* TestClock.setTime(NOW)
+				yield* h.connectVercel({ id: VERCEL_CONNECTION_A, asCostSource: true })
+				yield* h.connect({ id: CONNECTION_A })
+				yield* poll
+				assert.deepStrictEqual(yield* h.sourceRefs, [
+					["org_a", CONNECTION_A, "123456789012"],
+					["org_a", VERCEL_CONNECTION_A, "team_1"],
+				])
+
+				yield* h.sql("DELETE FROM vercel_connections")
+				yield* TestClock.adjust("1 hour")
+				yield* poll
+				assert.deepStrictEqual(yield* h.sourceRefs, [["org_a", CONNECTION_A, "123456789012"]])
+			}).pipe(Effect.provide(h.layer))
+		},
+	)
+})
+
+describe("CostSyncService PlanetScale sources", () => {
+	it.effect("makes no source for a PlanetScale connection the org did not add as one", () => {
+		const h = harness()
+		return Effect.gen(function* () {
+			yield* TestClock.setTime(NOW)
+			yield* h.connectPlanetScale({ id: PLANETSCALE_CONNECTION_A, asCostSource: false })
+			const summary = yield* poll
+			assert.deepStrictEqual([yield* h.sourceRefs, summary.due, h.pulls.length], [[], 0, 0])
+		}).pipe(Effect.provide(h.layer))
+	})
+
+	it.effect("pulls an added source through today, then walks twelve months back", () => {
+		const h = harness()
+		return Effect.gen(function* () {
+			yield* TestClock.setTime(NOW)
+			yield* h.connectPlanetScale({ id: PLANETSCALE_CONNECTION_A, asCostSource: true })
+			const summary = yield* poll
+			assert.deepStrictEqual(yield* h.sourceRefs, [["org_a", PLANETSCALE_CONNECTION_A, "acme"]])
+			assert.deepStrictEqual([summary.due, summary.synced], [1, 1])
+			// Last month's invoice and the open month through today, whose days are a share of it.
+			assert.deepStrictEqual(h.windows()[0], ["2026-10-01", "2026-11-11"])
+			assert.isTrue(Arr.every(h.writtenRows(), (row) => row.Provider === "planetscale"))
+
+			// History then walks down one invoice per step and stops twelve months back.
+			yield* Effect.forEach(Arr.range(1, 12), () => Effect.andThen(TestClock.adjust("5 minutes"), poll))
+			const state = yield* h.sourceStateOf("org_a", PLANETSCALE_CONNECTION_A)
+			assert.deepStrictEqual(
+				[state?.watermark, state?.backfill, state?.error],
+				["2026-11-11", "2025-11-01", null],
+			)
+			assert.deepStrictEqual(Arr.last(h.windows()), Option.some(["2025-11-01", "2025-11-30"]))
+			assert.isTrue(Arr.every(h.windows(), ([startDay]) => startDay >= "2025-11-01"))
+		}).pipe(Effect.provide(h.layer))
+	})
+
+	it.effect(
+		"pulls a source whose organization was authorized again at the next tick, though it synced minutes ago",
+		() => {
+			const h = harness()
+			return Effect.gen(function* () {
+				yield* TestClock.setTime(NOW)
+				yield* h.connectPlanetScale({ id: PLANETSCALE_CONNECTION_A, asCostSource: true })
+				// History walked to the floor and the head pulled just now, then held for a grant
+				// without the invoice scope: nothing is due for hours.
+				yield* h.sql(
+					`UPDATE cost_sources SET watermark_date = '2026-11-11', backfill_date = '2025-11-01',
+				        last_synced_at = now(), last_settled_at = now(), last_error = 'Reconnect PlanetScale',
+				        last_error_reason = 'not_ready', next_attempt_at = now() + interval '6 hours'`,
+				)
+				assert.strictEqual((yield* poll).due, 0)
+				// What a reconnect of the same organization writes to the source (`releasePlanetScaleCostSources`).
+				yield* h.sql(
+					`UPDATE cost_sources SET last_synced_at = NULL, next_attempt_at = NULL, lease_until = NULL,
+				        last_error = NULL, last_error_reason = NULL, consecutive_failures = 0`,
+				)
+				yield* TestClock.adjust("5 minutes")
+				const summary = yield* poll
+				assert.deepStrictEqual([summary.due, summary.synced], [1, 1])
+				// The open month again, read with the new grant; history is not walked twice.
+				assert.deepStrictEqual(h.windows(), [["2026-11-01", "2026-11-11"]])
+			}).pipe(Effect.provide(h.layer))
+		},
+	)
+
+	it.effect(
+		"removes the source of a connection that is gone, and leaves the org's other sources alone",
+		() => {
+			const h = harness()
+			return Effect.gen(function* () {
+				yield* TestClock.setTime(NOW)
+				yield* h.connectPlanetScale({ id: PLANETSCALE_CONNECTION_A, asCostSource: true })
+				yield* h.saveCostConnection({ id: CLOUDFLARE_TOKEN_A, provider: "cloudflare" })
+				yield* h.connect({ id: CONNECTION_A })
+				yield* poll
+				assert.deepStrictEqual(yield* h.sourceRefs, [
+					["org_a", CONNECTION_A, "123456789012"],
+					["org_a", CLOUDFLARE_TOKEN_A, "account_a"],
+					["org_a", PLANETSCALE_CONNECTION_A, "acme"],
+				])
+
+				yield* h.sql("DELETE FROM planetscale_connections")
+				yield* TestClock.adjust("1 hour")
+				yield* poll
+				assert.deepStrictEqual(yield* h.sourceRefs, [
+					["org_a", CONNECTION_A, "123456789012"],
+					["org_a", CLOUDFLARE_TOKEN_A, "account_a"],
+				])
+			}).pipe(Effect.provide(h.layer))
+		},
+	)
+
+	it.effect("removes the source of a connection that reads another organization by now", () => {
+		const h = harness()
+		return Effect.gen(function* () {
+			yield* TestClock.setTime(NOW)
+			yield* h.connectPlanetScale({ id: PLANETSCALE_CONNECTION_A, asCostSource: true })
+			// The connection keeps its id when it is bound to another organization.
+			yield* h.sql("UPDATE planetscale_connections SET ps_organization = 'second-org'")
+			const summary = yield* poll
+			// The other organization's invoices are not this source's history: it is gone, unpulled.
+			assert.deepStrictEqual([yield* h.sourceRefs, summary.due, h.pulls.length], [[], 0, 0])
+		}).pipe(Effect.provide(h.layer))
+	})
+
+	it.effect("makes no source for a pasted credential filed under PlanetScale", () => {
+		const h = harness()
+		return Effect.gen(function* () {
+			yield* TestClock.setTime(NOW)
+			// PlanetScale reads through its integration: a row in the pasted-credential table is not its.
+			yield* h.saveCostConnection({
+				id: "0190f2b3-0000-7000-8000-0000000000f3",
+				provider: "planetscale",
+			})
+			yield* poll
+			assert.deepStrictEqual(yield* h.sourceRefs, [])
 		}).pipe(Effect.provide(h.layer))
 	})
 })

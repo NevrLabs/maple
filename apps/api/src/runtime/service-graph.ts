@@ -66,7 +66,13 @@ import { SupabaseConnectionService } from "@maple/backend/services/integrations/
 import { SupabaseInsightsService } from "@maple/backend/services/integrations/SupabaseInsightsService"
 import { SupabaseLogsService } from "@maple/backend/services/integrations/SupabaseLogsService"
 import { SupabaseOAuthService } from "@maple/backend/services/auth/SupabaseOAuthService"
+import { AnthropicCostConnectionService } from "@maple/backend/services/cost/AnthropicCostConnectionService"
+import { CloudflareCostConnectionService } from "@maple/backend/services/cost/CloudflareCostConnectionService"
+import { OpenAiCostConnectionService } from "@maple/backend/services/cost/OpenAiCostConnectionService"
+import { GithubCostSourceService } from "@maple/backend/services/cost/GithubCostSourceService"
 import { OpenRouterCostConnectionService } from "@maple/backend/services/cost/OpenRouterCostConnectionService"
+import { PlanetScaleCostSourceService } from "@maple/backend/services/cost/PlanetScaleCostSourceService"
+import { VercelCostSourceService } from "@maple/backend/services/cost/VercelCostSourceService"
 import { OrgOpenRouterKeyService } from "@maple/backend/services/org/OrgOpenRouterKeyService"
 import { ServiceMapWorldService } from "@maple/backend/services/service-map/ServiceMapWorldService"
 import { ScrapeTargetsService } from "@maple/backend/services/integrations/ScrapeTargetsService"
@@ -107,6 +113,8 @@ import { AiSessionReadService } from "@maple/backend/services/ai-sessions/AiSess
 import { ProductEventsService } from "@maple/backend/services/product-events/ProductEventsService"
 
 import { AuditLogService } from "@maple/backend/services/audit/AuditLogService"
+import { AuditTrailService } from "@maple/backend/services/audit-trail/AuditTrailService"
+import { AuditDetectionsService } from "@maple/backend/services/audit-trail/AuditDetectionsService"
 import { WarehouseQueryService } from "@maple/backend/services/warehouse/WarehouseQueryService"
 import { QueryEngineService } from "@maple/backend/services/warehouse/QueryEngineService"
 import { TelemetryReadService } from "@maple/backend/services/warehouse/TelemetryReadService"
@@ -188,8 +196,16 @@ export const HttpServicesLive = Layer.mergeAll(
 	AwsIngestService.layer,
 	OrgOpenRouterKeyService.layer,
 	OpenRouterCostConnectionService.layer,
+	CloudflareCostConnectionService.layer,
+	AnthropicCostConnectionService.layer,
+	OpenAiCostConnectionService.layer,
+	GithubCostSourceService.layer,
+	PlanetScaleCostSourceService.layer,
+	VercelCostSourceService.layer,
 	ServiceMapWorldService.layer,
 	AuditLogService.layer,
+	AuditTrailService.layer,
+	AuditDetectionsService.layer,
 	WarehouseQueryService.layer,
 	QueryEngineService.layer,
 	RuntimeReleaseCatalog.layer,

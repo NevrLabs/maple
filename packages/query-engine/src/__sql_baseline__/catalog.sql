@@ -373,6 +373,87 @@ SELECT
         OFFSET 50
         FORMAT JSON
 
+-- builder:audit-trail:auditTrailCountQuery:filtered  [ee015597]
+SELECT
+          uniqExact(audit_trail_events.Id) AS events
+        FROM audit_trail_events
+        WHERE audit_trail_events.OrgId = 'org_sql_catalog'
+          AND audit_trail_events.IngestedAt > '2026-01-01 10:30:00'
+          AND audit_trail_events.IngestedAt <= '2026-01-03 14:15:00'
+          AND audit_trail_events.OccurredAt >= '2026-01-01 10:30:00' - INTERVAL 604800 SECOND
+          AND audit_trail_events.Provider = 'vercel'
+          AND audit_trail_events.Category = 'membership'
+          AND audit_trail_events.Outcome = 'success'
+          AND audit_trail_events.Action = 'team.member.added'
+        FORMAT JSON
+
+-- builder:audit-trail:auditTrailEventsQuery:default  [9ab77231]
+SELECT
+          audit_trail_events.Id AS id,
+          audit_trail_events.OccurredAt AS occurredAt,
+          audit_trail_events.IngestedAt AS ingestedAt,
+          audit_trail_events.Provider AS provider,
+          audit_trail_events.Account AS account,
+          audit_trail_events.ProviderEventId AS providerEventId,
+          audit_trail_events.ActorType AS actorType,
+          audit_trail_events.ActorId AS actorId,
+          audit_trail_events.ActorName AS actorName,
+          audit_trail_events.ActorEmail AS actorEmail,
+          audit_trail_events.Action AS action,
+          audit_trail_events.Category AS category,
+          audit_trail_events.Outcome AS outcome,
+          audit_trail_events.OutcomeReason AS outcomeReason,
+          audit_trail_events.TargetType AS targetType,
+          audit_trail_events.TargetId AS targetId,
+          audit_trail_events.TargetName AS targetName,
+          audit_trail_events.OriginIp AS originIp,
+          audit_trail_events.OriginCountry AS originCountry,
+          audit_trail_events.UserAgent AS userAgent,
+          audit_trail_events.Raw AS raw
+        FROM audit_trail_events
+        WHERE audit_trail_events.OrgId = 'org_sql_catalog'
+        ORDER BY occurredAt DESC, id DESC, ingestedAt ASC
+        LIMIT 51
+        FORMAT JSON
+
+-- builder:audit-trail:auditTrailEventsQuery:filtered  [fb4fb694]
+SELECT
+          audit_trail_events.Id AS id,
+          audit_trail_events.OccurredAt AS occurredAt,
+          audit_trail_events.IngestedAt AS ingestedAt,
+          audit_trail_events.Provider AS provider,
+          audit_trail_events.Account AS account,
+          audit_trail_events.ProviderEventId AS providerEventId,
+          audit_trail_events.ActorType AS actorType,
+          audit_trail_events.ActorId AS actorId,
+          audit_trail_events.ActorName AS actorName,
+          audit_trail_events.ActorEmail AS actorEmail,
+          audit_trail_events.Action AS action,
+          audit_trail_events.Category AS category,
+          audit_trail_events.Outcome AS outcome,
+          audit_trail_events.OutcomeReason AS outcomeReason,
+          audit_trail_events.TargetType AS targetType,
+          audit_trail_events.TargetId AS targetId,
+          audit_trail_events.TargetName AS targetName,
+          audit_trail_events.OriginIp AS originIp,
+          audit_trail_events.OriginCountry AS originCountry,
+          audit_trail_events.UserAgent AS userAgent,
+          audit_trail_events.Raw AS raw
+        FROM audit_trail_events
+        WHERE audit_trail_events.OrgId = 'org_sql_catalog'
+          AND audit_trail_events.Provider = 'github'
+          AND audit_trail_events.Account = 'acme'
+          AND audit_trail_events.Category = 'membership'
+          AND audit_trail_events.Outcome = 'success'
+          AND audit_trail_events.Action = 'org.add_member'
+          AND ((audit_trail_events.ActorId = 'octocat@acme.test' OR audit_trail_events.ActorEmail = 'octocat@acme.test') OR audit_trail_events.ActorId = 'user_1')
+          AND audit_trail_events.OccurredAt >= '2026-01-01 10:30:00'
+          AND audit_trail_events.OccurredAt <= '2026-01-03 14:15:00'
+          AND (audit_trail_events.OccurredAt < '2026-01-03 14:15:00' OR (audit_trail_events.OccurredAt = '2026-01-03 14:15:00' AND audit_trail_events.Id < '0f6f2c1e7a554c0e9a3b0d2c7e5b9a11'))
+        ORDER BY occurredAt DESC, id DESC, ingestedAt ASC
+        LIMIT 51
+        FORMAT JSON
+
 -- builder:aws-ingest:awsIngestQuery:default  [c5891e34]
 SELECT
           metrics_sum.Attributes['aws.namespace'] AS namespace,
@@ -5698,7 +5779,7 @@ SELECT
         LIMIT 500
         FORMAT JSON
 
--- builder:search-console:searchConsoleLandingPagesQuery:default  [18eba252]
+-- builder:search-console:searchConsoleLandingPagesQuery:default  [421df049]
 SELECT
           latest.page AS page,
           ifNull(sum(latest.positionSum), 0) AS positionSum,
@@ -5735,7 +5816,7 @@ SELECT
           AND search_console_daily.Date <= '2026-10-28 00:00:00'
         GROUP BY date, page, query, country, device) AS latest
         GROUP BY page
-        ORDER BY clicks DESC, page ASC
+        ORDER BY clicks DESC, impressions DESC, page ASC
         LIMIT 100
         FORMAT JSON
 
@@ -5818,7 +5899,7 @@ SELECT
         ORDER BY date ASC
         FORMAT JSON
 
--- builder:search-console:searchConsoleTopPagesQuery:default  [18eba252]
+-- builder:search-console:searchConsoleTopPagesQuery:default  [421df049]
 SELECT
           latest.page AS page,
           ifNull(sum(latest.positionSum), 0) AS positionSum,
@@ -5855,11 +5936,11 @@ SELECT
           AND search_console_daily.Date <= '2026-10-28 00:00:00'
         GROUP BY date, page, query, country, device) AS latest
         GROUP BY page
-        ORDER BY clicks DESC, page ASC
+        ORDER BY clicks DESC, impressions DESC, page ASC
         LIMIT 50
         FORMAT JSON
 
--- builder:search-console:searchConsoleTopQueriesQuery:filtered  [45090b5d]
+-- builder:search-console:searchConsoleTopQueriesQuery:filtered  [d31810a4]
 SELECT
           latest.query AS query,
           ifNull(sum(latest.clicks), 0) AS clicks,
@@ -5897,7 +5978,7 @@ SELECT
           AND search_console_daily.Device = 'mobile'
         GROUP BY date, page, query, country, device) AS latest
         GROUP BY query
-        ORDER BY position ASC, query ASC
+        ORDER BY position ASC, impressions DESC, query ASC
         LIMIT 50
         FORMAT JSON
 

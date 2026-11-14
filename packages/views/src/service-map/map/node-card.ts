@@ -39,6 +39,10 @@ export const DB_ICON = {
 	clickhouse: "ClickhouseIcon",
 	mongodb: "MongodbIcon",
 	redis: "RedisIcon",
+	sqlserver: "SqlServerIcon",
+	kafka: "KafkaIcon",
+	nats: "NatsIcon",
+	rabbitmq: "RabbitmqIcon",
 	database: "DatabaseIcon",
 	fire: "FireIcon",
 	"paper-plane": "PaperPlaneIcon",
@@ -95,7 +99,7 @@ export const metricCell = <M>(
 	valueClassName?: string,
 ): Html =>
 	vstack(h, { className: "gap-px" }, [
-		eyebrow(h, { className: "text-4xs text-foreground-subtle" }, [label]),
+		eyebrow(h, { variant: "mono", className: "text-4xs" }, [label]),
 		h.span(
 			[
 				h.Class(

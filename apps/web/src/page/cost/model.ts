@@ -1,11 +1,16 @@
 import {
 	CostBreakdownResponse,
-	type CostSourceSummary,
+	CostSourceSummary,
 	CostSourcesResponse,
 	CostTimeseriesResponse,
 	CostTotalsResponse,
+	GithubCostInstallations,
+	PlanetScaleCostStatus,
+	VercelCostStatus,
+	type VercelCostTeam,
 } from "@maple/domain/http"
 import * as Policy from "@maple/domain/policy"
+import { VcsInstallationId } from "@maple/domain/vcs"
 import { Option, Schema } from "effect"
 import { AsyncData } from "foldkit"
 import * as Chart from "@maple/views/charts/chart"
@@ -19,12 +24,53 @@ import { TimeWindow } from "../../data/time-range"
 import { CostSearch } from "../../route/search"
 import { CostFacets } from "./message"
 import * as TimeRangePicker from "../kit/time-range-picker"
+import { CredentialProvider } from "./providers"
 
 export type Search = typeof CostSearch.Type
 
-/** The add-source dialog's two faces: the providers, then the chosen one's form. */
-export const AddStep = Schema.Literals(["pick", "openrouter"])
+/** The add-source dialog's faces: the providers, then the chosen one's credential form, list or step. */
+export const AddStep = Schema.Union([
+	Schema.Literals(["pick", "github", "vercel", "planetscale"]),
+	CredentialProvider,
+])
 export type AddStep = typeof AddStep.Type
+
+/**
+ * What the Vercel step can do with the connection it read: only a `Ready` team can be added. A
+ * team that is a source already can still have lost its token, which stops its sync.
+ */
+export type VercelStep =
+	| Readonly<{ _tag: "NotConnected" }>
+	| Readonly<{ _tag: "TokenRejected" | "Ready"; team: VercelCostTeam }>
+	| Readonly<{ _tag: "Added"; team: VercelCostTeam; isTokenRejected: boolean }>
+
+export const vercelStepOf = (status: VercelCostStatus): VercelStep => {
+	if (status.team === null) return { _tag: "NotConnected" }
+	return status.added
+		? { _tag: "Added", team: status.team, isTokenRejected: status.authFailed }
+		: { _tag: status.authFailed ? "TokenRejected" : "Ready", team: status.team }
+}
+
+/** Why PlanetScale refused an add, and whether only connecting it again fixes that. */
+export const PlanetScaleAddError = Schema.Struct({ message: Schema.String, needsReconnect: Schema.Boolean })
+export type PlanetScaleAddError = typeof PlanetScaleAddError.Type
+
+/**
+ * What the PlanetScale step can do with the connection it read: only a `Ready` organization can
+ * be added. One that is a source already can still have lost its access to invoices, which stops
+ * its sync.
+ */
+export type PlanetScaleStep =
+	| Readonly<{ _tag: "NotConnected" }>
+	| Readonly<{ _tag: "NeedsReconnect" | "Ready"; organization: string }>
+	| Readonly<{ _tag: "Added"; organization: string; needsReconnect: boolean }>
+
+export const planetScaleStepOf = (status: PlanetScaleCostStatus): PlanetScaleStep => {
+	if (status.organization === null) return { _tag: "NotConnected" }
+	return status.added
+		? { _tag: "Added", organization: status.organization, needsReconnect: !status.invoiceAccess }
+		: { _tag: status.invoiceAccess ? "Ready" : "NeedsReconnect", organization: status.organization }
+}
 
 export const Model = Schema.Struct({
 	search: CostSearch,
@@ -47,11 +93,38 @@ export const Model = Schema.Struct({
 	grants: Schema.NullOr(Schema.Array(Policy.PermissionName)),
 	addDialog: Dialog.Model,
 	addStep: AddStep,
-	/** The OpenRouter management key being typed; cleared whichever way the dialog closes. */
-	keyDraft: Field.Model,
-	/** Why the last save was refused, shown under the field until the key changes. */
-	keyError: Schema.NullOr(Schema.String),
+	/** The credential being typed (a key or a token); cleared whichever way the dialog closes. */
+	credentialDraft: Field.Model,
+	/** Why the last save was refused, shown under the field until the credential changes. */
+	credentialError: Schema.NullOr(Schema.String),
+	/** The org's GitHub installations, read when the dialog's GitHub step opens. */
+	githubInstallations: AsyncData.Schema(GithubCostInstallations, LoadFailure).schema,
+	/** The number of the installations read on show: an answer to an older read is dropped. */
+	githubRead: Schema.Number,
+	/** The installation an add is in flight for. */
+	githubAdding: Schema.NullOr(VcsInstallationId),
+	/**
+	 * The installation whose add failed, with the reason, shown in its row until the next try.
+	 * `needsPermission`: GitHub refused the billing read, which the organization fixes in GitHub.
+	 */
+	githubRefusal: Schema.NullOr(
+		Schema.Struct({
+			installationId: VcsInstallationId,
+			message: Schema.String,
+			needsPermission: Schema.Boolean,
+		}),
+	),
+	/** The org's Vercel connection, read when the dialog turns to Vercel. */
+	vercel: KeyedSchema(VercelCostStatus, LoadFailure),
+	/** Why Vercel refused the last add, shown in the step until it is left. */
+	vercelError: Schema.NullOr(Schema.String),
+	/** The org's PlanetScale connection, read when the dialog turns to PlanetScale. */
+	planetscale: KeyedSchema(PlanetScaleCostStatus, LoadFailure),
+	/** Why the last add of the organization was refused, shown in the step until it is left. */
+	planetscaleError: Schema.NullOr(PlanetScaleAddError),
 	removeDialog: Dialog.Model,
+	/** The source the remove confirm is about, as it was when Remove was clicked. */
+	removeTarget: Schema.NullOr(CostSourceSummary),
 	/** `Settling`: the write answered and the sources are being read again; the list on show is the old one. */
 	sourceWrite: Schema.Literals(["Idle", "Saving", "Removing", "Settling"]),
 })

@@ -16,7 +16,12 @@ import {
 import { resolveColor, type ThemeColors } from "@maple/views/charts/theme-colors"
 import { widgetShell } from "../widget-shell"
 import { type commitMarkers, markerLayout } from "./markers"
-import { LINKED_CURSOR_STYLE, linkedCursorOverlay } from "@maple/views/charts/linked-cursor"
+import {
+	LINKED_CURSOR_STYLE,
+	LINKED_ZOOM_CLASS,
+	linkedCursorOverlay,
+} from "@maple/views/charts/linked-cursor"
+import type { MarkerCard } from "./marker-card"
 import { markersOverlay } from "./markers-view"
 import { chartFrameClass } from "@maple/views/ui/chart-frame"
 
@@ -154,8 +159,10 @@ export type GridInput<M> = Readonly<{
 	charts: Readonly<Record<string, Chart.Model>>
 	rows: ReadonlyArray<FixedMetricRow>
 	markers: ReturnType<typeof commitMarkers>
+	/** The page's marker hover card; without it the markers draw idle. */
+	markerCard?: MarkerCard<M>
 	toChartMessage: (chartId: string, message: Chart.Message) => M
-	/** `h.OnMount(MountLinkedCursor())`, lifted to the page's Message. */
+	/** `h.OnMount(MountLinkedZoom(...))`, lifted to the page's Message. */
 	linkedCursorMount: Parameters<HtmlBuilder<M>["OnMount"]>[0]
 }>
 
@@ -172,7 +179,17 @@ const chartBody = <M>(
 			? undefined
 			: Option.match(chartModel.plot, {
 					onNone: () => undefined,
-					onSome: (plot) => markersOverlay(h, markerLayout(markers, plot), plot),
+					onSome: (plot) =>
+						markersOverlay(
+							h,
+							markerLayout(markers, plot),
+							plot,
+							undefined,
+							"all",
+							input.markerCard === undefined
+								? undefined
+								: { ...input.markerCard, scope: `markers-${chart.id}` },
+						),
 				})
 	return h.div(
 		[h.Class("relative h-full min-h-0 w-full")],
@@ -186,11 +203,13 @@ const chartBody = <M>(
 					ariaLabel: chart.ariaLabel,
 					spec: specOf(chart, rows, context),
 					className: chartFrameClass("fill"),
-					overlay,
 					reportPlot: true,
 				},
 				toParentMessage: (message: Chart.Message) => input.toChartMessage(chart.id, message),
 			}),
+			// Beside the chart, not its `overlay` input: the marker card's handlers must bind to this
+			// page, and the plot box fills this wrapper, so the plot geometry lines up as is.
+			overlay ?? null,
 			linkedCursorOverlay(h, chart.id),
 		],
 	)
@@ -205,7 +224,13 @@ export const metricsGridOf = <M>(h: HtmlBuilder<M>, input: GridInput<M>, state: 
 			h.DataAttribute("metrics-grid", ""),
 			h.OnMount(input.linkedCursorMount),
 			...(state.isWaiting ? [h.AriaBusy(true)] : []),
-			h.Class(cn("grid grid-cols-1 md:grid-cols-2 gap-3", refreshingClass(state.isWaiting))),
+			h.Class(
+				cn(
+					"grid grid-cols-1 md:grid-cols-2 gap-3",
+					refreshingClass(state.isWaiting),
+					LINKED_ZOOM_CLASS,
+				),
+			),
 			h.Style(LINKED_CURSOR_STYLE),
 		],
 		Arr.map(CHARTS, (chart) => {

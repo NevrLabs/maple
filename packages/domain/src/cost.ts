@@ -24,7 +24,16 @@ export const CostDimension = Schema.Literals([
 export type CostDimension = typeof CostDimension.Type
 
 /** Providers Maple reads cost from. One literal per built adapter. */
-export const CostProvider = Schema.Literals(["aws", "openrouter"])
+export const CostProvider = Schema.Literals([
+	"aws",
+	"openrouter",
+	"github",
+	"vercel",
+	"cloudflare",
+	"planetscale",
+	"anthropic",
+	"openai",
+])
 export type CostProvider = typeof CostProvider.Type
 
 /** `billed`: the provider reported the money. `estimated`: usage times list price. */

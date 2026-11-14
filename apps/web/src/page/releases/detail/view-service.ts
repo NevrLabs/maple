@@ -7,7 +7,7 @@ import { Option, Array as Arr } from "effect"
 import { AsyncData } from "foldkit"
 import type { Html, HtmlBuilder } from "foldkit/html"
 import { isChartRuntimeReady } from "@maple/views/charts/chart-runtime"
-import { MountLinkedCursor } from "@maple/views/charts/linked-cursor"
+import { MountLinkedZoom } from "@maple/views/charts/linked-cursor"
 import { ResolveThemeColors } from "@maple/views/charts/theme-colors"
 import { AppRoute, hrefOf } from "../../../route"
 import { linkButton } from "@maple/views/ui/button"
@@ -21,10 +21,12 @@ import { serviceDot } from "@maple/views/ui/values"
 import { relativeTime } from "../../kit/relative-time"
 import { commitRangesKey, releaseHealthFigure, withQueryOrder } from "../kit"
 import { commitTrigger, type Overlays, releaseHealthPill } from "../overlays-view"
+import * as ReleaseOverlays from "../overlays"
 import { Message } from "./message"
 import type { Model } from "./model"
 import {
 	baselineOf,
+	commitsOf,
 	derivedOf,
 	FINGERPRINT_LIMIT,
 	markersOf,
@@ -352,8 +354,17 @@ const loadedBody = (h: H, model: Model, derived: ServiceDerived, serviceName: st
 				charts: model.charts,
 				rows: Arr.map(seriesPoints(model, derived), (point) => ({ ...point })),
 				markers: markersOf(model, derived),
+				markerCard: {
+					model: model.overlays.markerCard,
+					toParent: (message) =>
+						Message.GotOverlaysMessage({
+							message: ReleaseOverlays.Message.GotMarkerCardMessage({ message }),
+						}),
+					commits: commitsOf(model),
+					clock,
+				},
 				toChartMessage: (chartId, message) => Message.GotChartMessage({ chartId, message }),
-				linkedCursorMount: MountLinkedCursor(),
+				linkedCursorMount: MountLinkedZoom({ timeZone: clock.timeZone }),
 			},
 			{
 				isLoading: !isChartReady,
