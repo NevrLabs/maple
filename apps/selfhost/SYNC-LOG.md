@@ -215,3 +215,30 @@ gated head = merge `35695db00` (parents `b2448b871` #18 Atlas tip + `cf227e825`)
   lock commit.
 - Note: upstream's new `analyst` role overlaps conceptually with #5's selfhost `viewer`; both gates
   coexist. Candidate for later: map viewer onto analyst and drop the fork gate.
+
+## Run 6 — 2026-11-15 — upstream cf227e825 → acddf136e
+
+Status: **COMPLETE — merged, gated (MacBook), pushed.** Branch `selfhost-homelab-up-20261115`,
+gated head = merge `584f0e805` (parents `4c877db8b` run-5 tip + `acddf136e`). NOT deployed.
+
+- Frozen at run start: fork main `cf227e825`, selfhost tip `4c877db8b` (run-5 docs),
+  upstream/main `acddf136e`.
+- Incoming range: 40 commits, 595 files (+99.1k/−11.4k): integrations provider modules + shared
+  vendor HTTP kit / poller blocks (Cloudflare, PlanetScale, Vercel, Railway, Supabase, GCP, GitHub,
+  Linear, Search Console), deployment-secret catalog, backend runtime secrets as services, Product
+  analytics page (events/funnels/paths), sources list grouped by health, loading skeletons, sidebar
+  sub-rows, alerting org-scoped warehouse reads (flagged), deps (effect 4.1.4, alchemy beta.87,
+  oxlint 1.93, oxfmt 0.78), landing/docs design.
+- Mirror: origin `main` fast-forwarded `cf227e825` → `acddf136e`, pushed, read back.
+- Merge `584f0e805`: auto-merged, 0 conflicts, no markers; no fork-touched file deleted/renamed
+  upstream. Survival sweep (`cf227e825` → `4c877db8b`): 15 overlap files (web route/registry/nav/
+  main/update/view-table/view.lazy.test, bun.lock, CloudflareAnalyticsService.test, setup-audit.test,
+  WarehouseQueryService{,.test}) — zero MISSING fork lines.
+- Gates: `gh workflow run` → `HTTP 422 Actions has been disabled` (unchanged). MacBook
+  `scripts/mac-gates.sh` (step list re-checked == gates.yml), ledger `~/ci/maple-gates/584f0e805…/ledger`,
+  head asserted == `584f0e805`: **all green**, `DONE 584f0e805`. Typechecks ×7 green; suites:
+  qe-integrations 507/507, backend org 419/419, backend warehouse 174 passed / 515 skipped,
+  domain status-page 45/45, status-page 85/85, backend uptime alerts + status-pages 140/140,
+  web merge surfaces 974/974.
+- bun.lock: regenerated lock byte-identical to the committed merged lock (sha256 `086fa50c…`) — no
+  lock commit.
