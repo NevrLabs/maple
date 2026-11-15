@@ -4267,7 +4267,7 @@ SELECT
         ORDER BY bucket ASC, groupName ASC
         FORMAT JSON
 
--- builder:product-events-paths:productEventsPathsQuery:after-person  [ca42de6b]
+-- builder:product-events-paths:productEventsPathsQuery:after-person  [387f0bb9]
 SELECT
           mapped.hop AS hop,
           mapped.fromNode AS fromNode,
@@ -4300,7 +4300,7 @@ SELECT
           toUInt64(toUnixTimestamp64Milli(e.Timestamp)) AS ts,
           e.Seq AS seq,
           e.Kind AS kind,
-          if(e.Kind = 'navigation', e.PagePath, e.EventName) AS name,
+          if((e.Kind IN ('navigation', 'screen') AND e.PagePath != ''), e.PagePath, e.EventName) AS name,
           toUInt8(e.EventName = 'signup_completed') AS isAnchor
         FROM product_events AS e
         LEFT JOIN (SELECT
@@ -4392,7 +4392,7 @@ SELECT
         ORDER BY hop ASC, count DESC, fromNode ASC, toNode ASC
         FORMAT JSON
 
--- builder:product-events-paths:productEventsPathsQuery:before-session-pages-filtered  [59eef311]
+-- builder:product-events-paths:productEventsPathsQuery:before-session-pages-filtered  [a4e7b20b]
 SELECT
           mapped.hop AS hop,
           mapped.fromNode AS fromNode,
@@ -4425,8 +4425,8 @@ SELECT
           toUInt64(toUnixTimestamp64Milli(e.Timestamp)) AS ts,
           e.Seq AS seq,
           e.Kind AS kind,
-          if(e.Kind = 'navigation', e.PagePath, e.EventName) AS name,
-          toUInt8(((e.Kind = 'navigation' AND e.PagePath = '/pricing') AND e.Host = 'maple.dev')) AS isAnchor
+          if((e.Kind IN ('navigation', 'screen') AND e.PagePath != ''), e.PagePath, e.EventName) AS name,
+          toUInt8(((e.Kind IN ('navigation', 'screen') AND e.PagePath = '/pricing') AND e.Host = 'maple.dev')) AS isAnchor
         FROM product_events AS e
         WHERE e.OrgId = 'org_sql_catalog'
           AND e.Timestamp >= '2026-01-01 10:30:00'
@@ -4512,11 +4512,11 @@ SELECT
           AND product_events.EventName = 'signup_started'
         GROUP BY sessionId)
         GROUP BY key)
-          AND ((e.Kind = 'navigation' AND e.PagePath = '/pricing') AND e.Host = 'maple.dev')
+          AND ((e.Kind IN ('navigation', 'screen') AND e.PagePath = '/pricing') AND e.Host = 'maple.dev')
         GROUP BY key) AS a ON r.key = a.key
         WHERE r.ts <= a.anchorTs
           AND r.ts >= a.anchorTs - 3600000
-          AND (r.isAnchor = 1 OR r.kind = 'navigation')) AS path_events
+          AND (r.isAnchor = 1 OR r.kind IN ('navigation', 'screen'))) AS path_events
         GROUP BY key) AS per_person
         WHERE anchorIdx > 0) AS sequences) AS edges
         WHERE tupleElement(edge, 1) <= 2
@@ -4567,13 +4567,13 @@ SELECT
         ORDER BY hop ASC, count DESC, fromNode ASC, toNode ASC
         FORMAT JSON
 
--- builder:product-events:productEventNamesQuery:default  [1562ead5]
+-- builder:product-events:productEventNamesQuery:default  [d05b039c]
 SELECT
           product_events.EventName AS eventName,
           product_events.Kind AS kind,
           count() AS count,
           uniqIf(product_events.SessionId, product_events.SessionId != '') AS sessions,
-          uniq(if(product_events.UserId != '', product_events.UserId, product_events.VisitorId)) AS persons
+          uniq(if(product_events.VisitorId != '', product_events.VisitorId, product_events.UserId)) AS persons
         FROM product_events
         WHERE product_events.OrgId = 'org_sql_catalog'
           AND product_events.Timestamp >= '2026-01-01 10:30:00'
@@ -4583,13 +4583,13 @@ SELECT
         LIMIT 100
         FORMAT JSON
 
--- builder:product-events:productEventNamesQuery:filtered  [d2ec0a20]
+-- builder:product-events:productEventNamesQuery:filtered  [b9a881b9]
 SELECT
           product_events.EventName AS eventName,
           product_events.Kind AS kind,
           count() AS count,
           uniqIf(product_events.SessionId, product_events.SessionId != '') AS sessions,
-          uniq(if(product_events.UserId != '', product_events.UserId, product_events.VisitorId)) AS persons
+          uniq(if(product_events.VisitorId != '', product_events.VisitorId, product_events.UserId)) AS persons
         FROM product_events
         WHERE product_events.OrgId = 'org_sql_catalog'
           AND product_events.Timestamp >= '2026-01-01 10:30:00'
@@ -4655,7 +4655,7 @@ SELECT
         LIMIT 50
         FORMAT JSON
 
--- builder:product-events:productEventsFunnelBreakdownQuery:attribute-session-step  [c28317af]
+-- builder:product-events:productEventsFunnelBreakdownQuery:attribute-session-step  [9bf9b182]
 SELECT
           groups.group AS group,
           arrayJoin([1, 2, 3, 4]) AS step,
@@ -4665,14 +4665,34 @@ SELECT
           [countIf(level >= 1), countIf(level >= 2), countIf(level >= 3), countIf(level >= 4)] AS counts,
           countIf(level >= 1) AS entered
         FROM (SELECT
+          walked.key AS key,
+          walked.level AS level,
+          group AS group
+        FROM (SELECT
+          person_events.key AS key,
+          person_events.evs AS evs,
+          arrayFill(v -> v > 0, arrayMap(x -> if(x.2 = 1, x.1, toUInt64(0)), evs)) AS a1,
+          arrayMap((x, p) -> if(x.3 = 1 AND p > 0 AND intDiv(x.1, 1048576) <= intDiv(p, 1048576) + 604800000, p, toUInt64(0)), evs, arrayPushFront(arrayPopBack(a1), toUInt64(0))) AS b2,
+          arrayFill(v -> v > 0, b2) AS a2,
+          arrayMap((x, p) -> if(x.4 = 1 AND p > 0 AND intDiv(x.1, 1048576) <= intDiv(p, 1048576) + 604800000, p, toUInt64(0)), evs, arrayPushFront(arrayPopBack(a2), toUInt64(0))) AS b3,
+          arrayFill(v -> v > 0, b3) AS a3,
+          arrayMap((x, p) -> if(x.5 = 1 AND p > 0 AND intDiv(x.1, 1048576) <= intDiv(p, 1048576) + 604800000, p, toUInt64(0)), evs, arrayPushFront(arrayPopBack(a3), toUInt64(0))) AS b4,
+          arrayFill(v -> v > 0, b4) AS a4,
+          arrayFirst(v -> v > 0, a1) AS f1,
+          tupleElement(arrayFirst((x, b) -> b > 0, evs, b2), 1) AS f2,
+          tupleElement(arrayFirst((x, b) -> b > 0, evs, b3), 1) AS f3,
+          tupleElement(arrayFirst((x, b) -> b > 0, evs, b4), 1) AS f4,
+          toUInt8((f1 > 0) + (f2 > 0) + (f3 > 0) + (f4 > 0)) AS level,
+          greatest(f1, f2, f3, f4) AS reachedAt,
+          group AS group
+        FROM (SELECT
           funnel_events.key AS key,
-          windowFunnel(604800000)(funnel_events.ts, funnel_events.s1 = 1, funnel_events.s2 = 1, funnel_events.s3 = 1, funnel_events.s4 = 1) AS level,
-          argMinIf(funnel_events.dim, funnel_events.ts, funnel_events.dim != '') AS group
+          arraySort(x -> (x.1, 1 - x.2, 1 - x.3, 1 - x.4, 1 - x.5), groupArray(tuple(ord, s1, s2, s3, s4))) AS evs,
+          argMinIf(funnel_events.dim, funnel_events.ord, funnel_events.dim != '') AS group
         FROM (
 SELECT
           s.UserId AS key,
-          toUInt64(toUnixTimestamp64Milli(s.StartTime)) AS ts,
-          0 AS seq,
+          plus(multiply(toUInt64(toUnixTimestamp64Milli(s.StartTime)), 1048576), modulo(0, 1048576)) AS ord,
           1 AS s1,
           0 AS s2,
           0 AS s3,
@@ -4687,10 +4707,9 @@ SELECT
 UNION ALL
 SELECT
           e.UserId AS key,
-          toUInt64(toUnixTimestamp64Milli(e.Timestamp)) AS ts,
-          e.Seq AS seq,
+          plus(multiply(toUInt64(toUnixTimestamp64Milli(e.Timestamp)), 1048576), modulo(e.Seq, 1048576)) AS ord,
           0 AS s1,
-          toUInt8(((e.Kind = 'navigation' AND e.PagePath = '/pricing') AND e.Host = 'maple.dev')) AS s2,
+          toUInt8(((e.Kind IN ('navigation', 'screen') AND e.PagePath = '/pricing') AND e.Host = 'maple.dev')) AS s2,
           toUInt8(e.EventName = 'signup_completed') AS s3,
           toUInt8((e.EventName = 'plan_started' AND e.Attributes['plan'] = 'startup')) AS s4,
           e.Attributes['plan'] AS dim
@@ -4698,17 +4717,17 @@ SELECT
         WHERE e.OrgId = 'org_sql_catalog'
           AND e.Timestamp >= '2026-01-01 10:30:00'
           AND e.Timestamp <= '2026-01-03 14:15:00'
-          AND (((e.Kind = 'navigation' AND e.PagePath = '/pricing') AND e.Host = 'maple.dev') OR e.EventName = 'signup_completed' OR (e.EventName = 'plan_started' AND e.Attributes['plan'] = 'startup'))
+          AND (((e.Kind IN ('navigation', 'screen') AND e.PagePath = '/pricing') AND e.Host = 'maple.dev') OR e.EventName = 'signup_completed' OR (e.EventName = 'plan_started' AND e.Attributes['plan'] = 'startup'))
           AND e.UserId != ''
 ) AS funnel_events
-        GROUP BY key) AS levels
+        GROUP BY key) AS person_events) AS walked) AS levels
         GROUP BY group
         ORDER BY entered DESC, group ASC
         LIMIT 5) AS groups
         ORDER BY group ASC, step ASC
         FORMAT JSON
 
--- builder:product-events:productEventsFunnelBreakdownQuery:session-dimension  [f210b7b0]
+-- builder:product-events:productEventsFunnelBreakdownQuery:session-dimension  [210cccc5]
 SELECT
           groups.group AS group,
           arrayJoin([1, 2, 3]) AS step,
@@ -4718,14 +4737,31 @@ SELECT
           [countIf(level >= 1), countIf(level >= 2), countIf(level >= 3)] AS counts,
           countIf(level >= 1) AS entered
         FROM (SELECT
+          walked.key AS key,
+          walked.level AS level,
+          group AS group
+        FROM (SELECT
+          person_events.key AS key,
+          person_events.evs AS evs,
+          arrayFill(v -> v > 0, arrayMap(x -> if(x.2 = 1, x.1, toUInt64(0)), evs)) AS a1,
+          arrayMap((x, p) -> if(x.3 = 1 AND p > 0 AND intDiv(x.1, 1048576) <= intDiv(p, 1048576) + 604800000, p, toUInt64(0)), evs, arrayPushFront(arrayPopBack(a1), toUInt64(0))) AS b2,
+          arrayFill(v -> v > 0, b2) AS a2,
+          arrayMap((x, p) -> if(x.4 = 1 AND p > 0 AND intDiv(x.1, 1048576) <= intDiv(p, 1048576) + 604800000, p, toUInt64(0)), evs, arrayPushFront(arrayPopBack(a2), toUInt64(0))) AS b3,
+          arrayFill(v -> v > 0, b3) AS a3,
+          arrayFirst(v -> v > 0, a1) AS f1,
+          tupleElement(arrayFirst((x, b) -> b > 0, evs, b2), 1) AS f2,
+          tupleElement(arrayFirst((x, b) -> b > 0, evs, b3), 1) AS f3,
+          toUInt8((f1 > 0) + (f2 > 0) + (f3 > 0)) AS level,
+          greatest(f1, f2, f3) AS reachedAt,
+          group AS group
+        FROM (SELECT
           funnel_events.key AS key,
-          windowFunnel(604800000)(funnel_events.ts, funnel_events.s1 = 1, funnel_events.s2 = 1, funnel_events.s3 = 1) AS level,
-          argMinIf(funnel_events.dim, funnel_events.ts, funnel_events.dim != '') AS group
+          arraySort(x -> (x.1, 1 - x.2, 1 - x.3, 1 - x.4), groupArray(tuple(ord, s1, s2, s3))) AS evs,
+          argMinIf(funnel_events.dim, funnel_events.ord, funnel_events.dim != '') AS group
         FROM (SELECT
           multiIf(e.UserId != '', e.UserId, coalesce(link.UserId, '') != '', coalesce(link.UserId, ''), e.VisitorId) AS key,
-          toUInt64(toUnixTimestamp64Milli(e.Timestamp)) AS ts,
-          e.Seq AS seq,
-          toUInt8(((e.Kind = 'navigation' AND e.PagePath = '/pricing') AND e.Host = 'maple.dev')) AS s1,
+          plus(multiply(toUInt64(toUnixTimestamp64Milli(e.Timestamp)), 1048576), modulo(e.Seq, 1048576)) AS ord,
+          toUInt8(((e.Kind IN ('navigation', 'screen') AND e.PagePath = '/pricing') AND e.Host = 'maple.dev')) AS s1,
           toUInt8(e.EventName = 'signup_completed') AS s2,
           toUInt8((e.EventName = 'plan_started' AND e.Attributes['plan'] = 'startup')) AS s3,
           coalesce(sd.Value, '') AS dim
@@ -4752,16 +4788,16 @@ SELECT
         WHERE e.OrgId = 'org_sql_catalog'
           AND e.Timestamp >= '2026-01-01 10:30:00'
           AND e.Timestamp <= '2026-01-03 14:15:00'
-          AND (((e.Kind = 'navigation' AND e.PagePath = '/pricing') AND e.Host = 'maple.dev') OR e.EventName = 'signup_completed' OR (e.EventName = 'plan_started' AND e.Attributes['plan'] = 'startup'))
+          AND (((e.Kind IN ('navigation', 'screen') AND e.PagePath = '/pricing') AND e.Host = 'maple.dev') OR e.EventName = 'signup_completed' OR (e.EventName = 'plan_started' AND e.Attributes['plan'] = 'startup'))
           AND multiIf(e.UserId != '', e.UserId, coalesce(link.UserId, '') != '', coalesce(link.UserId, ''), e.VisitorId) != '') AS funnel_events
-        GROUP BY key) AS levels
+        GROUP BY key) AS person_events) AS walked) AS levels
         GROUP BY group
         ORDER BY entered DESC, group ASC
         LIMIT 10) AS groups
         ORDER BY group ASC, step ASC
         FORMAT JSON
 
--- builder:product-events:productEventsFunnelLeaversQuery:visitor-filtered  [95bb693c]
+-- builder:product-events:productEventsFunnelLeaversQuery:visitor-filtered  [e4ee4b23]
 SELECT
           hops.step AS step,
           tupleElement(hop, 1) AS next,
@@ -4771,86 +4807,55 @@ SELECT
           arrayJoin(head) AS hop
         FROM (SELECT
           counted.step AS step,
-          arraySlice(arrayReverseSort(x -> x.2, groupArray(tuple(next, count))), 1, 6) AS head
+          arraySlice(arraySort(x -> (-toInt64(x.2), x.1), groupArray(tuple(next, count))), 1, 6) AS head
         FROM (SELECT
           nexts.step AS step,
           nexts.next AS next,
           count() AS count
         FROM (SELECT
-          e.key AS key,
+          d.key AS key,
           d.step AS step,
-          argMinIf(e.name, e.ts, e.ts > d.tLast) AS next
+          argMinIf(coalesce(e.name, ''), tuple(coalesce(e.ord, 0), coalesce(e.name, '')), coalesce(e.ord, 0) > d.lastOrd) AS next
         FROM (SELECT
-          e.VisitorId AS key,
-          toUInt64(toUnixTimestamp64Milli(e.Timestamp)) AS ts,
-          if(e.Kind = 'navigation', e.PagePath, e.EventName) AS name
-        FROM product_events AS e
-        WHERE e.OrgId = 'org_sql_catalog'
-          AND e.Timestamp >= '2026-01-01 10:30:00'
-          AND e.Timestamp <= '2026-01-03 14:15:00'
-          AND e.VisitorId != ''
-          AND e.VisitorId IN (SELECT
-          session_replays.VisitorId AS key
-        FROM session_replays
-        WHERE session_replays.OrgId = 'org_sql_catalog'
-          AND session_replays.StartTime >= '2026-01-01 10:30:00'
-          AND session_replays.StartTime <= '2026-01-03 14:15:00'
-          AND session_replays.SessionId IN (SELECT
-          product_events.SessionId AS sessionId
-        FROM product_events
-        WHERE product_events.OrgId = 'org_sql_catalog'
-          AND product_events.Timestamp >= '2026-01-01 10:30:00'
-          AND product_events.Timestamp <= '2026-01-03 14:15:00'
-          AND product_events.Kind = 'navigation'
-          AND product_events.Host = 'maple.dev'
-          AND product_events.PagePath = '/pricing'
-        GROUP BY sessionId)
-          AND session_replays.ReferrerHost = 't.co'
-          AND session_replays.Country = 'DE'
-          AND session_replays.DeviceType = 'desktop'
-          AND session_replays.BrowserName = 'Chrome'
-          AND session_replays.OsName = 'macOS'
-          AND session_replays.Language = 'en-US'
-          AND session_replays.UtmSource = 'twitter'
-          AND session_replays.UtmMedium = 'social'
-          AND session_replays.UtmCampaign = 'launch'
-          AND session_replays.VisitorIsNew = 1
-          AND session_replays.SessionId IN (SELECT
-          product_events.SessionId AS sessionId
-        FROM product_events
-        WHERE product_events.OrgId = 'org_sql_catalog'
-          AND product_events.Timestamp >= '2026-01-01 10:30:00'
-          AND product_events.Timestamp <= '2026-01-03 14:15:00'
-          AND product_events.Kind = 'custom'
-          AND product_events.EventName = 'signup_started'
-        GROUP BY sessionId)
-        GROUP BY key)) AS e
-        INNER JOIN (SELECT
           chain.key AS key,
           chain.level + 1 AS step,
-          arrayElement([t1, t2, t3], level) AS tLast
+          arrayElement([o1, o2, o3], level) AS lastOrd
         FROM (SELECT
-          chain_events.key AS key,
-          chain_events.level AS level,
-          tupleElement(arrayFirst(x -> x.3 = 1, evs), 1) AS t1,
-          tupleElement(arrayFirst(x -> t1 > 0 AND x.4 = 1 AND x.1 >= t1 AND x.1 <= t1 + 604800000, evs), 1) AS t2,
-          tupleElement(arrayFirst(x -> t2 > 0 AND x.5 = 1 AND x.1 >= t2 AND x.1 <= t1 + 604800000, evs), 1) AS t3
+          walked.key AS key,
+          walked.level AS level,
+          if(level >= 1, arrayFirstIndex(x -> x.2 = 1 AND intDiv(x.1, 1048576) + 604800000 >= intDiv(reachedAt, 1048576), evs), 0) AS i1,
+          if(i1 > 0, tupleElement(arrayElement(evs, i1), 1), toUInt64(0)) AS o1,
+          if(level >= 2, arrayFirstIndex((x, i) -> x.3 = 1 AND i > i1, evs, arrayEnumerate(evs)), 0) AS i2,
+          if(i2 > 0, tupleElement(arrayElement(evs, i2), 1), toUInt64(0)) AS o2,
+          if(level >= 3, arrayFirstIndex((x, i) -> x.4 = 1 AND i > i2, evs, arrayEnumerate(evs)), 0) AS i3,
+          if(i3 > 0, tupleElement(arrayElement(evs, i3), 1), toUInt64(0)) AS o3
+        FROM (SELECT
+          person_events.key AS key,
+          person_events.evs AS evs,
+          arrayFill(v -> v > 0, arrayMap(x -> if(x.2 = 1, x.1, toUInt64(0)), evs)) AS a1,
+          arrayMap((x, p) -> if(x.3 = 1 AND p > 0 AND intDiv(x.1, 1048576) <= intDiv(p, 1048576) + 604800000, p, toUInt64(0)), evs, arrayPushFront(arrayPopBack(a1), toUInt64(0))) AS b2,
+          arrayFill(v -> v > 0, b2) AS a2,
+          arrayMap((x, p) -> if(x.4 = 1 AND p > 0 AND intDiv(x.1, 1048576) <= intDiv(p, 1048576) + 604800000, p, toUInt64(0)), evs, arrayPushFront(arrayPopBack(a2), toUInt64(0))) AS b3,
+          arrayFill(v -> v > 0, b3) AS a3,
+          arrayFirst(v -> v > 0, a1) AS f1,
+          tupleElement(arrayFirst((x, b) -> b > 0, evs, b2), 1) AS f2,
+          tupleElement(arrayFirst((x, b) -> b > 0, evs, b3), 1) AS f3,
+          toUInt8((f1 > 0) + (f2 > 0) + (f3 > 0)) AS level,
+          greatest(f1, f2, f3) AS reachedAt
         FROM (SELECT
           funnel_events.key AS key,
-          windowFunnel(604800000)(funnel_events.ts, funnel_events.s1 = 1, funnel_events.s2 = 1, funnel_events.s3 = 1) AS level,
-          arraySort(x -> (x.1, x.2), groupArray(tuple(ts, seq, s1, s2, s3))) AS evs
+          arraySort(x -> (x.1, 1 - x.2, 1 - x.3, 1 - x.4), groupArray(tuple(ord, s1, s2, s3))) AS evs
         FROM (SELECT
           e.VisitorId AS key,
-          toUInt64(toUnixTimestamp64Milli(e.Timestamp)) AS ts,
-          e.Seq AS seq,
-          toUInt8(((e.Kind = 'navigation' AND e.PagePath = '/pricing') AND e.Host = 'maple.dev')) AS s1,
+          plus(multiply(toUInt64(toUnixTimestamp64Milli(e.Timestamp)), 1048576), modulo(e.Seq, 1048576)) AS ord,
+          toUInt8(((e.Kind IN ('navigation', 'screen') AND e.PagePath = '/pricing') AND e.Host = 'maple.dev')) AS s1,
           toUInt8(e.EventName = 'signup_completed') AS s2,
           toUInt8((e.EventName = 'plan_started' AND e.Attributes['plan'] = 'startup')) AS s3
         FROM product_events AS e
         WHERE e.OrgId = 'org_sql_catalog'
           AND e.Timestamp >= '2026-01-01 10:30:00'
           AND e.Timestamp <= '2026-01-03 14:15:00'
-          AND (((e.Kind = 'navigation' AND e.PagePath = '/pricing') AND e.Host = 'maple.dev') OR e.EventName = 'signup_completed' OR (e.EventName = 'plan_started' AND e.Attributes['plan'] = 'startup'))
+          AND (((e.Kind IN ('navigation', 'screen') AND e.PagePath = '/pricing') AND e.Host = 'maple.dev') OR e.EventName = 'signup_completed' OR (e.EventName = 'plan_started' AND e.Attributes['plan'] = 'startup'))
           AND e.VisitorId != ''
           AND e.VisitorId IN (SELECT
           session_replays.VisitorId AS key
@@ -4888,30 +4893,89 @@ SELECT
           AND product_events.EventName = 'signup_started'
         GROUP BY sessionId)
         GROUP BY key)) AS funnel_events
-        GROUP BY key) AS chain_events) AS chain
+        GROUP BY key) AS person_events) AS walked) AS chain
         WHERE chain.level >= 1
-          AND chain.level < 3
-          AND arrayElement([t1, t2, t3], level) > 0) AS d ON e.key = d.key
+          AND chain.level < 3) AS d
+        LEFT JOIN (SELECT
+          e.VisitorId AS key,
+          plus(multiply(toUInt64(toUnixTimestamp64Milli(e.Timestamp)), 1048576), modulo(e.Seq, 1048576)) AS ord,
+          if((e.Kind IN ('navigation', 'screen') AND e.PagePath != ''), e.PagePath, e.EventName) AS name
+        FROM product_events AS e
+        WHERE e.OrgId = 'org_sql_catalog'
+          AND e.Timestamp >= '2026-01-01 10:30:00'
+          AND e.Timestamp <= '2026-01-03 14:15:00'
+          AND e.VisitorId != ''
+          AND e.VisitorId IN (SELECT
+          session_replays.VisitorId AS key
+        FROM session_replays
+        WHERE session_replays.OrgId = 'org_sql_catalog'
+          AND session_replays.StartTime >= '2026-01-01 10:30:00'
+          AND session_replays.StartTime <= '2026-01-03 14:15:00'
+          AND session_replays.SessionId IN (SELECT
+          product_events.SessionId AS sessionId
+        FROM product_events
+        WHERE product_events.OrgId = 'org_sql_catalog'
+          AND product_events.Timestamp >= '2026-01-01 10:30:00'
+          AND product_events.Timestamp <= '2026-01-03 14:15:00'
+          AND product_events.Kind = 'navigation'
+          AND product_events.Host = 'maple.dev'
+          AND product_events.PagePath = '/pricing'
+        GROUP BY sessionId)
+          AND session_replays.ReferrerHost = 't.co'
+          AND session_replays.Country = 'DE'
+          AND session_replays.DeviceType = 'desktop'
+          AND session_replays.BrowserName = 'Chrome'
+          AND session_replays.OsName = 'macOS'
+          AND session_replays.Language = 'en-US'
+          AND session_replays.UtmSource = 'twitter'
+          AND session_replays.UtmMedium = 'social'
+          AND session_replays.UtmCampaign = 'launch'
+          AND session_replays.VisitorIsNew = 1
+          AND session_replays.SessionId IN (SELECT
+          product_events.SessionId AS sessionId
+        FROM product_events
+        WHERE product_events.OrgId = 'org_sql_catalog'
+          AND product_events.Timestamp >= '2026-01-01 10:30:00'
+          AND product_events.Timestamp <= '2026-01-03 14:15:00'
+          AND product_events.Kind = 'custom'
+          AND product_events.EventName = 'signup_started'
+        GROUP BY sessionId)
+        GROUP BY key)) AS e ON d.key = e.key
         GROUP BY key, step) AS nexts
         GROUP BY step, next) AS counted
         GROUP BY step) AS ranked) AS hops
         ORDER BY step ASC, count DESC, next ASC
         FORMAT JSON
 
--- builder:product-events:productEventsFunnelQuery:person  [877c57db]
+-- builder:product-events:productEventsFunnelQuery:person  [3ef2759a]
 SELECT
           arrayJoin([1, 2, 3]) AS step,
           arrayElement(totals.counts, step) AS count
         FROM (SELECT
           [countIf(level >= 1), countIf(level >= 2), countIf(level >= 3)] AS counts
         FROM (SELECT
+          walked.key AS key,
+          walked.level AS level
+        FROM (SELECT
+          person_events.key AS key,
+          person_events.evs AS evs,
+          arrayFill(v -> v > 0, arrayMap(x -> if(x.2 = 1, x.1, toUInt64(0)), evs)) AS a1,
+          arrayMap((x, p) -> if(x.3 = 1 AND p > 0 AND intDiv(x.1, 1048576) <= intDiv(p, 1048576) + 604800000, p, toUInt64(0)), evs, arrayPushFront(arrayPopBack(a1), toUInt64(0))) AS b2,
+          arrayFill(v -> v > 0, b2) AS a2,
+          arrayMap((x, p) -> if(x.4 = 1 AND p > 0 AND intDiv(x.1, 1048576) <= intDiv(p, 1048576) + 604800000, p, toUInt64(0)), evs, arrayPushFront(arrayPopBack(a2), toUInt64(0))) AS b3,
+          arrayFill(v -> v > 0, b3) AS a3,
+          arrayFirst(v -> v > 0, a1) AS f1,
+          tupleElement(arrayFirst((x, b) -> b > 0, evs, b2), 1) AS f2,
+          tupleElement(arrayFirst((x, b) -> b > 0, evs, b3), 1) AS f3,
+          toUInt8((f1 > 0) + (f2 > 0) + (f3 > 0)) AS level,
+          greatest(f1, f2, f3) AS reachedAt
+        FROM (SELECT
           funnel_events.key AS key,
-          windowFunnel(604800000)(funnel_events.ts, funnel_events.s1 = 1, funnel_events.s2 = 1, funnel_events.s3 = 1) AS level
+          arraySort(x -> (x.1, 1 - x.2, 1 - x.3, 1 - x.4), groupArray(tuple(ord, s1, s2, s3))) AS evs
         FROM (SELECT
           multiIf(e.UserId != '', e.UserId, coalesce(link.UserId, '') != '', coalesce(link.UserId, ''), e.VisitorId) AS key,
-          toUInt64(toUnixTimestamp64Milli(e.Timestamp)) AS ts,
-          e.Seq AS seq,
-          toUInt8(((e.Kind = 'navigation' AND e.PagePath = '/pricing') AND e.Host = 'maple.dev')) AS s1,
+          plus(multiply(toUInt64(toUnixTimestamp64Milli(e.Timestamp)), 1048576), modulo(e.Seq, 1048576)) AS ord,
+          toUInt8(((e.Kind IN ('navigation', 'screen') AND e.PagePath = '/pricing') AND e.Host = 'maple.dev')) AS s1,
           toUInt8(e.EventName = 'signup_completed') AS s2,
           toUInt8((e.EventName = 'plan_started' AND e.Attributes['plan'] = 'startup')) AS s3
         FROM product_events AS e
@@ -4929,52 +4993,85 @@ SELECT
         WHERE e.OrgId = 'org_sql_catalog'
           AND e.Timestamp >= '2026-01-01 10:30:00'
           AND e.Timestamp <= '2026-01-03 14:15:00'
-          AND (((e.Kind = 'navigation' AND e.PagePath = '/pricing') AND e.Host = 'maple.dev') OR e.EventName = 'signup_completed' OR (e.EventName = 'plan_started' AND e.Attributes['plan'] = 'startup'))
+          AND (((e.Kind IN ('navigation', 'screen') AND e.PagePath = '/pricing') AND e.Host = 'maple.dev') OR e.EventName = 'signup_completed' OR (e.EventName = 'plan_started' AND e.Attributes['plan'] = 'startup'))
           AND multiIf(e.UserId != '', e.UserId, coalesce(link.UserId, '') != '', coalesce(link.UserId, ''), e.VisitorId) != '') AS funnel_events
-        GROUP BY key) AS levels) AS totals
+        GROUP BY key) AS person_events) AS walked) AS levels) AS totals
         ORDER BY step ASC
         FORMAT JSON
 
--- builder:product-events:productEventsFunnelQuery:session-key  [118d45ba]
+-- builder:product-events:productEventsFunnelQuery:session-key  [6abee1d1]
 SELECT
           arrayJoin([1, 2, 3]) AS step,
           arrayElement(totals.counts, step) AS count
         FROM (SELECT
           [countIf(level >= 1), countIf(level >= 2), countIf(level >= 3)] AS counts
         FROM (SELECT
+          walked.key AS key,
+          walked.level AS level
+        FROM (SELECT
+          person_events.key AS key,
+          person_events.evs AS evs,
+          arrayFill(v -> v > 0, arrayMap(x -> if(x.2 = 1, x.1, toUInt64(0)), evs)) AS a1,
+          arrayMap((x, p) -> if(x.3 = 1 AND p > 0 AND intDiv(x.1, 1048576) <= intDiv(p, 1048576) + 1800000, p, toUInt64(0)), evs, arrayPushFront(arrayPopBack(a1), toUInt64(0))) AS b2,
+          arrayFill(v -> v > 0, b2) AS a2,
+          arrayMap((x, p) -> if(x.4 = 1 AND p > 0 AND intDiv(x.1, 1048576) <= intDiv(p, 1048576) + 1800000, p, toUInt64(0)), evs, arrayPushFront(arrayPopBack(a2), toUInt64(0))) AS b3,
+          arrayFill(v -> v > 0, b3) AS a3,
+          arrayFirst(v -> v > 0, a1) AS f1,
+          tupleElement(arrayFirst((x, b) -> b > 0, evs, b2), 1) AS f2,
+          tupleElement(arrayFirst((x, b) -> b > 0, evs, b3), 1) AS f3,
+          toUInt8((f1 > 0) + (f2 > 0) + (f3 > 0)) AS level,
+          greatest(f1, f2, f3) AS reachedAt
+        FROM (SELECT
           funnel_events.key AS key,
-          windowFunnel(1800000)(funnel_events.ts, funnel_events.s1 = 1, funnel_events.s2 = 1, funnel_events.s3 = 1) AS level
+          arraySort(x -> (x.1, 1 - x.2, 1 - x.3, 1 - x.4), groupArray(tuple(ord, s1, s2, s3))) AS evs
         FROM (SELECT
           e.SessionId AS key,
-          toUInt64(toUnixTimestamp64Milli(e.Timestamp)) AS ts,
-          e.Seq AS seq,
-          toUInt8(((e.Kind = 'navigation' AND e.PagePath = '/pricing') AND e.Host = 'maple.dev')) AS s1,
+          plus(multiply(toUInt64(toUnixTimestamp64Milli(e.Timestamp)), 1048576), modulo(e.Seq, 1048576)) AS ord,
+          toUInt8(((e.Kind IN ('navigation', 'screen') AND e.PagePath = '/pricing') AND e.Host = 'maple.dev')) AS s1,
           toUInt8(e.EventName = 'signup_completed') AS s2,
           toUInt8((e.EventName = 'plan_started' AND e.Attributes['plan'] = 'startup')) AS s3
         FROM product_events AS e
         WHERE e.OrgId = 'org_sql_catalog'
           AND e.Timestamp >= '2026-01-01 10:30:00'
           AND e.Timestamp <= '2026-01-03 14:15:00'
-          AND (((e.Kind = 'navigation' AND e.PagePath = '/pricing') AND e.Host = 'maple.dev') OR e.EventName = 'signup_completed' OR (e.EventName = 'plan_started' AND e.Attributes['plan'] = 'startup'))
+          AND (((e.Kind IN ('navigation', 'screen') AND e.PagePath = '/pricing') AND e.Host = 'maple.dev') OR e.EventName = 'signup_completed' OR (e.EventName = 'plan_started' AND e.Attributes['plan'] = 'startup'))
           AND e.SessionId != '') AS funnel_events
-        GROUP BY key) AS levels) AS totals
+        GROUP BY key) AS person_events) AS walked) AS levels) AS totals
         ORDER BY step ASC
         FORMAT JSON
 
--- builder:product-events:productEventsFunnelQuery:session-step-filtered  [7bae7ef8]
+-- builder:product-events:productEventsFunnelQuery:session-step-filtered  [a221d533]
 SELECT
           arrayJoin([1, 2, 3, 4]) AS step,
           arrayElement(totals.counts, step) AS count
         FROM (SELECT
           [countIf(level >= 1), countIf(level >= 2), countIf(level >= 3), countIf(level >= 4)] AS counts
         FROM (SELECT
+          walked.key AS key,
+          walked.level AS level
+        FROM (SELECT
+          person_events.key AS key,
+          person_events.evs AS evs,
+          arrayFill(v -> v > 0, arrayMap(x -> if(x.2 = 1, x.1, toUInt64(0)), evs)) AS a1,
+          arrayMap((x, p) -> if(x.3 = 1 AND p > 0 AND intDiv(x.1, 1048576) <= intDiv(p, 1048576) + 604800000, p, toUInt64(0)), evs, arrayPushFront(arrayPopBack(a1), toUInt64(0))) AS b2,
+          arrayFill(v -> v > 0, b2) AS a2,
+          arrayMap((x, p) -> if(x.4 = 1 AND p > 0 AND intDiv(x.1, 1048576) <= intDiv(p, 1048576) + 604800000, p, toUInt64(0)), evs, arrayPushFront(arrayPopBack(a2), toUInt64(0))) AS b3,
+          arrayFill(v -> v > 0, b3) AS a3,
+          arrayMap((x, p) -> if(x.5 = 1 AND p > 0 AND intDiv(x.1, 1048576) <= intDiv(p, 1048576) + 604800000, p, toUInt64(0)), evs, arrayPushFront(arrayPopBack(a3), toUInt64(0))) AS b4,
+          arrayFill(v -> v > 0, b4) AS a4,
+          arrayFirst(v -> v > 0, a1) AS f1,
+          tupleElement(arrayFirst((x, b) -> b > 0, evs, b2), 1) AS f2,
+          tupleElement(arrayFirst((x, b) -> b > 0, evs, b3), 1) AS f3,
+          tupleElement(arrayFirst((x, b) -> b > 0, evs, b4), 1) AS f4,
+          toUInt8((f1 > 0) + (f2 > 0) + (f3 > 0) + (f4 > 0)) AS level,
+          greatest(f1, f2, f3, f4) AS reachedAt
+        FROM (SELECT
           funnel_events.key AS key,
-          windowFunnel(604800000)(funnel_events.ts, funnel_events.s1 = 1, funnel_events.s2 = 1, funnel_events.s3 = 1, funnel_events.s4 = 1) AS level
+          arraySort(x -> (x.1, 1 - x.2, 1 - x.3, 1 - x.4, 1 - x.5), groupArray(tuple(ord, s1, s2, s3, s4))) AS evs
         FROM (
 SELECT
           multiIf(s.UserId != '', s.UserId, coalesce(link.UserId, '') != '', coalesce(link.UserId, ''), s.VisitorId) AS key,
-          toUInt64(toUnixTimestamp64Milli(s.StartTime)) AS ts,
-          0 AS seq,
+          plus(multiply(toUInt64(toUnixTimestamp64Milli(s.StartTime)), 1048576), modulo(0, 1048576)) AS ord,
           1 AS s1,
           0 AS s2,
           0 AS s3,
@@ -5046,10 +5143,9 @@ SELECT
 UNION ALL
 SELECT
           multiIf(e.UserId != '', e.UserId, coalesce(link.UserId, '') != '', coalesce(link.UserId, ''), e.VisitorId) AS key,
-          toUInt64(toUnixTimestamp64Milli(e.Timestamp)) AS ts,
-          e.Seq AS seq,
+          plus(multiply(toUInt64(toUnixTimestamp64Milli(e.Timestamp)), 1048576), modulo(e.Seq, 1048576)) AS ord,
           0 AS s1,
-          toUInt8(((e.Kind = 'navigation' AND e.PagePath = '/pricing') AND e.Host = 'maple.dev')) AS s2,
+          toUInt8(((e.Kind IN ('navigation', 'screen') AND e.PagePath = '/pricing') AND e.Host = 'maple.dev')) AS s2,
           toUInt8(e.EventName = 'signup_completed') AS s3,
           toUInt8((e.EventName = 'plan_started' AND e.Attributes['plan'] = 'startup')) AS s4
         FROM product_events AS e
@@ -5067,7 +5163,7 @@ SELECT
         WHERE e.OrgId = 'org_sql_catalog'
           AND e.Timestamp >= '2026-01-01 10:30:00'
           AND e.Timestamp <= '2026-01-03 14:15:00'
-          AND (((e.Kind = 'navigation' AND e.PagePath = '/pricing') AND e.Host = 'maple.dev') OR e.EventName = 'signup_completed' OR (e.EventName = 'plan_started' AND e.Attributes['plan'] = 'startup'))
+          AND (((e.Kind IN ('navigation', 'screen') AND e.PagePath = '/pricing') AND e.Host = 'maple.dev') OR e.EventName = 'signup_completed' OR (e.EventName = 'plan_started' AND e.Attributes['plan'] = 'startup'))
           AND multiIf(e.UserId != '', e.UserId, coalesce(link.UserId, '') != '', coalesce(link.UserId, ''), e.VisitorId) != ''
           AND multiIf(e.UserId != '', e.UserId, coalesce(link.UserId, '') != '', coalesce(link.UserId, ''), e.VisitorId) IN (SELECT
           multiIf(s.UserId != '', s.UserId, coalesce(link.UserId, '') != '', coalesce(link.UserId, ''), s.VisitorId) AS key
@@ -5117,24 +5213,42 @@ SELECT
         GROUP BY sessionId)
         GROUP BY key)
 ) AS funnel_events
-        GROUP BY key) AS levels) AS totals
+        GROUP BY key) AS person_events) AS walked) AS levels) AS totals
         ORDER BY step ASC
         FORMAT JSON
 
--- builder:product-events:productEventsFunnelQuery:visitor-session-step  [59b281c2]
+-- builder:product-events:productEventsFunnelQuery:visitor-session-step  [81721d45]
 SELECT
           arrayJoin([1, 2, 3, 4]) AS step,
           arrayElement(totals.counts, step) AS count
         FROM (SELECT
           [countIf(level >= 1), countIf(level >= 2), countIf(level >= 3), countIf(level >= 4)] AS counts
         FROM (SELECT
+          walked.key AS key,
+          walked.level AS level
+        FROM (SELECT
+          person_events.key AS key,
+          person_events.evs AS evs,
+          arrayFill(v -> v > 0, arrayMap(x -> if(x.2 = 1, x.1, toUInt64(0)), evs)) AS a1,
+          arrayMap((x, p) -> if(x.3 = 1 AND p > 0 AND intDiv(x.1, 1048576) <= intDiv(p, 1048576) + 3600000, p, toUInt64(0)), evs, arrayPushFront(arrayPopBack(a1), toUInt64(0))) AS b2,
+          arrayFill(v -> v > 0, b2) AS a2,
+          arrayMap((x, p) -> if(x.4 = 1 AND p > 0 AND intDiv(x.1, 1048576) <= intDiv(p, 1048576) + 3600000, p, toUInt64(0)), evs, arrayPushFront(arrayPopBack(a2), toUInt64(0))) AS b3,
+          arrayFill(v -> v > 0, b3) AS a3,
+          arrayMap((x, p) -> if(x.5 = 1 AND p > 0 AND intDiv(x.1, 1048576) <= intDiv(p, 1048576) + 3600000, p, toUInt64(0)), evs, arrayPushFront(arrayPopBack(a3), toUInt64(0))) AS b4,
+          arrayFill(v -> v > 0, b4) AS a4,
+          arrayFirst(v -> v > 0, a1) AS f1,
+          tupleElement(arrayFirst((x, b) -> b > 0, evs, b2), 1) AS f2,
+          tupleElement(arrayFirst((x, b) -> b > 0, evs, b3), 1) AS f3,
+          tupleElement(arrayFirst((x, b) -> b > 0, evs, b4), 1) AS f4,
+          toUInt8((f1 > 0) + (f2 > 0) + (f3 > 0) + (f4 > 0)) AS level,
+          greatest(f1, f2, f3, f4) AS reachedAt
+        FROM (SELECT
           funnel_events.key AS key,
-          windowFunnel(3600000)(funnel_events.ts, funnel_events.s1 = 1, funnel_events.s2 = 1, funnel_events.s3 = 1, funnel_events.s4 = 1) AS level
+          arraySort(x -> (x.1, 1 - x.2, 1 - x.3, 1 - x.4, 1 - x.5), groupArray(tuple(ord, s1, s2, s3, s4))) AS evs
         FROM (
 SELECT
           s.VisitorId AS key,
-          toUInt64(toUnixTimestamp64Milli(s.StartTime)) AS ts,
-          0 AS seq,
+          plus(multiply(toUInt64(toUnixTimestamp64Milli(s.StartTime)), 1048576), modulo(0, 1048576)) AS ord,
           1 AS s1,
           0 AS s2,
           0 AS s3,
@@ -5148,46 +5262,63 @@ SELECT
 UNION ALL
 SELECT
           e.VisitorId AS key,
-          toUInt64(toUnixTimestamp64Milli(e.Timestamp)) AS ts,
-          e.Seq AS seq,
+          plus(multiply(toUInt64(toUnixTimestamp64Milli(e.Timestamp)), 1048576), modulo(e.Seq, 1048576)) AS ord,
           0 AS s1,
-          toUInt8(((e.Kind = 'navigation' AND e.PagePath = '/pricing') AND e.Host = 'maple.dev')) AS s2,
+          toUInt8(((e.Kind IN ('navigation', 'screen') AND e.PagePath = '/pricing') AND e.Host = 'maple.dev')) AS s2,
           toUInt8(e.EventName = 'signup_completed') AS s3,
           toUInt8((e.EventName = 'plan_started' AND e.Attributes['plan'] = 'startup')) AS s4
         FROM product_events AS e
         WHERE e.OrgId = 'org_sql_catalog'
           AND e.Timestamp >= '2026-01-01 10:30:00'
           AND e.Timestamp <= '2026-01-03 14:15:00'
-          AND (((e.Kind = 'navigation' AND e.PagePath = '/pricing') AND e.Host = 'maple.dev') OR e.EventName = 'signup_completed' OR (e.EventName = 'plan_started' AND e.Attributes['plan'] = 'startup'))
+          AND (((e.Kind IN ('navigation', 'screen') AND e.PagePath = '/pricing') AND e.Host = 'maple.dev') OR e.EventName = 'signup_completed' OR (e.EventName = 'plan_started' AND e.Attributes['plan'] = 'startup'))
           AND e.VisitorId != ''
 ) AS funnel_events
-        GROUP BY key) AS levels) AS totals
+        GROUP BY key) AS person_events) AS walked) AS levels) AS totals
         ORDER BY step ASC
         FORMAT JSON
 
--- builder:product-events:productEventsFunnelTimingQuery:person  [82b59764]
+-- builder:product-events:productEventsFunnelTimingQuery:person  [746bb43e]
 SELECT
           arrayJoin([2, 3]) AS step,
           arrayElement(totals.p50s, step) AS p50Ms,
-          arrayElement(totals.p90s, step) AS p90Ms
+          arrayElement(totals.p90s, step) AS p90Ms,
+          arrayElement(totals.start50s, step) AS sinceStartP50Ms,
+          arrayElement(totals.start90s, step) AS sinceStartP90Ms
         FROM (SELECT
-          [0, ifNotFinite(quantileIf(0.5)(toFloat64(t2 - t1), level >= 2 AND t2 > 0), 0), ifNotFinite(quantileIf(0.5)(toFloat64(t3 - t2), level >= 3 AND t3 > 0), 0)] AS p50s,
-          [0, ifNotFinite(quantileIf(0.9)(toFloat64(t2 - t1), level >= 2 AND t2 > 0), 0), ifNotFinite(quantileIf(0.9)(toFloat64(t3 - t2), level >= 3 AND t3 > 0), 0)] AS p90s
+          [0, ifNotFinite(quantileIf(0.5)(toFloat64(intDiv(o2, 1048576) - intDiv(o1, 1048576)), level >= 2), 0), ifNotFinite(quantileIf(0.5)(toFloat64(intDiv(o3, 1048576) - intDiv(o2, 1048576)), level >= 3), 0)] AS p50s,
+          [0, ifNotFinite(quantileIf(0.9)(toFloat64(intDiv(o2, 1048576) - intDiv(o1, 1048576)), level >= 2), 0), ifNotFinite(quantileIf(0.9)(toFloat64(intDiv(o3, 1048576) - intDiv(o2, 1048576)), level >= 3), 0)] AS p90s,
+          [0, ifNotFinite(quantileIf(0.5)(toFloat64(intDiv(o2, 1048576) - intDiv(o1, 1048576)), level >= 2), 0), ifNotFinite(quantileIf(0.5)(toFloat64(intDiv(o3, 1048576) - intDiv(o1, 1048576)), level >= 3), 0)] AS start50s,
+          [0, ifNotFinite(quantileIf(0.9)(toFloat64(intDiv(o2, 1048576) - intDiv(o1, 1048576)), level >= 2), 0), ifNotFinite(quantileIf(0.9)(toFloat64(intDiv(o3, 1048576) - intDiv(o1, 1048576)), level >= 3), 0)] AS start90s
         FROM (SELECT
-          chain_events.key AS key,
-          chain_events.level AS level,
-          tupleElement(arrayFirst(x -> x.3 = 1, evs), 1) AS t1,
-          tupleElement(arrayFirst(x -> t1 > 0 AND x.4 = 1 AND x.1 >= t1 AND x.1 <= t1 + 604800000, evs), 1) AS t2,
-          tupleElement(arrayFirst(x -> t2 > 0 AND x.5 = 1 AND x.1 >= t2 AND x.1 <= t1 + 604800000, evs), 1) AS t3
+          walked.key AS key,
+          walked.level AS level,
+          if(level >= 1, arrayFirstIndex(x -> x.2 = 1 AND intDiv(x.1, 1048576) + 604800000 >= intDiv(reachedAt, 1048576), evs), 0) AS i1,
+          if(i1 > 0, tupleElement(arrayElement(evs, i1), 1), toUInt64(0)) AS o1,
+          if(level >= 2, arrayFirstIndex((x, i) -> x.3 = 1 AND i > i1, evs, arrayEnumerate(evs)), 0) AS i2,
+          if(i2 > 0, tupleElement(arrayElement(evs, i2), 1), toUInt64(0)) AS o2,
+          if(level >= 3, arrayFirstIndex((x, i) -> x.4 = 1 AND i > i2, evs, arrayEnumerate(evs)), 0) AS i3,
+          if(i3 > 0, tupleElement(arrayElement(evs, i3), 1), toUInt64(0)) AS o3
+        FROM (SELECT
+          person_events.key AS key,
+          person_events.evs AS evs,
+          arrayFill(v -> v > 0, arrayMap(x -> if(x.2 = 1, x.1, toUInt64(0)), evs)) AS a1,
+          arrayMap((x, p) -> if(x.3 = 1 AND p > 0 AND intDiv(x.1, 1048576) <= intDiv(p, 1048576) + 604800000, p, toUInt64(0)), evs, arrayPushFront(arrayPopBack(a1), toUInt64(0))) AS b2,
+          arrayFill(v -> v > 0, b2) AS a2,
+          arrayMap((x, p) -> if(x.4 = 1 AND p > 0 AND intDiv(x.1, 1048576) <= intDiv(p, 1048576) + 604800000, p, toUInt64(0)), evs, arrayPushFront(arrayPopBack(a2), toUInt64(0))) AS b3,
+          arrayFill(v -> v > 0, b3) AS a3,
+          arrayFirst(v -> v > 0, a1) AS f1,
+          tupleElement(arrayFirst((x, b) -> b > 0, evs, b2), 1) AS f2,
+          tupleElement(arrayFirst((x, b) -> b > 0, evs, b3), 1) AS f3,
+          toUInt8((f1 > 0) + (f2 > 0) + (f3 > 0)) AS level,
+          greatest(f1, f2, f3) AS reachedAt
         FROM (SELECT
           funnel_events.key AS key,
-          windowFunnel(604800000)(funnel_events.ts, funnel_events.s1 = 1, funnel_events.s2 = 1, funnel_events.s3 = 1) AS level,
-          arraySort(x -> (x.1, x.2), groupArray(tuple(ts, seq, s1, s2, s3))) AS evs
+          arraySort(x -> (x.1, 1 - x.2, 1 - x.3, 1 - x.4), groupArray(tuple(ord, s1, s2, s3))) AS evs
         FROM (SELECT
           multiIf(e.UserId != '', e.UserId, coalesce(link.UserId, '') != '', coalesce(link.UserId, ''), e.VisitorId) AS key,
-          toUInt64(toUnixTimestamp64Milli(e.Timestamp)) AS ts,
-          e.Seq AS seq,
-          toUInt8(((e.Kind = 'navigation' AND e.PagePath = '/pricing') AND e.Host = 'maple.dev')) AS s1,
+          plus(multiply(toUInt64(toUnixTimestamp64Milli(e.Timestamp)), 1048576), modulo(e.Seq, 1048576)) AS ord,
+          toUInt8(((e.Kind IN ('navigation', 'screen') AND e.PagePath = '/pricing') AND e.Host = 'maple.dev')) AS s1,
           toUInt8(e.EventName = 'signup_completed') AS s2,
           toUInt8((e.EventName = 'plan_started' AND e.Attributes['plan'] = 'startup')) AS s3
         FROM product_events AS e
@@ -5205,9 +5336,9 @@ SELECT
         WHERE e.OrgId = 'org_sql_catalog'
           AND e.Timestamp >= '2026-01-01 10:30:00'
           AND e.Timestamp <= '2026-01-03 14:15:00'
-          AND (((e.Kind = 'navigation' AND e.PagePath = '/pricing') AND e.Host = 'maple.dev') OR e.EventName = 'signup_completed' OR (e.EventName = 'plan_started' AND e.Attributes['plan'] = 'startup'))
+          AND (((e.Kind IN ('navigation', 'screen') AND e.PagePath = '/pricing') AND e.Host = 'maple.dev') OR e.EventName = 'signup_completed' OR (e.EventName = 'plan_started' AND e.Attributes['plan'] = 'startup'))
           AND multiIf(e.UserId != '', e.UserId, coalesce(link.UserId, '') != '', coalesce(link.UserId, ''), e.VisitorId) != '') AS funnel_events
-        GROUP BY key) AS chain_events) AS chain) AS totals
+        GROUP BY key) AS person_events) AS walked) AS chain) AS totals
         ORDER BY step ASC
         FORMAT JSON
 
@@ -11350,35 +11481,21 @@ SELECT
         LIMIT 50
         FORMAT JSON
 
--- builder:users:usersFacetsQuery:default  [c8c283ee]
+-- builder:users:usersFacetsQuery:default  [ff0a2c7e]
 SELECT
-          signals.namespace AS name,
-          uniqExact(signals.userId) AS count,
+          rows.namespace AS name,
+          uniq(rows.userId) AS count,
           'namespace' AS facetType
         FROM (
 SELECT
           sessions.userId AS userId,
-          argMax(sessions.userName, if(sessions.userName != '', toFloat64(sessions.lastActivity), 0)) AS name,
-          argMax(sessions.userEmail, if(sessions.userEmail != '', toFloat64(sessions.lastActivity), 0)) AS email,
-          argMax(sessions.groupId, if(sessions.groupId != '', toFloat64(sessions.lastActivity), 0)) AS groupId,
+          sessions.userName AS name,
+          sessions.userEmail AS email,
           transform(sessions.serviceName, ['storefront-web', 'maple-ai'], ['storefront', 'platform'], '') AS namespace,
-          min(sessions.startTime) AS firstSeen,
-          max(sessions.lastActivity) AS lastSeen,
-          count() AS sessions,
-          toUInt64(sum(sessions.errors)) AS errors,
-          toUInt64(0) AS requests,
-          toUInt64(0) AS mcpSpans,
-          toUInt64(0) AS events,
-          toUInt64(0) AS spans,
-          toUInt64(0) AS logLines,
-          toUInt64(0) AS classifiedRequests,
-          toUInt64(0) AS mcpRequests,
-          toUInt64(0) AS webRequests,
-          toUInt64(0) AS mobileRequests,
-          groupUniqArrayIf(20)(sessions.groupId, sessions.groupId != '') AS groupIds,
-          toFloat64(maxIf(toFloat64(sessions.lastActivity), sessions.userName != '')) AS nameAt,
-          toFloat64(maxIf(toFloat64(sessions.lastActivity), sessions.userEmail != '')) AS emailAt,
-          toFloat64(maxIf(toFloat64(sessions.lastActivity), sessions.groupId != '')) AS groupAt
+          sessions.lastActivity AS at,
+          toUInt64(1) AS sessions,
+          toUInt64(sessions.errors) AS errors,
+          if(notEmpty(sessions.groupId), [sessions.groupId], CAST([], 'Array(String)')) AS groupIds
         FROM (SELECT
           session_replays.SessionId AS sessionId,
           argMax(session_replays.UserId, session_replays.Version) AS userId,
@@ -11395,61 +11512,31 @@ SELECT
           AND session_replays.StartTime <= '2026-01-03 14:15:00'
         GROUP BY sessionId) AS sessions
         WHERE sessions.userId != ''
-        GROUP BY userId, namespace
 UNION ALL
 SELECT
           product_events.UserId AS userId,
           '' AS name,
           '' AS email,
-          argMax(product_events.GroupId, if(product_events.GroupId != '', toFloat64(product_events.Timestamp), 0)) AS groupId,
           transform(product_events.ServiceName, ['storefront-web', 'maple-ai'], ['storefront', 'platform'], '') AS namespace,
-          min(product_events.Timestamp) AS firstSeen,
-          max(product_events.Timestamp) AS lastSeen,
+          product_events.Timestamp AS at,
           toUInt64(0) AS sessions,
           toUInt64(0) AS errors,
-          toUInt64(0) AS requests,
-          toUInt64(0) AS mcpSpans,
-          count() AS events,
-          toUInt64(0) AS spans,
-          toUInt64(0) AS logLines,
-          toUInt64(0) AS classifiedRequests,
-          toUInt64(0) AS mcpRequests,
-          toUInt64(0) AS webRequests,
-          toUInt64(0) AS mobileRequests,
-          groupUniqArrayIf(20)(product_events.GroupId, product_events.GroupId != '') AS groupIds,
-          toFloat64(0) AS nameAt,
-          toFloat64(0) AS emailAt,
-          toFloat64(maxIf(toFloat64(product_events.Timestamp), product_events.GroupId != '')) AS groupAt
+          if(notEmpty(product_events.GroupId), [product_events.GroupId], CAST([], 'Array(String)')) AS groupIds
         FROM product_events
         WHERE product_events.OrgId = 'org_sql_catalog'
           AND product_events.Timestamp >= '2026-01-01 10:30:00'
           AND product_events.Timestamp <= '2026-01-03 14:15:00'
           AND product_events.UserId != ''
-        GROUP BY userId, namespace
 UNION ALL
 SELECT
           if(traces.SpanAttributes['user.id'] != '', traces.SpanAttributes['user.id'], traces.SpanAttributes['enduser.id']) AS userId,
-          argMax(traces.SpanAttributes['user.name'], if(traces.SpanAttributes['user.name'] != '', toFloat64(traces.Timestamp), 0)) AS name,
-          argMax(traces.SpanAttributes['user.email'], if(traces.SpanAttributes['user.email'] != '', toFloat64(traces.Timestamp), 0)) AS email,
-          '' AS groupId,
+          traces.SpanAttributes['user.name'] AS name,
+          traces.SpanAttributes['user.email'] AS email,
           traces.ResourceAttributes['service.namespace'] AS namespace,
-          min(traces.Timestamp) AS firstSeen,
-          max(traces.Timestamp) AS lastSeen,
+          traces.Timestamp AS at,
           toUInt64(0) AS sessions,
           toUInt64(0) AS errors,
-          countIf(traces.SpanAttributes['mcp.method.name'] = 'tools/call') AS requests,
-          count() AS mcpSpans,
-          toUInt64(0) AS events,
-          toUInt64(0) AS spans,
-          toUInt64(0) AS logLines,
-          toUInt64(countIf(traces.SpanAttributes['mcp.method.name'] = 'tools/call')) AS classifiedRequests,
-          toUInt64(countIf(traces.SpanAttributes['mcp.method.name'] = 'tools/call')) AS mcpRequests,
-          toUInt64(0) AS webRequests,
-          toUInt64(0) AS mobileRequests,
-          CAST([], 'Array(String)') AS groupIds,
-          toFloat64(maxIf(toFloat64(traces.Timestamp), traces.SpanAttributes['user.name'] != '')) AS nameAt,
-          toFloat64(maxIf(toFloat64(traces.Timestamp), traces.SpanAttributes['user.email'] != '')) AS emailAt,
-          toFloat64(0) AS groupAt
+          CAST([], 'Array(String)') AS groupIds
         FROM traces
         WHERE traces.OrgId = 'org_sql_catalog'
           AND traces.Timestamp >= '2026-01-01 10:30:00'
@@ -11458,41 +11545,26 @@ SELECT
           AND traces.ServiceName IN ('maple-ai')
           AND traces.SpanAttributes['mcp.method.name'] != ''
           AND if(traces.SpanAttributes['user.id'] != '', traces.SpanAttributes['user.id'], traces.SpanAttributes['enduser.id']) != ''
-        GROUP BY userId, namespace
-) AS signals
-        WHERE signals.namespace != ''
+) AS rows
+        WHERE rows.namespace != ''
         GROUP BY name
         ORDER BY count DESC
         LIMIT 50
 UNION ALL
 SELECT
-          arrayJoin(signals.groupIds) AS name,
-          uniqExact(signals.userId) AS count,
+          arrayJoin(rows.groupIds) AS name,
+          uniq(rows.userId) AS count,
           'group' AS facetType
         FROM (
 SELECT
           sessions.userId AS userId,
-          argMax(sessions.userName, if(sessions.userName != '', toFloat64(sessions.lastActivity), 0)) AS name,
-          argMax(sessions.userEmail, if(sessions.userEmail != '', toFloat64(sessions.lastActivity), 0)) AS email,
-          argMax(sessions.groupId, if(sessions.groupId != '', toFloat64(sessions.lastActivity), 0)) AS groupId,
+          sessions.userName AS name,
+          sessions.userEmail AS email,
           transform(sessions.serviceName, ['storefront-web', 'maple-ai'], ['storefront', 'platform'], '') AS namespace,
-          min(sessions.startTime) AS firstSeen,
-          max(sessions.lastActivity) AS lastSeen,
-          count() AS sessions,
-          toUInt64(sum(sessions.errors)) AS errors,
-          toUInt64(0) AS requests,
-          toUInt64(0) AS mcpSpans,
-          toUInt64(0) AS events,
-          toUInt64(0) AS spans,
-          toUInt64(0) AS logLines,
-          toUInt64(0) AS classifiedRequests,
-          toUInt64(0) AS mcpRequests,
-          toUInt64(0) AS webRequests,
-          toUInt64(0) AS mobileRequests,
-          groupUniqArrayIf(20)(sessions.groupId, sessions.groupId != '') AS groupIds,
-          toFloat64(maxIf(toFloat64(sessions.lastActivity), sessions.userName != '')) AS nameAt,
-          toFloat64(maxIf(toFloat64(sessions.lastActivity), sessions.userEmail != '')) AS emailAt,
-          toFloat64(maxIf(toFloat64(sessions.lastActivity), sessions.groupId != '')) AS groupAt
+          sessions.lastActivity AS at,
+          toUInt64(1) AS sessions,
+          toUInt64(sessions.errors) AS errors,
+          if(notEmpty(sessions.groupId), [sessions.groupId], CAST([], 'Array(String)')) AS groupIds
         FROM (SELECT
           session_replays.SessionId AS sessionId,
           argMax(session_replays.UserId, session_replays.Version) AS userId,
@@ -11510,31 +11582,16 @@ SELECT
           AND session_replays.ServiceName IN ('storefront-web')
         GROUP BY sessionId) AS sessions
         WHERE sessions.userId != ''
-        GROUP BY userId, namespace
 UNION ALL
 SELECT
           product_events.UserId AS userId,
           '' AS name,
           '' AS email,
-          argMax(product_events.GroupId, if(product_events.GroupId != '', toFloat64(product_events.Timestamp), 0)) AS groupId,
           transform(product_events.ServiceName, ['storefront-web', 'maple-ai'], ['storefront', 'platform'], '') AS namespace,
-          min(product_events.Timestamp) AS firstSeen,
-          max(product_events.Timestamp) AS lastSeen,
+          product_events.Timestamp AS at,
           toUInt64(0) AS sessions,
           toUInt64(0) AS errors,
-          toUInt64(0) AS requests,
-          toUInt64(0) AS mcpSpans,
-          count() AS events,
-          toUInt64(0) AS spans,
-          toUInt64(0) AS logLines,
-          toUInt64(0) AS classifiedRequests,
-          toUInt64(0) AS mcpRequests,
-          toUInt64(0) AS webRequests,
-          toUInt64(0) AS mobileRequests,
-          groupUniqArrayIf(20)(product_events.GroupId, product_events.GroupId != '') AS groupIds,
-          toFloat64(0) AS nameAt,
-          toFloat64(0) AS emailAt,
-          toFloat64(maxIf(toFloat64(product_events.Timestamp), product_events.GroupId != '')) AS groupAt
+          if(notEmpty(product_events.GroupId), [product_events.GroupId], CAST([], 'Array(String)')) AS groupIds
         FROM product_events
         WHERE product_events.OrgId = 'org_sql_catalog'
           AND product_events.Timestamp >= '2026-01-01 10:30:00'
@@ -11549,76 +11606,27 @@ SELECT
           AND ifNull(session_replays.LastActivityAt, session_replays.StartTime) >= '2026-01-01 10:30:00'
           AND session_replays.ServiceName IN ('storefront-web')
         GROUP BY sessionId)))
-        GROUP BY userId, namespace
-UNION ALL
-SELECT
-          if(traces.SpanAttributes['user.id'] != '', traces.SpanAttributes['user.id'], traces.SpanAttributes['enduser.id']) AS userId,
-          argMax(traces.SpanAttributes['user.name'], if(traces.SpanAttributes['user.name'] != '', toFloat64(traces.Timestamp), 0)) AS name,
-          argMax(traces.SpanAttributes['user.email'], if(traces.SpanAttributes['user.email'] != '', toFloat64(traces.Timestamp), 0)) AS email,
-          '' AS groupId,
-          traces.ResourceAttributes['service.namespace'] AS namespace,
-          min(traces.Timestamp) AS firstSeen,
-          max(traces.Timestamp) AS lastSeen,
-          toUInt64(0) AS sessions,
-          toUInt64(0) AS errors,
-          countIf(traces.SpanAttributes['mcp.method.name'] = 'tools/call') AS requests,
-          count() AS mcpSpans,
-          toUInt64(0) AS events,
-          toUInt64(0) AS spans,
-          toUInt64(0) AS logLines,
-          toUInt64(countIf(traces.SpanAttributes['mcp.method.name'] = 'tools/call')) AS classifiedRequests,
-          toUInt64(countIf(traces.SpanAttributes['mcp.method.name'] = 'tools/call')) AS mcpRequests,
-          toUInt64(0) AS webRequests,
-          toUInt64(0) AS mobileRequests,
-          CAST([], 'Array(String)') AS groupIds,
-          toFloat64(maxIf(toFloat64(traces.Timestamp), traces.SpanAttributes['user.name'] != '')) AS nameAt,
-          toFloat64(maxIf(toFloat64(traces.Timestamp), traces.SpanAttributes['user.email'] != '')) AS emailAt,
-          toFloat64(0) AS groupAt
-        FROM traces
-        WHERE traces.OrgId = 'org_sql_catalog'
-          AND traces.Timestamp >= '2026-01-01 10:30:00'
-          AND traces.Timestamp <= '2026-01-03 14:15:00'
-          AND traces.SpanKind = 'Server'
-          AND traces.ServiceName IN ('maple-ai')
-          AND traces.SpanAttributes['mcp.method.name'] != ''
-          AND if(traces.SpanAttributes['user.id'] != '', traces.SpanAttributes['user.id'], traces.SpanAttributes['enduser.id']) != ''
-          AND traces.ResourceAttributes['service.namespace'] IN ('storefront')
-        GROUP BY userId, namespace
-) AS signals
+) AS rows
         GROUP BY name
         ORDER BY count DESC
         LIMIT 50
 FORMAT JSON
 
--- builder:users:usersFacetsQuery:pinned  [e2850b12]
+-- builder:users:usersFacetsQuery:pinned  [68d54a68]
 SELECT
-          arrayJoin(signals.groupIds) AS name,
-          uniqExact(signals.userId) AS count,
+          arrayJoin(rows.groupIds) AS name,
+          uniq(rows.userId) AS count,
           'group' AS facetType
         FROM (
 SELECT
           sessions.userId AS userId,
-          argMax(sessions.userName, if(sessions.userName != '', toFloat64(sessions.lastActivity), 0)) AS name,
-          argMax(sessions.userEmail, if(sessions.userEmail != '', toFloat64(sessions.lastActivity), 0)) AS email,
-          argMax(sessions.groupId, if(sessions.groupId != '', toFloat64(sessions.lastActivity), 0)) AS groupId,
+          sessions.userName AS name,
+          sessions.userEmail AS email,
           transform(sessions.serviceName, ['storefront-web', 'maple-ai'], ['storefront', 'platform'], '') AS namespace,
-          min(sessions.startTime) AS firstSeen,
-          max(sessions.lastActivity) AS lastSeen,
-          count() AS sessions,
-          toUInt64(sum(sessions.errors)) AS errors,
-          toUInt64(0) AS requests,
-          toUInt64(0) AS mcpSpans,
-          toUInt64(0) AS events,
-          toUInt64(0) AS spans,
-          toUInt64(0) AS logLines,
-          toUInt64(0) AS classifiedRequests,
-          toUInt64(0) AS mcpRequests,
-          toUInt64(0) AS webRequests,
-          toUInt64(0) AS mobileRequests,
-          groupUniqArrayIf(20)(sessions.groupId, sessions.groupId != '') AS groupIds,
-          toFloat64(maxIf(toFloat64(sessions.lastActivity), sessions.userName != '')) AS nameAt,
-          toFloat64(maxIf(toFloat64(sessions.lastActivity), sessions.userEmail != '')) AS emailAt,
-          toFloat64(maxIf(toFloat64(sessions.lastActivity), sessions.groupId != '')) AS groupAt
+          sessions.lastActivity AS at,
+          toUInt64(1) AS sessions,
+          toUInt64(sessions.errors) AS errors,
+          if(notEmpty(sessions.groupId), [sessions.groupId], CAST([], 'Array(String)')) AS groupIds
         FROM (SELECT
           session_replays.SessionId AS sessionId,
           argMax(session_replays.UserId, session_replays.Version) AS userId,
@@ -11636,31 +11644,16 @@ SELECT
           AND session_replays.ServiceName IN ('storefront-web')
         GROUP BY sessionId) AS sessions
         WHERE sessions.userId != ''
-        GROUP BY userId, namespace
 UNION ALL
 SELECT
           product_events.UserId AS userId,
           '' AS name,
           '' AS email,
-          argMax(product_events.GroupId, if(product_events.GroupId != '', toFloat64(product_events.Timestamp), 0)) AS groupId,
           transform(product_events.ServiceName, ['storefront-web', 'maple-ai'], ['storefront', 'platform'], '') AS namespace,
-          min(product_events.Timestamp) AS firstSeen,
-          max(product_events.Timestamp) AS lastSeen,
+          product_events.Timestamp AS at,
           toUInt64(0) AS sessions,
           toUInt64(0) AS errors,
-          toUInt64(0) AS requests,
-          toUInt64(0) AS mcpSpans,
-          count() AS events,
-          toUInt64(0) AS spans,
-          toUInt64(0) AS logLines,
-          toUInt64(0) AS classifiedRequests,
-          toUInt64(0) AS mcpRequests,
-          toUInt64(0) AS webRequests,
-          toUInt64(0) AS mobileRequests,
-          groupUniqArrayIf(20)(product_events.GroupId, product_events.GroupId != '') AS groupIds,
-          toFloat64(0) AS nameAt,
-          toFloat64(0) AS emailAt,
-          toFloat64(maxIf(toFloat64(product_events.Timestamp), product_events.GroupId != '')) AS groupAt
+          if(notEmpty(product_events.GroupId), [product_events.GroupId], CAST([], 'Array(String)')) AS groupIds
         FROM product_events
         WHERE product_events.OrgId = 'org_sql_catalog'
           AND product_events.Timestamp >= '2026-01-01 10:30:00'
@@ -11675,42 +11668,7 @@ SELECT
           AND ifNull(session_replays.LastActivityAt, session_replays.StartTime) >= '2026-01-01 10:30:00'
           AND session_replays.ServiceName IN ('storefront-web')
         GROUP BY sessionId)))
-        GROUP BY userId, namespace
-UNION ALL
-SELECT
-          if(traces.SpanAttributes['user.id'] != '', traces.SpanAttributes['user.id'], traces.SpanAttributes['enduser.id']) AS userId,
-          argMax(traces.SpanAttributes['user.name'], if(traces.SpanAttributes['user.name'] != '', toFloat64(traces.Timestamp), 0)) AS name,
-          argMax(traces.SpanAttributes['user.email'], if(traces.SpanAttributes['user.email'] != '', toFloat64(traces.Timestamp), 0)) AS email,
-          '' AS groupId,
-          traces.ResourceAttributes['service.namespace'] AS namespace,
-          min(traces.Timestamp) AS firstSeen,
-          max(traces.Timestamp) AS lastSeen,
-          toUInt64(0) AS sessions,
-          toUInt64(0) AS errors,
-          countIf(traces.SpanAttributes['mcp.method.name'] = 'tools/call') AS requests,
-          count() AS mcpSpans,
-          toUInt64(0) AS events,
-          toUInt64(0) AS spans,
-          toUInt64(0) AS logLines,
-          toUInt64(countIf(traces.SpanAttributes['mcp.method.name'] = 'tools/call')) AS classifiedRequests,
-          toUInt64(countIf(traces.SpanAttributes['mcp.method.name'] = 'tools/call')) AS mcpRequests,
-          toUInt64(0) AS webRequests,
-          toUInt64(0) AS mobileRequests,
-          CAST([], 'Array(String)') AS groupIds,
-          toFloat64(maxIf(toFloat64(traces.Timestamp), traces.SpanAttributes['user.name'] != '')) AS nameAt,
-          toFloat64(maxIf(toFloat64(traces.Timestamp), traces.SpanAttributes['user.email'] != '')) AS emailAt,
-          toFloat64(0) AS groupAt
-        FROM traces
-        WHERE traces.OrgId = 'org_sql_catalog'
-          AND traces.Timestamp >= '2026-01-01 10:30:00'
-          AND traces.Timestamp <= '2026-01-03 14:15:00'
-          AND traces.SpanKind = 'Server'
-          AND traces.ServiceName IN ('maple-ai')
-          AND traces.SpanAttributes['mcp.method.name'] != ''
-          AND if(traces.SpanAttributes['user.id'] != '', traces.SpanAttributes['user.id'], traces.SpanAttributes['enduser.id']) != ''
-          AND traces.ResourceAttributes['service.namespace'] IN ('storefront')
-        GROUP BY userId, namespace
-) AS signals
+) AS rows
         GROUP BY name
         ORDER BY count DESC
         LIMIT 50
@@ -12011,6 +11969,320 @@ SELECT
         LIMIT 200
         FORMAT JSON
 
+-- builder:users:usersListQuery:matchingBound  [ae8e2e08]
+SELECT
+          signals.userId AS userId,
+          argMax(signals.name, signals.nameAt) AS name,
+          argMax(signals.email, signals.emailAt) AS email,
+          argMax(signals.groupId, signals.groupAt) AS groupId,
+          arraySort(arrayDistinct(groupArrayArray(signals.groupIds))) AS groupIds,
+          arraySort(groupUniqArrayIf(20)(signals.namespace, signals.namespace != '')) AS namespaces,
+          min(signals.firstSeen) AS firstSeen,
+          max(signals.lastSeen) AS lastSeen,
+          toString(max(signals.lastSeen)) AS lastSeenKey,
+          sum(signals.sessions) AS sessions,
+          sum(signals.errors) AS errors,
+          sum(signals.requests) AS requests,
+          sum(signals.mcpSpans) AS mcpSpans,
+          sum(signals.events) AS events,
+          sum(signals.spans) AS spans,
+          sum(signals.logLines) AS logLines,
+          sum(signals.classifiedRequests) AS classifiedRequests,
+          sum(signals.mcpRequests) AS mcpRequests,
+          sum(signals.webRequests) AS webRequests,
+          sum(signals.mobileRequests) AS mobileRequests
+        FROM (
+SELECT
+          sessions.userId AS userId,
+          argMax(sessions.userName, if(sessions.userName != '', toFloat64(sessions.lastActivity), 0)) AS name,
+          argMax(sessions.userEmail, if(sessions.userEmail != '', toFloat64(sessions.lastActivity), 0)) AS email,
+          argMax(sessions.groupId, if(sessions.groupId != '', toFloat64(sessions.lastActivity), 0)) AS groupId,
+          transform(sessions.serviceName, ['storefront-web', 'maple-ai'], ['storefront', 'platform'], '') AS namespace,
+          min(sessions.startTime) AS firstSeen,
+          max(sessions.lastActivity) AS lastSeen,
+          count() AS sessions,
+          toUInt64(sum(sessions.errors)) AS errors,
+          toUInt64(0) AS requests,
+          toUInt64(0) AS mcpSpans,
+          toUInt64(0) AS events,
+          toUInt64(0) AS spans,
+          toUInt64(0) AS logLines,
+          toUInt64(0) AS classifiedRequests,
+          toUInt64(0) AS mcpRequests,
+          toUInt64(0) AS webRequests,
+          toUInt64(0) AS mobileRequests,
+          groupUniqArrayIf(20)(sessions.groupId, sessions.groupId != '') AS groupIds,
+          toFloat64(maxIf(toFloat64(sessions.lastActivity), sessions.userName != '')) AS nameAt,
+          toFloat64(maxIf(toFloat64(sessions.lastActivity), sessions.userEmail != '')) AS emailAt,
+          toFloat64(maxIf(toFloat64(sessions.lastActivity), sessions.groupId != '')) AS groupAt
+        FROM (SELECT
+          session_replays.SessionId AS sessionId,
+          argMax(session_replays.UserId, session_replays.Version) AS userId,
+          argMax(session_replays.UserName, session_replays.Version) AS userName,
+          argMax(session_replays.UserEmail, session_replays.Version) AS userEmail,
+          argMax(session_replays.GroupId, session_replays.Version) AS groupId,
+          any(session_replays.ServiceName) AS serviceName,
+          max(session_replays.ErrorCount) AS errors,
+          min(session_replays.StartTime) AS startTime,
+          max(ifNull(session_replays.LastActivityAt, session_replays.StartTime)) AS lastActivity
+        FROM session_replays
+        WHERE session_replays.OrgId = 'org_sql_catalog'
+          AND session_replays.StartTime >= '2026-01-01 10:30:00'
+          AND session_replays.StartTime <= '2026-01-03 14:15:00'
+        GROUP BY sessionId) AS sessions
+        WHERE sessions.userId != ''
+          AND sessions.userId IN (SELECT
+          rows.userId AS userId
+        FROM (
+SELECT
+          sessions.userId AS userId,
+          sessions.userName AS name,
+          sessions.userEmail AS email,
+          transform(sessions.serviceName, ['storefront-web', 'maple-ai'], ['storefront', 'platform'], '') AS namespace,
+          sessions.lastActivity AS at,
+          toUInt64(1) AS sessions,
+          toUInt64(sessions.errors) AS errors,
+          if(notEmpty(sessions.groupId), [sessions.groupId], CAST([], 'Array(String)')) AS groupIds
+        FROM (SELECT
+          session_replays.SessionId AS sessionId,
+          argMax(session_replays.UserId, session_replays.Version) AS userId,
+          argMax(session_replays.UserName, session_replays.Version) AS userName,
+          argMax(session_replays.UserEmail, session_replays.Version) AS userEmail,
+          argMax(session_replays.GroupId, session_replays.Version) AS groupId,
+          any(session_replays.ServiceName) AS serviceName,
+          max(session_replays.ErrorCount) AS errors,
+          min(session_replays.StartTime) AS startTime,
+          max(ifNull(session_replays.LastActivityAt, session_replays.StartTime)) AS lastActivity
+        FROM session_replays
+        WHERE session_replays.OrgId = 'org_sql_catalog'
+          AND session_replays.StartTime >= '2026-01-01 10:30:00'
+          AND session_replays.StartTime <= '2026-01-03 14:15:00'
+        GROUP BY sessionId) AS sessions
+        WHERE sessions.userId != ''
+UNION ALL
+SELECT
+          product_events.UserId AS userId,
+          '' AS name,
+          '' AS email,
+          transform(product_events.ServiceName, ['storefront-web', 'maple-ai'], ['storefront', 'platform'], '') AS namespace,
+          product_events.Timestamp AS at,
+          toUInt64(0) AS sessions,
+          toUInt64(0) AS errors,
+          if(notEmpty(product_events.GroupId), [product_events.GroupId], CAST([], 'Array(String)')) AS groupIds
+        FROM product_events
+        WHERE product_events.OrgId = 'org_sql_catalog'
+          AND product_events.Timestamp >= '2026-01-01 10:30:00'
+          AND product_events.Timestamp <= '2026-01-03 14:15:00'
+          AND product_events.UserId != ''
+UNION ALL
+SELECT
+          user_activity_hourly.UserId AS userId,
+          '' AS name,
+          '' AS email,
+          user_activity_hourly.ServiceNamespace AS namespace,
+          toDateTime64(user_activity_hourly.LastSeen, 9) AS at,
+          toUInt64(0) AS sessions,
+          toUInt64(user_activity_hourly.FailedRequestCount) AS errors,
+          CAST([], 'Array(String)') AS groupIds
+        FROM user_activity_hourly
+        WHERE user_activity_hourly.OrgId = 'org_sql_catalog'
+          AND user_activity_hourly.Hour >= toStartOfHour(toDateTime('2026-01-01 10:30:00'))
+          AND user_activity_hourly.Hour <= toStartOfHour(toDateTime('2026-01-03 14:15:00'))
+          AND user_activity_hourly.UserId != ''
+) AS rows
+        WHERE rows.errors > 0
+        GROUP BY userId)
+        GROUP BY userId, namespace
+UNION ALL
+SELECT
+          product_events.UserId AS userId,
+          '' AS name,
+          '' AS email,
+          argMax(product_events.GroupId, if(product_events.GroupId != '', toFloat64(product_events.Timestamp), 0)) AS groupId,
+          transform(product_events.ServiceName, ['storefront-web', 'maple-ai'], ['storefront', 'platform'], '') AS namespace,
+          min(product_events.Timestamp) AS firstSeen,
+          max(product_events.Timestamp) AS lastSeen,
+          toUInt64(0) AS sessions,
+          toUInt64(0) AS errors,
+          toUInt64(0) AS requests,
+          toUInt64(0) AS mcpSpans,
+          count() AS events,
+          toUInt64(0) AS spans,
+          toUInt64(0) AS logLines,
+          toUInt64(0) AS classifiedRequests,
+          toUInt64(0) AS mcpRequests,
+          toUInt64(0) AS webRequests,
+          toUInt64(0) AS mobileRequests,
+          groupUniqArrayIf(20)(product_events.GroupId, product_events.GroupId != '') AS groupIds,
+          toFloat64(0) AS nameAt,
+          toFloat64(0) AS emailAt,
+          toFloat64(maxIf(toFloat64(product_events.Timestamp), product_events.GroupId != '')) AS groupAt
+        FROM product_events
+        WHERE product_events.OrgId = 'org_sql_catalog'
+          AND product_events.Timestamp >= '2026-01-01 10:30:00'
+          AND product_events.Timestamp <= '2026-01-03 14:15:00'
+          AND product_events.UserId != ''
+          AND product_events.UserId IN (SELECT
+          rows.userId AS userId
+        FROM (
+SELECT
+          sessions.userId AS userId,
+          sessions.userName AS name,
+          sessions.userEmail AS email,
+          transform(sessions.serviceName, ['storefront-web', 'maple-ai'], ['storefront', 'platform'], '') AS namespace,
+          sessions.lastActivity AS at,
+          toUInt64(1) AS sessions,
+          toUInt64(sessions.errors) AS errors,
+          if(notEmpty(sessions.groupId), [sessions.groupId], CAST([], 'Array(String)')) AS groupIds
+        FROM (SELECT
+          session_replays.SessionId AS sessionId,
+          argMax(session_replays.UserId, session_replays.Version) AS userId,
+          argMax(session_replays.UserName, session_replays.Version) AS userName,
+          argMax(session_replays.UserEmail, session_replays.Version) AS userEmail,
+          argMax(session_replays.GroupId, session_replays.Version) AS groupId,
+          any(session_replays.ServiceName) AS serviceName,
+          max(session_replays.ErrorCount) AS errors,
+          min(session_replays.StartTime) AS startTime,
+          max(ifNull(session_replays.LastActivityAt, session_replays.StartTime)) AS lastActivity
+        FROM session_replays
+        WHERE session_replays.OrgId = 'org_sql_catalog'
+          AND session_replays.StartTime >= '2026-01-01 10:30:00'
+          AND session_replays.StartTime <= '2026-01-03 14:15:00'
+        GROUP BY sessionId) AS sessions
+        WHERE sessions.userId != ''
+UNION ALL
+SELECT
+          product_events.UserId AS userId,
+          '' AS name,
+          '' AS email,
+          transform(product_events.ServiceName, ['storefront-web', 'maple-ai'], ['storefront', 'platform'], '') AS namespace,
+          product_events.Timestamp AS at,
+          toUInt64(0) AS sessions,
+          toUInt64(0) AS errors,
+          if(notEmpty(product_events.GroupId), [product_events.GroupId], CAST([], 'Array(String)')) AS groupIds
+        FROM product_events
+        WHERE product_events.OrgId = 'org_sql_catalog'
+          AND product_events.Timestamp >= '2026-01-01 10:30:00'
+          AND product_events.Timestamp <= '2026-01-03 14:15:00'
+          AND product_events.UserId != ''
+UNION ALL
+SELECT
+          user_activity_hourly.UserId AS userId,
+          '' AS name,
+          '' AS email,
+          user_activity_hourly.ServiceNamespace AS namespace,
+          toDateTime64(user_activity_hourly.LastSeen, 9) AS at,
+          toUInt64(0) AS sessions,
+          toUInt64(user_activity_hourly.FailedRequestCount) AS errors,
+          CAST([], 'Array(String)') AS groupIds
+        FROM user_activity_hourly
+        WHERE user_activity_hourly.OrgId = 'org_sql_catalog'
+          AND user_activity_hourly.Hour >= toStartOfHour(toDateTime('2026-01-01 10:30:00'))
+          AND user_activity_hourly.Hour <= toStartOfHour(toDateTime('2026-01-03 14:15:00'))
+          AND user_activity_hourly.UserId != ''
+) AS rows
+        WHERE rows.errors > 0
+        GROUP BY userId)
+        GROUP BY userId, namespace
+UNION ALL
+SELECT
+          user_activity_hourly.UserId AS userId,
+          '' AS name,
+          '' AS email,
+          '' AS groupId,
+          user_activity_hourly.ServiceNamespace AS namespace,
+          toDateTime64(min(user_activity_hourly.FirstSeen), 9) AS firstSeen,
+          toDateTime64(max(user_activity_hourly.LastSeen), 9) AS lastSeen,
+          toUInt64(0) AS sessions,
+          toUInt64(sum(user_activity_hourly.FailedRequestCount)) AS errors,
+          toUInt64(sum(user_activity_hourly.RequestCount)) AS requests,
+          toUInt64(sumIf(user_activity_hourly.SpanCount, user_activity_hourly.ServiceName IN ('maple-ai'))) AS mcpSpans,
+          toUInt64(0) AS events,
+          toUInt64(sum(user_activity_hourly.SpanCount)) AS spans,
+          toUInt64(sum(user_activity_hourly.LogCount)) AS logLines,
+          toUInt64(0) AS classifiedRequests,
+          toUInt64(0) AS mcpRequests,
+          toUInt64(0) AS webRequests,
+          toUInt64(0) AS mobileRequests,
+          CAST([], 'Array(String)') AS groupIds,
+          toFloat64(0) AS nameAt,
+          toFloat64(0) AS emailAt,
+          toFloat64(0) AS groupAt
+        FROM user_activity_hourly
+        WHERE user_activity_hourly.OrgId = 'org_sql_catalog'
+          AND user_activity_hourly.Hour >= toStartOfHour(toDateTime('2026-01-01 10:30:00'))
+          AND user_activity_hourly.Hour <= toStartOfHour(toDateTime('2026-01-03 14:15:00'))
+          AND user_activity_hourly.UserId != ''
+          AND user_activity_hourly.UserId IN (SELECT
+          rows.userId AS userId
+        FROM (
+SELECT
+          sessions.userId AS userId,
+          sessions.userName AS name,
+          sessions.userEmail AS email,
+          transform(sessions.serviceName, ['storefront-web', 'maple-ai'], ['storefront', 'platform'], '') AS namespace,
+          sessions.lastActivity AS at,
+          toUInt64(1) AS sessions,
+          toUInt64(sessions.errors) AS errors,
+          if(notEmpty(sessions.groupId), [sessions.groupId], CAST([], 'Array(String)')) AS groupIds
+        FROM (SELECT
+          session_replays.SessionId AS sessionId,
+          argMax(session_replays.UserId, session_replays.Version) AS userId,
+          argMax(session_replays.UserName, session_replays.Version) AS userName,
+          argMax(session_replays.UserEmail, session_replays.Version) AS userEmail,
+          argMax(session_replays.GroupId, session_replays.Version) AS groupId,
+          any(session_replays.ServiceName) AS serviceName,
+          max(session_replays.ErrorCount) AS errors,
+          min(session_replays.StartTime) AS startTime,
+          max(ifNull(session_replays.LastActivityAt, session_replays.StartTime)) AS lastActivity
+        FROM session_replays
+        WHERE session_replays.OrgId = 'org_sql_catalog'
+          AND session_replays.StartTime >= '2026-01-01 10:30:00'
+          AND session_replays.StartTime <= '2026-01-03 14:15:00'
+        GROUP BY sessionId) AS sessions
+        WHERE sessions.userId != ''
+UNION ALL
+SELECT
+          product_events.UserId AS userId,
+          '' AS name,
+          '' AS email,
+          transform(product_events.ServiceName, ['storefront-web', 'maple-ai'], ['storefront', 'platform'], '') AS namespace,
+          product_events.Timestamp AS at,
+          toUInt64(0) AS sessions,
+          toUInt64(0) AS errors,
+          if(notEmpty(product_events.GroupId), [product_events.GroupId], CAST([], 'Array(String)')) AS groupIds
+        FROM product_events
+        WHERE product_events.OrgId = 'org_sql_catalog'
+          AND product_events.Timestamp >= '2026-01-01 10:30:00'
+          AND product_events.Timestamp <= '2026-01-03 14:15:00'
+          AND product_events.UserId != ''
+UNION ALL
+SELECT
+          user_activity_hourly.UserId AS userId,
+          '' AS name,
+          '' AS email,
+          user_activity_hourly.ServiceNamespace AS namespace,
+          toDateTime64(user_activity_hourly.LastSeen, 9) AS at,
+          toUInt64(0) AS sessions,
+          toUInt64(user_activity_hourly.FailedRequestCount) AS errors,
+          CAST([], 'Array(String)') AS groupIds
+        FROM user_activity_hourly
+        WHERE user_activity_hourly.OrgId = 'org_sql_catalog'
+          AND user_activity_hourly.Hour >= toStartOfHour(toDateTime('2026-01-01 10:30:00'))
+          AND user_activity_hourly.Hour <= toStartOfHour(toDateTime('2026-01-03 14:15:00'))
+          AND user_activity_hourly.UserId != ''
+) AS rows
+        WHERE rows.errors > 0
+        GROUP BY userId)
+        GROUP BY userId, namespace
+) AS signals
+        GROUP BY userId
+        HAVING sum(signals.errors) > 0
+          AND sum(signals.sessions) > 0
+        ORDER BY lastSeen DESC, userId ASC
+        LIMIT 201
+        FORMAT JSON
+
 -- builder:users:usersListQuery:namespaceFiltered  [5a3cb3cf]
 SELECT
           signals.userId AS userId,
@@ -12156,6 +12428,327 @@ SELECT
           AND (positionCaseInsensitiveUTF8(signals.userId, 'ada') > 0 OR positionCaseInsensitiveUTF8(argMax(signals.name, signals.nameAt), 'ada') > 0 OR positionCaseInsensitiveUTF8(argMax(signals.email, signals.emailAt), 'ada') > 0)
         ORDER BY lastSeen DESC, userId ASC
         LIMIT 200
+        FORMAT JSON
+
+-- builder:users:usersListQuery:recentFloorBound  [e9e96e2e]
+SELECT
+          signals.userId AS userId,
+          argMax(signals.name, signals.nameAt) AS name,
+          argMax(signals.email, signals.emailAt) AS email,
+          argMax(signals.groupId, signals.groupAt) AS groupId,
+          arraySort(arrayDistinct(groupArrayArray(signals.groupIds))) AS groupIds,
+          arraySort(groupUniqArrayIf(20)(signals.namespace, signals.namespace != '')) AS namespaces,
+          min(signals.firstSeen) AS firstSeen,
+          max(signals.lastSeen) AS lastSeen,
+          toString(max(signals.lastSeen)) AS lastSeenKey,
+          sum(signals.sessions) AS sessions,
+          sum(signals.errors) AS errors,
+          sum(signals.requests) AS requests,
+          sum(signals.mcpSpans) AS mcpSpans,
+          sum(signals.events) AS events,
+          sum(signals.spans) AS spans,
+          sum(signals.logLines) AS logLines,
+          sum(signals.classifiedRequests) AS classifiedRequests,
+          sum(signals.mcpRequests) AS mcpRequests,
+          sum(signals.webRequests) AS webRequests,
+          sum(signals.mobileRequests) AS mobileRequests
+        FROM (
+SELECT
+          sessions.userId AS userId,
+          argMax(sessions.userName, if(sessions.userName != '', toFloat64(sessions.lastActivity), 0)) AS name,
+          argMax(sessions.userEmail, if(sessions.userEmail != '', toFloat64(sessions.lastActivity), 0)) AS email,
+          argMax(sessions.groupId, if(sessions.groupId != '', toFloat64(sessions.lastActivity), 0)) AS groupId,
+          transform(sessions.serviceName, ['storefront-web', 'maple-ai'], ['storefront', 'platform'], '') AS namespace,
+          min(sessions.startTime) AS firstSeen,
+          max(sessions.lastActivity) AS lastSeen,
+          count() AS sessions,
+          toUInt64(sum(sessions.errors)) AS errors,
+          toUInt64(0) AS requests,
+          toUInt64(0) AS mcpSpans,
+          toUInt64(0) AS events,
+          toUInt64(0) AS spans,
+          toUInt64(0) AS logLines,
+          toUInt64(0) AS classifiedRequests,
+          toUInt64(0) AS mcpRequests,
+          toUInt64(0) AS webRequests,
+          toUInt64(0) AS mobileRequests,
+          groupUniqArrayIf(20)(sessions.groupId, sessions.groupId != '') AS groupIds,
+          toFloat64(maxIf(toFloat64(sessions.lastActivity), sessions.userName != '')) AS nameAt,
+          toFloat64(maxIf(toFloat64(sessions.lastActivity), sessions.userEmail != '')) AS emailAt,
+          toFloat64(maxIf(toFloat64(sessions.lastActivity), sessions.groupId != '')) AS groupAt
+        FROM (SELECT
+          session_replays.SessionId AS sessionId,
+          argMax(session_replays.UserId, session_replays.Version) AS userId,
+          argMax(session_replays.UserName, session_replays.Version) AS userName,
+          argMax(session_replays.UserEmail, session_replays.Version) AS userEmail,
+          argMax(session_replays.GroupId, session_replays.Version) AS groupId,
+          any(session_replays.ServiceName) AS serviceName,
+          max(session_replays.ErrorCount) AS errors,
+          min(session_replays.StartTime) AS startTime,
+          max(ifNull(session_replays.LastActivityAt, session_replays.StartTime)) AS lastActivity
+        FROM session_replays
+        WHERE session_replays.OrgId = 'org_sql_catalog'
+          AND session_replays.StartTime >= '2026-01-01 10:30:00'
+          AND session_replays.StartTime <= '2026-01-03 14:15:00'
+        GROUP BY sessionId) AS sessions
+        WHERE sessions.userId != ''
+          AND sessions.userId IN (SELECT
+          rows.userId AS userId
+        FROM (
+SELECT
+          sessions.userId AS userId,
+          sessions.userName AS name,
+          sessions.userEmail AS email,
+          transform(sessions.serviceName, ['storefront-web', 'maple-ai'], ['storefront', 'platform'], '') AS namespace,
+          sessions.lastActivity AS at,
+          toUInt64(1) AS sessions,
+          toUInt64(sessions.errors) AS errors,
+          if(notEmpty(sessions.groupId), [sessions.groupId], CAST([], 'Array(String)')) AS groupIds
+        FROM (SELECT
+          session_replays.SessionId AS sessionId,
+          argMax(session_replays.UserId, session_replays.Version) AS userId,
+          argMax(session_replays.UserName, session_replays.Version) AS userName,
+          argMax(session_replays.UserEmail, session_replays.Version) AS userEmail,
+          argMax(session_replays.GroupId, session_replays.Version) AS groupId,
+          any(session_replays.ServiceName) AS serviceName,
+          max(session_replays.ErrorCount) AS errors,
+          min(session_replays.StartTime) AS startTime,
+          max(ifNull(session_replays.LastActivityAt, session_replays.StartTime)) AS lastActivity
+        FROM session_replays
+        WHERE session_replays.OrgId = 'org_sql_catalog'
+          AND session_replays.StartTime >= '2026-01-01 10:30:00'
+          AND session_replays.StartTime <= '2026-01-03 14:15:00'
+        GROUP BY sessionId) AS sessions
+        WHERE sessions.userId != ''
+          AND sessions.lastActivity > '2026-01-01 23:40:00.000000000'
+UNION ALL
+SELECT
+          product_events.UserId AS userId,
+          '' AS name,
+          '' AS email,
+          transform(product_events.ServiceName, ['storefront-web', 'maple-ai'], ['storefront', 'platform'], '') AS namespace,
+          product_events.Timestamp AS at,
+          toUInt64(0) AS sessions,
+          toUInt64(0) AS errors,
+          if(notEmpty(product_events.GroupId), [product_events.GroupId], CAST([], 'Array(String)')) AS groupIds
+        FROM product_events
+        WHERE product_events.OrgId = 'org_sql_catalog'
+          AND product_events.Timestamp >= '2026-01-01 10:30:00'
+          AND product_events.Timestamp <= '2026-01-03 14:15:00'
+          AND product_events.UserId != ''
+          AND product_events.Timestamp > '2026-01-01 23:40:00.000000000'
+UNION ALL
+SELECT
+          user_activity_hourly.UserId AS userId,
+          '' AS name,
+          '' AS email,
+          user_activity_hourly.ServiceNamespace AS namespace,
+          toDateTime64(user_activity_hourly.LastSeen, 9) AS at,
+          toUInt64(0) AS sessions,
+          toUInt64(user_activity_hourly.FailedRequestCount) AS errors,
+          CAST([], 'Array(String)') AS groupIds
+        FROM user_activity_hourly
+        WHERE user_activity_hourly.OrgId = 'org_sql_catalog'
+          AND user_activity_hourly.Hour >= toStartOfHour(toDateTime('2026-01-01 10:30:00'))
+          AND user_activity_hourly.Hour <= toStartOfHour(toDateTime('2026-01-03 14:15:00'))
+          AND user_activity_hourly.Hour >= toStartOfHour(toDateTime64('2026-01-01 23:40:00.000000000', 9))
+          AND user_activity_hourly.UserId != ''
+          AND toDateTime64(user_activity_hourly.LastSeen, 9) > '2026-01-01 23:40:00.000000000'
+) AS rows
+        GROUP BY userId)
+        GROUP BY userId, namespace
+UNION ALL
+SELECT
+          product_events.UserId AS userId,
+          '' AS name,
+          '' AS email,
+          argMax(product_events.GroupId, if(product_events.GroupId != '', toFloat64(product_events.Timestamp), 0)) AS groupId,
+          transform(product_events.ServiceName, ['storefront-web', 'maple-ai'], ['storefront', 'platform'], '') AS namespace,
+          min(product_events.Timestamp) AS firstSeen,
+          max(product_events.Timestamp) AS lastSeen,
+          toUInt64(0) AS sessions,
+          toUInt64(0) AS errors,
+          toUInt64(0) AS requests,
+          toUInt64(0) AS mcpSpans,
+          count() AS events,
+          toUInt64(0) AS spans,
+          toUInt64(0) AS logLines,
+          toUInt64(0) AS classifiedRequests,
+          toUInt64(0) AS mcpRequests,
+          toUInt64(0) AS webRequests,
+          toUInt64(0) AS mobileRequests,
+          groupUniqArrayIf(20)(product_events.GroupId, product_events.GroupId != '') AS groupIds,
+          toFloat64(0) AS nameAt,
+          toFloat64(0) AS emailAt,
+          toFloat64(maxIf(toFloat64(product_events.Timestamp), product_events.GroupId != '')) AS groupAt
+        FROM product_events
+        WHERE product_events.OrgId = 'org_sql_catalog'
+          AND product_events.Timestamp >= '2026-01-01 10:30:00'
+          AND product_events.Timestamp <= '2026-01-03 14:15:00'
+          AND product_events.UserId != ''
+          AND product_events.UserId IN (SELECT
+          rows.userId AS userId
+        FROM (
+SELECT
+          sessions.userId AS userId,
+          sessions.userName AS name,
+          sessions.userEmail AS email,
+          transform(sessions.serviceName, ['storefront-web', 'maple-ai'], ['storefront', 'platform'], '') AS namespace,
+          sessions.lastActivity AS at,
+          toUInt64(1) AS sessions,
+          toUInt64(sessions.errors) AS errors,
+          if(notEmpty(sessions.groupId), [sessions.groupId], CAST([], 'Array(String)')) AS groupIds
+        FROM (SELECT
+          session_replays.SessionId AS sessionId,
+          argMax(session_replays.UserId, session_replays.Version) AS userId,
+          argMax(session_replays.UserName, session_replays.Version) AS userName,
+          argMax(session_replays.UserEmail, session_replays.Version) AS userEmail,
+          argMax(session_replays.GroupId, session_replays.Version) AS groupId,
+          any(session_replays.ServiceName) AS serviceName,
+          max(session_replays.ErrorCount) AS errors,
+          min(session_replays.StartTime) AS startTime,
+          max(ifNull(session_replays.LastActivityAt, session_replays.StartTime)) AS lastActivity
+        FROM session_replays
+        WHERE session_replays.OrgId = 'org_sql_catalog'
+          AND session_replays.StartTime >= '2026-01-01 10:30:00'
+          AND session_replays.StartTime <= '2026-01-03 14:15:00'
+        GROUP BY sessionId) AS sessions
+        WHERE sessions.userId != ''
+          AND sessions.lastActivity > '2026-01-01 23:40:00.000000000'
+UNION ALL
+SELECT
+          product_events.UserId AS userId,
+          '' AS name,
+          '' AS email,
+          transform(product_events.ServiceName, ['storefront-web', 'maple-ai'], ['storefront', 'platform'], '') AS namespace,
+          product_events.Timestamp AS at,
+          toUInt64(0) AS sessions,
+          toUInt64(0) AS errors,
+          if(notEmpty(product_events.GroupId), [product_events.GroupId], CAST([], 'Array(String)')) AS groupIds
+        FROM product_events
+        WHERE product_events.OrgId = 'org_sql_catalog'
+          AND product_events.Timestamp >= '2026-01-01 10:30:00'
+          AND product_events.Timestamp <= '2026-01-03 14:15:00'
+          AND product_events.UserId != ''
+          AND product_events.Timestamp > '2026-01-01 23:40:00.000000000'
+UNION ALL
+SELECT
+          user_activity_hourly.UserId AS userId,
+          '' AS name,
+          '' AS email,
+          user_activity_hourly.ServiceNamespace AS namespace,
+          toDateTime64(user_activity_hourly.LastSeen, 9) AS at,
+          toUInt64(0) AS sessions,
+          toUInt64(user_activity_hourly.FailedRequestCount) AS errors,
+          CAST([], 'Array(String)') AS groupIds
+        FROM user_activity_hourly
+        WHERE user_activity_hourly.OrgId = 'org_sql_catalog'
+          AND user_activity_hourly.Hour >= toStartOfHour(toDateTime('2026-01-01 10:30:00'))
+          AND user_activity_hourly.Hour <= toStartOfHour(toDateTime('2026-01-03 14:15:00'))
+          AND user_activity_hourly.Hour >= toStartOfHour(toDateTime64('2026-01-01 23:40:00.000000000', 9))
+          AND user_activity_hourly.UserId != ''
+          AND toDateTime64(user_activity_hourly.LastSeen, 9) > '2026-01-01 23:40:00.000000000'
+) AS rows
+        GROUP BY userId)
+        GROUP BY userId, namespace
+UNION ALL
+SELECT
+          user_activity_hourly.UserId AS userId,
+          '' AS name,
+          '' AS email,
+          '' AS groupId,
+          user_activity_hourly.ServiceNamespace AS namespace,
+          toDateTime64(min(user_activity_hourly.FirstSeen), 9) AS firstSeen,
+          toDateTime64(max(user_activity_hourly.LastSeen), 9) AS lastSeen,
+          toUInt64(0) AS sessions,
+          toUInt64(sum(user_activity_hourly.FailedRequestCount)) AS errors,
+          toUInt64(sum(user_activity_hourly.RequestCount)) AS requests,
+          toUInt64(sumIf(user_activity_hourly.SpanCount, user_activity_hourly.ServiceName IN ('maple-ai'))) AS mcpSpans,
+          toUInt64(0) AS events,
+          toUInt64(sum(user_activity_hourly.SpanCount)) AS spans,
+          toUInt64(sum(user_activity_hourly.LogCount)) AS logLines,
+          toUInt64(0) AS classifiedRequests,
+          toUInt64(0) AS mcpRequests,
+          toUInt64(0) AS webRequests,
+          toUInt64(0) AS mobileRequests,
+          CAST([], 'Array(String)') AS groupIds,
+          toFloat64(0) AS nameAt,
+          toFloat64(0) AS emailAt,
+          toFloat64(0) AS groupAt
+        FROM user_activity_hourly
+        WHERE user_activity_hourly.OrgId = 'org_sql_catalog'
+          AND user_activity_hourly.Hour >= toStartOfHour(toDateTime('2026-01-01 10:30:00'))
+          AND user_activity_hourly.Hour <= toStartOfHour(toDateTime('2026-01-03 14:15:00'))
+          AND user_activity_hourly.UserId != ''
+          AND user_activity_hourly.UserId IN (SELECT
+          rows.userId AS userId
+        FROM (
+SELECT
+          sessions.userId AS userId,
+          sessions.userName AS name,
+          sessions.userEmail AS email,
+          transform(sessions.serviceName, ['storefront-web', 'maple-ai'], ['storefront', 'platform'], '') AS namespace,
+          sessions.lastActivity AS at,
+          toUInt64(1) AS sessions,
+          toUInt64(sessions.errors) AS errors,
+          if(notEmpty(sessions.groupId), [sessions.groupId], CAST([], 'Array(String)')) AS groupIds
+        FROM (SELECT
+          session_replays.SessionId AS sessionId,
+          argMax(session_replays.UserId, session_replays.Version) AS userId,
+          argMax(session_replays.UserName, session_replays.Version) AS userName,
+          argMax(session_replays.UserEmail, session_replays.Version) AS userEmail,
+          argMax(session_replays.GroupId, session_replays.Version) AS groupId,
+          any(session_replays.ServiceName) AS serviceName,
+          max(session_replays.ErrorCount) AS errors,
+          min(session_replays.StartTime) AS startTime,
+          max(ifNull(session_replays.LastActivityAt, session_replays.StartTime)) AS lastActivity
+        FROM session_replays
+        WHERE session_replays.OrgId = 'org_sql_catalog'
+          AND session_replays.StartTime >= '2026-01-01 10:30:00'
+          AND session_replays.StartTime <= '2026-01-03 14:15:00'
+        GROUP BY sessionId) AS sessions
+        WHERE sessions.userId != ''
+          AND sessions.lastActivity > '2026-01-01 23:40:00.000000000'
+UNION ALL
+SELECT
+          product_events.UserId AS userId,
+          '' AS name,
+          '' AS email,
+          transform(product_events.ServiceName, ['storefront-web', 'maple-ai'], ['storefront', 'platform'], '') AS namespace,
+          product_events.Timestamp AS at,
+          toUInt64(0) AS sessions,
+          toUInt64(0) AS errors,
+          if(notEmpty(product_events.GroupId), [product_events.GroupId], CAST([], 'Array(String)')) AS groupIds
+        FROM product_events
+        WHERE product_events.OrgId = 'org_sql_catalog'
+          AND product_events.Timestamp >= '2026-01-01 10:30:00'
+          AND product_events.Timestamp <= '2026-01-03 14:15:00'
+          AND product_events.UserId != ''
+          AND product_events.Timestamp > '2026-01-01 23:40:00.000000000'
+UNION ALL
+SELECT
+          user_activity_hourly.UserId AS userId,
+          '' AS name,
+          '' AS email,
+          user_activity_hourly.ServiceNamespace AS namespace,
+          toDateTime64(user_activity_hourly.LastSeen, 9) AS at,
+          toUInt64(0) AS sessions,
+          toUInt64(user_activity_hourly.FailedRequestCount) AS errors,
+          CAST([], 'Array(String)') AS groupIds
+        FROM user_activity_hourly
+        WHERE user_activity_hourly.OrgId = 'org_sql_catalog'
+          AND user_activity_hourly.Hour >= toStartOfHour(toDateTime('2026-01-01 10:30:00'))
+          AND user_activity_hourly.Hour <= toStartOfHour(toDateTime('2026-01-03 14:15:00'))
+          AND user_activity_hourly.Hour >= toStartOfHour(toDateTime64('2026-01-01 23:40:00.000000000', 9))
+          AND user_activity_hourly.UserId != ''
+          AND toDateTime64(user_activity_hourly.LastSeen, 9) > '2026-01-01 23:40:00.000000000'
+) AS rows
+        GROUP BY userId)
+        GROUP BY userId, namespace
+) AS signals
+        GROUP BY userId
+        ORDER BY lastSeen DESC, userId ASC
+        LIMIT 201
         FORMAT JSON
 
 -- builder:users:usersListQuery:requestChannels  [9ff369d6]
@@ -12419,6 +13012,69 @@ SELECT
         LIMIT 200
         FORMAT JSON
 
+-- builder:users:usersMatchingCountQuery:default  [38c777b9]
+SELECT
+          uniq(rows.userId) AS users
+        FROM (
+SELECT
+          sessions.userId AS userId,
+          sessions.userName AS name,
+          sessions.userEmail AS email,
+          transform(sessions.serviceName, ['storefront-web', 'maple-ai'], ['storefront', 'platform'], '') AS namespace,
+          sessions.lastActivity AS at,
+          toUInt64(1) AS sessions,
+          toUInt64(sessions.errors) AS errors,
+          if(notEmpty(sessions.groupId), [sessions.groupId], CAST([], 'Array(String)')) AS groupIds
+        FROM (SELECT
+          session_replays.SessionId AS sessionId,
+          argMax(session_replays.UserId, session_replays.Version) AS userId,
+          argMax(session_replays.UserName, session_replays.Version) AS userName,
+          argMax(session_replays.UserEmail, session_replays.Version) AS userEmail,
+          argMax(session_replays.GroupId, session_replays.Version) AS groupId,
+          any(session_replays.ServiceName) AS serviceName,
+          max(session_replays.ErrorCount) AS errors,
+          min(session_replays.StartTime) AS startTime,
+          max(ifNull(session_replays.LastActivityAt, session_replays.StartTime)) AS lastActivity
+        FROM session_replays
+        WHERE session_replays.OrgId = 'org_sql_catalog'
+          AND session_replays.StartTime >= '2026-01-01 10:30:00'
+          AND session_replays.StartTime <= '2026-01-03 14:15:00'
+        GROUP BY sessionId) AS sessions
+        WHERE sessions.userId != ''
+UNION ALL
+SELECT
+          product_events.UserId AS userId,
+          '' AS name,
+          '' AS email,
+          transform(product_events.ServiceName, ['storefront-web', 'maple-ai'], ['storefront', 'platform'], '') AS namespace,
+          product_events.Timestamp AS at,
+          toUInt64(0) AS sessions,
+          toUInt64(0) AS errors,
+          if(notEmpty(product_events.GroupId), [product_events.GroupId], CAST([], 'Array(String)')) AS groupIds
+        FROM product_events
+        WHERE product_events.OrgId = 'org_sql_catalog'
+          AND product_events.Timestamp >= '2026-01-01 10:30:00'
+          AND product_events.Timestamp <= '2026-01-03 14:15:00'
+          AND product_events.UserId != ''
+UNION ALL
+SELECT
+          user_activity_hourly.UserId AS userId,
+          '' AS name,
+          '' AS email,
+          user_activity_hourly.ServiceNamespace AS namespace,
+          toDateTime64(user_activity_hourly.LastSeen, 9) AS at,
+          toUInt64(0) AS sessions,
+          toUInt64(user_activity_hourly.FailedRequestCount) AS errors,
+          CAST([], 'Array(String)') AS groupIds
+        FROM user_activity_hourly
+        WHERE user_activity_hourly.OrgId = 'org_sql_catalog'
+          AND user_activity_hourly.Hour >= toStartOfHour(toDateTime('2026-01-01 10:30:00'))
+          AND user_activity_hourly.Hour <= toStartOfHour(toDateTime('2026-01-03 14:15:00'))
+          AND user_activity_hourly.UserId != ''
+) AS rows
+        WHERE rows.errors > 0
+        FORMAT JSON
+
 -- builder:users:usersMcpNameSearchQuery:default  [a73a3eb1]
 SELECT
           if(traces.SpanAttributes['user.id'] != '', traces.SpanAttributes['user.id'], traces.SpanAttributes['enduser.id']) AS userId
@@ -12453,6 +13109,74 @@ SELECT
           AND (mapContains(traces.SpanAttributes, 'user.name') OR mapContains(traces.SpanAttributes, 'user.email'))
         GROUP BY userId
         LIMIT 2
+        FORMAT JSON
+
+-- builder:users:usersRecentFloorQuery:default  [0de89ebc]
+SELECT
+          toString(min(recent.at)) AS floor,
+          toString(addNanoseconds(min(recent.at), 1)) AS resume,
+          count() AS rows
+        FROM (SELECT
+          rows.at AS at
+        FROM (
+SELECT
+          sessions.userId AS userId,
+          sessions.userName AS name,
+          sessions.userEmail AS email,
+          transform(sessions.serviceName, ['storefront-web', 'maple-ai'], ['storefront', 'platform'], '') AS namespace,
+          sessions.lastActivity AS at,
+          toUInt64(1) AS sessions,
+          toUInt64(sessions.errors) AS errors,
+          if(notEmpty(sessions.groupId), [sessions.groupId], CAST([], 'Array(String)')) AS groupIds
+        FROM (SELECT
+          session_replays.SessionId AS sessionId,
+          argMax(session_replays.UserId, session_replays.Version) AS userId,
+          argMax(session_replays.UserName, session_replays.Version) AS userName,
+          argMax(session_replays.UserEmail, session_replays.Version) AS userEmail,
+          argMax(session_replays.GroupId, session_replays.Version) AS groupId,
+          any(session_replays.ServiceName) AS serviceName,
+          max(session_replays.ErrorCount) AS errors,
+          min(session_replays.StartTime) AS startTime,
+          max(ifNull(session_replays.LastActivityAt, session_replays.StartTime)) AS lastActivity
+        FROM session_replays
+        WHERE session_replays.OrgId = 'org_sql_catalog'
+          AND session_replays.StartTime >= '2026-01-01 10:30:00'
+          AND session_replays.StartTime <= '2026-01-03 14:15:00'
+        GROUP BY sessionId) AS sessions
+        WHERE sessions.userId != ''
+UNION ALL
+SELECT
+          product_events.UserId AS userId,
+          '' AS name,
+          '' AS email,
+          transform(product_events.ServiceName, ['storefront-web', 'maple-ai'], ['storefront', 'platform'], '') AS namespace,
+          product_events.Timestamp AS at,
+          toUInt64(0) AS sessions,
+          toUInt64(0) AS errors,
+          if(notEmpty(product_events.GroupId), [product_events.GroupId], CAST([], 'Array(String)')) AS groupIds
+        FROM product_events
+        WHERE product_events.OrgId = 'org_sql_catalog'
+          AND product_events.Timestamp >= '2026-01-01 10:30:00'
+          AND product_events.Timestamp <= '2026-01-03 14:15:00'
+          AND product_events.UserId != ''
+UNION ALL
+SELECT
+          user_activity_hourly.UserId AS userId,
+          '' AS name,
+          '' AS email,
+          user_activity_hourly.ServiceNamespace AS namespace,
+          toDateTime64(user_activity_hourly.LastSeen, 9) AS at,
+          toUInt64(0) AS sessions,
+          toUInt64(user_activity_hourly.FailedRequestCount) AS errors,
+          CAST([], 'Array(String)') AS groupIds
+        FROM user_activity_hourly
+        WHERE user_activity_hourly.OrgId = 'org_sql_catalog'
+          AND user_activity_hourly.Hour >= toStartOfHour(toDateTime('2026-01-01 10:30:00'))
+          AND user_activity_hourly.Hour <= toStartOfHour(toDateTime('2026-01-03 14:15:00'))
+          AND user_activity_hourly.UserId != ''
+) AS rows
+        ORDER BY at DESC
+        LIMIT 20000) AS recent
         FORMAT JSON
 
 -- builder:users:usersServiceNamespacesQuery:default  [7caa4563]
@@ -12511,41 +13235,22 @@ SELECT
         LIMIT 2000
         FORMAT JSON
 
--- builder:users:usersSummaryQuery:default  [48c9b564]
+-- builder:users:usersSummaryQuery:default  [70c1cbaa]
 SELECT
-          count() AS identified,
-          countIf(users.lastSeen >= '2026-01-01 10:30:00') AS activeToday,
-          countIf(users.errors > 0) AS withErrors,
-          countIf(users.sessions > 0) AS withReplay
-        FROM (SELECT
-          signals.userId AS userId,
-          max(signals.lastSeen) AS lastSeen,
-          sum(signals.sessions) AS sessions,
-          sum(signals.errors) AS errors
+          uniq(rows.userId) AS identified,
+          uniqIf(rows.userId, rows.at >= '2026-01-01 10:30:00') AS activeToday,
+          uniqIf(rows.userId, rows.errors > 0) AS withErrors,
+          uniqIf(rows.userId, rows.sessions > 0) AS withReplay
         FROM (
 SELECT
           sessions.userId AS userId,
-          argMax(sessions.userName, if(sessions.userName != '', toFloat64(sessions.lastActivity), 0)) AS name,
-          argMax(sessions.userEmail, if(sessions.userEmail != '', toFloat64(sessions.lastActivity), 0)) AS email,
-          argMax(sessions.groupId, if(sessions.groupId != '', toFloat64(sessions.lastActivity), 0)) AS groupId,
+          sessions.userName AS name,
+          sessions.userEmail AS email,
           transform(sessions.serviceName, ['storefront-web', 'maple-ai'], ['storefront', 'platform'], '') AS namespace,
-          min(sessions.startTime) AS firstSeen,
-          max(sessions.lastActivity) AS lastSeen,
-          count() AS sessions,
-          toUInt64(sum(sessions.errors)) AS errors,
-          toUInt64(0) AS requests,
-          toUInt64(0) AS mcpSpans,
-          toUInt64(0) AS events,
-          toUInt64(0) AS spans,
-          toUInt64(0) AS logLines,
-          toUInt64(0) AS classifiedRequests,
-          toUInt64(0) AS mcpRequests,
-          toUInt64(0) AS webRequests,
-          toUInt64(0) AS mobileRequests,
-          groupUniqArrayIf(20)(sessions.groupId, sessions.groupId != '') AS groupIds,
-          toFloat64(maxIf(toFloat64(sessions.lastActivity), sessions.userName != '')) AS nameAt,
-          toFloat64(maxIf(toFloat64(sessions.lastActivity), sessions.userEmail != '')) AS emailAt,
-          toFloat64(maxIf(toFloat64(sessions.lastActivity), sessions.groupId != '')) AS groupAt
+          sessions.lastActivity AS at,
+          toUInt64(1) AS sessions,
+          toUInt64(sessions.errors) AS errors,
+          if(notEmpty(sessions.groupId), [sessions.groupId], CAST([], 'Array(String)')) AS groupIds
         FROM (SELECT
           session_replays.SessionId AS sessionId,
           argMax(session_replays.UserId, session_replays.Version) AS userId,
@@ -12562,61 +13267,31 @@ SELECT
           AND session_replays.StartTime <= '2026-01-03 14:15:00'
         GROUP BY sessionId) AS sessions
         WHERE sessions.userId != ''
-        GROUP BY userId, namespace
 UNION ALL
 SELECT
           product_events.UserId AS userId,
           '' AS name,
           '' AS email,
-          argMax(product_events.GroupId, if(product_events.GroupId != '', toFloat64(product_events.Timestamp), 0)) AS groupId,
           transform(product_events.ServiceName, ['storefront-web', 'maple-ai'], ['storefront', 'platform'], '') AS namespace,
-          min(product_events.Timestamp) AS firstSeen,
-          max(product_events.Timestamp) AS lastSeen,
+          product_events.Timestamp AS at,
           toUInt64(0) AS sessions,
           toUInt64(0) AS errors,
-          toUInt64(0) AS requests,
-          toUInt64(0) AS mcpSpans,
-          count() AS events,
-          toUInt64(0) AS spans,
-          toUInt64(0) AS logLines,
-          toUInt64(0) AS classifiedRequests,
-          toUInt64(0) AS mcpRequests,
-          toUInt64(0) AS webRequests,
-          toUInt64(0) AS mobileRequests,
-          groupUniqArrayIf(20)(product_events.GroupId, product_events.GroupId != '') AS groupIds,
-          toFloat64(0) AS nameAt,
-          toFloat64(0) AS emailAt,
-          toFloat64(maxIf(toFloat64(product_events.Timestamp), product_events.GroupId != '')) AS groupAt
+          if(notEmpty(product_events.GroupId), [product_events.GroupId], CAST([], 'Array(String)')) AS groupIds
         FROM product_events
         WHERE product_events.OrgId = 'org_sql_catalog'
           AND product_events.Timestamp >= '2026-01-01 10:30:00'
           AND product_events.Timestamp <= '2026-01-03 14:15:00'
           AND product_events.UserId != ''
-        GROUP BY userId, namespace
 UNION ALL
 SELECT
           if(traces.SpanAttributes['user.id'] != '', traces.SpanAttributes['user.id'], traces.SpanAttributes['enduser.id']) AS userId,
-          argMax(traces.SpanAttributes['user.name'], if(traces.SpanAttributes['user.name'] != '', toFloat64(traces.Timestamp), 0)) AS name,
-          argMax(traces.SpanAttributes['user.email'], if(traces.SpanAttributes['user.email'] != '', toFloat64(traces.Timestamp), 0)) AS email,
-          '' AS groupId,
+          traces.SpanAttributes['user.name'] AS name,
+          traces.SpanAttributes['user.email'] AS email,
           traces.ResourceAttributes['service.namespace'] AS namespace,
-          min(traces.Timestamp) AS firstSeen,
-          max(traces.Timestamp) AS lastSeen,
+          traces.Timestamp AS at,
           toUInt64(0) AS sessions,
           toUInt64(0) AS errors,
-          countIf(traces.SpanAttributes['mcp.method.name'] = 'tools/call') AS requests,
-          count() AS mcpSpans,
-          toUInt64(0) AS events,
-          toUInt64(0) AS spans,
-          toUInt64(0) AS logLines,
-          toUInt64(countIf(traces.SpanAttributes['mcp.method.name'] = 'tools/call')) AS classifiedRequests,
-          toUInt64(countIf(traces.SpanAttributes['mcp.method.name'] = 'tools/call')) AS mcpRequests,
-          toUInt64(0) AS webRequests,
-          toUInt64(0) AS mobileRequests,
-          CAST([], 'Array(String)') AS groupIds,
-          toFloat64(maxIf(toFloat64(traces.Timestamp), traces.SpanAttributes['user.name'] != '')) AS nameAt,
-          toFloat64(maxIf(toFloat64(traces.Timestamp), traces.SpanAttributes['user.email'] != '')) AS emailAt,
-          toFloat64(0) AS groupAt
+          CAST([], 'Array(String)') AS groupIds
         FROM traces
         WHERE traces.OrgId = 'org_sql_catalog'
           AND traces.Timestamp >= '2026-01-01 10:30:00'
@@ -12625,9 +13300,7 @@ SELECT
           AND traces.ServiceName IN ('maple-ai')
           AND traces.SpanAttributes['mcp.method.name'] != ''
           AND if(traces.SpanAttributes['user.id'] != '', traces.SpanAttributes['user.id'], traces.SpanAttributes['enduser.id']) != ''
-        GROUP BY userId, namespace
-) AS signals
-        GROUP BY userId) AS users
+) AS rows
         FORMAT JSON
 
 -- builder:users:userVisitorIdsQuery:default  [4df66218]

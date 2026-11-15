@@ -114,19 +114,30 @@ export const statRailItem = <M>(h: HtmlBuilder<M>, options: StatRailItemOptions<
 		h.div(
 			[h.Class("flex items-baseline justify-between gap-3")],
 			[
+				// The hint stays beside its label when a delta takes the corner.
 				h.span(
+					[h.Class("flex min-w-0 items-center gap-1.5")],
 					[
-						h.Class(
-							cn(
-								"truncate text-2xs font-medium",
-								isSelected ? "text-primary" : "text-muted-foreground",
-							),
+						h.span(
+							[
+								h.Class(
+									cn(
+										"truncate text-2xs font-medium",
+										isSelected ? "text-primary" : "text-muted-foreground",
+									),
+								),
+							],
+							[options.eyebrow],
 						),
+						...(options.eyebrowTooltip === undefined
+							? []
+							: [infoHint(h, options.eyebrowTooltip)]),
 					],
-					[options.eyebrow],
 				),
-				...(options.eyebrowTooltip === undefined ? [] : [infoHint(h, options.eyebrowTooltip)]),
-				...(corner === undefined ? [] : [h.span([h.Class("shrink-0 whitespace-nowrap")], [corner])]),
+				// Centred, not on the baseline: a delta's arrow would otherwise make its tile's header taller.
+				...(corner === undefined
+					? []
+					: [h.span([h.Class("shrink-0 self-center leading-none whitespace-nowrap")], [corner])]),
 			],
 		),
 		h.div(
@@ -150,7 +161,7 @@ export const statRailItem = <M>(h: HtmlBuilder<M>, options: StatRailItemOptions<
 								values: options.spark.slice(-28),
 								color: options.sparkColor ?? SPARK_COLOR[options.tone ?? "neutral"],
 								opacityRamp: true,
-								className: "h-7 w-24 min-w-0 shrink",
+								className: "hidden h-7 w-24 min-w-0 shrink @min-[14rem]/stat:block",
 							}),
 						]
 					: options.compact === true || isSmall
@@ -163,7 +174,7 @@ export const statRailItem = <M>(h: HtmlBuilder<M>, options: StatRailItemOptions<
 			: [h.div([h.Class("mt-2 truncate text-2xs text-muted-foreground")], [options.subline])]),
 	]
 	// No entry animation: tiles remount on every refetch and tab switch, so it would replay each time.
-	const shell = cn("relative", isSmall ? "px-4 py-3" : "px-5 py-4", options.className)
+	const shell = cn("@container/stat relative", isSmall ? "px-4 py-3" : "px-5 py-4", options.className)
 	if (options.onSelect === undefined) return h.div([h.Class(shell)], body)
 	const isDisabled = options.isDisabled === true
 	return h.button(
