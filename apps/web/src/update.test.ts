@@ -244,7 +244,7 @@ describe("re-render on change only", () => {
 				cloudCost: false,
 				dataSources: false,
 				productAnalytics: false,
-				releases: false,
+				profiling: false,
 				securityAudit: false,
 				statusPages: false,
 			},

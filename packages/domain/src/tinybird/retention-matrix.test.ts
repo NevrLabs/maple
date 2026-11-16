@@ -27,8 +27,12 @@ const RETENTION_DAYS = {
 	// Only read while a fingerprint version bump settles; the re-key needs a recent occurrence.
 	error_fingerprint_lineage: 30,
 	logs: 30,
+	// Two weeks: a release's profile stays comparable with the previous week's.
+	profiles: 14,
 	logs_aggregates_hourly: 365,
 	metric_catalog: 90,
+	// As long as the raw metrics it rolls up.
+	aws_metrics_hourly: 90,
 	metrics_exponential_histogram: 90,
 	metrics_gauge: 90,
 	metrics_histogram: 90,

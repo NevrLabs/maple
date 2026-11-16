@@ -104,6 +104,7 @@ export const TABLE_DELETE_PLAN = {
 	attribute_values_hourly: unkeyed("Hour"),
 	audit_log: { strategy: "excluded", reason: NOT_TELEMETRY },
 	audit_trail_events: { strategy: "excluded", reason: NOT_TELEMETRY },
+	aws_metrics_hourly: derived("Hour", { env: null }),
 	ci_jobs: unkeyed("Timestamp"),
 	ci_runs: unkeyed("Timestamp"),
 	error_events: derived("Timestamp"),
@@ -119,6 +120,7 @@ export const TABLE_DELETE_PLAN = {
 	metrics_histogram: raw("TimeUnix"),
 	metrics_sum: raw("TimeUnix"),
 	product_events: derived("Timestamp", { env: null }),
+	profiles: raw("Timestamp"),
 	scanner_requests: derived("Timestamp", { env: null }),
 	cost_daily: {
 		strategy: "excluded",

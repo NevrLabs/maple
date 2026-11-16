@@ -10,6 +10,7 @@ import * as Billing from "./billing/model"
 import * as Members from "./members/model"
 import * as SelfhostMembers from "./selfhost-members/model"
 import * as General from "./general/model"
+import * as Domains from "./domains/model"
 import * as DataPlatform from "./data-platform/model"
 import * as DataSources from "./data-sources/model"
 import * as AuditLog from "./audit-log/model"
@@ -49,6 +50,7 @@ export const TabModel = Schema.Union([
 	Schema.TaggedStruct("Members", { model: Members.Model }),
 	/** NevrLabs selfhost: Members on a self-hosted deployment (the OIDC users table). */
 	Schema.TaggedStruct("SelfhostMembers", { model: SelfhostMembers.Model }),
+	Schema.TaggedStruct("Domains", { model: Domains.Model }),
 	Schema.TaggedStruct("Billing", { model: Billing.Model }),
 ])
 export type TabModel = typeof TabModel.Type

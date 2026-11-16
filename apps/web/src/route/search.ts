@@ -212,6 +212,7 @@ export const accountTabValues = [
 export const settingsTabValues = [
 	"general",
 	"members",
+	"domains",
 	"billing",
 	"audit-log",
 	"keys",
@@ -446,11 +447,25 @@ export const InvestigationSearch = Schema.Struct({
 	action: Schema.optional(Schema.Unknown),
 })
 
+export const MetricSearchAggregation = Schema.Literals([
+	"avg",
+	"sum",
+	"min",
+	"max",
+	"count",
+	"latest",
+	"rate",
+	"increase",
+	"p50",
+	"p75",
+	"p90",
+	"p95",
+	"p99",
+])
+
 export const MetricSearch = Schema.Struct({
 	type: Schema.optional(Schema.Literals(QUERY_BUILDER_METRIC_TYPES)),
-	agg: Schema.optional(
-		Schema.Literals(["avg", "sum", "min", "max", "count", "latest", "rate", "increase"]),
-	),
+	agg: Schema.optional(MetricSearchAggregation),
 	where: StringParam,
 	groupBy: StringParam,
 	step: StringParam,
@@ -472,6 +487,10 @@ export const ServiceSearch = Schema.Struct({
 	tab: StringParam,
 	/** The API tab's open endpoint drawer, by normalized span name ("GET /users/{id}"). */
 	endpoint: StringParam,
+	/** The Overview's open deploy drawer, by commit sha. */
+	deploy: StringParam,
+	/** The open deploy's environment, when its commit shipped to several. */
+	deployEnv: StringParam,
 	environments: OptionalStringArrayParam,
 	...TimeRangeSearchFields,
 })
@@ -618,6 +637,21 @@ export const CostSearch = Schema.Struct({
 	account: OptionalStringArrayParam,
 })
 
+/**
+ * `/cost/budgets/new`: `budgetId` edits that budget. The rest prefill a new one with the slice of
+ * spend the Cost page was filtered to, one value list per dimension.
+ */
+export const CostBudgetNewSearch = Schema.Struct({
+	budgetId: StringParam,
+	cloud_service: OptionalStringArrayParam,
+	provider: OptionalStringArrayParam,
+	service_category: OptionalStringArrayParam,
+	region: OptionalStringArrayParam,
+	resource: OptionalStringArrayParam,
+	account: OptionalStringArrayParam,
+})
+export type CostBudgetNewSearch = typeof CostBudgetNewSearch.Type
+
 export const DashboardsSearch = Schema.Struct({
 	q: StringParam,
 	scope: Schema.optional(Schema.Literals(["all", "favorites"])),
@@ -691,13 +725,8 @@ export const MetricsSearch = Schema.Struct({
 	...TimeRangeSearchFields,
 })
 
-export const ReleasesSearch = Schema.Struct({
-	environments: OptionalStringArrayParam,
-	excludedEnvironments: OptionalStringArrayParam,
-	services: OptionalStringArrayParam,
-	impact: Schema.optional(Schema.Literals(["regressed", "watch", "rolling", "healthy"])),
-	...TimeRangeSearchFields,
-})
+/** Retired: `routeRedirect` sends `/releases` to the services, keeping the window. */
+export const ReleasesSearch = Schema.Struct({ ...TimeRangeSearchFields })
 
 export const ReplaysSearch = Schema.Struct({
 	service: StringParam,

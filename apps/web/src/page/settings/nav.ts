@@ -12,6 +12,7 @@ export type LegacySettingsTab = (typeof legacySettingsTabValues)[number]
 export const settingsTabLabels = {
 	general: "General",
 	members: "Members",
+	domains: "Verified domains",
 	billing: "Billing & usage",
 	"audit-log": "Audit log",
 	keys: "Keys",
@@ -62,6 +63,7 @@ const navSections: ReadonlyArray<NavShellSection<SettingsTab>> = [
 		items: [
 			tab("general", "GearIcon"),
 			tab("members", "UserIcon"),
+			tab("domains", "GlobeIcon"),
 			tab("billing", "CreditCardIcon"),
 			tab("audit-log", "HistoryIcon"),
 		],
@@ -110,6 +112,8 @@ const isVisible = (id: string, visibility: Visibility): boolean => {
 	// NevrLabs selfhost: Members is the OIDC users table on a self-hosted deployment.
 	if (id === "members") return visibility.isClerk || oidcProvider !== null
 	if (id === "general" || id === "billing") return visibility.isClerk
+	// Clerk refuses a member reading the domains, so the tab is for admins only.
+	if (id === "domains") return visibility.isClerk && Policy.has(visibility.grants, "organization:manage")
 	if (!visibility.isClerk) return true
 	if (id === "data-platform")
 		return visibility.canAccessDataPlatform || visibility.isDataPlatformLocked === true

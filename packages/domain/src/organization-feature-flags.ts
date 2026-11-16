@@ -33,10 +33,10 @@ export const OrganizationFeatureFlags = Schema.Struct({
 	 */
 	productAnalytics: DisabledByDefaultFeatureFlag,
 	/**
-	 * Gates the Releases row under Monitor. The `/releases` routes stay
-	 * reachable by URL for anyone; the flag only decides who is shown the door.
+	 * Gates continuous profiling in the dashboard: the service page's Profiles tab and the span
+	 * panel's Profile tab. Off until profile ingest is live for customers.
 	 */
-	releases: DisabledByDefaultFeatureFlag,
+	profiling: DisabledByDefaultFeatureFlag,
 	/** Gates the scheduled security audit API; internal-only while it is built out. */
 	securityAudit: DisabledByDefaultFeatureFlag,
 	/** Gates customer status pages: the nav row, the `/status-pages` routes, the API and MCP tools. */
@@ -47,7 +47,7 @@ export const OrganizationFeatureFlags = Schema.Struct({
 		cloudCost: "cloudcost",
 		dataSources: "datasources",
 		productAnalytics: "productanalytics",
-		releases: "releases",
+		profiling: "profiling",
 		securityAudit: "securityaudit",
 		statusPages: "statuspages",
 	}),
@@ -63,7 +63,7 @@ export const DISABLED_ORGANIZATION_FEATURE_FLAGS: OrganizationFeatureFlags = {
 	cloudCost: false,
 	dataSources: false,
 	productAnalytics: false,
-	releases: false,
+	profiling: false,
 	securityAudit: false,
 	statusPages: false,
 }
@@ -78,7 +78,7 @@ export const ENABLED_ORGANIZATION_FEATURE_FLAGS: OrganizationFeatureFlags = {
 	cloudCost: true,
 	dataSources: true,
 	productAnalytics: true,
-	releases: true,
+	profiling: true,
 	securityAudit: true,
 	statusPages: true,
 }

@@ -1,7 +1,7 @@
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api"
 import { Schema, String as Str } from "effect"
 import { AWS_INFRA_KIND_IDS } from "../aws-infra"
-import { CostDimension, CostMetric, CostProvider } from "../cost"
+import { CostCurrency, CostDimension, CostFilters, CostMetric, CostProvider } from "../cost"
 import { GCP_INFRA_SERVICE_IDS, GCP_INFRA_SOURCE_IDS } from "../gcp-infra"
 import { ADVISORY_SEVERITIES } from "../runtime-advisories"
 import { ATTACK_STAGES } from "../security-telemetry"
@@ -1608,13 +1608,50 @@ const ReleaseRow = Schema.Struct({
 })
 export type ReleaseRow = Schema.Schema.Type<typeof ReleaseRow>
 
-const ReleaseTimelinePoint = Schema.Struct({
-	bucket: Schema.String,
+/**
+ * One deploy's first minutes against the same minutes just before it on the
+ * same environment. `before*` is every other version in that span.
+ */
+const DeployVerificationRow = Schema.Struct({
 	serviceName: ServiceName,
+	environment: Schema.String,
 	commitSha: CommitSha,
-	count: Schema.Number,
+	firstSeen: Schema.String,
+	afterSpans: Schema.Number,
+	afterErrors: Schema.Number,
+	afterP95Ms: Schema.Number,
+	beforeSpans: Schema.Number,
+	beforeErrors: Schema.Number,
+	beforeP95Ms: Schema.Number,
 })
-export type ReleaseTimelinePoint = Schema.Schema.Type<typeof ReleaseTimelinePoint>
+export type DeployVerificationRow = Schema.Schema.Type<typeof DeployVerificationRow>
+
+/** One service's deploys in the window, or with `commitSha` one commit across the services it reached. */
+export class ServiceDeploysRequest extends Schema.Class<ServiceDeploysRequest>("ServiceDeploysRequest")(
+	Schema.Struct({
+		serviceName: Schema.optional(ServiceName),
+		commitSha: Schema.optional(CommitSha),
+		startTime: TinybirdDateTime,
+		endTime: TinybirdDateTime,
+		environments: OptionalDeploymentEnvs,
+	}).check(
+		// Neither would read every service's minutes across the org.
+		Schema.makeFilter(
+			(request: { readonly serviceName?: string; readonly commitSha?: string }) =>
+				request.serviceName !== undefined ||
+				request.commitSha !== undefined ||
+				"a serviceName or a commitSha is required",
+			{ identifier: "ServiceDeploysScoped" },
+		),
+	),
+) {}
+
+export class ServiceDeploysResponse extends Schema.Class<ServiceDeploysResponse>("ServiceDeploysResponse")({
+	/** Versions first seen inside the window, newest first. */
+	deploys: Schema.Array(DeployVerificationRow),
+	/** The width of each side of a verification, in seconds. */
+	verifyWindowSeconds: Schema.Number,
+}) {}
 
 export class ReleasesListRequest extends Schema.Class<ReleasesListRequest>("ReleasesListRequest")({
 	startTime: TinybirdDateTime,
@@ -1623,15 +1660,11 @@ export class ReleasesListRequest extends Schema.Class<ReleasesListRequest>("Rele
 	namespaces: OptionalServiceNamespaces,
 	services: OptionalServiceNames,
 	excludedEnvironments: OptionalDeploymentEnvs,
-	// Bucket for the swimlane timeline. Whole minutes at least: the rollup tiers
-	// cannot place a row inside a minute, and the list is org-wide.
-	bucketSeconds: BucketSeconds,
 }) {}
 
 export class ReleasesListResponse extends Schema.Class<ReleasesListResponse>("ReleasesListResponse")({
 	/** One row per (service, environment, commit), newest first. */
 	releases: Schema.Array(ReleaseRow),
-	timeline: Schema.Array(ReleaseTimelinePoint),
 	/** True when the row cap cut older releases off the end. */
 	truncated: Schema.Boolean,
 }) {}
@@ -1694,36 +1727,6 @@ export type UptimeCheck = Schema.Schema.Type<typeof UptimeCheck>
 export class UptimeChecksResponse extends Schema.Class<UptimeChecksResponse>("UptimeChecksResponse")({
 	/** Newest first. */
 	checks: Schema.Array(UptimeCheck),
-}) {}
-
-export class ReleaseDetailRequest extends Schema.Class<ReleaseDetailRequest>("ReleaseDetailRequest")({
-	serviceName: ServiceName,
-	commitSha: CommitSha,
-	startTime: TinybirdDateTime,
-	endTime: TinybirdDateTime,
-	environments: OptionalDeploymentEnvs,
-	// Pre-built all-metrics timeseries for this version and for every other
-	// version of the service, forwarded verbatim to `queryEngine.execute` like
-	// the service-detail bundle does.
-	timeseries: QueryEngineExecuteRequest,
-	baselineTimeseries: QueryEngineExecuteRequest,
-	bucketSeconds: BucketSeconds,
-}) {}
-
-export class ReleaseDetailResponse extends Schema.Class<ReleaseDetailResponse>("ReleaseDetailResponse")({
-	/** Every version of this service in the window, this one included. */
-	versions: Schema.Array(ReleaseRow),
-	timeline: Schema.Array(ReleaseTimelinePoint),
-	timeseries: QueryEngineExecuteResponse,
-	baselineTimeseries: QueryEngineExecuteResponse,
-	/** Error fingerprints whose occurrences carried this version as `service.version`. */
-	errorFingerprints: Schema.Array(
-		Schema.Struct({
-			fingerprintHash: FingerprintHash,
-			count: Schema.Number,
-			firstSeen: Schema.String,
-		}),
-	),
 }) {}
 
 export class ServiceDependenciesBundleRequest extends Schema.Class<ServiceDependenciesBundleRequest>(
@@ -1897,6 +1900,86 @@ export class ServiceRuntimesResponse extends Schema.Class<ServiceRuntimesRespons
 		data: Schema.Array(ServiceRuntimeRow),
 	},
 ) {}
+
+/** Span ids one profile read may name: the span panel cuts a deeper subtree off at the same count. */
+export const PROFILE_SPAN_IDS_MAX = 500
+
+/** A span and the spans under it: a sample belongs to the innermost span that was running. */
+export const ProfileSpanIds = Schema.Array(SpanId).check(
+	Schema.isMinLength(1),
+	Schema.isMaxLength(PROFILE_SPAN_IDS_MAX),
+)
+
+/** A sample type as a producer names it (`cpu`, `alloc_space`, ...). */
+export const ProfileSampleType = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128))
+
+/** `nanoseconds` | `bytes` | `count`, or `""`: ingest stores a profile that names no unit that way. */
+export const ProfileSampleUnit = Schema.String.check(Schema.isMaxLength(128))
+
+/**
+ * What a profile read covers: a service's window (`serviceName`, one environment at most), or the
+ * samples linked to spans of one trace (`traceId` with `spanIds`). A read names at least one.
+ */
+const profileScopeFields = {
+	startTime: TinybirdDateTime,
+	endTime: TinybirdDateTime,
+	serviceName: Schema.optionalKey(ServiceName),
+	deploymentEnv: Schema.optionalKey(DeploymentEnvironment),
+	traceId: Schema.optionalKey(TraceId),
+	spanIds: Schema.optionalKey(ProfileSpanIds),
+}
+
+export class ProfileSampleTypesRequest extends Schema.Class<ProfileSampleTypesRequest>(
+	"ProfileSampleTypesRequest",
+)(profileScopeFields) {}
+
+/** One sample type in scope, in one unit, with what it summed to. */
+export const ProfileSampleTypeRow = Schema.Struct({
+	sampleType: Schema.String,
+	/** `nanoseconds` | `bytes` | `count`. */
+	sampleUnit: Schema.String,
+	value: Schema.Number,
+	samples: Schema.Number,
+	profiles: Schema.Number,
+	/** The summed length of the profiled windows: CPU time over it is average cores. */
+	durationNano: Schema.Number,
+})
+export type ProfileSampleTypeRow = typeof ProfileSampleTypeRow.Type
+
+export class ProfileSampleTypesResponse extends Schema.Class<ProfileSampleTypesResponse>(
+	"ProfileSampleTypesResponse",
+)({
+	/** Heaviest first; empty for a scope without profiles. */
+	data: Schema.Array(ProfileSampleTypeRow),
+}) {}
+
+export class ProfileStacksRequest extends Schema.Class<ProfileStacksRequest>("ProfileStacksRequest")({
+	...profileScopeFields,
+	sampleType: ProfileSampleType,
+	/** The unit of the sample-type row being read: one type's values only add up within a unit. */
+	sampleUnit: ProfileSampleUnit,
+}) {}
+
+/** One distinct call stack, frames root first, with the value it summed to in scope. */
+export const ProfileStackRow = Schema.Struct({
+	frames: Schema.Array(Schema.String),
+	/** `""` where the producer had no file. */
+	files: Schema.Array(Schema.String),
+	/** 0 where unknown. */
+	lines: Schema.Array(Schema.Number),
+	value: Schema.Number,
+})
+export type ProfileStackRow = typeof ProfileStackRow.Type
+
+export class ProfileStacksResponse extends Schema.Class<ProfileStacksResponse>("ProfileStacksResponse")({
+	/** The heaviest stacks, up to the read's cap. */
+	stacks: Schema.Array(ProfileStackRow),
+	/** Every stack in scope, including those the cap cut off. */
+	totalValue: Schema.Number,
+	totalStacks: Schema.Number,
+	/** True when `stacks` is fewer than `totalStacks`. */
+	truncated: Schema.Boolean,
+}) {}
 
 export class ServiceMapBundleRequest extends Schema.Class<ServiceMapBundleRequest>("ServiceMapBundleRequest")(
 	{
@@ -3099,27 +3182,6 @@ export class CloudCostPersistenceError extends HttpTaggedError<CloudCostPersiste
 /** The widest window a cost read takes: a little past what `cost_daily` keeps. */
 export const COST_MAX_WINDOW_DAYS = 800
 
-/** Values per dimension a cost read may narrow to; the query inlines them, so both sizes are capped. */
-export const COST_FILTER_MAX_VALUES = 50
-export const COST_FILTER_MAX_VALUE_LENGTH = 300
-
-const CostFilterValues = Schema.Array(
-	Schema.String.check(Schema.isMaxLength(COST_FILTER_MAX_VALUE_LENGTH)),
-).check(Schema.isMaxLength(COST_FILTER_MAX_VALUES))
-
-/** One optional value list per `CostDimension`; an empty or missing list does not narrow. */
-export const CostFilters = Schema.Struct({
-	provider: Schema.optionalKey(CostFilterValues),
-	account: Schema.optionalKey(CostFilterValues),
-	cloud_service: Schema.optionalKey(CostFilterValues),
-	service_category: Schema.optionalKey(CostFilterValues),
-	usage_type: Schema.optionalKey(CostFilterValues),
-	region: Schema.optionalKey(CostFilterValues),
-	resource: Schema.optionalKey(CostFilterValues),
-	service: Schema.optionalKey(CostFilterValues),
-} satisfies Record<CostDimension, Schema.Top>)
-export type CostFilters = typeof CostFilters.Type
-
 /** The years a cost window may name: day arithmetic past 9999 leaves the four-digit year. */
 const COST_WINDOW_MIN_YEAR = 2000
 const COST_WINDOW_MAX_YEAR = 2100
@@ -3145,9 +3207,6 @@ const CostWindowDateTime = TinybirdDateTime.check(
 		)
 	}),
 )
-
-/** An ISO 4217 code as the providers bill it. The query inlines it, so nothing else gets through. */
-const CostCurrency = Schema.String.check(Schema.isPattern(/^[A-Z]{3}$/u))
 
 /** The window is floored to whole UTC days, both ends inclusive. */
 const CostWindowFields = {
@@ -4134,7 +4193,8 @@ const queryEngineEndpointErrors = [
 // The Security Center's telemetry tabs are for engineers and admins, like its findings.
 const securityEndpointErrors = [...queryEngineEndpointErrors, DependencyScanForbiddenError] as const
 
-const costEndpointErrors = [
+/** What any read of the org's cost can answer with. */
+export const costEndpointErrors = [
 	CloudCostDisabledError,
 	CloudCostPersistenceError,
 	// A window wider than `COST_MAX_WINDOW_DAYS`.
@@ -4554,6 +4614,13 @@ export class QueryEngineApiGroup extends HttpApiGroup.make("queryEngine")
 		}),
 	)
 	.add(
+		HttpApiEndpoint.post("serviceDeploys", "/service-deploys", {
+			payload: ServiceDeploysRequest,
+			success: ServiceDeploysResponse,
+			error: queryEngineEndpointErrors,
+		}),
+	)
+	.add(
 		HttpApiEndpoint.post("releasesList", "/releases", {
 			payload: ReleasesListRequest,
 			success: ReleasesListResponse,
@@ -4572,14 +4639,6 @@ export class QueryEngineApiGroup extends HttpApiGroup.make("queryEngine")
 			payload: UptimeChecksRequest,
 			success: UptimeChecksResponse,
 			error: queryEngineEndpointErrors,
-		}),
-	)
-	.add(
-		HttpApiEndpoint.post("releaseDetail", "/release-detail", {
-			payload: ReleaseDetailRequest,
-			success: ReleaseDetailResponse,
-			// Embeds `execute` sub-queries, so it can also surface QueryEngineValidationError.
-			error: validatedQueryEndpointErrors,
 		}),
 	)
 	.add(
@@ -4615,6 +4674,20 @@ export class QueryEngineApiGroup extends HttpApiGroup.make("queryEngine")
 			payload: ServiceRuntimesRequest,
 			success: ServiceRuntimesResponse,
 			error: queryEngineEndpointErrors,
+		}),
+	)
+	.add(
+		HttpApiEndpoint.post("profileSampleTypes", "/profile-sample-types", {
+			payload: ProfileSampleTypesRequest,
+			success: ProfileSampleTypesResponse,
+			error: validatedQueryEndpointErrors,
+		}),
+	)
+	.add(
+		HttpApiEndpoint.post("profileStacks", "/profile-stacks", {
+			payload: ProfileStacksRequest,
+			success: ProfileStacksResponse,
+			error: validatedQueryEndpointErrors,
 		}),
 	)
 	.add(

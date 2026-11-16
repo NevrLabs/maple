@@ -81,6 +81,11 @@ const TABLE_NOTES: Record<string, ReadonlyArray<string>> = {
 		"Aggregate state columns: merge `DurationQuantiles` with `quantilesTDigestMerge(0.5, 0.95, 0.99)` (NANOSECONDS), `BodySizeQuantiles` with `quantilesTDigestIfMerge(0.5, 0.95, 0.99)` (bytes), `UserAgents` with `approx_top_kMerge(10)`, and `SlowestTraceId`/`SlowestTimestamp`/`SlowestBodySize` with `argMaxMerge` (`SlowestBodySize` -1 = no body size). Sum `SpanCount`/`EstimatedSpanCount`/`BodyCount`.",
 		"Keeps 90 days at hour grain. Sorting key: `(OrgId, ServiceName, Hour, DeploymentEnv, SpanName, HttpStatusCode, ErrorType)`.",
 	],
+	aws_metrics_hourly: [
+		"One row per AWS series (`MetricType` 'sum' or 'gauge', `MetricName`, `ServiceName`, `Attributes`, `CloudRegion`, `CloudAccountId`) and `Hour` of the CloudWatch stream's `aws.*` metrics. ALWAYS prefer this over `metrics_sum` / `metrics_gauge` for `aws.*` metrics over more than a few hours.",
+		"Sum `Total` and `Samples` (a gauge's mean is `sum(Total) / sum(Samples)`), `max(Peak)`, `max(LastSeen)`.",
+		"Keeps 90 days at hour grain: snap range bounds with `toStartOfHour`. Sorting key: `(OrgId, MetricType, MetricName, Hour, ServiceName, Attributes, CloudRegion, CloudAccountId)`.",
+	],
 	user_activity_hourly: [
 		"One row per (`ServiceNamespace`, `UserId`, `Hour`, `ServiceName`) of spans and logs carrying `user.id` (else `enduser.id`). ALWAYS prefer this over `traces` + `SpanAttributes['user.id']` for per-user request, error and log counts.",
 		"Sum `SpanCount`, `ErrorSpanCount`, `RequestCount` (entry-point spans), `FailedRequestCount`, `LogCount`, `WarnLogCount`, `ErrorLogCount`; `min(FirstSeen)` / `max(LastSeen)`. Merge `TraceIds` / `SessionIds` with `uniqIfMerge`, `RequestDurationQuantiles` with `quantilesTDigestIfMerge(0.5, 0.95)` (NANOSECONDS), `TopRoutes` with `approx_top_kMerge(10)` (drop the '' entry).",
@@ -148,7 +153,7 @@ const TABLE_NOTES: Record<string, ReadonlyArray<string>> = {
 	service_usage: [
 		"Hourly per-service rollup of STORED rows, 365-day TTL — far longer than the 30-day `logs`/`traces` retention, so it is the right table for long-range volume trends.",
 		"`Hour` is a top-of-hour DateTime. Snap both range bounds to their hour floor (`toStartOfHour`) or sub-hour windows return no rows at all; this necessarily over-reports at the window edges.",
-		"The `*SizeBytes` columns are STORAGE ESTIMATES, not measured bytes — the materialized views compute them as `length(Body) + 200` (logs), `length(SpanName) + 300` (spans) and flat per-point constants (metrics). They will NOT reconcile with an Autumn invoice and must never be presented as billed usage.",
+		"The `*SizeBytes` columns are STORAGE ESTIMATES, not measured bytes: the materialized views compute them as `length(Body) + 200` (logs), `length(SpanName) + 300` (spans), flat per-point constants (metrics) and `length(Frames) * 16 + 200` per stack row (profiles, `ProfileRowCount` / `ProfileSizeBytes`, 0 before migration 0068). They will NOT reconcile with an Autumn invoice and must never be presented as billed usage.",
 		"For real billed bytes use `metrics_sum` / `maple_ingest_org_bytes_total`, which records the decoded payload size the gateway actually metered. Counts here are also post-sampling and post-drop, i.e. what was stored, not what was accepted.",
 		"`TraceCount` counts stored SPANS (not distinct traces) and `LogCount` log records; there is no `SpanCount` column.",
 		"Metric counts are split across four columns by point type (`SumMetricCount`, `GaugeMetricCount`, `HistogramMetricCount`, `ExpHistogramMetricCount`) — add all four for a total metric-point count.",

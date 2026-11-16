@@ -26,6 +26,7 @@ import * as Ai from "./ai/update"
 import * as Billing from "./billing/update"
 import * as Members from "./members/update"
 import * as General from "./general/update"
+import * as Domains from "./domains/update"
 import * as DataPlatform from "./data-platform/update"
 import * as DataSources from "./data-sources/update"
 import * as AuditLog from "./audit-log/update"
@@ -104,6 +105,7 @@ const TAB_TAGS = {
 	general: "General",
 	// NevrLabs selfhost (PATCHES #5): without Clerk the members tab is the fork's IdP-agnostic one.
 	members: isClerkAuthEnabled ? "Members" : "SelfhostMembers",
+	domains: "Domains",
 	billing: "Billing",
 } as const satisfies Record<SettingsTab, TabModel["_tag"]>
 const tabTag = (tab: SettingsTab): TabModel["_tag"] => TAB_TAGS[tab]
@@ -286,6 +288,15 @@ const initTab = (model: Model, tab: SettingsTab, context: PageContext): Return =
 				),
 			}
 		}
+		case "Domains": {
+			const step = Domains.init()
+			return {
+				model: { ...model, tab: { _tag: "Domains", model: step.model } },
+				commands: Command.mapMessages(step.commands ?? [], (message) =>
+					Message.GotDomainsMessage({ message }),
+				),
+			}
+		}
 		case "Billing": {
 			const step = Billing.init(
 				grantsOf(model),
@@ -407,6 +418,15 @@ const revisitTab = (model: Model, kept: TabModel, context: PageContext): Return 
 				model: { ...model, tab: { _tag: "SelfhostMembers", model: step.model } },
 				commands: Command.mapMessages(step.commands ?? [], (message) =>
 					Message.GotSelfhostMembersMessage({ message }),
+				),
+			}
+		}
+		case "Domains": {
+			const step = Domains.revisit(kept.model)
+			return {
+				model: { ...model, tab: { _tag: "Domains", model: step.model } },
+				commands: Command.mapMessages(step.commands ?? [], (message) =>
+					Message.GotDomainsMessage({ message }),
 				),
 			}
 		}
@@ -782,6 +802,18 @@ const updateMessage = (model: Model, message: Message, context: PageContext): Re
 				model: putTab(model, { _tag: "Members", model: step.model }),
 				commands: Command.mapMessages(step.commands ?? [], (child) =>
 					Message.GotMembersMessage({ message: child }),
+				),
+				outMessage: step.outMessage,
+			}
+		},
+		GotDomainsMessage: ({ message: inner }) => {
+			const tab = tabNamed(model, "Domains")
+			if (tab === undefined) return { model }
+			const step = Domains.update(tab.model, inner)
+			return {
+				model: putTab(model, { _tag: "Domains", model: step.model }),
+				commands: Command.mapMessages(step.commands ?? [], (child) =>
+					Message.GotDomainsMessage({ message: child }),
 				),
 				outMessage: step.outMessage,
 			}

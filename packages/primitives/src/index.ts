@@ -147,6 +147,9 @@ export type AwsConnectionId = Schema.Schema.Type<typeof AwsConnectionId>
 export const CostSourceId = MapleUuidId("@maple/CostSourceId", "Cost Source ID")
 export type CostSourceId = Schema.Schema.Type<typeof CostSourceId>
 
+export const SavedViewId = MapleUuidId("@maple/SavedViewId", "Saved View ID")
+export type SavedViewId = Schema.Schema.Type<typeof SavedViewId>
+
 // Twelve digits, as AWS prints it. It is interpolated into role ARNs and setup scripts.
 export const AwsAccountId = Schema.String.check(Schema.isPattern(/^[0-9]{12}$/u)).pipe(
 	Schema.brand("@maple/AwsAccountId"),
@@ -581,7 +584,14 @@ export const SourceKind = Schema.Literals(["default", "token", "integration"]).a
 export type SourceKind = Schema.Schema.Type<typeof SourceKind>
 
 /** Signal families a source can be limited to; `sessions` covers replays and session events. */
-export const SourceSignal = Schema.Literals(["traces", "logs", "metrics", "sessions", "events"]).annotate({
+export const SourceSignal = Schema.Literals([
+	"traces",
+	"logs",
+	"metrics",
+	"sessions",
+	"events",
+	"profiles",
+]).annotate({
 	identifier: "@maple/SourceSignal",
 	title: "Source Signal",
 })
