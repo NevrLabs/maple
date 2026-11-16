@@ -242,3 +242,32 @@ gated head = merge `584f0e805` (parents `4c877db8b` run-5 tip + `acddf136e`). NO
   web merge surfaces 974/974.
 - bun.lock: regenerated lock byte-identical to the committed merged lock (sha256 `086fa50c…`) — no
   lock commit.
+
+## Run 7 — 2026-11-16 — upstream acddf136e → 64d696235
+
+Status: **COMPLETE — merged, gated (MacBook), pushed.** Branch `selfhost-homelab-up-20261116`,
+gated head = merge `6867394c1` (parents `5b3305aa4` run-6 tip + `64d696235`). NOT deployed.
+
+- Frozen at run start: fork main `acddf136e`, selfhost tip `5b3305aa4` (run-6 docs),
+  upstream/main `64d696235`.
+- Incoming range: 37 commits, 625 files (+226.2k/−10.6k): OTLP profiles end to end (warehouse table,
+  ingest on every gateway, effect-sdk CPU profiling, flame chart + span Profile tab, Maple Local),
+  Prometheus remote write ingest, org-scoped Tinybird tokens for tenant reads, profile billing,
+  integration feature switches, cost budgets as managed alert rules + budgets pages, histogram
+  percentiles, saved explorer views, deploy judgement/drawer on the service page (Releases pages
+  retired), verified domains in Settings, aws_metrics_hourly rollup, audit names for Maple agents.
+- Mirror: origin `main` fast-forwarded `acddf136e` → `64d696235`, pushed, read back.
+- Merge `6867394c1` (in a separate worktree; the main checkout's uncommitted postgres-integration
+  work left untouched): 4 conflicts, all additive tab-union arms in `apps/web/src/page/settings/`
+  — upstream's new `Domains` tab beside #5's `SelfhostMembers`: `model.ts` (union arm), `nav.ts`
+  (#5 members OIDC visibility kept; upstream's admin-only `domains` rule added), `update.ts`
+  (tab map + revisit case), `view.ts` (description case). Both sides kept in each.
+- Survival sweep (`acddf136e` → `5b3305aa4`): 24 overlap files — zero MISSING fork lines.
+- Gates: `gh workflow run` → `HTTP 422 Actions has been disabled` (unchanged). MacBook
+  `scripts/mac-gates.sh` (step list re-checked == gates.yml), ledger `~/ci/maple-gates/6867394c1…/ledger`,
+  head asserted == `6867394c1`: **all green**, `DONE 6867394c1`. Typechecks ×7 green; suites:
+  qe-integrations 512/512, backend org 423/423, backend warehouse 177 passed / 523 skipped,
+  domain status-page 45/45, status-page 85/85, backend uptime alerts + status-pages 140/140,
+  web merge surfaces 989/989.
+- bun.lock: regenerated lock byte-identical to the committed merged lock (sha256 `086fa50c…`) — no
+  lock commit.
