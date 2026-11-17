@@ -118,6 +118,9 @@ const PURGE_ORDER: ReadonlyArray<TableName> = [
 	"GcpResources",
 	// Before the connections they point at: a surviving row would keep the cost sync pulling.
 	"CostSources",
+	// Also removed with their connection, by the foreign key.
+	"CloudSecurityFindings",
+	"CloudSecurityServiceStates",
 	// A surviving row would keep Maple signing tokens for, and assuming, the customer's role.
 	"AwsConnections",
 	"ErrorIssueEvents",
@@ -172,6 +175,10 @@ const PURGE_ORDER: ReadonlyArray<TableName> = [
 	"SupabaseConnections",
 	// The org's own OpenRouter key: a recreated org with the same id must not inherit it.
 	"OrgOpenRouterKeys",
+	// Enterprise SSO domains, connection ids and SCIM groups; the Clerk side goes with the Clerk org.
+	"OrgSsoDomains",
+	"OrgSsoConnections",
+	"OrgDirectoryGroups",
 	// A surviving key would keep Maple reading the deleted org's OpenRouter spend.
 	"OpenRouterCostConnections",
 	// The same for every provider read with a pasted credential.

@@ -122,6 +122,49 @@ export const componentStatus = (
 		),
 	})
 
+const MONITOR_STATE = {
+	up: "up",
+	down: "down",
+	pending: "waiting for its first check",
+	paused: "paused",
+} as const satisfies Record<NonNullable<V2UptimeMonitor["state"]["status"]>, string>
+
+/**
+ * Why visitors see a status the monitor alone would not give: the open incident behind it, or the
+ * override. `null` when the component shows what its monitor says.
+ */
+export const statusReason = (
+	component: V2StatusPageComponent,
+	monitors: ReadonlyArray<V2UptimeMonitor>,
+	incidents: ReadonlyArray<V2StatusPageIncident>,
+): string | null => {
+	const monitorStatus = monitorStatusOf(monitors, component.monitor_id)
+	const shown = componentStatus(component, monitors, incidents)
+	// Selfhost fork (PATCHES #11): a down informational monitor reads degraded on its own.
+	const fromMonitor =
+		monitorStatus !== "down"
+			? "operational"
+			: isInformationalGroup(component.group)
+				? "degraded"
+				: "major_outage"
+	if (shown === fromMonitor) return null
+	const label = COMPONENT_STATUS_LABEL[shown]
+	const cause = Arr.findFirst(
+		incidents,
+		(incident) =>
+			incident.published &&
+			isActiveIncident(incident) &&
+			incident.component_ids.includes(component.id) &&
+			incidentComponentStatus(incident) === shown,
+	)
+	const why = Option.match(cause, {
+		onSome: (incident) =>
+			`${label} by the open ${incident.kind === "incident" ? "incident" : "maintenance"} "${incident.title}".`,
+		onNone: () => `${label}, set under Override status.`,
+	})
+	return monitorStatus === null ? why : `${why} The monitor is ${MONITOR_STATE[monitorStatus]}.`
+}
+
 /** The page banner: the worst non-informational component, as the public page derives it. */
 export const pageStatus = (
 	components: ReadonlyArray<V2StatusPageComponent>,

@@ -957,6 +957,10 @@ export const V2StatusPageIncident = Schema.Struct({
 	published: Schema.Boolean.annotate({ description: "Drafts (`false`) are not shown on the page." }),
 	scheduled_start: Schema.NullOr(scheduledField),
 	scheduled_end: Schema.NullOr(scheduledField),
+	auto_complete: Schema.Boolean.annotate({
+		description:
+			"Maintenance only: `true` completes it when its window ends; `false` keeps it in progress until someone completes it.",
+	}),
 	started_at: Timestamp,
 	resolved_at: Schema.NullOr(Timestamp),
 	component_ids: Schema.Array(StatusPageComponentPublicId),
@@ -979,6 +983,7 @@ export const V2StatusPageIncident = Schema.Struct({
 			published: true,
 			scheduled_start: null,
 			scheduled_end: null,
+			auto_complete: true,
 			started_at: "2026-07-15T09:12:00.000Z",
 			resolved_at: null,
 			component_ids: ["stc_YofPTrK9782DWwcnXhpcCw"],
@@ -1009,7 +1014,8 @@ export const V2StatusPageIncidentCreateParams = Schema.Struct({
 	),
 	status: Schema.optionalKey(
 		StatusPageIncidentStatus.annotate({
-			description: "Defaults to `investigating` for an incident and `scheduled` for maintenance.",
+			description:
+				"Defaults to `investigating` for an incident. Open maintenance takes its status from its window: `scheduled` before `scheduled_start`, `in_progress` after; a window that already ended is refused unless `completed`.",
 		}),
 	),
 	body: UpdateBody.annotate({ description: "The first public update." }),
@@ -1019,6 +1025,12 @@ export const V2StatusPageIncidentCreateParams = Schema.Struct({
 	),
 	scheduled_start: Schema.optionalKey(scheduledField),
 	scheduled_end: Schema.optionalKey(scheduledField),
+	auto_complete: Schema.optionalKey(
+		Schema.Boolean.annotate({
+			description:
+				"Maintenance only: `false` keeps it in progress past its window until someone completes it. Defaults to `true`.",
+		}),
+	),
 	started_at: Schema.optionalKey(startedAtField),
 }).annotate({
 	identifier: "StatusPageIncidentCreateParams",
@@ -1040,6 +1052,7 @@ export const V2StatusPageIncidentUpdateParams = Schema.Struct({
 	published: Schema.optionalKey(Schema.Boolean),
 	scheduled_start: Schema.optionalKey(Schema.NullOr(scheduledField)),
 	scheduled_end: Schema.optionalKey(Schema.NullOr(scheduledField)),
+	auto_complete: Schema.optionalKey(Schema.Boolean),
 	started_at: Schema.optionalKey(startedAtField),
 	resolved_at: Schema.optionalKey(
 		resolvedAtField.annotate({

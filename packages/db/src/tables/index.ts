@@ -47,6 +47,7 @@ import { IssueEscalationPolicies, IssueEscalations } from "./escalations"
 import { AlertEscalationRuns, AlertMemberNotifications, EscalationChains } from "./escalation-chains"
 import { OnCallOverrides, OnCallSchedules } from "./oncall-schedules"
 import { AwsConnections } from "./aws-connections"
+import { CloudSecurityFindings, CloudSecurityServiceStates } from "./cloud-security"
 import { CostSources } from "./cost-sources"
 import { GcpConnectors } from "./gcp-connectors"
 import { GcpResources } from "./gcp-resources"
@@ -76,6 +77,7 @@ import {
 import { CostConnections } from "./cost-connections"
 import { OpenRouterCostConnections } from "./openrouter-cost-connections"
 import { OrgOpenRouterKeys } from "./openrouter-keys"
+import { OrgDirectoryGroups, OrgSsoConnections, OrgSsoDomains } from "./enterprise-sso"
 import { RailwayConnections, RailwayEnvironments } from "./railway"
 import { SavedViews } from "./saved-views"
 import { ScrapeTargets, ScrapeTargetChecks } from "./scrape-targets"
@@ -127,6 +129,7 @@ export * from "./anomalies"
 export * from "./api-keys"
 export * from "./billing-links"
 export * from "./cancellation-reviews"
+export * from "./cloud-security"
 export * from "./dependency-scan"
 export * from "./chat-identities"
 export * from "./chat-workspaces"
@@ -168,6 +171,7 @@ export * from "./planetscale-inventory"
 export * from "./cost-connections"
 export * from "./openrouter-cost-connections"
 export * from "./openrouter-keys"
+export * from "./enterprise-sso"
 export * from "./railway"
 export * from "./saved-views"
 export * from "./scrape-targets"
@@ -238,6 +242,8 @@ export const allTables: ReadonlyArray<PgSchemaTable<string, ColumnDefs>> = [
 	GcpConnectors,
 	GcpResources,
 	AwsConnections,
+	CloudSecurityFindings,
+	CloudSecurityServiceStates,
 	CostSources,
 	Investigations,
 	LinearFeatureSettings,
@@ -260,6 +266,9 @@ export const allTables: ReadonlyArray<PgSchemaTable<string, ColumnDefs>> = [
 	OpenRouterCostConnections,
 	CostConnections,
 	OrgOpenRouterKeys,
+	OrgSsoDomains,
+	OrgSsoConnections,
+	OrgDirectoryGroups,
 	OrgBillingLinks,
 	Sources,
 	ExternalDataSources,
