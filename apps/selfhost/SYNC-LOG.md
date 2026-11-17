@@ -305,3 +305,17 @@ gated head = merge `f96b904b2` (parents `eb70d1320` run-7 tip + `c081ca2cd`). NO
   web merge surfaces 1042/1042.
 - bun.lock: regenerated lock byte-identical to the committed merged lock (sha256 `144a6ac6…`) — no
   lock commit.
+
+## Decision of record — 2026-11-17T12:17Z — FORK DEPLOY: APPROVED
+
+Owner (Raisal) go for deploying the selfhost fork to CT130: given orally in the Maple cutover thread
+2026-11-15/16 ("already said go"), reconfirmed 2026-11-17 via the chief-of-staff thread, recorded in
+writing in the Maple sync thread 2026-11-17T12:17Z. This entry is the durable record.
+
+- Scope: Run 8 (`selfhost-homelab-up-20261117` @ `94c2913af`, merge `f96b904b2`, gates green) — it
+  contains Runs 2–7, so one image set built from it replaces CT130's `up-fd23f5f0`. No Run 5/6 image
+  set exists on CT130, talos or the MacBook (checked 2026-11-17T12:17Z); images get built from Run 8.
+- Covers: image build + transfer, PG and ClickHouse migrations on the live databases (28 new drizzle
+  migrations, 9 new CH migration files since `fd23f5f06`), bounded service recreate, per the
+  `~/deploy/maple/BRIEF-upstream-DEPLOY.md` order (backup, PBS snapshot, restore rehearsal first).
+- Not covered (still separate): destructive DB restore/rollback; Telegram; upstream PRs.
