@@ -271,3 +271,37 @@ gated head = merge `6867394c1` (parents `5b3305aa4` run-6 tip + `64d696235`). NO
   web merge surfaces 989/989.
 - bun.lock: regenerated lock byte-identical to the committed merged lock (sha256 `086fa50c…`) — no
   lock commit.
+
+## Run 8 — 2026-11-17 — upstream 64d696235 → c081ca2cd
+
+Status: **COMPLETE — merged, gated (MacBook), pushed.** Branch `selfhost-homelab-up-20261117`,
+gated head = merge `f96b904b2` (parents `eb70d1320` run-7 tip + `c081ca2cd`). NOT deployed.
+
+- Frozen at run start: fork main `64d696235`, selfhost tip `eb70d1320` (run-7 docs),
+  upstream/main `c081ca2cd`.
+- Incoming range: 50 commits, 554 files (+174.6k/−4.9k): SSO (SAML/OIDC) + SCIM add-ons and settings
+  tab, status-page editor redesign (Live page / Incidents / Maintenance / Settings, statusPages org flag
+  again), HTTPS certificate-expiry warnings on uptime monitors, AWS security findings + CloudTrail into
+  the audit log, profile_hotspots MCP tool, quieter anomaly detection, expected-4xx/vendor-refusal noise
+  cuts across api/cli/integrations/scraper, OpenRouter BYOK provider order, actions bumps, landing.
+- Mirror: origin `main` fast-forwarded `64d696235` → `c081ca2cd`, pushed, read back.
+- Merge `f96b904b2` (separate worktree; main checkout's uncommitted postgres-integration work untouched):
+  4 conflicts, resolved by hand:
+  - `apps/web/src/page/settings/nav.ts`: #5 members OIDC visibility kept beside upstream's new `sso` rule.
+  - `apps/web/src/page/status-pages/shared/derive.ts`: upstream's `statusReason` taken with the #11 banner
+    doc; a down informational monitor's `degraded` counts as the monitor's own status (new test in
+    `derive.test.ts`).
+  - `packages/backend/src/services/alerts/AlertsService.uptime.test.ts`: #11/#13 tier tests and upstream's
+    certificate tests both kept.
+  - `packages/status-page/src/page.ts`: #11 divider moved into upstream's `flatMap`/`onlyId` panel (full
+    panel only); core-only "Affected" filter moved into upstream's `renderPageHero`. PATCHES #11 updated.
+- Survival sweep (`64d696235` → `eb70d1320`): 25 overlap files; the only MISSING lines are the four
+  `page.ts` lines above, re-expressed inside upstream's restructure (render.test tier cases green).
+- Gates: `gh workflow run` → `HTTP 422 Actions has been disabled` (unchanged). MacBook
+  `scripts/mac-gates.sh` (step list re-checked == gates.yml), ledger `~/ci/maple-gates/f96b904b2…/ledger`,
+  head asserted == `f96b904b2`: **all green**, `DONE f96b904b2`. Typechecks ×7 green; suites:
+  qe-integrations 512/512, backend org 449 passed / 1 skipped, backend warehouse 177 passed / 523 skipped,
+  domain status-page 45/45, status-page 85/85, backend uptime alerts + status-pages 146/146,
+  web merge surfaces 1042/1042.
+- bun.lock: regenerated lock byte-identical to the committed merged lock (sha256 `144a6ac6…`) — no
+  lock commit.

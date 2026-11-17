@@ -299,6 +299,10 @@ incident, so status-page auto incidents still work).
 - `packages/status-page/src/{page,select,script,styles}.ts` — row/group icons from `rowStatus`; hero "Affected" lists
   core only; one `Informational · does not affect the overall status` divider before the first informational group;
   the client script's window uptime uses failures (same as the server).
+- 2026-11-17 (run 8): upstream moved the hero call into `renderPageHero` and made the System status panel a
+  `flatMap` with an `onlyId` filter; the core-only "Affected" filter now lives in `renderPageHero`, and the divider
+  renders only on the full panel (not the single-component preview). Upstream's new `statusReason` (editor) treats a
+  down informational monitor's `degraded` as the monitor's own status, so it gives no reason (derive.test.ts).
 - Tests: `packages/domain/src/status-page.test.ts` (upstream uptime expectation 99.5 -> 99 = the new semantics, + tier
   cases), `packages/status-page/src/render.test.ts` (divider/hero/icon), `packages/backend/src/services/alerts/
   AlertsService.uptime.test.ts` (minor vs major auto incident). Negative controls: each of the 5 behaviours sabotaged
