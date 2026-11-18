@@ -319,3 +319,43 @@ writing in the Maple sync thread 2026-11-17T12:17Z. This entry is the durable re
   migrations, 9 new CH migration files since `fd23f5f06`), bounded service recreate, per the
   `~/deploy/maple/BRIEF-upstream-DEPLOY.md` order (backup, PBS snapshot, restore rehearsal first).
 - Not covered (still separate): destructive DB restore/rollback; Telegram; upstream PRs.
+
+## Run 9 — 2026-11-18 — upstream c081ca2cd → 019e4d9d1
+
+Status: **COMPLETE — merged, gated (MacBook), pushed.** Branch `selfhost-homelab-up-20261118`,
+merge `05c47b54c` (parents `69c36f75e` run-8 tip + `019e4d9d1`), gated head `4c187d1e2` (merge + gates
+extension). NOT deployed (the run-8 deploy approval covers run 8 only).
+
+- Frozen at run start: fork main `c081ca2cd`, selfhost tip `69c36f75e` (run-8 decision of record),
+  upstream/main `019e4d9d1`.
+- Incoming range: 49 commits, 629 files (+104.7k/−7.0k): status-page editor (click-to-edit preview,
+  logo/favicon uploads, custom colours, list cards with components/uptime/maintenance, custom-domain TXT
+  proof, password bounds, prd status domain), multi-step API uptime checks + request-body sealing, AWS
+  security findings via EventBridge + Cloud findings tab, permission-gated controls shown disabled,
+  engineer policy grants, PR-review auto-approval (admin setting), SSO connection cleanup, API key
+  lifetime bounds, settings tabs as paths, Cloud cost open to every org, db migration ordering fixes.
+- Mirror: origin `main` fast-forwarded `c081ca2cd` → `019e4d9d1`, pushed, read back.
+- Merge `05c47b54c` (separate worktree; main checkout's uncommitted postgres-integration work untouched):
+  5 conflicts, resolved by hand:
+  - `apps/scraper/src/UptimeSpans.ts` (#8): fork target-span structure kept; check spans now use upstream's
+    `toOtlpSpans` (multi-step child spans). Auto-merge had duplicated `OtlpSpan.parentSpanId`; dropped.
+  - `apps/web/src/page/alerts/hub/view.ts` (#5): upstream removed the `canManageAlerts` early return
+    (non-managers get disabled controls with a denial tooltip); the viewer early return moved above the
+    tab switch so a viewer still sees no create action on any tab. PATCHES #5 updated.
+  - `apps/web/src/page/status-pages/shared/derive.ts` + `derive.test.ts` (#11): both import sets kept;
+    upstream's `summarizePage` now reads the public snapshot (`overallStatus` already excludes
+    informational groups), so the #11 banner test was re-expressed on snapshot fixtures.
+  - `packages/status-page/src/page.ts` (#11): tier-head kept beside upstream's group `previewIdAttr`.
+- Survival sweep (`c081ca2cd` → `69c36f75e`): 26 overlap files; MISSING lines are only the re-expressed
+  ones above (`group.map(toOtlpSpan)` → `Arr.flatMap(group, toOtlpSpans)`, the moved #5 comment, the old
+  monitor-based #11 summary test).
+- Gates extended: the scraper conflict surface was ungated, so `gates.yml` (commit `4c187d1e2`) and
+  `scripts/mac-gates.sh` add `apps/scraper` typecheck + `UptimeSpans`/`UptimeTargetSpans` suites.
+- Gates: `gh workflow run` → `HTTP 422 Actions has been disabled` (unchanged). MacBook
+  `scripts/mac-gates.sh`, ledger `~/ci/maple-gates/4c187d1e2…/ledger`, head asserted == `4c187d1e2`:
+  **all green**, `DONE 4c187d1e2`. Typechecks ×8 green; suites: qe-integrations 512/512, backend org
+  459 passed / 1 skipped, backend warehouse 177 passed / 523 skipped, domain status-page 48/48,
+  status-page 96/96, backend uptime alerts + status-pages 159/159, scraper spans 14/14, web merge
+  surfaces 1102/1102.
+- bun.lock: regenerated lock byte-identical to the committed merged lock (sha256 `144a6ac6…`) — no
+  lock commit.

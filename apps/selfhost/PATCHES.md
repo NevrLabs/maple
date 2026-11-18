@@ -194,7 +194,9 @@ a read-only role and an admin needs to cut someone off without waiting for the 1
 when not Clerk; viewer = non-admin), `page/settings/selfhost-members/*` (new), `platform/selfhost-session.ts` (new:
 identity from the token), `platform/auth-api.ts` (`readSessionTokenSync`), `platform/api-clients.ts` (a 401 drops the
 tab session -> /sign-in), `shell/view-sidebar.ts` + `shell/view-menus.ts` (chip/menu show the OIDC name + role),
-`page/dashboards/list/view.ts` + `page/alerts/hub/view.ts` (viewer: Create/Import/New rule hidden),
+`page/dashboards/list/view.ts` + `page/alerts/hub/view.ts` (viewer: Create/Import/New rule hidden; since run 9
+the hub's `headerActions` returns early for a viewer on every tab, since upstream now shows non-managers disabled
+controls instead of hiding them),
 `lib/services/common/auth-mode.ts` + `page/sign-in/view.ts` (button label = `VITE_MAPLE_OIDC`).
 
 **Verify after rebase:** `bun test apps/selfhost/src/{oidc,gate}.test.ts`; `vitest run src/page/settings src/page/sign-in`;
