@@ -53,7 +53,8 @@ build_web() {
   VITE_ELECTRIC_SYNC_URL=${VITE_ELECTRIC_SYNC_URL:-/_sync} VITE_INGEST_URL=${VITE_INGEST_URL:-http://192.168.100.30:3474} VITE_MAPLE_REPLAY=off VITE_MAPLE_CAPTURE=${VITE_MAPLE_CAPTURE:-off} VITE_COMMIT_SHA=$TAG \
     $BUN run --cwd apps/web build 2>&1 | tail -3
   C=$OUT/ctx/web; rm -rf $C; mkdir -p $C
-  cp -r apps/web/dist $C/dist; cp apps/web/nginx.conf $C/
+  # Upstream deleted apps/web/nginx.conf (#2446); the fork keeps the deployed copy.
+  cp -r apps/web/dist $C/dist; cp apps/selfhost/compose/web-nginx.conf $C/nginx.conf
   cat > $C/Dockerfile <<'EOF'
 FROM nginx:alpine
 COPY dist /usr/share/nginx/html
