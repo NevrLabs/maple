@@ -359,3 +359,28 @@ extension). NOT deployed (the run-8 deploy approval covers run 8 only).
   surfaces 1102/1102.
 - bun.lock: regenerated lock byte-identical to the committed merged lock (sha256 `144a6ac6…`) — no
   lock commit.
+
+## Image build — 2026-11-18 — Run 8 deploy prep (MacBook, colima)
+
+Owner decision 2026-11-18: Docker Desktop on the MacBook is replaced by colima (pure CLI, OSS). colima 0.10.3,
+VZ + Rosetta, 6 CPU / 8 GiB / 60 GiB, docker context `colima`; Desktop state not migrated, Desktop left
+installed-but-unused. The CLI config no longer depends on Docker.app (desktop creds helper dropped, brew
+plugins dir, Desktop plugin links moved to `~/.docker/pre-colima-20261118T022646Z/`).
+
+Building the approved Run 8 image set from `94c2913af` failed: no run since run 2 produced a deployable tree.
+Fixed on `selfhost-homelab-up-20261117` (cherry-picked onto `-20261118`):
+- `99e51583c` `apps/selfhost/src/ports.ts` imported `@maple/backend/platform/chat-sessions-fake`, moved to
+  `testing/` by upstream #2472 (run 2 range). Typecheck never covered `apps/selfhost`, so the gates missed it;
+  `build-images.sh bundles` (docker-free) is now a gate step in `gates.yml` + `mac-gates.sh`.
+- `6eab0b523` upstream #2446 deleted `apps/web/nginx.conf`; the deployed `fd23f5f06` copy is kept
+  byte-identical at `apps/selfhost/compose/web-nginx.conf`.
+- `08c27d73a` upstream #2726 lifted the exporter go.mod to otel v1.47 (otel/log v1.x); collector v0.151's
+  otelzap v0.18 / sdk/log v0.19 do not compile against it. `build-images.sh` pins the otel family to the
+  deployed v1.45 set (otel/log v0.19.0) via ocb replaces; exporter unit tests pass under the pins.
+- Gates green at `08c27d73a` (run 8 line) and `684150c74` (run 9 line), ledgers `~/ci/maple-gates/<sha>/`.
+- Images `up-08c27d73` (linux/amd64, MacBook colima, ledger `~/ci/maple-images/up-08c27d73/ledger`):
+  maple-selfhost `sha256:26ed9f8d…`, maple-web `sha256:cfdffe12…`, maple-otel-collector `sha256:a28f2e24…`,
+  maple-ingest `sha256:ce77f75f…`. The deploy approval names `94c2913af`; these images are `94c2913af` +
+  the three build fixes above (no runtime-behaviour change beyond making the bundle resolve).
+- NOT deployed. Pre-deploy Setup Health 39/5 differs from the approved 37/7 baseline (STAT-02 new;
+  NAME-03, CFG-NOTIF-01, STAT-04 cleared) — the runbook requires baseline reconciliation before cutover.
