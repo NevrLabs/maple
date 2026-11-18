@@ -11,10 +11,12 @@ TAG=${TAG:-$(git -C "$SRC" rev-parse --short HEAD)}
 echo "building tag=$TAG"
 EXT=(-e "cloudflare:*" -e vite -e "@vitejs/*" -e vitest -e "@cloudflare/vite-plugin" -e wrangler -e miniflare -e esbuild -e rolldown -e lightningcss -e "@rolldown/*" -e "@alchemy.run/frontend-frameworks/astro/config" -e react-devtools-core)
 
-build_selfhost() {
+# Bundles only (no docker): `build-images.sh bundles` is also the selfhost gate's image-parity step.
+bundle_selfhost() {
   echo "== selfhost bundles (api, alerting, electric-sync, scraper, status, pg-migrate, ch-migrate)"
   C=$OUT/ctx/selfhost; rm -rf $C; mkdir -p $C/app/db $C/app/ch
   cd $SRC
+  ( cd packages/alchemy-maple && $BUN run build >/dev/null 2>&1 )
   $BUN build apps/selfhost/src/api.ts      --target=bun --outfile=$C/app/api.js      "${EXT[@]}" | tail -1
   $BUN build apps/selfhost/src/alerting.ts --target=bun --outfile=$C/app/alerting.js "${EXT[@]}" | tail -1
   $BUN build apps/selfhost/src/electric-sync.ts --target=bun --outfile=$C/app/electric-sync.js "${EXT[@]}" | tail -1
@@ -27,6 +29,10 @@ build_selfhost() {
   $BUN build packages/db/scripts/migrate.ts --target=bun --outfile=$C/app/db/scripts/migrate.js "${EXT[@]}" | tail -1
   cp -r packages/db/drizzle $C/app/db/drizzle
   $BUN build packages/clickhouse-cli/src/cli.ts --target=bun --outfile=$C/app/ch/cli.js "${EXT[@]}" | tail -1
+}
+
+build_selfhost() {
+  bundle_selfhost
   cat > $C/Dockerfile <<'EOF'
 FROM oven/bun:1.4.4-slim
 WORKDIR /app
@@ -98,6 +104,7 @@ EOF
 
 what=${1:-all}
 case $what in
+  bundles) bundle_selfhost; echo BUNDLES-DONE; exit 0;;
   selfhost) build_selfhost;; web) build_web;; collector) build_collector;; ingest) build_ingest;;
   all) build_selfhost; build_web; build_collector; build_ingest;;
 esac
