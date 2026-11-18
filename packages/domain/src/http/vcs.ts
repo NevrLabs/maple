@@ -246,6 +246,10 @@ export const PullRequestReviewComment = Schema.Struct({
 export const PullRequestReviewThread = Schema.Struct({
 	id: Schema.String,
 	isResolved: Schema.Boolean,
+	/** Who resolved the thread, when the provider says; only its author or someone who can push may. */
+	resolvedBy: Schema.optionalKey(Schema.String),
+	/** The thread has more comments than were read, so its latest reply is not known. */
+	commentsTruncated: Schema.optionalKey(Schema.Boolean),
 	comments: Schema.Array(
 		Schema.Struct({
 			commentId: Schema.NullOr(Schema.String),
@@ -292,8 +296,42 @@ export const PullRequestReviewPublication = Schema.Struct({
 	summaryComment: Schema.Struct({ marker: Schema.String, body: Schema.String }),
 	reviewBody: Schema.NullOr(Schema.String),
 	comments: Schema.Array(PullRequestReviewComment),
+	/**
+	 * Set only for a repository with `autoApprove` on: approve the reviewed head, or withdraw an
+	 * approval this App gave the pull request earlier. The provider still checks the pull request
+	 * itself (open, not a draft, head unmoved, an author with push access) before it approves.
+	 */
+	approval: Schema.optionalKey(
+		Schema.Union([
+			Schema.Struct({
+				action: Schema.Literal("approve"),
+				body: Schema.String,
+				/** The base commit the review read the diff against. Absent, the base is not known. */
+				baseSha: Schema.optionalKey(GitCommitSha),
+			}),
+			Schema.Struct({ action: Schema.Literal("withdraw"), reason: Schema.String }),
+		]),
+	),
 })
 export type PullRequestReviewPublication = Schema.Schema.Type<typeof PullRequestReviewPublication>
+
+/**
+ * What an approval request came to: `approved` and `withdrawn` did what was asked; the rest are why
+ * the provider would not approve the pull request as it stands now.
+ */
+export const PullRequestApprovalOutcome = Schema.Literals([
+	"approved",
+	"withdrawn",
+	"not_open",
+	"draft",
+	"head_moved",
+	"base_moved",
+	"base_not_default",
+	"untrusted_author",
+	"too_many_reviews",
+	"unsupported",
+])
+export type PullRequestApprovalOutcome = Schema.Schema.Type<typeof PullRequestApprovalOutcome>
 
 export const PullRequestReviewPublished = Schema.Struct({
 	checkRunUrl: Schema.NullOr(Schema.String),
@@ -301,6 +339,8 @@ export const PullRequestReviewPublished = Schema.Struct({
 	reviewUrl: Schema.NullOr(Schema.String),
 	/** The provider's id for each posted inline comment that carried a `key`. */
 	inlineComments: Schema.Array(Schema.Struct({ key: Schema.String, commentId: Schema.String })),
+	/** What became of the publication's `approval`; absent when it asked for none. */
+	approval: Schema.optionalKey(PullRequestApprovalOutcome),
 })
 export type PullRequestReviewPublished = Schema.Schema.Type<typeof PullRequestReviewPublished>
 
@@ -523,6 +563,8 @@ export const PullRequestEventJob = Schema.Struct({
 	draft: Schema.optionalKey(Schema.Boolean),
 	/** The head repository, which differs from `repoFullName` on a fork's pull request. */
 	headRepoFullName: Schema.optionalKey(Schema.NullOr(Schema.String)),
+	/** On `edited`: whether the edit moved the pull request to another base branch. */
+	baseChanged: Schema.optionalKey(Schema.Boolean),
 	/**
 	 * Set on the copy the review trigger re-enqueues with a delay, to start a review once a burst
 	 * of pushes settles. Every other reader of pull request events ignores that copy.

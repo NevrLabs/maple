@@ -116,10 +116,13 @@ export const AuditResources = {
 		prefix: PublicIdPrefixes.gcpConnector,
 		verbs: ["created", "updated", "removal_confirmed", "deleted"],
 	},
-	/** One connected AWS account; the account and its modules are in `metadata`. */
+	/**
+	 * One connected AWS account; the account and its modules are in `metadata`. `events_key_read`
+	 * is a setup that carried the key its findings arrive with; the key itself is never recorded.
+	 */
 	aws_connection: {
 		prefix: PublicIdPrefixes.awsConnection,
-		verbs: ["created", "updated", "deleted"],
+		verbs: ["created", "updated", "deleted", "events_key_read", "events_key_rotated"],
 	},
 	/** Anything that sends data; a token source's secret is never in `changes`. */
 	source: {
@@ -159,6 +162,13 @@ export const AuditResources = {
 	cloudflare_integration: { verbs: ["zones_updated", "features_updated"] },
 	/** Org-singleton connection; the switches it saved ride in `metadata`. */
 	linear_integration: { verbs: ["features_updated"] },
+	/**
+	 * Pull request review setup: a repository switched on or off, its rules, and the organization's
+	 * defaults. `metadata` names the repository and says whether automatic approval is on.
+	 */
+	code_review: {
+		verbs: ["repository_enabled", "repository_disabled", "repository_rules_updated", "settings_updated"],
+	},
 	/** A provider key the org's spend is read with, one per provider; the key is never in `changes`. */
 	cost_source_key: { verbs: ["updated", "deleted"] },
 	/** A cost source that reads through a connection the org already has; which one is in `metadata`. */
@@ -281,6 +291,7 @@ export const AuditResourceLabels = {
 	planetscale_integration: "PlanetScale integration",
 	cloudflare_integration: "Cloudflare integration",
 	linear_integration: "Linear integration",
+	code_review: "Code review",
 	cost_source_key: "Cost source key",
 	cost_source: "Cost source",
 	member: "Member",
@@ -407,6 +418,8 @@ export const AuditActionLabels = {
 	"aws_connection.created": "Connected AWS",
 	"aws_connection.updated": "Updated AWS connection",
 	"aws_connection.deleted": "Removed AWS connection",
+	"aws_connection.events_key_read": "Read AWS events key",
+	"aws_connection.events_key_rotated": "Rotated AWS events key",
 	"ingest_key.rolled": "Rolled ingest key",
 	"source.created": "Created source",
 	"source.updated": "Updated source",
@@ -428,6 +441,10 @@ export const AuditActionLabels = {
 	"cloudflare_integration.zones_updated": "Updated Cloudflare zones",
 	"cloudflare_integration.features_updated": "Changed what Cloudflare collects",
 	"linear_integration.features_updated": "Changed what Maple does in Linear",
+	"code_review.repository_enabled": "Turned on code review for a repository",
+	"code_review.repository_disabled": "Turned off code review for a repository",
+	"code_review.repository_rules_updated": "Changed a repository's code review rules",
+	"code_review.settings_updated": "Changed the organization's code review settings",
 	"cost_source_key.updated": "Updated cost source key",
 	"cost_source_key.deleted": "Removed cost source key",
 	"cost_source.created": "Added cost source",
@@ -499,7 +516,14 @@ const isAuditResourceType = (type: string): type is AuditResourceType =>
  * and API requests. A heavy agent user writes hundreds of these a day. The
  * server filters by them and the web mutes them, so both read this one list.
  */
-export const AUDIT_ACCESS_ACTION_SUFFIXES = [".read", ".called", ".sql_executed", ".request"] as const
+export const AUDIT_ACCESS_ACTION_SUFFIXES = [
+	".read",
+	".called",
+	".sql_executed",
+	".request",
+	// Reading a setup that carries the events key changes nothing.
+	".events_key_read",
+] as const
 
 /** True for an access action (see {@link AUDIT_ACCESS_ACTION_SUFFIXES}). */
 export const isAuditAccessAction = (action: string): boolean =>

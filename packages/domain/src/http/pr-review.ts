@@ -282,6 +282,12 @@ export class PrReviewRepositoryConfig extends Schema.Class<PrReviewRepositoryCon
 	blockOnContractBreaks: Schema.optionalKey(Schema.Boolean),
 	/** Look at production after the merged pull request ships and say how it went. On by default. */
 	postMergeCheck: Schema.optionalKey(Schema.Boolean),
+	/**
+	 * Approve the pull request on GitHub when the review finds its blast radius low enough that no
+	 * person needs to read it ({@link prReviewAutoApproval}), and withdraw that approval when a
+	 * later review does not. Off by default. An approval never satisfies a CODEOWNERS rule.
+	 */
+	autoApprove: Schema.optionalKey(Schema.Boolean),
 }) {}
 
 /** Organization-wide review settings; absent fields use the deployment's defaults. */
@@ -444,6 +450,17 @@ export class SubmitPrReviewRequest extends Schema.Class<SubmitPrReviewRequest>("
 	partial: Schema.optionalKey(Schema.Boolean),
 	/** Why the pass that preceded a partial stopped; the pull request is told this, not `ended_early`. */
 	partialReason: Schema.optionalKey(PrReviewFailureReason),
+	/**
+	 * What the model itself sent, before it was normalized: its own verdict (absent when it sent none
+	 * that is a verdict) and how many findings were dropped as unreadable. Auto-approval reads this,
+	 * not the tidied report; absent, as on a close-out, it never approves.
+	 */
+	submitted: Schema.optionalKey(
+		Schema.Struct({
+			verdict: Schema.optionalKey(PrReviewVerdict),
+			droppedFindings: Schema.Number,
+		}),
+	),
 	/** Handles of earlier findings this head fixes. */
 	resolved: Schema.optionalKey(Schema.Array(Schema.String)),
 	/** Earlier findings the reviewer dismissed, by handle, with its reason. */

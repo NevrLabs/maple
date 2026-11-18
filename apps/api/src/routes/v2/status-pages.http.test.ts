@@ -36,8 +36,12 @@ import { StatusPagesService } from "@maple/backend/services/status-pages/StatusP
 import { StatusPageSnapshotBuilder } from "@maple/backend/services/status-pages/StatusPageSnapshotBuilder"
 import { CloudflareCustomHostnames } from "@maple/backend/services/status-pages/CloudflareCustomHostnames"
 import { StatusPageCustomDomainsService } from "@maple/backend/services/status-pages/StatusPageCustomDomainsService"
+import { DnsTxtResolver } from "@maple/backend/platform/DnsTxtResolver"
 
-/** Custom domains over the Cloudflare test double; `cnameTarget: null` is a deployment without them. */
+/**
+ * Custom domains over the Cloudflare test double, with no ownership record published in DNS;
+ * `cnameTarget: null` is a deployment without them.
+ */
 const customDomainsLayer = (cnameTarget: string | null = "status-domains.maple.test") =>
 	Layer.effect(StatusPageCustomDomainsService, StatusPageCustomDomainsService.make).pipe(
 		Layer.provide(
@@ -48,6 +52,7 @@ const customDomainsLayer = (cnameTarget: string | null = "status-domains.maple.t
 				),
 			),
 		),
+		Layer.provide(Layer.succeed(DnsTxtResolver, { lookupTxt: () => Effect.succeed([]) })),
 	)
 
 /** `/v2/status_pages` and `/v2/status_page_incidents` over an embedded PGlite with the real service. */
@@ -343,7 +348,7 @@ describe("v2 status pages", () => {
 			expect(revoked.body.break_glass_token_suffix).toBeNull()
 		}))
 
-	it("leaves the password and visibility to admins, never returns the password, and shows members the page", () =>
+	it("leaves the password and visibility to engineers and admins, never returns the password, and shows members the page", () =>
 		withHarness(async (harness) => {
 			const { secret: admin } = await harness.bootstrapKey()
 			const { secret: engineer } = await harness.bootstrapKey(ORG, {
@@ -358,32 +363,20 @@ describe("v2 status pages", () => {
 			const path = `/v2/status_pages/${page.body.id}`
 			const password = "correct horse battery"
 
-			expect((await harness.request("PUT", `${path}/password`, engineer, { password })).status).toBe(
+			expect((await harness.request("PUT", `${path}/password`, member, { password })).status).toBe(403)
+			expect((await harness.request("PATCH", path, member, { visibility: "internal" })).status).toBe(
 				403,
 			)
-			expect((await harness.request("PATCH", path, engineer, { visibility: "internal" })).status).toBe(
-				403,
-			)
-			const config = (await harness.request("GET", `${path}/config`, engineer)).body
-			const viaConfig = await harness.request("PUT", `${path}/config`, engineer, {
-				...config,
-				visibility: "internal",
-			})
-			expect(viaConfig.status).toBe(403)
-			expect((await harness.request("GET", path, engineer)).body.visibility).toBe("public")
-			// An engineer may still edit everything else.
-			expect((await harness.request("PATCH", path, engineer, { name: "Acme Inc" })).status).toBe(200)
+			expect((await harness.request("GET", path, member)).body.visibility).toBe("public")
 
-			const short = await harness.request("PUT", `${path}/password`, admin, { password: "short" })
+			const short = await harness.request("PUT", `${path}/password`, engineer, { password: "short" })
 			expect(short.status).toBe(400)
-			const set = await harness.request("PUT", `${path}/password`, admin, { password })
+			const set = await harness.request("PUT", `${path}/password`, engineer, { password })
 			expect(set.body.has_password).toBe(true)
 			expect(JSON.stringify(set.body)).not.toContain(password)
-			expect((await harness.request("DELETE", `${path}/password`, engineer)).status).toBe(403)
-			expect((await harness.request("GET", path, engineer)).body.has_password).toBe(true)
-			const locked = await harness.request("PATCH", path, admin, { visibility: "password" })
+			const locked = await harness.request("PATCH", path, engineer, { visibility: "password" })
 			expect(locked.body.visibility).toBe("password")
-			const removing = await harness.request("DELETE", `${path}/password`, admin)
+			const removing = await harness.request("DELETE", `${path}/password`, engineer)
 			expect(removing.status).toBe(400)
 
 			const view = await harness.request("GET", `${path}/view`, member)
@@ -1073,6 +1066,12 @@ describe("v2 status pages", () => {
 					value: "status-domains.maple.test",
 					purpose: "routing",
 				})
+				expect(set.body.dns_records[1]).toMatchObject({
+					type: "TXT",
+					name: "_maple-challenge.status.acme.com",
+					purpose: "ownership",
+				})
+				expect(set.body.dns_records[1].value).toMatch(/^maple-status-page=[0-9a-f]{32}$/)
 				const read = await harness.request("GET", `/v2/status_pages/${id}/custom_domain`, token)
 				expect(read.body).toEqual(set.body)
 
@@ -1138,6 +1137,8 @@ describe("v2 status pages", () => {
 				)
 				expect(taken.status).toBe(409)
 				expect(taken.body.error.code).toBe("status_page_custom_domain_taken")
+				// The first page never proved the hostname, so the answer names the record that claims it.
+				expect(taken.body.error.message).toContain("_maple-challenge.status.acme.com")
 			}))
 
 		it("lets members read the domain but not change it", () =>

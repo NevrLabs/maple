@@ -8,7 +8,9 @@
 import { afterEach, assert, describe, it } from "@effect/vitest"
 import {
 	GitCommitSha,
+	isSensitivePath,
 	type PullRequestEventJob,
+	type PullRequestApprovalOutcome,
 	type PullRequestReviewPublication,
 	type PullRequestReviewThread,
 	type VcsSyncJob,
@@ -55,11 +57,13 @@ import {
 	clampSummary,
 	PR_REVIEW_CHECK_NAME,
 	PR_REVIEW_PUSH_DEBOUNCE_SECONDS,
+	PR_REVIEW_RULE_FILES,
 	PrReviewService,
 	renderCheckSummary,
 	renderSummaryComment,
 	prReviewCommentMarker,
 	reviewCheckFor,
+	WITHDRAWAL_FAILURE_MARKER,
 	withReviewStatus,
 } from "./PrReviewService"
 import { FindingEmbedder, type FindingEmbedderApi, PrReviewEmbeddingError } from "./FindingEmbedder"
@@ -105,6 +109,9 @@ const layerFor = (
 		readonly begun?: Array<Begun>
 		readonly aborted?: Array<string>
 		readonly published?: Array<PullRequestReviewPublication>
+		readonly withdrawals?: Array<string>
+		/** What the provider answers a publication that asks for an approval. */
+		readonly approvalOutcome?: PullRequestApprovalOutcome
 		readonly publishFails?: boolean
 		readonly busy?: boolean
 		readonly withWorkerEnv?: boolean
@@ -129,6 +136,10 @@ const layerFor = (
 		/** One hit per query listed here, with these snippets; a query not listed finds nothing. */
 		readonly searchSnippets?: Readonly<Record<string, ReadonlyArray<string>>>
 		readonly prFiles?: ReadonlyArray<PullRequestFile>
+		/** The provider cut its listing of the pull request's files short. */
+		readonly filesTruncated?: boolean
+		/** Present and true: withdrawing an approval fails. */
+		readonly withdrawFails?: boolean
 		/** Present: replies posted to the pull request's conversation are recorded here. */
 		readonly replies?: Array<string>
 		/** How many replies fail before one is accepted. */
@@ -159,7 +170,10 @@ const layerFor = (
 		fetchPullRequestFiles: () =>
 			options.filesUnreadable?.value === true
 				? Effect.die("GitHub is down")
-				: Effect.succeed(options.prFiles ?? []),
+				: Effect.succeed({
+						files: options.prFiles ?? [],
+						truncated: options.filesTruncated === true,
+					}),
 		fetchPullRequestContext: unused,
 		fetchReviewThreads: () =>
 			Effect.suspend(() => options.duringThreadRead?.current ?? Effect.void).pipe(
@@ -242,6 +256,15 @@ const layerFor = (
 				)
 				return { url: "https://github.com/octo/repo/runs/1" }
 			}),
+		withdrawPullRequestApprovals: (_installation, _repo, input) =>
+			Effect.suspend(() => {
+				options.withdrawals?.push(
+					`${input.number}:${input.reason}${input.keepHead === undefined ? "" : ` (keeps ${input.keepHead})`}`,
+				)
+				return options.withdrawFails === true
+					? Effect.fail(new VcsRepoUnavailableError({ message: "GitHub is down" }))
+					: Effect.succeed("withdrawn" as const)
+			}),
 		publishPullRequestReview: (_installation, _repo, publication) => {
 			options.published?.push(publication)
 			if (!options.publishFails) {
@@ -264,6 +287,16 @@ const layerFor = (
 						inlineComments: Arr.flatMap(publication.comments, (comment, i) =>
 							comment.key === undefined ? [] : [{ key: comment.key, commentId: `c-${i}` }],
 						),
+						// What the provider answers when nothing stands in the way, unless a test says otherwise.
+						...(publication.approval === undefined
+							? undefined
+							: {
+									approval:
+										options.approvalOutcome ??
+										(publication.approval.action === "approve"
+											? ("approved" as const)
+											: ("withdrawn" as const)),
+								}),
 					})
 		},
 	}
@@ -949,6 +982,29 @@ describe("PrReviewService.onPullRequestEvent", () => {
 			assert.isNull(row.error)
 			assert.equal(begun.length, 1)
 			assert.equal(begun[0].sessionId, `${orgId}:pr-${again.reviewId}`)
+		}).pipe(Effect.provide(layerFor(testDb, { begun })))
+		return firstDelivery.pipe(Effect.andThen(redelivery))
+	})
+
+	it.effect("a reclaimed row takes the base the new attempt reads against", () => {
+		const testDb = createTestDb(trackedDbs)
+		const begun: Array<Begun> = []
+		const NEW_BASE = sha("dddddddddddddddddddddddddddddddddddddddd")
+		const firstDelivery = Effect.gen(function* () {
+			yield* seed(true)
+			const reviews = yield* PrReviewService
+			const first = yield* reviews.onPullRequestEvent(orgId, job())
+			assert.equal(Option.getOrThrow(yield* reviews.getReview(orgId, first.reviewId!)).baseSha, BASE)
+		}).pipe(Effect.provide(layerFor(testDb, { withWorkerEnv: false })))
+		// The same head, after the pull request moved to another base.
+		const redelivery = Effect.gen(function* () {
+			const reviews = yield* PrReviewService
+			const again = yield* reviews.onPullRequestEvent(orgId, job({ baseSha: NEW_BASE }))
+			assert.equal(again.outcome, "started")
+			assert.equal(
+				Option.getOrThrow(yield* reviews.getReview(orgId, again.reviewId!)).baseSha,
+				NEW_BASE,
+			)
 		}).pipe(Effect.provide(layerFor(testDb, { begun })))
 		return firstDelivery.pipe(Effect.andThen(redelivery))
 	})
@@ -2223,6 +2279,720 @@ describe("buildReviewKickoff", () => {
 		assert.include(text, "[cut at 30000 of 40000 characters")
 		assert.notInclude(text, '<rules path="AGENTS.md">')
 		assert.include(text, "Also binding, left out for length: AGENTS.md, .maple/review.md.")
+	})
+})
+
+describe("PrReviewService auto-approve", () => {
+	const lowRisk = (findings: PrReviewReport["findings"] = []) =>
+		new PrReviewReport({ ...report(findings), risk: "low", tests: "not_needed", wholeDiff: true })
+	/** The model sent a clean verdict and no finding was dropped: what an approval needs to be told. */
+	const SENT_CLEAN = { submitted: { verdict: "clean" as const, droppedFindings: 0 } }
+
+	it.effect("asks to approve a low-risk review, then to withdraw once a later push has a warning", () => {
+		const testDb = createTestDb(trackedDbs)
+		const published: Array<PullRequestReviewPublication> = []
+		const withdrawals: Array<string> = []
+		return Effect.gen(function* () {
+			const repositoryId = yield* seed(true)
+			const repo = yield* VcsRepository
+			yield* repo.setPrReviewConfig(
+				orgId,
+				repositoryId,
+				new PrReviewRepositoryConfig({ autoApprove: true }),
+			)
+			const reviews = yield* PrReviewService
+			const first = yield* reviews.onPullRequestEvent(orgId, job())
+			yield* reviews.submitReview(
+				orgId,
+				first.reviewId!,
+				new SubmitPrReviewRequest({ ...SENT_CLEAN, report: lowRisk() }),
+			)
+			assert.strictEqual(published[0].approval?.action, "approve")
+
+			const second = yield* reviews.onPullRequestEvent(
+				orgId,
+				job({ action: "synchronize", headSha: HEAD_2 }),
+			)
+			yield* reviews.submitReview(
+				orgId,
+				second.reviewId!,
+				new SubmitPrReviewRequest({
+					...SENT_CLEAN,
+					report: lowRisk([
+						new PrReviewFinding({
+							path: "src/orders.ts",
+							line: 3,
+							category: "correctness",
+							severity: "warn",
+							title: "Unchecked null",
+							body: "b",
+						}),
+					]),
+				}),
+			)
+			const withdrawn = published[1].approval
+			assert.strictEqual(withdrawn?.action, "withdraw")
+			// The push itself withdrew first, before its review ran, sparing an approval of its own head.
+			assert.deepStrictEqual(withdrawals, [
+				`612:new commits were pushed since it approved (keeps ${HEAD_2})`,
+			])
+		}).pipe(Effect.provide(layerFor(testDb, { published, withdrawals })))
+	})
+
+	it.effect("does not approve a pull request where a person dismissed a warning", () => {
+		const testDb = createTestDb(trackedDbs)
+		const published: Array<PullRequestReviewPublication> = []
+		const warning = new PrReviewFinding({
+			path: "src/orders.ts",
+			line: 3,
+			category: "correctness",
+			severity: "warn",
+			title: "Unchecked null",
+			body: "b",
+		})
+		return Effect.gen(function* () {
+			const repositoryId = yield* seed(true)
+			const repo = yield* VcsRepository
+			yield* repo.setPrReviewConfig(
+				orgId,
+				repositoryId,
+				new PrReviewRepositoryConfig({ autoApprove: true }),
+			)
+			const reviews = yield* PrReviewService
+			const first = yield* reviews.onPullRequestEvent(orgId, job())
+			yield* reviews.submitReview(
+				orgId,
+				first.reviewId!,
+				new SubmitPrReviewRequest({ ...SENT_CLEAN, report: lowRisk([warning]) }),
+			)
+			const handle = Option.getOrThrow(yield* reviews.getReview(orgId, first.reviewId!)).report
+				?.findings[0]?.handle
+
+			const second = yield* reviews.onPullRequestEvent(
+				orgId,
+				job({ action: "synchronize", headSha: HEAD_2 }),
+			)
+			yield* reviews.submitReview(
+				orgId,
+				second.reviewId!,
+				new SubmitPrReviewRequest({
+					...SENT_CLEAN,
+					report: lowRisk(),
+					dismissed: [{ handle: handle!, reason: "the author says it cannot be null" }],
+				}),
+			)
+			const refused = published[1].approval
+			assert.strictEqual(refused?.action, "withdraw")
+			if (refused?.action === "withdraw") assert.include(refused.reason, "was dismissed")
+		}).pipe(Effect.provide(layerFor(testDb, { published })))
+	})
+
+	it.effect("does not approve a pass that read only the commits since the last review", () => {
+		const testDb = createTestDb(trackedDbs)
+		const published: Array<PullRequestReviewPublication> = []
+		return Effect.gen(function* () {
+			const repositoryId = yield* seed(true)
+			const repo = yield* VcsRepository
+			yield* repo.setPrReviewConfig(
+				orgId,
+				repositoryId,
+				new PrReviewRepositoryConfig({ autoApprove: true }),
+			)
+			const reviews = yield* PrReviewService
+			const started = yield* reviews.onPullRequestEvent(orgId, job())
+			yield* reviews.submitReview(
+				orgId,
+				started.reviewId!,
+				new SubmitPrReviewRequest({
+					...SENT_CLEAN,
+					report: new PrReviewReport({ ...lowRisk(), wholeDiff: false, risk: "high" }),
+				}),
+			)
+			const refused = published[0].approval
+			assert.strictEqual(refused?.action, "withdraw")
+			if (refused?.action === "withdraw") assert.include(refused.reason, "only the commits")
+			// The comment says why under its score, every reason at once.
+			assert.include(
+				published[0].summaryComment.body,
+				"<br>Not auto-approved: the review read only the commits since the last one · the risk is high · confidence is 8, under 9</sub>",
+			)
+		}).pipe(Effect.provide(layerFor(testDb, { published })))
+	})
+
+	it.effect(
+		"does not approve once an earlier review held back a warning, even if later ones do not",
+		() => {
+			const testDb = createTestDb(trackedDbs)
+			const published: Array<PullRequestReviewPublication> = []
+			const warning = new PrReviewFinding({
+				path: "src/orders.ts",
+				line: 3,
+				category: "correctness",
+				severity: "warn",
+				title: "Unchecked null",
+				body: "b",
+			})
+			return Effect.gen(function* () {
+				const repositoryId = yield* seed(true)
+				const repo = yield* VcsRepository
+				yield* repo.setPrReviewConfig(
+					orgId,
+					repositoryId,
+					new PrReviewRepositoryConfig({ autoApprove: true, categories: ["security"] }),
+				)
+				const reviews = yield* PrReviewService
+				const first = yield* reviews.onPullRequestEvent(orgId, job())
+				yield* reviews.submitReview(
+					orgId,
+					first.reviewId!,
+					new SubmitPrReviewRequest({ ...SENT_CLEAN, report: lowRisk([warning]) }),
+				)
+				assert.strictEqual(published[0].approval?.action, "withdraw")
+
+				const second = yield* reviews.onPullRequestEvent(
+					orgId,
+					job({ action: "synchronize", headSha: HEAD_2 }),
+				)
+				yield* reviews.submitReview(
+					orgId,
+					second.reviewId!,
+					new SubmitPrReviewRequest({ ...SENT_CLEAN, report: lowRisk() }),
+				)
+				const refused = published[1].approval
+				assert.strictEqual(refused?.action, "withdraw")
+				if (refused?.action === "withdraw") assert.include(refused.reason, "held back")
+			}).pipe(Effect.provide(layerFor(testDb, { published })))
+		},
+	)
+
+	it.effect("remembers a held-back warning when the same head is reviewed again", () => {
+		const testDb = createTestDb(trackedDbs)
+		const published: Array<PullRequestReviewPublication> = []
+		const warning = new PrReviewFinding({
+			path: "src/orders.ts",
+			line: 3,
+			category: "correctness",
+			severity: "warn",
+			title: "Unchecked null",
+			body: "b",
+		})
+		return Effect.gen(function* () {
+			const repositoryId = yield* seed(true)
+			const repo = yield* VcsRepository
+			yield* repo.setPrReviewConfig(
+				orgId,
+				repositoryId,
+				new PrReviewRepositoryConfig({ autoApprove: true, categories: ["security"] }),
+			)
+			const reviews = yield* PrReviewService
+			const first = yield* reviews.onPullRequestEvent(orgId, job())
+			yield* reviews.submitReview(
+				orgId,
+				first.reviewId!,
+				new SubmitPrReviewRequest({ ...SENT_CLEAN, report: lowRisk([warning]) }),
+			)
+			// Asked for again: the same row, its report cleared.
+			const repeat = yield* reviews.reviewNow(orgId, job())
+			assert.equal(repeat.reviewId, first.reviewId)
+			yield* reviews.submitReview(
+				orgId,
+				repeat.reviewId!,
+				new SubmitPrReviewRequest({ ...SENT_CLEAN, report: lowRisk() }),
+			)
+			const refused = published[1].approval
+			assert.strictEqual(refused?.action, "withdraw")
+			if (refused?.action === "withdraw") assert.include(refused.reason, "held back")
+		}).pipe(Effect.provide(layerFor(testDb, { published })))
+	})
+
+	it.effect("does not approve when Maple cannot read the diff itself", () => {
+		const testDb = createTestDb(trackedDbs)
+		const published: Array<PullRequestReviewPublication> = []
+		return Effect.gen(function* () {
+			const repositoryId = yield* seed(true)
+			const repo = yield* VcsRepository
+			yield* repo.setPrReviewConfig(
+				orgId,
+				repositoryId,
+				new PrReviewRepositoryConfig({ autoApprove: true }),
+			)
+			const reviews = yield* PrReviewService
+			const started = yield* reviews.onPullRequestEvent(orgId, job())
+			yield* reviews.submitReview(
+				orgId,
+				started.reviewId!,
+				new SubmitPrReviewRequest({ ...SENT_CLEAN, report: lowRisk() }),
+			)
+			const refused = published[0].approval
+			assert.strictEqual(refused?.action, "withdraw")
+			if (refused?.action === "withdraw") assert.include(refused.reason, "could not read the diff")
+		}).pipe(Effect.provide(layerFor(testDb, { published, filesUnreadable: { value: true } })))
+	})
+
+	it.effect("does not approve a diff with a file whose patch GitHub withholds", () => {
+		const testDb = createTestDb(trackedDbs)
+		const published: Array<PullRequestReviewPublication> = []
+		return Effect.gen(function* () {
+			const repositoryId = yield* seed(true)
+			const repo = yield* VcsRepository
+			yield* repo.setPrReviewConfig(
+				orgId,
+				repositoryId,
+				new PrReviewRepositoryConfig({ autoApprove: true }),
+			)
+			const reviews = yield* PrReviewService
+			const started = yield* reviews.onPullRequestEvent(orgId, job())
+			yield* reviews.submitReview(
+				orgId,
+				started.reviewId!,
+				new SubmitPrReviewRequest({ ...SENT_CLEAN, report: lowRisk() }),
+			)
+			const refused = published[0].approval
+			assert.strictEqual(refused?.action, "withdraw")
+			if (refused?.action === "withdraw") assert.include(refused.reason, "no patch")
+		}).pipe(
+			Effect.provide(
+				layerFor(testDb, {
+					published,
+					prFiles: [
+						{
+							path: "src/generated.ts",
+							previousPath: null,
+							status: "modified",
+							additions: 4000,
+							deletions: 10,
+							patch: null,
+						},
+					],
+				}),
+			),
+		)
+	})
+
+	it.effect("withdraws an approval when a later review of the same head ends early", () => {
+		const testDb = createTestDb(trackedDbs)
+		const published: Array<PullRequestReviewPublication> = []
+		const withdrawals: Array<string> = []
+		return Effect.gen(function* () {
+			const repositoryId = yield* seed(true)
+			const repo = yield* VcsRepository
+			yield* repo.setPrReviewConfig(
+				orgId,
+				repositoryId,
+				new PrReviewRepositoryConfig({ autoApprove: true }),
+			)
+			const reviews = yield* PrReviewService
+			const started = yield* reviews.onPullRequestEvent(orgId, job())
+			yield* reviews.submitReview(
+				orgId,
+				started.reviewId!,
+				new SubmitPrReviewRequest({ ...SENT_CLEAN, report: lowRisk(), partial: true }),
+			)
+			assert.deepStrictEqual(withdrawals, ["612:its latest review ended early"])
+		}).pipe(Effect.provide(layerFor(testDb, { published, withdrawals })))
+	})
+
+	it.effect("says why the provider would not give the approval the review asked for", () => {
+		const testDb = createTestDb(trackedDbs)
+		const published: Array<PullRequestReviewPublication> = []
+		const comments: Array<string> = []
+		return Effect.gen(function* () {
+			const repositoryId = yield* seed(true)
+			const repo = yield* VcsRepository
+			yield* repo.setPrReviewConfig(
+				orgId,
+				repositoryId,
+				new PrReviewRepositoryConfig({ autoApprove: true }),
+			)
+			const reviews = yield* PrReviewService
+			const started = yield* reviews.onPullRequestEvent(orgId, job())
+			yield* reviews.submitReview(
+				orgId,
+				started.reviewId!,
+				new SubmitPrReviewRequest({ ...SENT_CLEAN, report: lowRisk() }),
+			)
+			assert.strictEqual(published[0].approval?.action, "approve")
+			assert.notInclude(published[0].summaryComment.body, "Not auto-approved")
+			assert.include(comments.at(-1) ?? "", "<br>Not auto-approved: the pull request is a draft</sub>")
+		}).pipe(Effect.provide(layerFor(testDb, { published, comments, approvalOutcome: "draft" })))
+	})
+
+	it.effect("says why it did not approve a review with nothing to score", () => {
+		const testDb = createTestDb(trackedDbs)
+		const published: Array<PullRequestReviewPublication> = []
+		return Effect.gen(function* () {
+			const repositoryId = yield* seed(true)
+			const repo = yield* VcsRepository
+			yield* repo.setPrReviewConfig(
+				orgId,
+				repositoryId,
+				new PrReviewRepositoryConfig({ autoApprove: true }),
+			)
+			const reviews = yield* PrReviewService
+			const started = yield* reviews.onPullRequestEvent(orgId, job())
+			yield* reviews.submitReview(
+				orgId,
+				started.reviewId!,
+				new SubmitPrReviewRequest({
+					...SENT_CLEAN,
+					report: new PrReviewReport({ ...lowRisk(), verdict: "not_applicable" }),
+				}),
+			)
+			assert.include(
+				published[0].summaryComment.body,
+				"**Nothing to review**<br><sub>Not auto-approved: the verdict is not_applicable",
+			)
+		}).pipe(Effect.provide(layerFor(testDb, { published })))
+	})
+
+	/** One review of a repository that approves, over `files`, answering what it asked about approval. */
+	const approvalFor = (request: SubmitPrReviewRequest, options: Parameters<typeof layerFor>[1] = {}) => {
+		const testDb = createTestDb(trackedDbs)
+		const published: Array<PullRequestReviewPublication> = []
+		return Effect.gen(function* () {
+			const repositoryId = yield* seed(true)
+			const repo = yield* VcsRepository
+			yield* repo.setPrReviewConfig(
+				orgId,
+				repositoryId,
+				new PrReviewRepositoryConfig({ autoApprove: true }),
+			)
+			const reviews = yield* PrReviewService
+			const started = yield* reviews.onPullRequestEvent(orgId, job())
+			yield* reviews.submitReview(orgId, started.reviewId!, request)
+			return published[0].approval
+		}).pipe(Effect.provide(layerFor(testDb, { ...options, published })))
+	}
+
+	const changed = (path: string, overrides: Partial<PullRequestFile> = {}): PullRequestFile => ({
+		path,
+		previousPath: null,
+		status: "modified",
+		additions: 2,
+		deletions: 1,
+		patch: "@@ -1,2 +1,2 @@\n-a\n+b\n c",
+		...overrides,
+	})
+
+	const refusedBecause = (approval: PullRequestReviewPublication["approval"]) =>
+		approval?.action === "withdraw" ? approval.reason : `asked to ${approval?.action}`
+
+	it.effect("approves a small change to source and prose", () =>
+		Effect.gen(function* () {
+			const approval = yield* approvalFor(
+				new SubmitPrReviewRequest({ ...SENT_CLEAN, report: lowRisk() }),
+				{ prFiles: [changed("src/orders/label.ts"), changed("docs/orders.md")] },
+			)
+			assert.strictEqual(approval?.action, "approve")
+		}),
+	)
+
+	it.effect("does not approve on a verdict the model never sent as clean", () =>
+		Effect.gen(function* () {
+			// The report reads clean either way; what the model sent is what decides.
+			const unsaid = yield* approvalFor(new SubmitPrReviewRequest({ report: lowRisk() }))
+			assert.include(refusedBecause(unsaid), "did not submit a clean verdict")
+			const tidied = yield* approvalFor(
+				new SubmitPrReviewRequest({
+					report: lowRisk(),
+					submitted: { verdict: "issues", droppedFindings: 0 },
+				}),
+			)
+			assert.include(refusedBecause(tidied), "did not submit a clean verdict")
+		}),
+	)
+
+	it.effect("does not approve when a finding the model sent was dropped as unreadable", () =>
+		Effect.gen(function* () {
+			const approval = yield* approvalFor(
+				new SubmitPrReviewRequest({
+					report: lowRisk(),
+					submitted: { verdict: "clean", droppedFindings: 1 },
+				}),
+			)
+			assert.include(refusedBecause(approval), "could not be read")
+		}),
+	)
+
+	it.effect("does not approve a sensitive path the review rated low risk, and names it", () =>
+		Effect.gen(function* () {
+			const approval = yield* approvalFor(
+				new SubmitPrReviewRequest({ ...SENT_CLEAN, report: lowRisk() }),
+				{ prFiles: [changed("src/orders/label.ts"), changed(".github/workflows/deploy.yml")] },
+			)
+			assert.include(refusedBecause(approval), "the diff touches .github/workflows/deploy.yml")
+		}),
+	)
+
+	it.effect("does not approve a file of a kind the review never reads", () =>
+		Effect.gen(function* () {
+			const approval = yield* approvalFor(
+				new SubmitPrReviewRequest({ ...SENT_CLEAN, report: lowRisk() }),
+				{ prFiles: [changed("src/orders/label.ts"), changed("tools/release.ts")] },
+			)
+			assert.include(refusedBecause(approval), "a kind the review does not read")
+		}),
+	)
+
+	it.effect("does not approve a patch longer than the review was shown", () =>
+		Effect.gen(function* () {
+			const long = Arr.join(["@@ -1,1 +1,2000 @@", ...Arr.makeBy(2_000, (i) => `+line ${i}`)], "\n")
+			const approval = yield* approvalFor(
+				new SubmitPrReviewRequest({ ...SENT_CLEAN, report: lowRisk() }),
+				{ prFiles: [changed("src/orders/table.ts", { patch: long, additions: 10 })] },
+			)
+			assert.include(refusedBecause(approval), "a patch longer than the review was shown")
+		}),
+	)
+
+	it.effect("does not approve when the provider cut the file listing short", () =>
+		Effect.gen(function* () {
+			const approval = yield* approvalFor(
+				new SubmitPrReviewRequest({ ...SENT_CLEAN, report: lowRisk() }),
+				{ prFiles: [changed("src/orders/label.ts")], filesTruncated: true },
+			)
+			assert.include(refusedBecause(approval), "more files than the review was shown")
+		}),
+	)
+
+	it.effect("does not approve a diff past the size cap", () =>
+		Effect.gen(function* () {
+			const approval = yield* approvalFor(
+				new SubmitPrReviewRequest({ ...SENT_CLEAN, report: lowRisk() }),
+				{ prFiles: [changed("src/orders/label.ts", { additions: 900, deletions: 0 })] },
+			)
+			assert.include(refusedBecause(approval), "the diff changes 900 lines")
+		}),
+	)
+
+	it.effect("withdraws when an edit moves the pull request to another base, and only then", () => {
+		const testDb = createTestDb(trackedDbs)
+		const withdrawals: Array<string> = []
+		return Effect.gen(function* () {
+			const repositoryId = yield* seed(true)
+			const repo = yield* VcsRepository
+			const reviews = yield* PrReviewService
+			// Off: an edit asks nothing of the provider.
+			yield* reviews.onPullRequestEvent(orgId, job({ action: "edited" }))
+			assert.deepStrictEqual(withdrawals, [])
+			yield* repo.setPrReviewConfig(
+				orgId,
+				repositoryId,
+				new PrReviewRepositoryConfig({ autoApprove: true }),
+			)
+			// A title or description edit leaves the approval alone.
+			yield* reviews.onPullRequestEvent(orgId, job({ action: "edited", baseChanged: false }))
+			assert.deepStrictEqual(withdrawals, [])
+			const outcome = yield* reviews.onPullRequestEvent(
+				orgId,
+				job({ action: "edited", baseRef: "release", baseChanged: true }),
+			)
+			assert.strictEqual(outcome.outcome, "skipped")
+			assert.deepStrictEqual(withdrawals, [
+				"612:the pull request's base branch changed since it approved",
+			])
+		}).pipe(Effect.provide(layerFor(testDb, { withdrawals })))
+	})
+
+	it.effect("ends a review still running when the pull request moves to another base", () => {
+		const testDb = createTestDb(trackedDbs)
+		const withdrawals: Array<string> = []
+		const aborted: Array<string> = []
+		return Effect.gen(function* () {
+			const repositoryId = yield* seed(true)
+			const repo = yield* VcsRepository
+			yield* repo.setPrReviewConfig(
+				orgId,
+				repositoryId,
+				new PrReviewRepositoryConfig({ autoApprove: true }),
+			)
+			const reviews = yield* PrReviewService
+			const running = yield* reviews.onPullRequestEvent(orgId, job())
+			assert.equal(running.outcome, "started")
+			// A title edit leaves it running; a base change ends it, since it read another diff.
+			yield* reviews.onPullRequestEvent(orgId, job({ action: "edited", baseChanged: false }))
+			assert.deepEqual(aborted, [])
+			yield* reviews.onPullRequestEvent(
+				orgId,
+				job({ action: "edited", baseRef: "main", baseChanged: true }),
+			)
+			assert.deepEqual(aborted, [`${orgId}:pr-${running.reviewId} (superseded)`])
+			const ended = Option.getOrThrow(yield* reviews.getReview(orgId, running.reviewId!))
+			assert.equal(ended.status, "skipped")
+			assert.equal(ended.skipReason, "superseded")
+		}).pipe(Effect.provide(layerFor(testDb, { withdrawals, aborted })))
+	})
+
+	it.effect("tells the pull request when it could not withdraw its approval", () => {
+		const testDb = createTestDb(trackedDbs)
+		const withdrawals: Array<string> = []
+		const comments: Array<string> = []
+		return Effect.gen(function* () {
+			const repositoryId = yield* seed(true)
+			const repo = yield* VcsRepository
+			yield* repo.setPrReviewConfig(
+				orgId,
+				repositoryId,
+				new PrReviewRepositoryConfig({ autoApprove: true }),
+			)
+			const reviews = yield* PrReviewService
+			const outcome = yield* reviews.onPullRequestEvent(
+				orgId,
+				job({ action: "synchronize", headSha: HEAD_2 }),
+			)
+			// The review still starts; the failure is tried twice and then said where people will see it.
+			assert.strictEqual(outcome.outcome, "started")
+			assert.strictEqual(withdrawals.length, 2)
+			const notices = Arr.filter(comments, Str.includes("could not withdraw its approval"))
+			assert.strictEqual(notices.length, 1)
+			assert.include(notices[0], "should dismiss it")
+			// Written under its own marker, so a later failure rewrites this comment and adds none.
+			assert.isTrue(Str.startsWith(WITHDRAWAL_FAILURE_MARKER)(notices[0] ?? ""))
+		}).pipe(Effect.provide(layerFor(testDb, { withdrawals, comments, withdrawFails: true })))
+	})
+
+	it.effect("does not approve on a step before merge that the author ticked themselves", () => {
+		const step = new PrReviewMergeStep({ kind: "manual", title: "Run the backfill", source: "reviewer" })
+		const tickedBy = (editorLogin: string) => {
+			const testDb = createTestDb(trackedDbs)
+			const published: Array<PullRequestReviewPublication> = []
+			return Effect.gen(function* () {
+				const repositoryId = yield* seed(true)
+				const repo = yield* VcsRepository
+				yield* repo.setPrReviewConfig(
+					orgId,
+					repositoryId,
+					new PrReviewRepositoryConfig({ autoApprove: true }),
+				)
+				const reviews = yield* PrReviewService
+				const request = new SubmitPrReviewRequest({
+					...SENT_CLEAN,
+					report: new PrReviewReport({ ...lowRisk(), beforeMerge: [step] }),
+				})
+				const first = yield* reviews.onPullRequestEvent(orgId, job())
+				yield* reviews.submitReview(orgId, first.reviewId!, request)
+				const key = Option.getOrThrow(yield* reviews.getReview(orgId, first.reviewId!)).report
+					?.beforeMerge?.[0]?.key
+				yield* reviews.onMergeStepsTicked(orgId, {
+					kind: "pull-request-checklist",
+					provider: "github",
+					externalInstallationId: "42",
+					externalRepoId: "7",
+					repoFullName: "octo/repo",
+					number: job().number,
+					commentId: "99",
+					editorLogin,
+					ticks: [{ key: key!, done: true }],
+				})
+				const second = yield* reviews.onPullRequestEvent(
+					orgId,
+					job({ action: "synchronize", headSha: HEAD_2 }),
+				)
+				yield* reviews.submitReview(orgId, second.reviewId!, request)
+				return published[1].approval
+			}).pipe(Effect.provide(layerFor(testDb, { published })))
+		}
+		return Effect.gen(function* () {
+			// `octocat` opened the pull request.
+			assert.include(refusedBecause(yield* tickedBy("octocat")), "ticked by the pull request's author")
+			assert.strictEqual((yield* tickedBy("maintainer"))?.action, "approve")
+		})
+	})
+
+	it.effect("does not approve when the author settled a warning with a reply", () => {
+		const warning = new PrReviewFinding({
+			path: "a.ts",
+			line: 3,
+			category: "correctness",
+			severity: "warn",
+			title: "Unchecked null",
+			body: "b",
+		})
+		const answeredBy = (author: string, permission: string) => {
+			const testDb = createTestDb(trackedDbs)
+			const published: Array<PullRequestReviewPublication> = []
+			const threads: ReadonlyArray<PullRequestReviewThread> = [
+				{
+					id: "T1",
+					isResolved: false,
+					comments: [
+						{ commentId: "c-0", author: "maple[bot]", body: "F1", thumbsUp: 0, thumbsDown: 0 },
+						{
+							commentId: "c-9",
+							author,
+							body: "Fixed in c88ba3a.",
+							thumbsUp: 0,
+							thumbsDown: 0,
+						},
+					],
+				},
+			]
+			return Effect.gen(function* () {
+				const repositoryId = yield* seed(true)
+				const repo = yield* VcsRepository
+				yield* repo.setPrReviewConfig(
+					orgId,
+					repositoryId,
+					new PrReviewRepositoryConfig({ autoApprove: true }),
+				)
+				const reviews = yield* PrReviewService
+				const first = yield* reviews.onPullRequestEvent(orgId, job())
+				yield* reviews.submitReview(
+					orgId,
+					first.reviewId!,
+					new SubmitPrReviewRequest({ ...SENT_CLEAN, report: lowRisk([warning]) }),
+				)
+				// The next push reads the thread: the reply settles the warning without a review confirming it.
+				const second = yield* reviews.onPullRequestEvent(
+					orgId,
+					job({ action: "synchronize", headSha: HEAD_2 }),
+				)
+				yield* reviews.submitReview(
+					orgId,
+					second.reviewId!,
+					new SubmitPrReviewRequest({ ...SENT_CLEAN, report: lowRisk() }),
+				)
+				return published[1].approval
+			}).pipe(Effect.provide(layerFor(testDb, { published, threads, permission })))
+		}
+		return Effect.gen(function* () {
+			assert.include(
+				refusedBecause(yield* answeredBy("octocat", "write")),
+				"settled by the author or by someone without push access",
+			)
+			assert.include(
+				refusedBecause(yield* answeredBy("drive-by", "read")),
+				"settled by the author or by someone without push access",
+			)
+			assert.strictEqual((yield* answeredBy("maintainer", "write"))?.action, "approve")
+		})
+	})
+
+	it("never approves a change to a file the review reads as its own instructions", () => {
+		assert.deepStrictEqual(
+			Arr.filter(PR_REVIEW_RULE_FILES, (path) => !isSensitivePath(path)),
+			[],
+		)
+	})
+
+	it.effect("asks nothing about approval when the repository has not turned it on", () => {
+		const testDb = createTestDb(trackedDbs)
+		const published: Array<PullRequestReviewPublication> = []
+		return Effect.gen(function* () {
+			yield* seed(true)
+			const reviews = yield* PrReviewService
+			const started = yield* reviews.onPullRequestEvent(orgId, job())
+			yield* reviews.submitReview(
+				orgId,
+				started.reviewId!,
+				new SubmitPrReviewRequest({
+					...SENT_CLEAN,
+					report: new PrReviewReport({ ...lowRisk(), risk: "high" }),
+				}),
+			)
+			assert.isUndefined(published[0].approval)
+			assert.notInclude(published[0].summaryComment.body, "auto-approved")
+		}).pipe(Effect.provide(layerFor(testDb, { published })))
 	})
 })
 

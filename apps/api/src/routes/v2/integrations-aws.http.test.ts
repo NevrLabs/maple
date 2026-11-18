@@ -8,7 +8,7 @@ import { Env } from "@maple/backend/platform/Env"
 import { cleanupTestDbs, createTestDb, type TestDb } from "@maple/backend/testing/test-pglite"
 import { ApiAuthorizationV2Live } from "@maple/backend/services/auth/ApiAuthorizationV2Live"
 import { AuthService } from "@maple/backend/services/auth/AuthService"
-import { AuditLogService } from "@maple/backend/services/audit/AuditLogService"
+import { AuditLogService, makeMemoryAuditLog } from "@maple/backend/services/audit/AuditLogService"
 import { DashboardPersistenceService } from "@maple/backend/services/dashboards/DashboardPersistenceService"
 import { SharedDashboardService } from "@maple/backend/services/dashboards/SharedDashboardService"
 import { MAPLE_TEST_OIDC_KEY } from "@maple/backend/services/integrations/aws/fake-aws"
@@ -73,14 +73,15 @@ const makeHarness = (
 	options: {
 		readonly awsAvailable: boolean
 		readonly warehouseRows?: ReadonlyArray<unknown>
-		/** The org is in the `cloudCost` rollout, so `cost` is offered. */
-		readonly cloudCost?: boolean
+		/** Every rollout on, so `security` can be asked for. Off by default. */
+		readonly rolledOut?: boolean
 	} = {
 		awsAvailable: true,
 	},
 ) => {
 	const testDb = createTestDb(createdDbs)
 	const warehouse = makeWarehouse(options.warehouseRows ?? [])
+	const auditLog = makeMemoryAuditLog()
 	const envLive = Env.layer.pipe(Layer.provide(testConfig(options.awsAvailable)))
 	const servicesLive = Layer.mergeAll(
 		ApiKeysService.layer,
@@ -96,14 +97,15 @@ const makeHarness = (
 			HttpV2AwsIntegrationsLive.pipe(
 				Layer.provide(
 					Layer.mergeAll(
-						// Outside the `cloudCost` rollout unless a test asks for it: `cost` is then planned.
+						// Outside every rollout: `security` is then planned.
 						Layer.effect(AwsConnectionService, AwsConnectionService.make).pipe(
 							Layer.provide([
 								FetchHttpClient.layer,
-								OrganizationFeatureFlagsService.fixed({
-									...DISABLED_ORGANIZATION_FEATURE_FLAGS,
-									cloudCost: options.cloudCost === true,
-								}),
+								options.rolledOut === true
+									? OrganizationFeatureFlagsService.allEnabled
+									: OrganizationFeatureFlagsService.fixed(
+											DISABLED_ORGANIZATION_FEATURE_FLAGS,
+										),
 							]),
 						),
 						Layer.effect(AwsIngestService, AwsIngestService.make),
@@ -114,7 +116,7 @@ const makeHarness = (
 		Layer.provide(warehouse.layer),
 		Layer.provide(V2TransportErrorBoundaryLive),
 		Layer.provideMerge(ApiAuthorizationV2Live),
-		Layer.provideMerge(AuditLogService.layerMemory),
+		Layer.provideMerge(Layer.succeed(AuditLogService, auditLog)),
 		Layer.provideMerge(ApiV2RateLimiterAllowAllLayer),
 		Layer.provideMerge(servicesLive),
 	)
@@ -157,8 +159,15 @@ const makeHarness = (
 		return { status: response.status, body: text.length === 0 ? null : JSON.parse(text) }
 	}
 
+	/** The org's audit entries for one action, as the ids of the resources they name. */
+	const audited = (action: string) =>
+		Effect.runPromise(auditLog.list(ORG, { action, limit: 50, offset: 0 })).then((entries) =>
+			Arr.map(entries, (entry) => ({ resourceId: entry.resourceId, metadata: entry.metadata })),
+		)
+
 	return {
 		request,
+		audited,
 		warehouseSql: warehouse.asked,
 		adminKey,
 		memberKey,
@@ -256,8 +265,68 @@ describe("v2 aws integration over HTTP", () => {
 		await harness.dispose()
 	})
 
-	it("offers and accepts the cost module for an org in the cloudCost rollout", async () => {
-		const harness = makeHarness({ awsAvailable: true, cloudCost: true })
+	it("rotates the events key for admins with the write scope, and records who read or rotated it", async () => {
+		const harness = makeHarness({ awsAvailable: true, rolledOut: true })
+		const admin = await harness.adminKey()
+		const member = await harness.memberKey()
+		const reader = await harness.adminKey(["integrations:read"])
+		const created = await harness.request("POST", CONNECTIONS, admin.secret, {
+			account_id: "123456789012",
+			modules: ["security"],
+		})
+		const path = `${CONNECTIONS}/${created.body.id}`
+		const eventsKey = async () => {
+			const setup = await harness.request("GET", `${path}/setup`, admin.secret)
+			return /"EventsKey=(maple_awsev_[\w-]+)"/u.exec(setup.body.setup_script)?.[1]
+		}
+
+		const before = await eventsKey()
+		expect(before).toBeDefined()
+		expect((await harness.request("POST", `${path}/events_key/rotate`, member.secret)).status).toBe(403)
+		const unscoped = await harness.request("POST", `${path}/events_key/rotate`, reader.secret)
+		expect(unscoped.status).toBe(403)
+		expect(await eventsKey()).toBe(before)
+
+		const rotated = await harness.request("POST", `${path}/events_key/rotate`, admin.secret)
+		expect(rotated.status).toBe(200)
+		expect(rotated.body).toMatchObject({ id: created.body.id, object: "aws_connection" })
+		const after = await eventsKey()
+		expect(after).toBeDefined()
+		expect(after).not.toBe(before)
+		// The answer names the connection and nothing of the key.
+		expect(JSON.stringify(rotated.body)).not.toContain("maple_awsev_")
+
+		// Three setups handed a key out and one rotation replaced it; no entry holds a key.
+		const reads = await harness.audited("aws_connection.events_key_read")
+		const rotations = await harness.audited("aws_connection.events_key_rotated")
+		expect(Arr.map(reads, (entry) => entry.resourceId)).toEqual([
+			created.body.id,
+			created.body.id,
+			created.body.id,
+		])
+		expect(Arr.map(rotations, (entry) => entry.resourceId)).toEqual([created.body.id])
+		expect(JSON.stringify([reads, rotations])).not.toContain("maple_awsev_")
+
+		const gone = `${CONNECTIONS}/awsc_YofPTrK9782DWwcnXhpcCw/events_key/rotate`
+		expect((await harness.request("POST", gone, admin.secret)).status).toBe(404)
+		await harness.dispose()
+	})
+
+	it("records no events key read for a setup that carries none", async () => {
+		const harness = makeHarness()
+		const admin = await harness.adminKey()
+		const created = await harness.request("POST", CONNECTIONS, admin.secret, {
+			account_id: "123456789012",
+			modules: ["cost"],
+		})
+		const setup = await harness.request("GET", `${CONNECTIONS}/${created.body.id}/setup`, admin.secret)
+		expect(setup.status).toBe(200)
+		expect(await harness.audited("aws_connection.events_key_read")).toEqual([])
+		await harness.dispose()
+	})
+
+	it("offers and accepts the cost module for every org", async () => {
+		const harness = makeHarness()
 		const admin = await harness.adminKey()
 		const availability = (body: { modules: ReadonlyArray<{ module: string; available: boolean }> }) =>
 			Arr.map(
@@ -296,7 +365,7 @@ describe("v2 aws integration over HTTP", () => {
 		).toBe(400)
 		const planned = await harness.request("POST", CONNECTIONS, admin.secret, {
 			account_id: "123456789012",
-			modules: ["cost"],
+			modules: ["inventory"],
 		})
 		expect(planned.status).toBe(400)
 		const elsewhere = await harness.request("POST", CONNECTIONS, admin.secret, {
@@ -325,7 +394,9 @@ describe("v2 aws integration over HTTP", () => {
 		const unchanged = await harness.request("PATCH", path, admin.secret, {})
 		expect(unchanged.status).toBe(200)
 		expect(unchanged.body.modules).toEqual([])
-		expect((await harness.request("PATCH", path, admin.secret, { modules: ["cost"] })).status).toBe(400)
+		expect((await harness.request("PATCH", path, admin.secret, { modules: ["inventory"] })).status).toBe(
+			400,
+		)
 		await harness.request("DELETE", path, admin.secret)
 		const missing = await harness.request("PATCH", path, admin.secret, { modules: [] })
 		expect(missing.status).toBe(404)

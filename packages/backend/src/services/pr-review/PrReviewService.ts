@@ -45,6 +45,9 @@ import {
 	PrReviewFailureReason,
 	prReviewFailureReason,
 	confidencePrReview,
+	type PrReviewAutoApproval,
+	prReviewAutoApproval,
+	prReviewDiffSignals,
 	isPrReviewDefectHistory,
 	prReviewConfidenceTone,
 	scorePrReview,
@@ -52,6 +55,7 @@ import {
 	type PullRequestChecklistJob,
 	type PullRequestEventJob,
 	type PullRequestReviewComment,
+	type PullRequestApprovalOutcome,
 	type PullRequestReviewPublication,
 	type PullRequestReviewThread,
 	type SubmitPrReviewRequest,
@@ -126,8 +130,11 @@ import {
 } from "./telemetry/render"
 import {
 	capUnsourcedPrivacyCriticals,
+	findingSettlers,
 	latestReplies,
 	settledFindings,
+	untrustedSettlements,
+	wordSettledIssues,
 	nextHandles,
 	pathIgnored,
 	renderFollowUp,
@@ -182,6 +189,9 @@ const REVIEWABLE_ACTIONS: ReadonlySet<PullRequestEventJob["action"]> = new Set([
 	"synchronize",
 	"ready_for_review",
 ])
+
+/** People whose push access one approval decision asks the provider about; settlers past it are not trusted. */
+const MAX_SETTLER_LOOKUPS = 5
 
 /** The states a review's own turn may still move: anything else is settled or superseded. */
 const ACTIVE_STATUSES: ReadonlyArray<PrReviewStatus> = ["queued", "running"]
@@ -650,6 +660,8 @@ export interface ReviewMarkdownInput {
 	readonly mention?: string
 	/** The repository fails the check on a broken telemetry contract. */
 	readonly blocking?: boolean
+	/** Why the review did not auto-approve, said under the score; absent when it did or never asked. */
+	readonly notApproved?: ReadonlyArray<string>
 }
 
 const bySeverity = <F extends { readonly severity: PrReviewSeverity }>(findings: ReadonlyArray<F>) =>
@@ -748,6 +760,18 @@ export const renderBeforeMerge = (
 				"",
 			]
 
+/**
+ * What the pull request is told when an approval could not be withdrawn: Maple no longer stands
+ * behind it, and only a person can take it down now.
+ */
+export const renderWithdrawalFailure = (reason: string): string =>
+	`${WITHDRAWAL_FAILURE_MARKER}\n` +
+	`**Maple could not withdraw its approval of this pull request** (${reason}). ` +
+	"If an approval from Maple still shows on it, someone with write access should dismiss it before merging."
+
+/** Hidden first line of that notice: one comment per pull request, rewritten on a later failure. */
+export const WITHDRAWAL_FAILURE_MARKER = "<!-- maple-pr-approval-not-withdrawn -->"
+
 /** Hidden first line of the merge reminder. */
 export const MERGE_REMINDER_MARKER = "<!-- maple-pr-merge-steps -->"
 
@@ -785,10 +809,14 @@ export const renderReviewMarkdown = (input: ReviewMarkdownInput & { readonly hea
 	const comment = input.heading
 
 	// Confidence leads, like the check title: one number, then what decides it and what went in.
+	const refused =
+		input.notApproved === undefined || input.notApproved.length === 0
+			? undefined
+			: `Not auto-approved: ${Arr.join(input.notApproved, " · ")}`
 	const lines: Array<string> = []
 	if (input.heading) lines.push("## Maple review", "")
 	if (confidence === undefined) {
-		lines.push("**Nothing to review**", "")
+		lines.push(`**Nothing to review**${refused === undefined ? "" : `<br><sub>${refused}</sub>`}`, "")
 	} else {
 		// An early end is already the warning below; the reason would only say it again.
 		const reason =
@@ -797,7 +825,8 @@ export const renderReviewMarkdown = (input: ReviewMarkdownInput & { readonly hea
 				: undefined
 		lines.push(
 			`${confidenceMark(confidence.confidence)} **Confidence ${confidence.confidence}/${PR_REVIEW_CONFIDENCE_MAX}** · ${PR_REVIEW_CONFIDENCE_LABEL[confidence.confidence]}${reason === undefined ? "" : `. ${reason}`}`,
-			`<sub>${Arr.join(confidence.factors, " · ")}</sub>`,
+			// A refusal joins the factors' line: a check summary does not break on a bare newline.
+			`<sub>${Arr.join(confidence.factors, " · ")}${refused === undefined ? "" : `<br>${refused}`}</sub>`,
 			"",
 		)
 	}
@@ -1034,6 +1063,8 @@ export const buildPublication = (input: {
 	readonly reviewId: PrReviewId
 	readonly number: number
 	readonly headSha: GitCommitSha
+	/** The base commit the review read against: an approval is asked for that base only. */
+	readonly baseSha?: GitCommitSha | null
 	readonly report: PrReviewReport
 	readonly partial: boolean
 	readonly repositoryUrl: string
@@ -1044,6 +1075,10 @@ export const buildPublication = (input: {
 	readonly mention?: string
 	/** Fail the check while a telemetry contract break is open (the repository's setting). */
 	readonly blockOnContractBreaks?: boolean
+	/** The repository's `autoApprove` decision for this review; absent when the setting is off. */
+	readonly approval?: PrReviewAutoApproval
+	/** The provider would not give the approval the decision asked for; the comment says why. */
+	readonly providerRefusal?: string
 }): PullRequestReviewPublication => {
 	const { report } = input
 	const marker = prReviewCommentMarker(input.reviewId, input.commentAttempt)
@@ -1075,6 +1110,11 @@ export const buildPublication = (input: {
 		repositoryUrl: input.repositoryUrl,
 		carried,
 		...(input.mention === undefined ? undefined : { mention: input.mention }),
+		...(input.providerRefusal !== undefined
+			? { notApproved: [input.providerRefusal] }
+			: input.approval === undefined || input.approval.approve
+				? undefined
+				: { notApproved: input.approval.reasons }),
 	}
 	const hasIssues = Arr.some(
 		[...report.findings, ...carried.open],
@@ -1111,8 +1151,52 @@ export const buildPublication = (input: {
 				? null
 				: `${comments.length} inline ${comments.length === 1 ? "note" : "notes"} from Maple's review. The score and summary are in the review comment above.`,
 		comments,
+		...(input.approval === undefined
+			? undefined
+			: {
+					approval: input.approval.approve
+						? {
+								action: "approve" as const,
+								body: approvalBody(input.approval.reason),
+								...(input.baseSha == null ? undefined : { baseSha: input.baseSha }),
+							}
+						: { action: "withdraw" as const, reason: input.approval.reason },
+				}),
 	}
 }
+
+/**
+ * Why the provider would not approve what the review cleared, for the comment; `undefined` for an
+ * outcome that is not a refusal.
+ */
+export const providerApprovalRefusal = (outcome: PullRequestApprovalOutcome): string | undefined => {
+	switch (outcome) {
+		case "approved":
+		case "withdrawn":
+			return undefined
+		case "not_open":
+			return "the pull request is no longer open"
+		case "draft":
+			return "the pull request is a draft"
+		case "head_moved":
+			return "commits were pushed after this review"
+		case "base_moved":
+			return "the pull request's base changed after this review read it"
+		case "base_not_default":
+			return "the pull request does not target the default branch"
+		case "too_many_reviews":
+			return "the pull request has too many reviews for Maple to find its own approval again"
+		case "untrusted_author":
+			return "the author cannot push to this repository"
+		case "unsupported":
+			return "this installation cannot approve pull requests"
+	}
+}
+
+/** What Maple says when it approves: why, and that the approval does not outlast the change. */
+const approvalBody = (reason: string) =>
+	`Approved by Maple's review: ${reason} Nothing in it needs a person to read it first. ` +
+	"Maple withdraws this approval if a later review of the pull request finds otherwise."
 
 export class PrReviewService extends Context.Service<PrReviewService, PrReviewServiceApi>()(
 	"@maple/backend/services/pr-review/PrReviewService",
@@ -1215,6 +1299,21 @@ export class PrReviewService extends Context.Service<PrReviewService, PrReviewSe
 								$.status.eq("completed"),
 							])
 							.orderBy(($) => [[$.finishedAt, "desc"]]),
+					),
+				)
+
+			/** Reviews of the pull request that held a warning or critical back, of any status. */
+			const loadHeldBack = (orgId: OrgId, repositoryId: VcsRepositoryId, number: number) =>
+				dbExecute((db) =>
+					db.run(
+						PG.from(PrReviews)
+							.select(($) => ({ id: $.id, heldBack: $.heldBack }))
+							.where(($) => [
+								$.orgId.eq(orgId),
+								$.repositoryId.eq(repositoryId),
+								$.number.eq(number),
+								$.heldBack.gt(0),
+							]),
 					),
 				)
 
@@ -1346,7 +1445,7 @@ export class PrReviewService extends Context.Service<PrReviewService, PrReviewSe
 				return { kept, vectors: keptVectors, suppressed }
 			})
 
-			const { upstreamFor, canPush } = yield* makeRepoUpstream
+			const { upstreamFor, canPush, pushAccess } = yield* makeRepoUpstream
 
 			/**
 			 * The diff read against the organization's telemetry, for the kickoff and the report. Best
@@ -1357,7 +1456,7 @@ export class PrReviewService extends Context.Service<PrReviewService, PrReviewSe
 					const target = yield* upstreamFor(orgId, repo)
 					if (Option.isNone(target)) return undefined
 					const { provider, installation, ref } = target.value
-					const files = yield* provider.fetchPullRequestFiles(installation, ref, number)
+					const { files } = yield* provider.fetchPullRequestFiles(installation, ref, number)
 					const analyzed = yield* telemetryReader.analyze(orgId, files)
 					if (analyzed === undefined) return undefined
 					// The diff only shows changed lines: a name the pull request removes may still be emitted
@@ -1423,7 +1522,11 @@ export class PrReviewService extends Context.Service<PrReviewService, PrReviewSe
 					const target = yield* upstreamFor(orgId, repo)
 					if (Option.isNone(target)) return undefined
 					const { provider, installation, ref } = target.value
-					const files = yield* provider.fetchPullRequestFiles(installation, ref, number)
+					const { files, truncated } = yield* provider.fetchPullRequestFiles(
+						installation,
+						ref,
+						number,
+					)
 					const detected = detectMergeSteps(files)
 					const verdicts = yield* Effect.forEach(
 						detected.names.slice(0, MAX_CHECKLIST_SEARCHES),
@@ -1435,6 +1538,13 @@ export class PrReviewService extends Context.Service<PrReviewService, PrReviewSe
 						{ concurrency: 2 },
 					)
 					return {
+						files,
+						truncated,
+						paths: Arr.map(files, (file) => file.path),
+						patchless: Arr.map(
+							Arr.filter(files, (file) => file.patch === null),
+							(file) => file.path,
+						),
 						detected,
 						verdicts: new Map<string, NameVerdict>(verdicts.flat()),
 						privacy: privacyFindings(files),
@@ -1558,6 +1668,111 @@ export class PrReviewService extends Context.Service<PrReviewService, PrReviewSe
 					Effect.withSpan("PrReviewService.postReviewStatus", {
 						attributes: { orgId, "maple.pr_review.status_notice": notice.kind },
 					}),
+				)
+
+			/**
+			 * Dismiss the approvals Maple gave a pull request. A review never fails on it, but a
+			 * withdrawal that could not be made is not silent: it is tried twice, logged as an error,
+			 * and said on the pull request so a person can dismiss the approval.
+			 * `keepHead`: an approval of this commit still stands, so a repeated push event spares it.
+			 */
+			const withdrawApprovals = (
+				orgId: OrgId,
+				repo: VcsRepo,
+				number: number,
+				reason: string,
+				keepHead?: GitCommitSha,
+			) =>
+				Effect.gen(function* () {
+					const target = yield* upstreamFor(orgId, repo)
+					if (Option.isNone(target)) return
+					const { provider, installation, ref } = target.value
+					const withdrawn = yield* provider
+						.withdrawPullRequestApprovals(installation, ref, {
+							number,
+							reason,
+							...(keepHead === undefined ? undefined : { keepHead }),
+						})
+						.pipe(Effect.retry({ times: 1 }), Effect.exit)
+					if (Exit.isSuccess(withdrawn)) {
+						yield* Effect.annotateCurrentSpan("vcs.pull_request.approval", withdrawn.value)
+						return
+					}
+					yield* Effect.annotateCurrentSpan("vcs.pull_request.approval", "withdraw_failed")
+					yield* Effect.logError("[PrReview] could not withdraw the review's approval").pipe(
+						Effect.annotateLogs({ orgId, number, cause: summarizeCause(withdrawn.cause) }),
+					)
+					yield* provider
+						.writePullRequestSummaryComment(installation, ref, {
+							number,
+							marker: WITHDRAWAL_FAILURE_MARKER,
+							body: () => renderWithdrawalFailure(reason),
+						})
+						.pipe(
+							Effect.catchCause((cause) =>
+								Effect.logError(
+									"[PrReview] could not say that the approval was not withdrawn",
+								).pipe(Effect.annotateLogs({ orgId, number, cause: summarizeCause(cause) })),
+							),
+						)
+				}).pipe(
+					Effect.catchCause((cause) =>
+						Effect.logError("[PrReview] could not withdraw the review's approval").pipe(
+							Effect.annotateLogs({ orgId, number, cause: summarizeCause(cause) }),
+						),
+					),
+					Effect.withSpan("PrReviewService.withdrawApprovals", { attributes: { orgId } }),
+				)
+
+			/** Who opened the pull request a review is of; null on a row from before it was kept. */
+			const authorLoginOf = (orgId: OrgId, reviewId: PrReviewId) =>
+				dbExecute((db) =>
+					db.run(
+						PG.from(PrReviews)
+							.select("authorLogin")
+							.where(($) => [$.orgId.eq(orgId), $.id.eq(reviewId)])
+							.limit(1),
+					),
+				).pipe(Effect.map((rows) => rows[0]?.authorLogin ?? null))
+
+			/**
+			 * How many warnings and criticals were settled by word alone by someone an approval cannot
+			 * lean on ({@link untrustedSettlements}). Push access is asked of the provider for each
+			 * person; a thread or permission that cannot be read counts against the approval.
+			 */
+			const untrustedSettlementsOf = (
+				orgId: OrgId,
+				repo: VcsRepo,
+				number: number,
+				settled: ReadonlyArray<TrackedFinding>,
+				authorLogin: string | null,
+			) =>
+				Effect.gen(function* () {
+					const target = yield* upstreamFor(orgId, repo)
+					if (Option.isNone(target)) return settled.length
+					const { provider, installation, ref } = target.value
+					const threads = yield* provider.fetchReviewThreads(installation, ref, number)
+					const settlers = findingSettlers(settled, threads)
+					const logins = Arr.dedupe(
+						Arr.flatMap(settlers, ({ settler }) => (settler === undefined ? [] : [settler])),
+					).slice(0, MAX_SETTLER_LOOKUPS)
+					const pushers = yield* Effect.forEach(
+						logins,
+						(login) =>
+							pushAccess(target.value, login).pipe(
+								Effect.map((access) => (access.canPush ? [login] : [])),
+							),
+						{ concurrency: 2 },
+					)
+					return untrustedSettlements(settlers, authorLogin, new Set(pushers.flat()))
+				}).pipe(
+					Effect.catchCause((cause) =>
+						Effect.logWarning("[PrReview] could not read who settled the findings").pipe(
+							Effect.annotateLogs({ orgId, number, cause: summarizeCause(cause) }),
+							Effect.as(settled.length),
+						),
+					),
+					Effect.withSpan("PrReviewService.untrustedSettlementsOf", { attributes: { orgId } }),
 				)
 
 			/** Say on the head's checks that pushes no longer start reviews. Best effort, like every status. */
@@ -1727,7 +1942,8 @@ export class PrReviewService extends Context.Service<PrReviewService, PrReviewSe
 				orgId: OrgId,
 				repo: VcsRepo,
 				number: number,
-				headSha: GitCommitSha,
+				/** The head whose review stays; `null` ends every review in flight, whatever it read. */
+				headSha: GitCommitSha | null,
 				nowMs: number,
 			) {
 				const rows = yield* dbExecute((db) =>
@@ -1742,7 +1958,7 @@ export class PrReviewService extends Context.Service<PrReviewService, PrReviewSe
 					),
 				)
 				yield* Effect.forEach(
-					Arr.filter(rows, (row) => row.headSha !== headSha),
+					Arr.filter(rows, (row) => headSha === null || row.headSha !== headSha),
 					(row) =>
 						Effect.gen(function* () {
 							if (row.sessionId !== null && chatSessions !== undefined) {
@@ -1796,6 +2012,8 @@ export class PrReviewService extends Context.Service<PrReviewService, PrReviewSe
 				repositoryId: VcsRepositoryId,
 				number: number,
 				headSha: GitCommitSha,
+				/** The base this attempt reads against, which may differ from the earlier attempt's. */
+				baseSha: GitCommitSha | null,
 				nowMs: number,
 				statuses: ReadonlyArray<PrReviewStatus> = ["failed"],
 			) {
@@ -1804,6 +2022,8 @@ export class PrReviewService extends Context.Service<PrReviewService, PrReviewSe
 						PG.update(PrReviews)
 							.set(($) => ({
 								status: "queued",
+								// An approval is asked for the base a review read, so the row follows this attempt's.
+								baseSha,
 								error: null,
 								// A reclaimed skipped or completed row must not carry its old outcome forward.
 								skipReason: null,
@@ -2100,6 +2320,30 @@ export class PrReviewService extends Context.Service<PrReviewService, PrReviewSe
 						}
 					}
 				}
+				// Retargeting a pull request at another base changes the merged diff under an approval
+				// of the same head, so that edit withdraws. A title or description edit does not.
+				if (job.action === "edited" && job.baseChanged === true) {
+					const edited = yield* repositories
+						.resolveRepository(orgId, job.provider, job.externalRepoId)
+						.pipe(Effect.mapError(toPersistence))
+					if (Option.isSome(edited) && edited.value.prReviewEnabled) {
+						const editedConfig = yield* repositories
+							.getEffectivePrReviewConfig(orgId, edited.value.id)
+							.pipe(Effect.mapError(toPersistence))
+						if (editedConfig.autoApprove === true) {
+							// A review still running read the diff against the old base: it ends here, so
+							// what it found cannot approve the pull request as it now stands.
+							const editedAt = yield* Clock.currentTimeMillis
+							yield* supersede(orgId, edited.value, job.number, null, editedAt)
+							yield* withdrawApprovals(
+								orgId,
+								edited.value,
+								job.number,
+								"the pull request's base branch changed since it approved",
+							)
+						}
+					}
+				}
 				if (!REVIEWABLE_ACTIONS.has(job.action)) {
 					yield* annotate("skipped", { "maple.pr_review.skip_reason": "action" })
 					return skip("action")
@@ -2115,6 +2359,23 @@ export class PrReviewService extends Context.Service<PrReviewService, PrReviewSe
 				const config = yield* repositories
 					.getEffectivePrReviewConfig(orgId, repo.id)
 					.pipe(Effect.mapError(toPersistence))
+				// A new head leaves any approval Maple gave about other code, whatever becomes of this push's
+				// review: it may be skipped, end early or never publish. The delayed copy of the push is
+				// the same head, so it asks nothing again, and an approval of this very head (a repeated
+				// event, after its review approved) stands.
+				if (
+					config.autoApprove === true &&
+					job.action === "synchronize" &&
+					job.deferredReview !== true
+				) {
+					yield* withdrawApprovals(
+						orgId,
+						repo,
+						job.number,
+						"new commits were pushed since it approved",
+						job.headSha,
+					)
+				}
 				if (job.draft === true && config.reviewDrafts !== true && !requested) {
 					yield* annotate("skipped", { "maple.pr_review.skip_reason": "draft" })
 					return skip("draft")
@@ -2325,6 +2586,7 @@ export class PrReviewService extends Context.Service<PrReviewService, PrReviewSe
 					repo.id,
 					job.number,
 					headSha,
+					job.baseSha ?? null,
 					nowMs,
 					requested ? ["failed", "completed", "skipped"] : ["failed"],
 				)
@@ -2716,7 +2978,7 @@ export class PrReviewService extends Context.Service<PrReviewService, PrReviewSe
 							config.categories.length === 0 ||
 							config.categories.includes(finding.category)),
 				)
-				const { fresh, repeated, reraisedDismissed } = withoutRepeats(
+				const { fresh, repeated, reraisedDismissed, restatedResolved } = withoutRepeats(
 					allowed,
 					Arr.map(
 						Arr.filter(tracked, (finding) => !resolved.includes(finding)),
@@ -2748,6 +3010,59 @@ export class PrReviewService extends Context.Service<PrReviewService, PrReviewSe
 							),
 						}),
 					)
+				}
+				// What auto-approval must also know, beyond the report: issues a person set aside or the
+				// repository's rules kept off it, now or in an earlier review, and files no review read.
+				// A diff Maple could not read itself refuses on its own.
+				const isIssue = (finding: { readonly severity: PrReviewSeverity }) =>
+					finding.severity !== "info"
+				const heldBack =
+					Arr.filter(proposed, (finding) => isIssue(finding) && !allowed.includes(finding)).length +
+					Arr.filter(feedback.suppressed, isIssue).length +
+					Arr.filter(restatedResolved, isIssue).length
+				// Kept on the row, not the report, so a review of this head asked for again keeps it.
+				const heldBackRows = yield* loadHeldBack(orgId, review.repositoryId, review.number)
+				const heldBackBefore = Arr.reduce(heldBackRows, 0, (sum, row) => sum + row.heldBack)
+				const heldBackHere =
+					(Arr.findFirst(heldBackRows, (row) => row.id === reviewId).pipe(
+						Option.map((row) => row.heldBack),
+						Option.getOrUndefined,
+					) ?? 0) + heldBack
+				const unignored = (paths: ReadonlyArray<string>) =>
+					Arr.filter(paths, (path) => !pathIgnored(path, config.ignorePaths))
+				// Asked only when the repository approves: each costs a read the review itself does not need.
+				const authorLogin = config.autoApprove === true ? yield* authorLoginOf(orgId, reviewId) : null
+				const settledByWord = config.autoApprove === true ? wordSettledIssues(tracked) : []
+				const approvalSignals = {
+					diffUnavailable: read === undefined,
+					patchlessFiles: read === undefined ? 0 : unignored(read.patchless).length,
+					ignoredFiles: read === undefined ? 0 : read.paths.length - unignored(read.paths).length,
+					// From Maple's own read of the diff, never from what the model said it read.
+					...(read === undefined
+						? undefined
+						: {
+								diff: prReviewDiffSignals({
+									files: read.files,
+									truncated: read.truncated,
+									isIgnored: (path) => pathIgnored(path, config.ignorePaths),
+								}),
+							}),
+					...(request.submitted === undefined ? undefined : { submitted: request.submitted }),
+					untrustedSettlements:
+						settledByWord.length === 0 || Option.isNone(repository)
+							? settledByWord.length
+							: yield* untrustedSettlementsOf(
+									orgId,
+									repository.value,
+									review.number,
+									settledByWord,
+									authorLogin,
+								),
+					authorLogin,
+					dismissedIssues:
+						Arr.filter(tracked, (finding) => finding.status === "dismissed" && isIssue(finding))
+							.length + Arr.filter(dismissedByReviewer, isIssue).length,
+					filteredIssues: heldBack + heldBackBefore,
 				}
 				const handles = nextHandles(
 					Arr.map(tracked, (finding) => finding.handle),
@@ -2830,6 +3145,7 @@ export class PrReviewService extends Context.Service<PrReviewService, PrReviewSe
 				const stored = yield* updateWhere(orgId, reviewId, ACTIVE_STATUSES, {
 					status: "completed",
 					reportJson: report,
+					heldBack: heldBackHere,
 					score,
 					model: request.model ?? null,
 					inputTokens: request.inputTokens ?? null,
@@ -2981,13 +3297,34 @@ export class PrReviewService extends Context.Service<PrReviewService, PrReviewSe
 						headSha: review.headSha,
 						reason: request.partialReason ?? "ended_early",
 					})
+					// A review of the same head asked for again may end early after an approval; what it
+					// saw is unknown, so the approval goes.
+					if (config.autoApprove === true) {
+						yield* withdrawApprovals(orgId, repo, review.number, "its latest review ended early")
+					}
 				} else {
-					const publication = buildPublication({
+					const approval =
+						config.autoApprove === true
+							? prReviewAutoApproval({
+									report,
+									carriedOpen: carried.open,
+									uncheckedFixes: carried.uncheckedFixes ?? 0,
+									...approvalSignals,
+								})
+							: undefined
+					if (approval !== undefined) {
+						yield* Effect.annotateCurrentSpan(
+							"maple.pr_review.auto_approve",
+							approval.approve ? "approve" : approval.refusal,
+						)
+					}
+					const publicationInput = {
 						reviewId,
 						commentAttempt: yield* commentAttemptOf(orgId, reviewId),
 						repositoryUrl: repo.htmlUrl,
 						number: review.number,
 						headSha: review.headSha,
+						baseSha: review.baseSha,
 						report,
 						partial: false,
 						carried,
@@ -2999,7 +3336,9 @@ export class PrReviewService extends Context.Service<PrReviewService, PrReviewSe
 						...(config.blockOnContractBreaks === true
 							? { blockOnContractBreaks: true }
 							: undefined),
-					})
+						...(approval === undefined ? undefined : { approval }),
+					}
+					const publication = buildPublication(publicationInput)
 					const published = yield* provider.success
 						.publishPullRequestReview(installation.value, ref, publication)
 						.pipe(Effect.result)
@@ -3014,6 +3353,10 @@ export class PrReviewService extends Context.Service<PrReviewService, PrReviewSe
 							publishError: Str.slice(0, 500)(published.failure.message),
 							updatedAt: nowMs,
 						})
+						// The refusal never reached the provider, so an earlier approval would still stand.
+						if (approval?.approve === false) {
+							yield* withdrawApprovals(orgId, repo, review.number, approval.reason)
+						}
 					} else {
 						yield* Effect.annotateCurrentSpan({ "maple.pr_review.published": true })
 						yield* update(orgId, reviewId, {
@@ -3023,6 +3366,39 @@ export class PrReviewService extends Context.Service<PrReviewService, PrReviewSe
 							publishError: null,
 							updatedAt: nowMs,
 						})
+						// The review cleared the change but the provider would not approve it (a draft, an
+						// author without push access): the comment says so, or it reads as a lost approval.
+						const providerRefusal =
+							approval?.approve === true && published.success.approval !== undefined
+								? providerApprovalRefusal(published.success.approval)
+								: undefined
+						// The publication asked to withdraw and the provider did not say it had: an approval
+						// may still stand, so it is tried again here, where a failure is told to the pull request.
+						if (approval?.approve === false && published.success.approval === undefined) {
+							yield* withdrawApprovals(orgId, repo, review.number, approval.reason)
+						}
+						if (providerRefusal !== undefined) {
+							const explained = buildPublication({ ...publicationInput, providerRefusal })
+							yield* provider.success
+								.writePullRequestSummaryComment(installation.value, ref, {
+									number: review.number,
+									marker: explained.summaryComment.marker,
+									body: () => explained.summaryComment.body,
+								})
+								.pipe(
+									Effect.catchCause((cause) =>
+										Effect.logWarning(
+											"[PrReview] could not say why the approval was refused",
+										).pipe(
+											Effect.annotateLogs({
+												orgId,
+												reviewId,
+												cause: summarizeCause(cause),
+											}),
+										),
+									),
+								)
+						}
 						yield* Effect.forEach(
 							published.success.inlineComments,
 							({ key, commentId }) =>
