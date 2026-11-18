@@ -44,7 +44,7 @@ jobs:
             - name: Typecheck workspaces
               run: |
                   set -e
-                  for ws in packages/domain packages/status-page packages/query-engine packages/query-engine-integrations packages/backend packages/views apps/web; do
+                  for ws in packages/domain packages/status-page packages/query-engine packages/query-engine-integrations packages/backend packages/views apps/scraper apps/web; do
                       echo "== typecheck $ws"
                       bun run --cwd "$ws" typecheck
                   done
@@ -64,6 +64,9 @@ jobs:
                   bun run --cwd packages/domain test src/status-page.test.ts
                   bun run --cwd packages/status-page test
                   bun run --cwd packages/backend test src/services/alerts/AlertsService.uptime.test.ts src/services/status-pages
+
+            - name: Suite — scraper uptime spans (PATCHES #8)
+              run: bun run --cwd apps/scraper test src/UptimeSpans.test.ts src/UptimeTargetSpans.test.ts
 
             - name: Suite — web merge surfaces
               run: bun run --cwd apps/web test src/page/services/list src/page/alerts/hub src/page/sign-in src/page/settings src/page/status-pages src/shell src/route src/platform src/view.lazy.test.ts
