@@ -72,6 +72,16 @@ build_collector() {
     -v $OUT/go:/go -v $C:/out -w /tmp golang:1.26-alpine sh -c '
       set -e; mkdir -p /tmp/b/packages && cp /work/otel/builder-config.yaml /tmp/b/ && cp -r /work/packages/otel-collector-maple-exporter /tmp/b/packages/
       cd /tmp/b
+      # The exporter go.mod (upstream #2726) lifts otel to v1.47 / otel/log v1.x, which collector v0.151
+      # (otelzap v0.18, sdk/log v0.19) does not compile against. Pin the family to the deployed v1.45 set.
+      cat >> builder-config.yaml <<PINS
+    - go.opentelemetry.io/otel => go.opentelemetry.io/otel v1.45.0
+    - go.opentelemetry.io/otel/metric => go.opentelemetry.io/otel/metric v1.45.0
+    - go.opentelemetry.io/otel/trace => go.opentelemetry.io/otel/trace v1.45.0
+    - go.opentelemetry.io/otel/sdk => go.opentelemetry.io/otel/sdk v1.45.0
+    - go.opentelemetry.io/otel/sdk/metric => go.opentelemetry.io/otel/sdk/metric v1.45.0
+    - go.opentelemetry.io/otel/log => go.opentelemetry.io/otel/log v0.19.0
+PINS
       [ -x /go/bin/builder ] || CGO_ENABLED=0 go install go.opentelemetry.io/collector/cmd/builder@v0.151.0
       CGO_ENABLED=0 /go/bin/builder --config=builder-config.yaml >/tmp/ocb.log 2>&1 || { tail -40 /tmp/ocb.log; exit 1; }
       cp bin/otel-collector-maple /out/'
