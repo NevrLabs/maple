@@ -41,6 +41,10 @@ jobs:
             - name: Build SDK prerequisite
               run: bun x turbo build --filter=@maple-dev/effect-sdk
 
+            # Image parity: the selfhost bundles are what CT130 runs; typecheck does not cover apps/selfhost.
+            - name: Bundle selfhost entry points (image parity)
+              run: OUT="$RUNNER_TEMP/maple-build" bash apps/selfhost/dev/build-images.sh bundles
+
             - name: Typecheck workspaces
               run: |
                   set -e

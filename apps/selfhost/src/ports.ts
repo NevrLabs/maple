@@ -6,7 +6,7 @@
  * Fork-only file (NevrLabs/maple `selfhost`). Upstream files are not edited.
  */
 import { StatusPageStore } from "@maple/backend/services/status-pages/StatusPageStore"
-import { fakeChatSessionsLayer } from "@maple/backend/platform/chat-sessions-fake"
+import { fakeChatSessionsLayer } from "@maple/backend/testing/chat-sessions-fake"
 import { envPorts } from "@maple/backend/platform/env-ports"
 import {
 	ApiV2RateLimit,
