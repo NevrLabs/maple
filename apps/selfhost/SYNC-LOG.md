@@ -384,3 +384,47 @@ Fixed on `selfhost-homelab-up-20261117` (cherry-picked onto `-20261118`):
   the three build fixes above (no runtime-behaviour change beyond making the bundle resolve).
 - NOT deployed. Pre-deploy Setup Health 39/5 differs from the approved 37/7 baseline (STAT-02 new;
   NAME-03, CFG-NOTIF-01, STAT-04 cleared) — the runbook requires baseline reconciliation before cutover.
+
+## Run 10 — 2026-11-19 — upstream 019e4d9d1 → 486316866
+
+Status: **COMPLETE — merged, gated (MacBook), pushed.** Branch `selfhost-homelab-up-20261119`,
+merge `fc7408ba2` (parents `ba2c15a12` run-9/image-prep tip + `486316866`), gated head `593f61000`
+(merge + #2828 session-key adaptation). NOT deployed.
+
+- Frozen at run start: fork main `019e4d9d1`, selfhost tip `ba2c15a12` (newest gated line, carries the
+  three image-path fixes), upstream/main `486316866`.
+- Incoming range: 53 commits, 905 files (+167.0k/−4.6k): PromQL (parser/evaluator on the metric tables,
+  Prometheus-compatible API, MCP tool, dashboard widget source, Grafana dashboard import), destination-bound
+  v3 secret envelopes (ClickHouse/scrape/data-source/uptime; v2 refused for those slots), self-hosted login
+  rate limit + strong root password + HKDF session key (#2828), raw SQL read-only on ClickHouse
+  (`readonly=1` with a `readonly=2` profile fallback), status-page slugs per org (`/s/<org key>/<slug>`),
+  Alchemy StatusPage/UptimeMonitor, GCP cost source, feature requests, org deletion service, GitHub org audit,
+  ingest gateway hardening, landing.
+- Mirror: origin `main` fast-forwarded `019e4d9d1` → `486316866`, pushed, read back.
+- Merge `fc7408ba2` (separate worktree; main checkout's uncommitted postgres-integration work untouched):
+  2 conflicts, resolved by hand:
+  - `packages/backend/src/services/warehouse/WarehouseQueryService.ts` (#1): upstream's import list + `Config`
+    (fork write-route env); upstream's new read-only `sql` (Ref-cached `readonly=1`) kept inside the fork's
+    `Effect.flatMap(HttpClient…)` wrapper, with the #1 `insert` (`kind=clickhouse` → JSONEachRow) and
+    `insertJsonEachRow` helper in place of upstream's always-fail insert.
+  - `packages/domain/src/status-page.test.ts` (#11): fork `informational tier` suite and upstream's new
+    `slugFromName` suite both kept (adjacent EOF insertions).
+- Survival sweep (`019e4d9d1` → `ba2c15a12`): 15 overlap files; only MISSING line is the old single-line
+  `effect` import in WarehouseQueryService (re-expressed as upstream's multi-line list + `Config`).
+- Post-merge adaptation `593f61000` (not a text conflict): upstream #2828 signs self-hosted sessions with an
+  HKDF-SHA256 key (`MAPLE_SESSION_SIGNING_SECRET` salted with the root password, else the password alone).
+  The fork's OIDC mint/gate (#4/#5) signed with the raw root password, so every OIDC session would have
+  401'd at the API. `session.ts` `sessionKey(env)` derives the same key; `api.ts`/`electric-sync.ts` use it;
+  compose passes the optional secret; new `session.test.ts` resolves fork-minted tokens through upstream's
+  `makeResolveTenant` with and without the secret. Deploy note: CT130's root password must be ≥16 chars and
+  not a placeholder or the api refuses to start (upstream `rootPasswordProblem`); old sessions are invalidated
+  by the key change (one re-login).
+- Gates extended: `bun test apps/selfhost/src` (the selfhost server's own suites were ungated) in `gates.yml`
+  and `scripts/mac-gates.sh`.
+- Gates: `gh workflow run` → `HTTP 422 Actions has been disabled` (unchanged). MacBook
+  `scripts/mac-gates.sh`, ledger `~/ci/maple-gates/593f61000…/ledger`, head asserted == `593f61000`:
+  **all green**, `DONE 593f61000`. Bundles ✓, typechecks ×8 green; suites: qe-integrations 512/512, backend
+  org 464 passed / 1 skipped, backend warehouse 182 passed / 524 skipped, domain status-page 50/50,
+  status-page 96/96, backend uptime alerts + status-pages 162/162, scraper spans 14/14, selfhost 69/69,
+  web merge surfaces 1115/1115.
+- bun.lock: regenerated lock byte-identical to the committed merged lock (sha256 `f1717f21…`) — no lock commit.
