@@ -162,7 +162,12 @@ const makeHarness = (
 	/** The org's audit entries for one action, as the ids of the resources they name. */
 	const audited = (action: string) =>
 		Effect.runPromise(auditLog.list(ORG, { action, limit: 50, offset: 0 })).then((entries) =>
-			Arr.map(entries, (entry) => ({ resourceId: entry.resourceId, metadata: entry.metadata })),
+			Arr.map(entries, (entry) => ({
+				resourceId: entry.resourceId,
+				metadata: entry.metadata,
+				outcome: entry.outcome,
+				apiKeyId: entry.apiKeyId,
+			})),
 		)
 
 	return {
@@ -245,6 +250,7 @@ describe("v2 aws integration over HTTP", () => {
 			"inventory",
 			"security",
 			"cost",
+			"audit",
 		])
 		expect((await harness.request("GET", `${CONNECTIONS}/${id}/setup`, member.secret)).status).toBe(403)
 		expect((await harness.request("DELETE", `${CONNECTIONS}/${id}`, member.secret)).status).toBe(403)
@@ -252,6 +258,12 @@ describe("v2 aws integration over HTTP", () => {
 		const reader = await harness.adminKey(["integrations:read"])
 		const refused = await harness.request("GET", `${CONNECTIONS}/${id}/setup`, reader.secret)
 		expect([refused.status, refused.body.error.code]).toEqual([403, "insufficient_scope"])
+		expect(refused.body.error.message).toContain('"integrations:write"')
+		// The refusal is recorded like every other scope refusal, against the key that tried.
+		const denied = await harness.audited("api.request")
+		expect(Arr.map(denied, (entry) => [entry.outcome, entry.apiKeyId, entry.metadata])).toEqual([
+			["denied", reader.id, { method: "GET", path: `${CONNECTIONS}/${id}/setup` }],
+		])
 		const writer = await harness.adminKey(["integrations:write"])
 		expect((await harness.request("GET", `${CONNECTIONS}/${id}/setup`, writer.secret)).status).toBe(200)
 
@@ -312,7 +324,7 @@ describe("v2 aws integration over HTTP", () => {
 		await harness.dispose()
 	})
 
-	it("records no events key read for a setup that carries none", async () => {
+	it("records a key read only for a setup that carries one", async () => {
 		const harness = makeHarness()
 		const admin = await harness.adminKey()
 		const created = await harness.request("POST", CONNECTIONS, admin.secret, {
@@ -321,11 +333,60 @@ describe("v2 aws integration over HTTP", () => {
 		})
 		const setup = await harness.request("GET", `${CONNECTIONS}/${created.body.id}/setup`, admin.secret)
 		expect(setup.status).toBe(200)
+		expect(JSON.stringify(setup.body)).not.toMatch(/maple_aws(ev)?_/u)
+		expect(await harness.audited("aws_connection.events_key_read")).toEqual([])
+		expect(await harness.audited("aws_connection.stream_key_read")).toEqual([])
+		await harness.dispose()
+	})
+
+	it("records one entry per key for a setup that carries both, without either key", async () => {
+		const harness = makeHarness({ awsAvailable: true, rolledOut: true })
+		const admin = await harness.adminKey()
+		const created = await harness.request("POST", CONNECTIONS, admin.secret, {
+			account_id: "123456789012",
+			modules: ["security"],
+			metric_stream: { regions: ["us-east-1"], namespaces: ["AWS/ECS"] },
+		})
+		expect(created.status).toBe(200)
+		const setup = await harness.request("GET", `${CONNECTIONS}/${created.body.id}/setup`, admin.secret)
+		expect(setup.status).toBe(200)
+		const rendered = JSON.stringify(setup.body)
+		expect(rendered).toMatch(/maple_aws_[\w-]+/u)
+		expect(rendered).toMatch(/maple_awsev_[\w-]+/u)
+
+		const reads = [
+			...(await harness.audited("aws_connection.stream_key_read")),
+			...(await harness.audited("aws_connection.events_key_read")),
+		]
+		expect(Arr.map(reads, (entry) => entry.resourceId)).toEqual([created.body.id, created.body.id])
+		expect(JSON.stringify(reads)).not.toMatch(/maple_aws(ev)?_/u)
+		await harness.dispose()
+	})
+
+	it("records a setup read that carries the stream access key, without the key", async () => {
+		const harness = makeHarness()
+		const admin = await harness.adminKey()
+		const member = await harness.memberKey()
+		const created = await harness.request("POST", CONNECTIONS, admin.secret, {
+			account_id: "123456789012",
+			metric_stream: { regions: ["us-east-1"], namespaces: ["AWS/ECS"] },
+		})
+		expect(created.status).toBe(200)
+		const path = `${CONNECTIONS}/${created.body.id}/setup`
+		const setup = await harness.request("GET", path, admin.secret)
+		expect(setup.status).toBe(200)
+		expect(JSON.stringify(setup.body)).toMatch(/maple_aws_[\w-]+/u)
+		// A refused read hands nothing out, so it leaves no entry.
+		expect((await harness.request("GET", path, member.secret)).status).toBe(403)
+
+		const reads = await harness.audited("aws_connection.stream_key_read")
+		expect(Arr.map(reads, (entry) => entry.resourceId)).toEqual([created.body.id])
+		expect(JSON.stringify(reads)).not.toContain("maple_aws_")
 		expect(await harness.audited("aws_connection.events_key_read")).toEqual([])
 		await harness.dispose()
 	})
 
-	it("offers and accepts the cost module for every org", async () => {
+	it("offers and accepts the cost and audit modules for every org", async () => {
 		const harness = makeHarness()
 		const admin = await harness.adminKey()
 		const availability = (body: { modules: ReadonlyArray<{ module: string; available: boolean }> }) =>
@@ -334,26 +395,41 @@ describe("v2 aws integration over HTTP", () => {
 				(module) => module.module,
 			)
 
-		expect(availability((await harness.request("GET", BASE, admin.secret)).body)).toEqual(["cost"])
-		const created = await harness.request("POST", CONNECTIONS, admin.secret, {
-			account_id: "123456789012",
-			modules: ["cost"],
-		})
-		expect(created.status).toBe(200)
-		expect(created.body.modules).toEqual(["cost"])
-		// The role's policy carries the module's reads.
-		const setup = await harness.request("GET", `${CONNECTIONS}/${created.body.id}/setup`, admin.secret)
-		expect(setup.body.cloudformation_template).toContain("ce:GetCostAndUsage")
+		expect(availability((await harness.request("GET", BASE, admin.secret)).body)).toEqual([
+			"cost",
+			"audit",
+		])
+		// Each module, on its own account, survives create, clear and restore, and its role policy
+		// carries the reads it makes.
+		const lifecycles = [
+			{ module: "cost", account: "123456789012", reads: ["ce:GetCostAndUsage"] },
+			{
+				module: "audit",
+				account: "210987654321",
+				reads: ["cloudtrail:LookupEvents", "account:ListRegions"],
+			},
+		]
+		for (const { module, account, reads } of lifecycles) {
+			const created = await harness.request("POST", CONNECTIONS, admin.secret, {
+				account_id: account,
+				modules: [module],
+			})
+			expect(created.status).toBe(200)
+			expect(created.body.modules).toEqual([module])
+			const setup = await harness.request(
+				"GET",
+				`${CONNECTIONS}/${created.body.id}/setup`,
+				admin.secret,
+			)
+			for (const read of reads) expect(setup.body.cloudformation_template).toContain(read)
 
-		const cleared = await harness.request("PATCH", `${CONNECTIONS}/${created.body.id}`, admin.secret, {
-			modules: [],
-		})
-		expect(cleared.body.modules).toEqual([])
-		const restored = await harness.request("PATCH", `${CONNECTIONS}/${created.body.id}`, admin.secret, {
-			modules: ["cost"],
-		})
-		expect(restored.status).toBe(200)
-		expect(restored.body.modules).toEqual(["cost"])
+			const path = `${CONNECTIONS}/${created.body.id}`
+			const cleared = await harness.request("PATCH", path, admin.secret, { modules: [] })
+			expect(cleared.body.modules).toEqual([])
+			const restored = await harness.request("PATCH", path, admin.secret, { modules: [module] })
+			expect(restored.status).toBe(200)
+			expect(restored.body.modules).toEqual([module])
+		}
 		await harness.dispose()
 	})
 

@@ -5,6 +5,7 @@
  * The provider is a fake at the `VcsProviderRegistry` seam and the Durable Object is a fake at
  * the `ChatSessions` seam, so the test sees exactly what each would have been asked to do.
  */
+import type { ChatTurnOrigin } from "@maple/domain/chat-session"
 import { afterEach, assert, describe, it } from "@effect/vitest"
 import {
 	GitCommitSha,
@@ -66,6 +67,7 @@ import {
 	WITHDRAWAL_FAILURE_MARKER,
 	withReviewStatus,
 } from "./PrReviewService"
+import { FEEDBACK_EXAMPLE_PAGE } from "./feedback"
 import { FindingEmbedder, type FindingEmbedderApi, PrReviewEmbeddingError } from "./FindingEmbedder"
 import {
 	PrReviewTelemetryService,
@@ -88,6 +90,7 @@ const UNKNOWN_REVIEW = Schema.decodeSync(PrReviewId)("00000000-0000-0000-0000-00
 interface Begun {
 	readonly sessionId: string
 	readonly text: string
+	readonly origin?: ChatTurnOrigin
 }
 
 /** The `ChatSession` namespace as the service sees it off the Worker env. */
@@ -95,7 +98,7 @@ const chatSessionsFake = (begun: Array<Begun>, aborted: Array<string>, options: 
 	fakeChatSessionsLayer((sessionId) => ({
 		beginTurn: async (input) => {
 			if (options.busy) return undefined
-			begun.push({ sessionId: input.sessionId, text: input.text })
+			begun.push({ sessionId: input.sessionId, text: input.text, origin: input.origin })
 			return { cursor: 0, messageId: "m", turnMessageId: "t" }
 		},
 		abort: async (reason) => {
@@ -823,6 +826,48 @@ describe("PrReviewService.onPullRequestEvent", () => {
 				const again = yield* reviews.onCiApproved(orgId, job({ authorAssociation: "CONTRIBUTOR" }))
 				assert.equal(again.skipReason, "duplicate")
 				assert.equal(begun.length, 1)
+			}).pipe(Effect.provide(layerFor(testDb, { begun })))
+		},
+	)
+
+	it.effect.each([
+		["a private", true, "private"],
+		["a public", false, "public"],
+	] as const)(
+		"starts every review mode on %s repository with the repository's visibility on the turn",
+		([, isPrivate, expected]) => {
+			const testDb = createTestDb(trackedDbs)
+			const begun: Array<Begun> = []
+			return Effect.gen(function* () {
+				yield* seed(true, isPrivate)
+				const reviews = yield* PrReviewService
+				const automatic = yield* reviews.onPullRequestEvent(
+					orgId,
+					job({ authorAssociation: "MEMBER" }),
+				)
+				const requested = yield* reviews.reviewNow(
+					orgId,
+					job({ number: 613, authorAssociation: "NONE" }),
+				)
+				const approved = yield* reviews.onCiApproved(
+					orgId,
+					job({ number: 614, authorAssociation: "NONE" }),
+				)
+				assert.deepEqual(
+					Arr.map([automatic, requested, approved], (outcome) => outcome.outcome),
+					["started", "started", "started"],
+				)
+				assert.deepEqual(
+					Arr.map(begun, (turn) =>
+						turn.origin?.kind === "autonomous" ? turn.origin.repository : undefined,
+					),
+					[expected, expected, expected],
+				)
+				// A public repository's kickoff tells the agent why it has no telemetry tools.
+				assert.equal(
+					Arr.every(begun, (turn) => Str.includes("This repository is public")(turn.text)),
+					!isPrivate,
+				)
 			}).pipe(Effect.provide(layerFor(testDb, { begun })))
 		},
 	)
@@ -1632,6 +1677,32 @@ describe("PrReviewService.submitReview feedback filter", () => {
 		}).pipe(Effect.provide(layerFor(testDb, { published, embedder: fakeEmbedder() })))
 	})
 
+	it.effect("reads votes past the first page of examples, which share one timestamp", () => {
+		const testDb = createTestDb(trackedDbs)
+		const published: Array<PullRequestReviewPublication> = []
+		return Effect.gen(function* () {
+			const repositoryId = yield* seed(true)
+			// Every vote is created at once, so the page order falls to the id: `vote-…-0`, `-1` and
+			// `-10` sort last, after a full page of votes about something else.
+			const late = new Set([0, 1, 10])
+			yield* seedVotes(
+				repositoryId,
+				Array.from({ length: FEEDBACK_EXAMPLE_PAGE + 50 }, (_, i) => ({
+					status: "dismissed" as const,
+					embedding: late.has(i) ? NOISE : OTHER,
+				})),
+			)
+			const reviews = yield* PrReviewService
+			const started = yield* reviews.onPullRequestEvent(orgId, job())
+			yield* reviews.submitReview(
+				orgId,
+				started.reviewId!,
+				new SubmitPrReviewRequest({ report: report([noisyConvention]) }),
+			)
+			assert.equal(published[0].comments.length, 0)
+		}).pipe(Effect.provide(layerFor(testDb, { published, embedder: fakeEmbedder() })))
+	})
+
 	it.effect("posts it when as many similar findings were upvoted or fixed", () => {
 		const testDb = createTestDb(trackedDbs)
 		const published: Array<PullRequestReviewPublication> = []
@@ -1855,6 +1926,7 @@ describe("withReviewStatus", () => {
 			partial: false,
 			headSha: HEAD,
 			repositoryUrl: REPO_URL,
+			isPrivate: true,
 		})
 		assert.isUndefined(
 			withReviewStatus(finished, MARKER, { kind: "failed", headSha: HEAD }, "@maple-review-bot"),
@@ -1873,6 +1945,7 @@ describe("buildPublication", () => {
 			headSha: HEAD,
 			partial: false,
 			repositoryUrl: REPO_URL,
+			isPrivate: true,
 			report: report([
 				new PrReviewFinding({
 					path: "a.ts",
@@ -1911,6 +1984,7 @@ describe("buildPublication", () => {
 			headSha: HEAD,
 			partial: false,
 			repositoryUrl: REPO_URL,
+			isPrivate: true,
 			report: report([]),
 		})
 		assert.equal(publication.conclusion, "success")
@@ -1942,6 +2016,7 @@ describe("buildPublication", () => {
 			partial: true,
 			headSha: HEAD,
 			repositoryUrl: REPO_URL,
+			isPrivate: true,
 		}
 		const comment = renderSummaryComment(prReviewCommentMarker(UNKNOWN_REVIEW), input)
 		assert.include(comment, "Files not reviewed (2)")
@@ -1971,6 +2046,7 @@ describe("buildPublication", () => {
 			partial: false,
 			headSha: HEAD,
 			repositoryUrl: `${REPO_URL}/`,
+			isPrivate: true,
 		})
 		assert.include(comment, `(${REPO_URL}/blob/${HEAD}/src/a%20b.ts#L4-L6)`)
 		assert.include(comment, "🔴 **Confidence 4/10** · risky as written")
@@ -1994,6 +2070,7 @@ describe("buildPublication", () => {
 			partial: true,
 			headSha: HEAD,
 			repositoryUrl: REPO_URL,
+			isPrivate: true,
 		})
 		assert.include(summary, "| POST /orders | entrypoint | no | no withSpan |")
 		assert.include(summary, "observability · SPAN-03 · [`a.ts:1`]")
@@ -2026,6 +2103,7 @@ describe("buildPublication", () => {
 			partial: false,
 			headSha: HEAD,
 			repositoryUrl: REPO_URL,
+			isPrivate: true,
 		})
 		assert.isBelow(
 			Option.getOrElse(Str.indexOf("<b>Critical</b>")(comment), () => -1),
@@ -2043,6 +2121,7 @@ describe("buildPublication", () => {
 			partial: false,
 			headSha: HEAD,
 			repositoryUrl: REPO_URL,
+			isPrivate: true,
 		}
 		const check = renderCheckSummary(input)
 		assert.include(
@@ -2075,6 +2154,7 @@ describe("buildPublication", () => {
 				partial,
 				headSha: HEAD,
 				repositoryUrl: REPO_URL,
+				isPrivate: true,
 			})
 		assert.include(
 			render([]),
@@ -2113,6 +2193,7 @@ describe("buildPublication", () => {
 				headSha: HEAD,
 				partial,
 				repositoryUrl: REPO_URL,
+				isPrivate: true,
 				// The reviewer's own number never moves the check.
 				report: new PrReviewReport({ ...report([]), ...signals, confidence: 1 }),
 			}).conclusion
@@ -2130,6 +2211,7 @@ describe("buildPublication", () => {
 			headSha: HEAD,
 			partial: false,
 			repositoryUrl: REPO_URL,
+			isPrivate: true,
 			report: report([
 				new PrReviewFinding({
 					path: "a.ts",
@@ -2153,6 +2235,7 @@ describe("buildPublication", () => {
 			headSha: HEAD,
 			partial: false,
 			repositoryUrl: REPO_URL,
+			isPrivate: true,
 			report: report([
 				new PrReviewFinding({
 					path: "a.ts",
@@ -2187,6 +2270,7 @@ describe("buildPublication", () => {
 			partial: false,
 			headSha: HEAD,
 			repositoryUrl: REPO_URL,
+			isPrivate: true,
 		})
 		assert.include(summary, "| a\\\\\\|b | k | yes | e |")
 	})
@@ -2207,6 +2291,7 @@ describe("buildPublication", () => {
 			partial: false,
 			headSha: HEAD,
 			repositoryUrl: REPO_URL,
+			isPrivate: true,
 		})
 		assert.isAtMost(new TextEncoder().encode(summary).byteLength, 65_535)
 		assert.include(summary, "cut at GitHub's limit")
@@ -2241,6 +2326,7 @@ describe("buildReviewKickoff", () => {
 			baseSha: undefined,
 			fork: false,
 			body: "Retries GETs.",
+			isPrivate: true,
 			...overrides,
 		})
 	const rules = [

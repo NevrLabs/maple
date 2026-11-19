@@ -428,6 +428,7 @@ describe("buildIntegrationInventory", () => {
 						accountLogin: "acme",
 						status: "active",
 						ciTracesEnabled: false,
+						auditLogEnabled: true,
 						createdAt: NOW,
 					},
 				],
@@ -452,6 +453,29 @@ describe("buildIntegrationInventory", () => {
 			lastError: "Not Found",
 			note: "tracks main, PR review on",
 		})
+		expect(Arr.filter(github?.resources ?? [], (r) => r.kind === "audit log")).toHaveLength(1)
+	})
+
+	it("lists no audit log feed for an installation with the audit log off", () => {
+		const github = providerOf(
+			{
+				vcsInstallations: [
+					{
+						provider: "github",
+						accountLogin: "acme",
+						status: "active",
+						ciTracesEnabled: true,
+						auditLogEnabled: false,
+						createdAt: NOW,
+					},
+				],
+			},
+			"github",
+		)
+		// The source stays connected, so the audit log Sources panel reads it as off, not missing.
+		expect(github?.status).toBe("healthy")
+		expect(Arr.filter(github?.resources ?? [], (r) => r.kind === "audit log")).toEqual([])
+		expect(Arr.some(github?.feeds ?? [], (feed) => Str.includes("audit log")(feed))).toBe(false)
 	})
 })
 
@@ -644,8 +668,8 @@ describe("aws", () => {
 	it("shows the audit log failing while the role cannot be assumed", () => {
 		const security = {
 			...connection,
-			modules: ["security"],
-			grantedModules: ["security"],
+			modules: ["audit"],
+			grantedModules: ["audit"],
 			lastCheckError: "Maple can no longer assume the role",
 		}
 		const auditLog = Arr.findFirst(
@@ -658,8 +682,8 @@ describe("aws", () => {
 		})
 	})
 
-	it("shows a security-module account's audit log failing while CloudTrail cannot be read", () => {
-		const security = { ...connection, modules: ["security"], grantedModules: ["security"] }
+	it("shows an audit-module account's audit log failing while CloudTrail cannot be read", () => {
+		const security = { ...connection, modules: ["audit"], grantedModules: ["audit"] }
 		const auditLogOf = (
 			problems: ReadonlyArray<{ accountId: string; state: string; lastError: string | null }>,
 		) =>

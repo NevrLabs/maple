@@ -64,7 +64,7 @@ import {
 	type VcsRepositoryId,
 } from "@maple/domain/http"
 import { wrapChatContext } from "@maple/domain/chat-preamble"
-import { encodeChatTurnTenant, prReviewSessionId } from "@maple/domain/chat-session"
+import { encodeChatTurnTenant, prReviewSessionId, pullRequestTurnOrigin } from "@maple/domain/chat-session"
 import { UserId } from "@maple/primitives"
 import * as PG from "@maple-dev/effect-orm/postgres"
 import {
@@ -101,9 +101,13 @@ import { VcsSyncQueue } from "@maple/backend/services/integrations/vcs/VcsSyncQu
 import {
 	applyFeedback,
 	FEEDBACK_EXAMPLE_LIMIT,
+	FEEDBACK_EXAMPLE_PAGE,
 	type FeedbackExample,
 	feedbackLabel,
+	type FeedbackVotes,
 	findingText,
+	NO_FEEDBACK_VOTES,
+	tallyFeedback,
 } from "./feedback"
 import { FindingEmbedder } from "./FindingEmbedder"
 import { isRuntimeSource, lineEmitting } from "./telemetry/diff"
@@ -364,6 +368,8 @@ export const buildReviewKickoff = (input: {
 	readonly rules?: ReadonlyArray<RepositoryRuleFile>
 	/** What production telemetry says about the diff; absent when it could not be read. */
 	readonly telemetry?: PrReviewTelemetry
+	/** A public repository's review is world-readable: it reads no telemetry text and no tools. */
+	readonly isPrivate: boolean
 }): string => {
 	const body = Str.trim(input.body ?? "")
 	const quoted =
@@ -388,7 +394,13 @@ export const buildReviewKickoff = (input: {
 		"",
 		...renderConfigRules(input.config),
 		...(input.followUp === undefined || input.followUp.length === 0 ? [] : [...input.followUp, ""]),
-		...renderTelemetryKickoff(input.telemetry),
+		...renderTelemetryKickoff(input.telemetry, input),
+		...(input.isPrivate
+			? []
+			: [
+					"This repository is public, so its review is world-readable: no telemetry tools are offered. Review from the diff and the code.",
+					"",
+				]),
 		"Start with pr_changed_files. Read every hunk that adds code with pr_file_diff before you decide anything. Finish with submit_review.",
 	]
 	return wrapChatContext(Arr.join(lines, "\n"), "")
@@ -660,6 +672,8 @@ export interface ReviewMarkdownInput {
 	readonly mention?: string
 	/** The repository fails the check on a broken telemetry contract. */
 	readonly blocking?: boolean
+	/** A public repository's summary is world-readable: its telemetry section names nothing. */
+	readonly isPrivate: boolean
 	/** Why the review did not auto-approve, said under the score; absent when it did or never asked. */
 	readonly notApproved?: ReadonlyArray<string>
 }
@@ -889,7 +903,11 @@ export const renderReviewMarkdown = (input: ReviewMarkdownInput & { readonly hea
 		)
 	}
 	lines.push(
-		...renderTelemetryMarkdown(report.telemetry, { blocking: input.blocking === true, brief: comment }),
+		...renderTelemetryMarkdown(report.telemetry, {
+			blocking: input.blocking === true,
+			brief: comment,
+			isPrivate: input.isPrivate,
+		}),
 	)
 	const checked = comment ? [] : (report.checked ?? [])
 	if (checked.length > 0) {
@@ -1046,6 +1064,12 @@ const inlineComment = (finding: PrReviewFinding, key: string | undefined): PullR
 	...(key === undefined ? undefined : { key }),
 })
 
+/** Where the next page of feedback examples starts: the last row read, by creation then id. */
+interface FeedbackExampleCursor {
+	readonly createdAt: number
+	readonly findingId: string
+}
+
 /**
  * A vector as one `float4[]` literal. Bound as a number array, the driver types each element on
  * its own, so a component that is exactly `0` reads as int4 beside float8 and the insert fails.
@@ -1068,6 +1092,8 @@ export const buildPublication = (input: {
 	readonly report: PrReviewReport
 	readonly partial: boolean
 	readonly repositoryUrl: string
+	/** Whether the repository is private; a public one's summary names nothing from telemetry. */
+	readonly isPrivate: boolean
 	readonly carried?: CarriedFindings
 	readonly minInlineSeverity?: PrReviewSeverity
 	readonly keys?: ReadonlyMap<string, string>
@@ -1108,6 +1134,7 @@ export const buildPublication = (input: {
 		partial: input.partial,
 		headSha: input.headSha,
 		repositoryUrl: input.repositoryUrl,
+		isPrivate: input.isPrivate,
 		carried,
 		...(input.mention === undefined ? undefined : { mention: input.mention }),
 		...(input.providerRefusal !== undefined
@@ -1341,13 +1368,15 @@ export class PrReviewService extends Context.Service<PrReviewService, PrReviewSe
 						).pipe(Effect.map((rows) => rows.length))
 
 			/**
-			 * Stored findings the team voted on, embedded with `model`, newest first. `repositoryId`
-			 * narrows the pool to one repository; absent, every repository of the org counts.
+			 * One page of the findings the team voted on, embedded with `model`, newest first, after
+			 * `cursor`. `repositoryId` narrows the pool to one repository; absent, the whole org counts.
 			 */
-			const loadFeedbackExamples = (
+			const feedbackExamplePage = (
 				orgId: OrgId,
 				model: string,
 				repositoryId: VcsRepositoryId | undefined,
+				cursor: FeedbackExampleCursor | undefined,
+				limit: number,
 			) =>
 				dbExecute((db) =>
 					db.run(
@@ -1356,6 +1385,8 @@ export class PrReviewService extends Context.Service<PrReviewService, PrReviewSe
 								finding.id.eq(embedding.findingId),
 							)
 							.select(($) => ({
+								findingId: $.findingId,
+								createdAt: $.createdAt,
 								status: $.finding.status,
 								reactionsUp: $.finding.reactionsUp,
 								reactionsDown: $.finding.reactionsDown,
@@ -1371,18 +1402,75 @@ export class PrReviewService extends Context.Service<PrReviewService, PrReviewSe
 									$.finding.reactionsUp.gt(0),
 									$.finding.reactionsDown.gt(0),
 								),
+								cursor === undefined
+									? undefined
+									: PG.or(
+											$.createdAt.lt(cursor.createdAt),
+											PG.and(
+												$.createdAt.eq(cursor.createdAt),
+												$.findingId.lt(cursor.findingId),
+											),
+										),
 							])
-							.orderBy(($) => [[$.createdAt, "desc"]])
-							.limit(FEEDBACK_EXAMPLE_LIMIT),
-					),
-				).pipe(
-					Effect.map((rows) =>
-						Arr.flatMap(rows, (row): ReadonlyArray<FeedbackExample> => {
-							const label = feedbackLabel(row)
-							return label === undefined ? [] : [{ label, embedding: row.embedding }]
-						}),
+							.orderBy(($) => [
+								[$.createdAt, "desc"],
+								[$.findingId, "desc"],
+							])
+							.limit(limit),
 					),
 				)
+
+			/**
+			 * Each finding's votes over the newest {@link FEEDBACK_EXAMPLE_LIMIT} labelled examples, read a
+			 * page at a time: a page is tallied and dropped, so the vectors are never all in memory.
+			 */
+			const tallyFeedbackExamples = (
+				orgId: OrgId,
+				model: string,
+				repositoryId: VcsRepositoryId | undefined,
+				embeddings: ReadonlyArray<ReadonlyArray<number>>,
+			) => {
+				const next = (
+					votes: ReadonlyArray<FeedbackVotes>,
+					read: number,
+					cursor: FeedbackExampleCursor | undefined,
+				): Effect.Effect<
+					{ readonly votes: ReadonlyArray<FeedbackVotes>; readonly examples: number },
+					PrReviewPersistenceError
+				> =>
+					feedbackExamplePage(
+						orgId,
+						model,
+						repositoryId,
+						cursor,
+						Math.min(FEEDBACK_EXAMPLE_PAGE, FEEDBACK_EXAMPLE_LIMIT - read),
+					).pipe(
+						Effect.flatMap((rows) => {
+							const examples = Arr.flatMap(rows, (row): ReadonlyArray<FeedbackExample> => {
+								const label = feedbackLabel(row)
+								return label === undefined ? [] : [{ label, embedding: row.embedding }]
+							})
+							const tallied = Arr.map(votes, (tally, i) =>
+								tallyFeedback(tally, embeddings[i] ?? [], examples),
+							)
+							const last = rows.at(-1)
+							const total = read + rows.length
+							return last === undefined ||
+								rows.length < FEEDBACK_EXAMPLE_PAGE ||
+								total >= FEEDBACK_EXAMPLE_LIMIT
+								? Effect.succeed({ votes: tallied, examples: total })
+								: next(tallied, total, {
+										createdAt: last.createdAt,
+										findingId: last.findingId,
+									})
+						}),
+					)
+				return next(
+					Arr.map(embeddings, () => NO_FEEDBACK_VOTES),
+					0,
+					undefined,
+				)
+			}
 
 			/**
 			 * Drop the findings the team's votes reject, before they are stored or posted. Answers the
@@ -1425,22 +1513,27 @@ export class PrReviewService extends Context.Service<PrReviewService, PrReviewSe
 						suppressed: none,
 					})
 				if (scope === "off") return yield* unfiltered("off")
-				const examples = yield* loadFeedbackExamples(
+				const tallied = yield* tallyFeedbackExamples(
 					orgId,
 					embedder.model,
 					scope === "repository" ? repositoryId : undefined,
+					vectors,
 				).pipe(Effect.result)
-				if (Result.isFailure(examples)) {
+				if (Result.isFailure(tallied)) {
 					yield* Effect.logWarning(
 						"[PrReview] could not read feedback examples; posting all findings",
-					).pipe(Effect.annotateLogs({ orgId, error: examples.failure.message }))
+					).pipe(Effect.annotateLogs({ orgId, error: tallied.failure.message }))
 					return yield* unfiltered("read_failed")
 				}
-				const { kept, keptVectors, suppressed } = applyFeedback(findings, vectors, examples.success)
+				const { kept, keptVectors, suppressed } = applyFeedback(
+					findings,
+					vectors,
+					tallied.success.votes,
+				)
 				yield* Effect.annotateCurrentSpan({
 					"maple.pr_review.feedback_filter": "applied",
 					"maple.pr_review.feedback_scope": scope,
-					"maple.pr_review.feedback_examples": examples.success.length,
+					"maple.pr_review.feedback_examples": tallied.success.examples,
 				})
 				return { kept, vectors: keptVectors, suppressed }
 			})
@@ -2147,6 +2240,7 @@ export class PrReviewService extends Context.Service<PrReviewService, PrReviewSe
 					...(followUp === undefined ? undefined : { followUp }),
 					...(rules === undefined ? undefined : { rules }),
 					...(telemetry === undefined ? undefined : { telemetry }),
+					isPrivate: repo.isPrivate,
 				})
 				// Before the turn, so a fast turn's finished summary is never overwritten by this notice.
 				yield* postReviewStatus(orgId, reviewId, repo, job.number, { kind: "reviewing", headSha })
@@ -2155,7 +2249,7 @@ export class PrReviewService extends Context.Service<PrReviewService, PrReviewSe
 						sessionId,
 						messageId: randomUUID(),
 						text,
-						origin: { kind: "autonomous" },
+						origin: pullRequestTurnOrigin(repo),
 						tenant: encodeChatTurnTenant({
 							orgId,
 							userId: internalServiceUserId,
@@ -2389,10 +2483,9 @@ export class PrReviewService extends Context.Service<PrReviewService, PrReviewSe
 					yield* annotate("skipped", { "maple.pr_review.skip_reason": "bot_author" })
 					return skip("bot_author")
 				}
-				// The automatic review reads org telemetry and posts to the pull request, so on a public
-				// repository it runs only for a trusted author. GitHub reports private org members as
-				// CONTRIBUTOR in webhooks, and only people with access can open a pull request on a private one.
-				// Webhooks also report them as CONTRIBUTOR on public repositories, so their push access is asked.
+				// The automatic review spends the org's quota, so on a public repository it runs only for a
+				// trusted author. Webhooks report org members as CONTRIBUTOR, so their push access is asked;
+				// only people with access can open a pull request on a private one.
 				const outsideAuthor =
 					mode === "automatic" &&
 					!repo.isPrivate &&
@@ -2965,9 +3058,11 @@ export class PrReviewService extends Context.Service<PrReviewService, PrReviewSe
 				// The model's findings weighed by production traffic, and the facts the service files
 				// itself. The repository's settings are enforced here, not only stated in the kickoff.
 				const scanned = withoutReviewerOverlap(read?.privacy ?? [], sourced.findings)
+				// A repository Maple cannot read back is treated as public.
+				const visibility = { isPrivate: Option.isSome(repository) && repository.value.isPrivate }
 				const proposed = [
-					...weighByTraffic(sourced.findings, telemetry),
-					...telemetryFindings(telemetry),
+					...weighByTraffic(sourced.findings, telemetry, visibility),
+					...telemetryFindings(telemetry, visibility),
 					...scanned,
 				]
 				const allowed = Arr.filter(
@@ -3322,6 +3417,7 @@ export class PrReviewService extends Context.Service<PrReviewService, PrReviewSe
 						reviewId,
 						commentAttempt: yield* commentAttemptOf(orgId, reviewId),
 						repositoryUrl: repo.htmlUrl,
+						isPrivate: repo.isPrivate,
 						number: review.number,
 						headSha: review.headSha,
 						baseSha: review.baseSha,

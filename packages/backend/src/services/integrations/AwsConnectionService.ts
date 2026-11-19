@@ -8,6 +8,8 @@ import {
 	AWS_ROLE_TAGS,
 	AWS_TEMPLATE_VERSION,
 	awsConnectionResourceNames,
+	awsGrantsMatch,
+	awsModuleGranted,
 	awsModuleOfPolicyName,
 	awsOidcIssuer,
 	awsOidcSubject,
@@ -102,6 +104,8 @@ export interface AwsSetup {
 	readonly metricsCloudformationTemplate: string | null
 	/** Whether the scripts carry the events key: true with the security module on. */
 	readonly containsEventsKey: boolean
+	/** Whether the scripts carry the stream access key: true with a metric stream set. */
+	readonly containsStreamKey: boolean
 }
 
 export interface AwsCheckSweep {
@@ -209,9 +213,6 @@ const SWEEP_BUDGET_MS = 10 * 60_000
  */
 const SWEEP_CONCURRENCY = 2
 
-const sameModules = (a: ReadonlyArray<AwsModule>, b: ReadonlyArray<AwsModule>) =>
-	a.length === b.length && Arr.every(a, (module) => b.includes(module))
-
 /** Modules in their canonical order, without repeats. */
 const normalizeModules = (modules: ReadonlyArray<AwsModule>) =>
 	Arr.filter(AWS_MODULES, (module) => modules.includes(module))
@@ -229,7 +230,8 @@ const toConnection = (issuer: string, row: AwsConnectionRow): AwsConnection => {
 		templateVersion: row.templateVersion,
 		setupOutdated:
 			row.grantedModules !== null &&
-			(row.templateVersion !== AWS_TEMPLATE_VERSION || !sameModules(row.modules, row.grantedModules)),
+			(row.templateVersion !== AWS_TEMPLATE_VERSION ||
+				!awsGrantsMatch(row.modules, row.grantedModules)),
 		verifiedAt: row.verifiedAt,
 		lastCheckedAt: row.lastCheckedAt,
 		lastCheckError: row.lastCheckError,
@@ -302,7 +304,7 @@ const interpretCheck = (
 				return module === undefined ? [] : [module]
 			}),
 		)
-		const missing = Arr.filter(row.modules, (module) => !granted.includes(module))
+		const missing = Arr.filter(row.modules, (module) => !awsModuleGranted(granted, module))
 		const error =
 			missing.length === 0
 				? null
@@ -625,7 +627,7 @@ export class AwsConnectionService extends Context.Service<AwsConnectionService, 
 						}
 					: null
 				const rendered = yield* renderAwsSetup(row.id, row.accountId, plan, stream, events)
-				return { ...rendered, containsEventsKey: events !== null }
+				return { ...rendered, containsEventsKey: events !== null, containsStreamKey: stream !== null }
 			})
 
 			const rotateEventsKey = Effect.fn("AwsConnectionService.rotateEventsKey")(function* (

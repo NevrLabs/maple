@@ -12,6 +12,7 @@ import { HttpMcpInternalLive } from "@/routes/internal/mcp.http"
 import { HttpUsersInternalLive } from "@/routes/internal/users.http"
 import { HttpAiTriageLive } from "@/routes/internal/ai-triage.http"
 import { HttpAnthropicCostLive } from "@/routes/internal/anthropic-cost.http"
+import { HttpFeatureRequestsLive } from "@/routes/internal/feature-requests.http"
 import { HttpCloudflareCostLive } from "@/routes/internal/cloudflare-cost.http"
 import { HttpOpenAiCostLive } from "@/routes/internal/openai-cost.http"
 import { HttpGithubCostLive } from "@/routes/internal/github-cost.http"
@@ -22,6 +23,7 @@ import { HttpEnterpriseSsoLive } from "@/routes/internal/enterprise-sso.http"
 import { HttpPlanetScaleCostLive } from "@/routes/internal/planetscale-cost.http"
 import { HttpServiceMapWorldLive } from "@/routes/internal/service-map-world.http"
 import { HttpVercelCostLive } from "@/routes/internal/vercel-cost.http"
+import { HttpGcpCostLive } from "@/routes/internal/gcp-cost.http"
 import { HttpAuthLive, HttpAuthPublicLive, HttpAuthSessionLive } from "@/routes/auth.http"
 import { HttpBillingLive } from "@/routes/internal/billing.http"
 import { HttpBillingPublicLive } from "@/routes/billing-public.http"
@@ -106,6 +108,7 @@ import {
 	HttpV2TracesLive,
 } from "@/routes/v2/telemetry.http"
 import { HttpV2WidgetSummaryLive } from "@/routes/v2/widget-summary.http"
+import { HttpV2PrometheusLive } from "@/routes/v2/prometheus.http"
 import { HttpV2WidgetCredentialsLive } from "@/routes/v2/widget-credentials.http"
 import { HttpV2DeviceCredentialsLive, HttpV2DeviceTokensLive } from "@/routes/v2/device-credentials.http"
 import { DeviceCredentialsService } from "@maple/backend/services/auth/DeviceCredentialsService"
@@ -185,6 +188,7 @@ const ApiInternalRoutes = HttpApiBuilder.layer(MapleInternalApi).pipe(
 			HttpSavedViewsLive,
 			HttpCloudflareCostLive,
 			HttpAnthropicCostLive,
+			HttpFeatureRequestsLive,
 			HttpOpenAiCostLive,
 			HttpGithubCostLive,
 			HttpPlanetScaleCostLive,
@@ -194,6 +198,7 @@ const ApiInternalRoutes = HttpApiBuilder.layer(MapleInternalApi).pipe(
 			HttpEnterpriseSsoLive,
 			HttpServiceMapWorldLive,
 			HttpVercelCostLive,
+			HttpGcpCostLive,
 		),
 	),
 	Layer.provide(
@@ -256,6 +261,7 @@ const ApiV2Routes = HttpApiBuilder.layer(MapleApiV2).pipe(
 			HttpV2TracesLive,
 			HttpV2LogsLive,
 			HttpV2MetricsLive,
+			HttpV2PrometheusLive,
 			HttpV2ServicesLive,
 			HttpV2ServiceMapLive,
 			HttpV2EnvironmentsLive,

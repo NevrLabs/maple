@@ -9,6 +9,7 @@ import {
 	customDomainIssue,
 	isCustomDomainChallengeRecord,
 	normalizeCustomDomain,
+	slugFromName,
 	StatusPageCustomDomainHostname,
 	DEFAULT_STATUS_PAGE_THEME,
 	decodeStatusPageSnapshotJson,
@@ -44,6 +45,7 @@ const snapshot = (overrides: Partial<StatusPageSnapshot> = {}): StatusPageSnapsh
 	page: {
 		name: "Acme",
 		slug: "acme",
+		orgKey: "",
 		description: null,
 		websiteUrl: null,
 		logoUrl: null,
@@ -727,5 +729,16 @@ describe("informational tier", () => {
 		expect(rowStatus(component({}))).toBe("operational")
 		expect(rowStatus(component({ ...degradedToday, status: "major_outage" }))).toBe("major_outage")
 		expect(rowStatus(component({ ...degradedToday, showUptime: false }))).toBe("operational")
+	})
+})
+
+describe("slugFromName", () => {
+	it("keeps accented letters as their base letter instead of splitting them with hyphens", () => {
+		expect(slugFromName("Crème Brûlée")).toBe("creme-brulee")
+		expect(slugFromName("Über Status")).toBe("uber-status")
+	})
+
+	it("collapses punctuation and trims hyphens at the ends", () => {
+		expect(slugFromName("  Acme Status! ")).toBe("acme-status")
 	})
 })

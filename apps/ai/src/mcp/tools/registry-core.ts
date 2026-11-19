@@ -16,7 +16,7 @@ import {
 } from "effect"
 import { CurrentMcpTenant } from "../tenant"
 import {
-	audienceAdmits,
+	surfaceAdmits,
 	McpAuthInvalidError,
 	type McpToolAudience,
 	type McpToolError,
@@ -282,6 +282,17 @@ export const toInputSchema = (schema: Schema.Top): Record<string, unknown> => {
 /** A tool module's registration function, as `registry.ts` and the generated module map import it. */
 export type McpToolRegister = (registrar: McpToolRegistrar) => void
 
+/** A tool's rendered doc, marked when it shows telemetry text (see `untrustedOutput`). */
+export const toolDocOf = <O>(
+	spec: { readonly render: (output: O) => ToolDoc; readonly untrustedOutput?: true },
+	output: O,
+): ToolDoc => {
+	const doc = spec.render(output)
+	// An empty result's hints can name values read from the warehouse ("did you mean"), so they count too.
+	const carries = doc.empty === undefined || (doc.empty.hints?.length ?? 0) > 0
+	return spec.untrustedOutput === true && carries ? { ...doc, untrusted: true } : doc
+}
+
 /**
  * Runs registration functions and keeps the tools `keep` accepts. One module can register
  * several tools; the per-tool lookup defines only the one a call asked for.
@@ -325,7 +336,7 @@ export const collectToolDefinitions = (
 							),
 						),
 					)
-					return { doc: spec.render(output), structured }
+					return { doc: toolDocOf(spec, output), structured }
 				}),
 		})
 	}
@@ -341,6 +352,8 @@ export interface McpToolModule {
 	readonly tool: string
 	readonly title: string
 	readonly audience: McpToolAudience
+	/** `hints.readOnly`, so a surface's names can be listed without loading every module. */
+	readonly readOnly: boolean
 	readonly load: () => Promise<McpToolRegister>
 }
 
@@ -425,7 +438,7 @@ const checkNextCall = Effect.fnUntraced(function* (
 ) {
 	const target = yield* lookup.find(call.tool)
 	if (target === undefined) return { call, valid: false, hidden: false }
-	if (!audienceAdmits(target.audience, surface)) return { call, valid: false, hidden: true }
+	if (!surfaceAdmits(target, surface)) return { call, valid: false, hidden: true }
 	const normalized = normalizeFor(target, call.args)
 	const valid =
 		normalized.unknown.length === 0 &&
@@ -495,7 +508,7 @@ export const executeRegisteredTool = Effect.fn("McpToolRegistry.execute")(functi
 	surface: McpToolSurface,
 ) {
 	const definition = yield* lookup.find(name)
-	if (!definition || !audienceAdmits(definition.audience, surface)) {
+	if (!definition || !surfaceAdmits(definition, surface)) {
 		if (definition) {
 			yield* Effect.logWarning("MCP tool is not exposed on this surface").pipe(
 				Effect.annotateLogs({ "maple.mcp.tool": name, "maple.mcp.surface": surface }),

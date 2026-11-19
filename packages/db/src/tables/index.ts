@@ -50,6 +50,7 @@ import { AwsConnections } from "./aws-connections"
 import { CloudSecurityFindings, CloudSecurityServiceStates } from "./cloud-security"
 import { CostSources } from "./cost-sources"
 import { GcpConnectors } from "./gcp-connectors"
+import { GcpCostExports } from "./gcp-cost-exports"
 import { GcpResources } from "./gcp-resources"
 import { Investigations } from "./investigations"
 import { LinearFeatureSettings } from "./linear-feature-settings"
@@ -75,6 +76,7 @@ import {
 	PlanetscaleIssueReceipts,
 } from "./planetscale-inventory"
 import { CostConnections } from "./cost-connections"
+import { FeatureRequests } from "./feature-requests"
 import { OpenRouterCostConnections } from "./openrouter-cost-connections"
 import { OrgOpenRouterKeys } from "./openrouter-keys"
 import { OrgDirectoryGroups, OrgSsoConnections, OrgSsoDomains } from "./enterprise-sso"
@@ -151,6 +153,7 @@ export * from "./oncall-schedules"
 export * from "./aws-connections"
 export * from "./cost-sources"
 export * from "./gcp-connectors"
+export * from "./gcp-cost-exports"
 export * from "./gcp-resources"
 export * from "./investigations"
 export * from "./linear-feature-settings"
@@ -169,6 +172,7 @@ export * from "./org-recommendation-issues"
 export * from "./planetscale-connections"
 export * from "./planetscale-inventory"
 export * from "./cost-connections"
+export * from "./feature-requests"
 export * from "./openrouter-cost-connections"
 export * from "./openrouter-keys"
 export * from "./enterprise-sso"
@@ -240,6 +244,7 @@ export const allTables: ReadonlyArray<PgSchemaTable<string, ColumnDefs>> = [
 	OnCallSchedules,
 	OnCallOverrides,
 	GcpConnectors,
+	GcpCostExports,
 	GcpResources,
 	AwsConnections,
 	CloudSecurityFindings,
@@ -265,6 +270,7 @@ export const allTables: ReadonlyArray<PgSchemaTable<string, ColumnDefs>> = [
 	OrgIngestSamplingPolicies,
 	OpenRouterCostConnections,
 	CostConnections,
+	FeatureRequests,
 	OrgOpenRouterKeys,
 	OrgSsoDomains,
 	OrgSsoConnections,
