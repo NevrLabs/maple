@@ -525,6 +525,10 @@ export const PUSH_SOURCE_PLATFORMS = [
 	"host",
 	"cloudflare_ai_gateway",
 	"claude_code",
+	// NevrLabs selfhost: infrastructure that pushes OTLP with a source token (PVE metric server, a collector).
+	"proxmox",
+	"mongodb_atlas",
+	"postgresql",
 ] as const
 
 /** Platforms Maple pulls from; their config lives in the integration's own table. */

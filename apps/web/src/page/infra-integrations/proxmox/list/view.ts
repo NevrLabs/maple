@@ -1,6 +1,7 @@
 import { AsyncData, Submodel } from "foldkit"
 import type { Html, HtmlBuilder } from "foldkit/html"
 import { errorState } from "@maple/views/ui/error-state"
+import { vstack } from "@maple/views/ui/stack"
 import type { PageViewInputs } from "../../../contract"
 import { dashboardPage } from "../../../kit/dashboard-page"
 import type { ProxmoxSnapshot } from "../model"
@@ -58,6 +59,6 @@ export const view = Submodel.defineView<Model, Message, PageViewInputs>((model, 
 			actions: page.data === undefined ? undefined : proxmoxTabs(h, viewStateOf(model.search).tab, ACTIONS),
 			gap: "lg",
 		},
-		[h.div([h.Class("flex flex-col gap-8"), h.DataAttribute("proxmox-state", page.state)], page.body)],
+		[vstack(h, { gap: "8", attributes: [h.DataAttribute("proxmox-state", page.state)] }, page.body)],
 	)
 })

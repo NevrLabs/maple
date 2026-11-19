@@ -25,12 +25,16 @@ const DOCS_PAGE = {
 	host: "hosts",
 	cloudflare_ai_gateway: "instrumentation",
 	claude_code: "agentSessions",
-} satisfies Record<PushSourcePlatform, DocsPage>
+	// NevrLabs selfhost: no maple.dev page; the snippets are the setup.
+	proxmox: null,
+	mongodb_atlas: null,
+	postgresql: null,
+} satisfies Record<PushSourcePlatform, DocsPage | null>
 
-const docsOf = (platform: PushSourcePlatform) => ({
-	label: `${platformMeta(platform).label} setup docs`,
-	href: docsUrl(DOCS_PAGE[platform]),
-})
+const docsOf = (platform: PushSourcePlatform) => {
+	const page = DOCS_PAGE[platform]
+	return page === null ? null : { label: `${platformMeta(platform).label} setup docs`, href: docsUrl(page) }
+}
 
 /** The first place this platform's data lands. */
 const LANDS_IN = {
@@ -39,15 +43,14 @@ const LANDS_IN = {
 	kubernetes: { icon: "ServerIcon", title: "Infrastructure", detail: "Nodes, pods and containers" },
 	docker: { icon: "ServerIcon", title: "Infrastructure", detail: "Containers on each host" },
 	host: { icon: "ServerIcon", title: "Infrastructure", detail: "CPU, memory, disk and network" },
+	proxmox: { icon: "StackPerspectiveIcon", title: "Infrastructure → Proxmox", detail: "Nodes, guests and storage" },
+	mongodb_atlas: { icon: "MongodbIcon", title: "Infrastructure → MongoDB Atlas", detail: "One row per replica set member" },
+	postgresql: { icon: "PostgresIcon", title: "Infrastructure → PostgreSQL", detail: "One row per instance, Patroni roles" },
 } satisfies Partial<Record<PushSourcePlatform, RailItem>>
 
 const landsIn = (platform: PushSourcePlatform): RailItem =>
-	platform === "browser" ||
-	platform === "claude_code" ||
-	platform === "kubernetes" ||
-	platform === "docker" ||
-	platform === "host"
-		? LANDS_IN[platform]
+	platform in LANDS_IN
+		? LANDS_IN[platform as keyof typeof LANDS_IN]
 		: { icon: "LayersIcon", title: "Services", detail: "One row per service.name" }
 
 export const showsUpRail = (h: H, platform: PushSourcePlatform): Html =>

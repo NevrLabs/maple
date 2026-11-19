@@ -35,6 +35,7 @@ const integrations = {
 	aws: false,
 	proxmox: false,
 	atlas: false,
+	postgres: false,
 }
 const context: PageContext = {
 	orgId,

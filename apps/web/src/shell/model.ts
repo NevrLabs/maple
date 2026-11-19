@@ -52,6 +52,8 @@ export const Integrations = Schema.Struct({
 	proxmox: IntegrationFlag,
 	/** NevrLabs selfhost: MongoDB Atlas metrics in the last hour (Atlas Prometheus integration, scraped). */
 	atlas: IntegrationFlag,
+	/** NevrLabs selfhost: postgresql receiver metrics in the last hour. */
+	postgres: IntegrationFlag,
 })
 
 export const Model = Schema.Struct({

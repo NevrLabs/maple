@@ -146,6 +146,9 @@ export const dataTable = <M>(
 export const dataTableEmpty = <M>(h: HtmlBuilder<M>, children: ReadonlyArray<Html | string>): Html =>
 	emptyMessage(h, { className: "py-12" }, children)
 
+/** One body row: the head's columns, ruled below (not the last). `className` is for state (dimmed). */
+export const DATA_TABLE_ROW = "border-b border-border-subtle px-4 py-2.5 last:border-0"
+
 /** `count` identical placeholder rows. */
 export const skeletonRows = <M>(
 	h: HtmlBuilder<M>,

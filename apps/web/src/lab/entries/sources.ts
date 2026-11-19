@@ -9,6 +9,7 @@ import {
 	V2SourceUsageSummary,
 	V2SourceWithSecret,
 } from "@maple/domain/http/v2"
+import { PushSourcePlatform } from "@maple/primitives"
 import { Effect, Option, Result, Schema, Array as Arr } from "effect"
 import type { Html, HtmlBuilder } from "foldkit/html"
 import { defineMessageUnion } from "foldkit/message"
@@ -245,13 +246,20 @@ const detailModel = (role: LabRole): DetailModel => {
 	)
 }
 
-/** The picker, a push source's form (`push`), or the same source once Create answered (`sent`). */
+/** `?platform=` picks the push page's platform (default Node.js). */
+const labPlatform = (): PushSourcePlatform =>
+	Option.getOrElse(
+		Schema.decodeUnknownOption(PushSourcePlatform)(new URLSearchParams(window.location.search).get("platform")),
+		(): PushSourcePlatform => "nodejs",
+	)
+
 const isIntegrationPage = (page: LabPage): page is IntegrationLabPage =>
 	Arr.some(INTEGRATION_PAGES, (candidate) => candidate === page)
 
+/** The picker, a push source's form (`push`), or the same source once Create answered (`sent`). */
 const newModel = (role: LabRole, page: LabPage): NewModel => {
 	if (isIntegrationPage(page)) return integrationFlowModel(page, context, grantsOf(role))
-	const search = page === "push" || page === "sent" ? { platform: "nodejs" as const } : {}
+	const search = page === "push" || page === "sent" ? { platform: labPlatform() } : {}
 	const granted = newUpdate(
 		newInit(AppRoute.SourcesNew({ search }), context).model,
 		NewMessage.CompletedReadGrants({ grants: grantsOf(role) }),

@@ -30,6 +30,7 @@ const NO_INTEGRATIONS = {
 	aws: false,
 	proxmox: false,
 	atlas: false,
+	postgres: false,
 }
 
 /** The StatefulSet kind with an empty answer for the window. */

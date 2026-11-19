@@ -93,6 +93,109 @@ const claudeCodeSnippet = (token: string): SourceSnippet => ({
 	),
 })
 
+/** NevrLabs selfhost: the three infrastructure sources, as each sender is configured in the homelab/Noovoleum. */
+const ingestHost = (): { server: string; port: string; protocol: string } => {
+	const url = new URL(ingestUrl)
+	const https = url.protocol === "https:"
+	return { server: url.hostname, port: url.port || (https ? "443" : "80"), protocol: https ? "https" : "http" }
+}
+
+/** PVE 9's OpenTelemetry metric server: headers are base64 JSON, and the payload is OTLP/HTTP JSON. */
+const proxmoxSnippets = (token: string): ReadonlyArray<SourceSnippet> => {
+	const { server, port, protocol } = ingestHost()
+	return [
+		{
+			id: "pvesh",
+			label: "pvesh (any node)",
+			language: "shell",
+			code: Arr.join(
+				[
+					`HEADERS=$(printf '{"Authorization":"Bearer %s"}' '${token}' | base64 -w0)`,
+					"pvesh create /cluster/metrics/server/maple --type opentelemetry \\",
+					`  --server ${server} --port ${port} --otel-protocol ${protocol} \\`,
+					"  --otel-path /v1/metrics --otel-compression gzip --otel-timeout 5 \\",
+					'  --otel-headers "$HEADERS"',
+				],
+				"\n",
+			),
+		},
+		{
+			id: "status-cfg",
+			label: "/etc/pve/status.cfg",
+			language: "text",
+			code: `opentelemetry: maple\n\tserver ${server}\n\tport ${port}\n\totel-protocol ${protocol}\n\totel-path /v1/metrics\n\totel-compression gzip\n\totel-headers <base64 of {"Authorization":"Bearer ${token}"}>`,
+		},
+	]
+}
+
+/** Atlas's Prometheus integration (Project → Integrations → Prometheus), scraped by any collector you run. */
+const atlasSnippet = (token: string): SourceSnippet => ({
+	id: "collector",
+	label: "Collector",
+	language: "yaml",
+	code: `receivers:
+  prometheus:
+    config:
+      scrape_configs:
+        - job_name: atlas
+          scheme: https
+          scrape_interval: 30s
+          basic_auth: { username: <prometheus user>, password_file: /etc/secrets/atlas-prom-password }
+          http_sd_configs:
+            - url: https://cloud.mongodb.com/prometheus/v1.0/groups/<project id>/discovery?targetScheme=PRIVATE
+              basic_auth: { username: <prometheus user>, password_file: /etc/secrets/atlas-prom-password }
+exporters:
+  otlphttp/maple:
+    endpoint: ${ingestUrl}
+    headers: { Authorization: "Bearer ${token}" }
+service:
+  pipelines:
+    metrics: { receivers: [prometheus], exporters: [otlphttp/maple] }`,
+})
+
+/** One collector per instance: the postgresql receiver (role with pg_monitor), plus Patroni's /metrics when present. */
+const postgresSnippets = (token: string): ReadonlyArray<SourceSnippet> => [
+	{
+		id: "role",
+		label: "Monitoring role",
+		language: "sql",
+		code: "CREATE ROLE maple_monitor LOGIN PASSWORD '<password>';\nGRANT pg_monitor TO maple_monitor;",
+	},
+	{
+		id: "collector",
+		label: "Collector",
+		language: "yaml",
+		code: `receivers:
+  postgresql:
+    endpoint: 127.0.0.1:5432
+    username: maple_monitor
+    password: \${env:PG_MONITOR_PASSWORD}
+    collection_interval: 60s
+    tls: { insecure: true }
+    metrics:
+      postgresql.blks_hit: { enabled: true }
+      postgresql.blks_read: { enabled: true }
+      postgresql.deadlocks: { enabled: true }
+      postgresql.wal.delay: { enabled: true }
+  # Patroni clusters only: roles, timeline, replay position
+  prometheus:
+    config:
+      scrape_configs:
+        - job_name: patroni
+          scrape_interval: 60s
+          static_configs: [{ targets: ["127.0.0.1:8008"] }]
+processors:
+  resourcedetection: { detectors: [env, system] }
+exporters:
+  otlphttp/maple:
+    endpoint: ${ingestUrl}
+    headers: { Authorization: "Bearer ${token}" }
+service:
+  pipelines:
+    metrics: { receivers: [postgresql, prometheus], processors: [resourcedetection], exporters: [otlphttp/maple] }`,
+	},
+]
+
 /** The service name the env snippet suggests: the source name, slugged. */
 const serviceNameOf = (name: string): string =>
 	Str.replace(/^-|-$/g, "")(Str.replace(/[^a-z0-9]+/g, "-")(Str.toLowerCase(Str.trim(name)))) ||
@@ -122,6 +225,12 @@ export const sourceSnippets = (
 			return [browserSnippet(token, serviceName)]
 		case "claude_code":
 			return [claudeCodeSnippet(token)]
+		case "proxmox":
+			return proxmoxSnippets(token)
+		case "mongodb_atlas":
+			return [atlasSnippet(token)]
+		case "postgresql":
+			return postgresSnippets(token)
 		case "opentelemetry":
 		case "cloudflare_ai_gateway":
 			return [envSnippet(token, serviceName), collectorSnippet(token)]

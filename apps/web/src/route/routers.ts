@@ -544,6 +544,11 @@ const routers = {
 		search(Search.InfraAtlasSearch),
 		Route.mapTo(AppRoute.InfraAtlas),
 	),
+	InfraPostgres: pipe(
+		path("infra", "postgres"),
+		search(Search.InfraPostgresSearch),
+		Route.mapTo(AppRoute.InfraPostgres),
+	),
 	InfraVercel: pipe(
 		path("infra", "vercel"),
 		search(Search.InfraVercelSearch),
@@ -665,6 +670,7 @@ export const urlToAppRoute = Route.parseUrlWithFallback(
 		routers.InfraRailway,
 		routers.InfraProxmox,
 		routers.InfraAtlas,
+		routers.InfraPostgres,
 		routers.InfraVercel,
 		routers.InfraSupabase,
 		routers.McpServerSession,

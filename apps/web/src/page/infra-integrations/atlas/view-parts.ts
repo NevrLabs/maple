@@ -10,7 +10,7 @@ import { skeleton } from "@maple/views/ui/skeleton"
 import { hstack, vstack } from "@maple/views/ui/stack"
 import { statusDot } from "@maple/views/ui/status-dot"
 import { typography } from "@maple/views/ui/typography"
-import { columnHead, dataTable, dataTableEmpty, skeletonRows } from "../../kit/data-table"
+import { columnHead, DATA_TABLE_ROW, dataTable, dataTableEmpty, skeletonRows } from "../../kit/data-table"
 import { sectionHeading } from "../../kit/section-heading"
 import { statRail, statRailItem, statRailLoading } from "../../kit/stat-rail"
 import { type AtlasNode, type AtlasSnapshot, OP_KINDS, type OpKind } from "./model"
@@ -167,7 +167,7 @@ const row = <M>(h: HtmlBuilder<M>, node: AtlasNode, now: number): Html => {
 		h,
 		{
 			gap: "4",
-			className: cn("border-b border-border-subtle px-4 py-2.5 last:border-0", down && "opacity-50"),
+			className: cn(DATA_TABLE_ROW, down && "opacity-50"),
 			attributes: [h.Key(node.host), h.DataAttribute("atlas-node", shortName(node)), h.DataAttribute("atlas-node-state", down ? "down" : "up")],
 		},
 		[

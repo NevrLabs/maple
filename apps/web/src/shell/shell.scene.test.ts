@@ -43,6 +43,7 @@ const statuses = (connected: Partial<Record<Integration, boolean>> = {}) => ({
 	aws: false,
 	proxmox: false,
 	atlas: false,
+	postgres: false,
 	...connected,
 })
 
@@ -365,6 +366,7 @@ describe("in-place org change", () => {
 				aws: false,
 				proxmox: false,
 				atlas: false,
+				postgres: false,
 			},
 		}
 		const onB = enter("org_b")(onA).model
@@ -379,6 +381,7 @@ describe("in-place org change", () => {
 			aws: null,
 			proxmox: null,
 			atlas: null,
+			postgres: null,
 		})
 		const lateNamespaces = update(
 			onB,
@@ -544,6 +547,7 @@ describe("infrastructure section", () => {
 						aws: false,
 						proxmox: false,
 						atlas: false,
+						postgres: false,
 					},
 				}),
 			),

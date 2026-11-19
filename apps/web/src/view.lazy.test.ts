@@ -75,6 +75,7 @@ const SAMPLE_PATHS = [
 	"/infra/railway/svc_1?environmentId=%22env_1%22",
 	"/infra/proxmox",
 	"/infra/atlas",
+	"/infra/postgres",
 	"/infra/vercel",
 	"/infra/vercel/prj_1",
 	"/infra/supabase",

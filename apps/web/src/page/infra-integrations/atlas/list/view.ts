@@ -1,6 +1,7 @@
 import { AsyncData, Submodel } from "foldkit"
 import type { Html, HtmlBuilder } from "foldkit/html"
 import { errorState } from "@maple/views/ui/error-state"
+import { vstack } from "@maple/views/ui/stack"
 import type { PageViewInputs } from "../../../contract"
 import { dashboardPage } from "../../../kit/dashboard-page"
 import type { AtlasSnapshot } from "../model"
@@ -36,6 +37,6 @@ export const view = Submodel.defineView<Model, Message, PageViewInputs>((model, 
 	return dashboardPage(
 		h,
 		{ title: "MongoDB Atlas", description: page.data === undefined ? DESCRIPTION : atlasDescription(page.data), gap: "lg" },
-		[h.div([h.Class("flex flex-col gap-8"), h.DataAttribute("atlas-state", page.state)], page.body)],
+		[vstack(h, { gap: "8", attributes: [h.DataAttribute("atlas-state", page.state)] }, page.body)],
 	)
 })

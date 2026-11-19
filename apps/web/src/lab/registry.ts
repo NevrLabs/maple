@@ -53,6 +53,13 @@ export const LAB_ENTRIES: ReadonlyArray<LabEntry> = [
 		session: "none",
 	},
 	{
+		path: "/lab/postgres",
+		title: "PostgreSQL",
+		description: "The /infra/postgres page over the homelab Patroni cluster mid-failover (pg2 silent). ?state=live|healthy|loading|empty",
+		kind: "lab",
+		session: "none",
+	},
+	{
 		path: "/lab/cloudflare",
 		title: "Cloudflare",
 		description:

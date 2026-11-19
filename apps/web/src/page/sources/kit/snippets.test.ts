@@ -18,4 +18,14 @@ describe("sourceSnippets", () => {
 		expect(install?.code).toContain("opentelemetry-distro")
 		expect(run?.code).toContain("opentelemetry-instrument")
 	})
+
+	it("puts the token where each infrastructure sender reads it", () => {
+		const [pvesh] = sourceSnippets("proxmox", "maple_src_pve", "Proxmox")
+		expect(pvesh?.code).toContain(`'{"Authorization":"Bearer %s"}' 'maple_src_pve'`)
+		expect(pvesh?.code).toContain("--type opentelemetry")
+		const [atlas] = sourceSnippets("mongodb_atlas", "maple_src_atlas", "Atlas")
+		expect(atlas?.code).toContain('Authorization: "Bearer maple_src_atlas"')
+		expect(atlas?.code).toContain("http_sd_configs")
+		expect(Arr.map(sourceSnippets("postgresql", "maple_src_pg", "PG"), (s) => s.id)).toEqual(["role", "collector"])
+	})
 })

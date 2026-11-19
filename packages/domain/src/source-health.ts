@@ -64,6 +64,9 @@ const POLICIES = {
 	host: PUSH,
 	cloudflare_ai_gateway: PUSH,
 	claude_code: PUSH,
+	proxmox: PUSH,
+	mongodb_atlas: PUSH,
+	postgresql: PUSH,
 	prometheus: { freshness: "poll", staleAfterMs: 10 * MINUTE },
 	// Analytics are polled and Logpush pushes; a grant may only push. Both arrive at the gateway.
 	cloudflare: { freshness: "data", staleAfterMs: 24 * 60 * MINUTE },

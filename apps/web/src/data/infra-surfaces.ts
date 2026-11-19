@@ -61,6 +61,7 @@ export const INTEGRATION_IDS = [
 	"aws",
 	"proxmox",
 	"atlas",
+	"postgres",
 ] as const
 
 /** Connected integrations: `null` until its status answers; a failed status counts as not connected. */
@@ -76,6 +77,7 @@ export const PENDING_INTEGRATIONS: IntegrationFlags = {
 	aws: null,
 	proxmox: null,
 	atlas: null,
+	postgres: null,
 }
 
 /** Every integration settled as not connected, as when the combined read failed. */
