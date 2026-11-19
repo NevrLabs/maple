@@ -8,6 +8,7 @@ import { Cause, Duration, Effect, Option } from "effect"
 import { ALERTING_SCHEDULE, type AlertingCron } from "../../alerting/src/schedule"
 import { selfhostEnv, selfhostStatusBindings } from "./ports"
 import { ensureStatusSchema, statusDb } from "./status-store"
+import { cronMatches } from "./cron"
 
 const env = selfhostEnv()
 // PATCHES #9: publish status pages into the Postgres store the status server reads.
@@ -16,24 +17,6 @@ if (statusBindings !== null && process.env.MAPLE_PG_URL) await ensureStatusSchem
 const statusPages = statusBindings === null ? Option.none() : Option.some(statusBindings)
 const running = new Set<string>()
 const lastFire: Record<string, { at: string; lanes: Record<string, string> }> = {}
-
-/** Minimal 5-field cron matcher for the fixed schedules alerting declares (*, *\/n, n). */
-const fieldMatches = (field: string, value: number) => {
-	if (field === "*") return true
-	const step = field.match(/^\*\/(\d+)$/)
-	if (step) return value % Number(step[1]) === 0
-	return field.split(",").some((part) => Number(part) === value)
-}
-const cronMatches = (cron: string, d: Date) => {
-	const [min, hour, dom, mon, dow] = cron.split(" ")
-	return (
-		fieldMatches(min!, d.getUTCMinutes()) &&
-		fieldMatches(hour!, d.getUTCHours()) &&
-		fieldMatches(dom!, d.getUTCDate()) &&
-		fieldMatches(mon!, d.getUTCMonth() + 1) &&
-		fieldMatches(dow!, d.getUTCDay())
-	)
-}
 
 const scheduledModule = import("../../alerting/src/scheduled")
 
