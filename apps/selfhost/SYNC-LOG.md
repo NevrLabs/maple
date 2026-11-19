@@ -428,3 +428,18 @@ merge `fc7408ba2` (parents `ba2c15a12` run-9/image-prep tip + `486316866`), gate
   status-page 96/96, backend uptime alerts + status-pages 162/162, scraper spans 14/14, selfhost 69/69,
   web merge surfaces 1115/1115.
 - bun.lock: regenerated lock byte-identical to the committed merged lock (sha256 `f1717f21…`) — no lock commit.
+
+## Deploy — 2026-11-19T06:54Z — Run 10 on CT130 (owner go, Maple sync thread)
+
+CT130 runs `up-593f6100` (= `selfhost-homelab-up-20261119` @ `593f61000`) on all 8 Maple services, replacing
+`up-fd23f5f0`. Built on the MacBook (colima, linux/amd64), streamed to CT130, image IDs verified.
+- Pre-cutover: PBS `vzdump 130`; ClickHouse `maple/pre-run10-593f6100-20261119-0632` (3.65 GiB, after the SeaweedFS S3
+  gateway recovered; seaweedfs-01 memory 1→2 GiB); writers stopped, quiesced pg_dump. PG migrations 176→212, CH 60–68.
+- Upgrade trap, fixed: upstream reads only v2/v3 secret envelopes since #2458, and the reseal pass that rewrote pre-v2
+  values lived only in the releases between #2456 and #2458, which this deployment skipped (fd23f5f06 → run 10).
+  Five pre-v2 values (Discord destinations, one OAuth pair, the org ingest key) stopped opening: uptime target list 503,
+  Discord deliveries failing. Resealed once in one transaction (legacy open with the master key → v2 seal, round-trip
+  checked, dry run first). **Any other deployment upgrading across #2458 needs the same step** (the Noovoleum Maple runs
+  fd23f5f06 too).
+- Setup Health 37/9: RES-02/04/05 now fail because upstream #2429 judges them per service; NAME-03 cleared (upstream
+  excludes Maple-written `maple_ai.*`). Owner baseline reconciliation pending.
