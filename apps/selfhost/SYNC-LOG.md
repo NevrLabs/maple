@@ -450,3 +450,11 @@ Found connecting the Cloudflare cost source on CT130: the token saved, but `cost
 (gated green on the MacBook, selfhost 71/71); image `maple-selfhost:up-6e6e26c4` (`sha256:2c7d5b2a…`) on the
 `alerting` container only, others stay `up-593f6100`. First tick 07:07Z: Cloudflare account `af929c6a…`,
 2026-08-01 → 2026-11-18 synced (110 days, all US$0: the account's subscriptions are all free tiers).
+
+## Feature — 2026-11-19T08:09Z — Atlas, Proxmox VE and PostgreSQL in Connect a source
+
+`c8295a73b` adds the three push platforms (picker, snippets, source health, MCP descriptors) and the
+PostgreSQL infra page. Gated green on the MacBook (20/20; web 126 files, domain 95, ai typecheck).
+CT130: api/alerting/scraper/status/electric-sync on `maple-selfhost:up-c8295a73` (`0f6d7ad8`), web on
+`maple-web:up-c8295a73` (`ffa02dd5`); ingest/collector unchanged; no migrations. Probe: create+delete
+of a `mongodb_atlas`, `proxmox` and `postgresql` source via `/v2/sources` all 200.
