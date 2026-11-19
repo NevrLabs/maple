@@ -189,6 +189,10 @@ a read-only role and an admin needs to cut someone off without waiting for the 1
   token keeps role + identity. Members API: `GET /api/selfhost/me`, `GET /api/selfhost/users`,
   `POST /api/selfhost/users/:sub/{disable,enable,sign-out}` (admin; root row fixed; no self-disable).
 - `packages/auth` is back to upstream (the #4 mint export was removed; minting lives in session.ts).
+- Since run 10 (upstream #2828) sessions are signed with an HKDF key, not the raw root password: `session.ts`
+  `sessionKey(env)` mirrors `selfHostedSessionKey` (`MAPLE_SESSION_SIGNING_SECRET` salted with the root password,
+  or the root password alone); `api.ts` + `electric-sync.ts` sign/read with it; `session.test.ts` proves a fork
+  token resolves through upstream's `makeResolveTenant` both ways (gated: `bun test apps/selfhost/src`).
 
 **Web (upstream files touched):** `page/settings/{model,message,update,view,nav}.ts` (Members tab = `selfhost-members/`
 when not Clerk; viewer = non-admin), `page/settings/selfhost-members/*` (new), `platform/selfhost-session.ts` (new:

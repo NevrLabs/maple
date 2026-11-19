@@ -15,11 +15,11 @@
  *   POST /api/selfhost/users/:sub/sign-out    admin: sessions_valid_after = now
  * Root (break-glass) and API keys pass straight through: the root row cannot be revoked from the UI.
  */
-import { bearerOf, readSession, renewSession, roleOf, type SessionClaims } from "./session"
+import { bearerOf, readSession, renewSession, roleOf, type SessionClaims, type SessionSecret } from "./session"
 import type { UsersStore } from "./users"
 import { viewerMay } from "./route-policy"
 
-export type GateConfig = Readonly<{ secret: string; users: UsersStore | null; log?: (line: string) => void }>
+export type GateConfig = Readonly<{ secret: SessionSecret; users: UsersStore | null; log?: (line: string) => void }>
 
 const problem = (status: 401 | 403 | 404 | 400, title: string, message: string, extra: Record<string, unknown> = {}) =>
 	Response.json(

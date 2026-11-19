@@ -29,6 +29,8 @@ x-app-env: &app-env
   MAPLE_INGEST_PUBLIC_URL: ${MAPLE_INGEST_URL}
   MAPLE_PG_URL: postgres://maple:${POSTGRES_PASSWORD}@postgres:5432/maple
   MAPLE_ROOT_PASSWORD: ${MAPLE_ROOT_PASSWORD}
+  # Upstream #2828: optional session MAC key; blank = derived from the root password.
+  MAPLE_SESSION_SIGNING_SECRET: ${MAPLE_SESSION_SIGNING_SECRET:-}
   INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN}
   SD_INTERNAL_TOKEN: ${SD_INTERNAL_TOKEN}
   MAPLE_INGEST_KEY_ENCRYPTION_KEY: ${MAPLE_INGEST_KEY_ENCRYPTION_KEY}
@@ -254,6 +256,7 @@ services:
       MAPLE_DEFAULT_ORG_ID: default
       MAPLE_ENVIRONMENT: selfhost
       MAPLE_ROOT_PASSWORD: ${MAPLE_ROOT_PASSWORD}
+      MAPLE_SESSION_SIGNING_SECRET: ${MAPLE_SESSION_SIGNING_SECRET:-}
       # NevrLabs selfhost: revoke checks against selfhost_users (PATCHES #5).
       MAPLE_PG_URL: postgres://maple:${POSTGRES_PASSWORD}@postgres:5432/maple
     depends_on:

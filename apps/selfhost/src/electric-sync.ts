@@ -12,6 +12,7 @@ import { ElectricClient } from "../../electric-sync/src/electric/ElectricClient"
 import { ELECTRIC_SYNC_CORS_OPTIONS } from "../../electric-sync/src/routes/cors"
 import { ElectricSyncRouter } from "../../electric-sync/src/routes/shape.http"
 import { gate } from "./gate"
+import { sessionKey } from "./session"
 import { makeUsersStore, pgSql } from "./users"
 
 const port = Number(process.env.PORT ?? 3476)
@@ -28,7 +29,7 @@ const { handler } = HttpRouter.toWebHandler(AppLive, { disableLogger: true })
 // NevrLabs selfhost (PATCHES #5): a disabled / signed-out-everywhere OIDC user stops syncing at once too.
 // Shapes are reads, so only the revoke half of the gate applies (a viewer may sync).
 const users = process.env.MAPLE_PG_URL ? makeUsersStore(pgSql(process.env.MAPLE_PG_URL)) : null
-const secret = process.env.MAPLE_ROOT_PASSWORD ?? ""
+const secret = sessionKey(process.env)
 
 const server = Bun.serve({
 	port,

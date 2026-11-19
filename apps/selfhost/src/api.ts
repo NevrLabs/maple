@@ -9,7 +9,7 @@ import { workerEnvLayer } from "@maple/infra/worker-runtime"
 import { buildApp, makeAppGraphs, makeFetch } from "../../api/src/worker/http"
 import { gate } from "./gate"
 import { handleOidc, OidcRejection, oidcConfigFromEnv } from "./oidc"
-import { mintSession } from "./session"
+import { mintSession, sessionKey } from "./session"
 import { makeUsersStore, pgSql } from "./users"
 import { selfhostEnv, selfhostPorts, setSchemaApplyRunner } from "./ports"
 import { withRequestContext } from "./request-context"
@@ -37,7 +37,8 @@ const requestLayer = Layer.mergeAll(ports, workerEnvLayer(env))
 // NevrLabs selfhost (PATCHES #4, #5): OIDC sign-in for any provider, the users table, and the gate that
 // enforces instant revoke + the read-only viewer role in front of the unmodified route graph.
 const oidc = oidcConfigFromEnv(process.env)
-const rootPassword = process.env.MAPLE_ROOT_PASSWORD ?? ""
+// Upstream #2828 signs sessions with an HKDF-derived key, not the raw root password.
+const secret = sessionKey(process.env)
 const orgId = process.env.MAPLE_DEFAULT_ORG_ID ?? "default"
 const users = oidc !== null && process.env.MAPLE_PG_URL ? makeUsersStore(pgSql(process.env.MAPLE_PG_URL)) : null
 if (users !== null) await pgSql(process.env.MAPLE_PG_URL!).ensureSchema()
@@ -47,7 +48,7 @@ const signIn = async (identity: Parameters<typeof mintSession>[0]) => {
 		if (state?.disabled) throw new OidcRejection("user disabled", 403)
 		await users.signIn(identity)
 	}
-	return mintSession(identity, orgId, rootPassword, Math.floor(Date.now() / 1000)).token
+	return mintSession(identity, orgId, secret, Math.floor(Date.now() / 1000)).token
 }
 console.log(
 	`maple-api (selfhost) oidc ${oidc ? `on issuer=${oidc.issuer} label=${oidc.label} admin=${oidc.adminRole} viewer=${oidc.viewerRole} claim=${oidc.rolesClaim} users=${users ? "pg" : "off"}` : "off"}`,
@@ -64,7 +65,7 @@ const server = Bun.serve({
 	async fetch(request, srv) {
 		const oidcResponse = await handleOidc(request, oidc, signIn)
 		if (oidcResponse) return oidcResponse
-		const gated = await gate(request, { secret: rootPassword, users, log: (line) => console.log(line) })
+		const gated = await gate(request, { secret, users, log: (line) => console.log(line) })
 		if (gated) return gated
 		// Workers set cf-connecting-ip; the auth layer reads it for rate-limit keys.
 		const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? srv.requestIP(request)?.address
