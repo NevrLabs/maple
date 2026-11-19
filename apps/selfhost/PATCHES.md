@@ -206,6 +206,14 @@ controls instead of hiding them),
 **Verify after rebase:** `bun test apps/selfhost/src/{oidc,gate}.test.ts`; `vitest run src/page/settings src/page/sign-in`;
 E2E `verify/e2e-users.ts` (Zitadel disposable admin + viewer).
 
+## #19 — Bun alerting scheduler matches ranged crons (`a-b/n`)
+
+`apps/selfhost/src/alerting.ts` replaces Cloudflare cron triggers with a minute loop; its matcher knew only
+`*`, `*/n` and lists, so upstream's `"2-59/5 * * * *"` (lanes `vercel`, `cost_sync`, `aws_security`) never fired
+self-hosted: cost sources saved but never synced. The matcher lives in `cron.ts` (fork-only); `cron.test.ts`
+asserts every cron in `ALERTING_SCHEDULE` fires at least once an hour, so a new cron form fails the gate.
+**Verify after rebase:** `bun test apps/selfhost/src/cron.test.ts`; alerting logs show `tick: cost_sync`.
+
 ## #6 — durable VCS-sync queue (BRIEF-integrations A2)
 
 Upstream runs GitHub webhook/backfill work on a Cloudflare Queue; selfhost `ports.ts` had `droppingQueue("vcs-sync")`,

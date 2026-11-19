@@ -443,3 +443,10 @@ CT130 runs `up-593f6100` (= `selfhost-homelab-up-20261119` @ `593f61000`) on all
   fd23f5f06 too).
 - Setup Health 37/9: RES-02/04/05 now fail because upstream #2429 judges them per service; NAME-03 cleared (upstream
   excludes Maple-written `maple_ai.*`). Owner baseline reconciliation pending.
+
+## Fix — 2026-11-19T07:11Z — alerting `2-59/5` cron never fired self-hosted (PATCHES #19)
+
+Found connecting the Cloudflare cost source on CT130: the token saved, but `cost_sync` never ran. Fix `6e6e26c46`
+(gated green on the MacBook, selfhost 71/71); image `maple-selfhost:up-6e6e26c4` (`sha256:2c7d5b2a…`) on the
+`alerting` container only, others stay `up-593f6100`. First tick 07:07Z: Cloudflare account `af929c6a…`,
+2026-08-01 → 2026-11-18 synced (110 days, all US$0: the account's subscriptions are all free tiers).
