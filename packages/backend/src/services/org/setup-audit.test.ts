@@ -1425,7 +1425,7 @@ describe("integration checks", () => {
 			}
 			const result = check(runSetupAudit(inputs({ cloudflareAnalytics: [state] })), "CFG-INTEG-02")
 			expect(result.status).toBe("pass")
-			expect(result.detail).toContain("unavailable")
+			expect(result.detail).toContain("not included in the Cloudflare plan")
 			expect(result.affected).toEqual([
 				expect.objectContaining({
 					name: "firewall_events · example.com",
@@ -1434,6 +1434,21 @@ describe("integration checks", () => {
 			])
 		},
 	)
+
+	it("CFG-INTEG-02 caps unavailable entities on a passing result and retains the total", () => {
+		const states = Arr.makeBy(25, (index) => ({
+			dataset: "firewall_events",
+			zoneName: `zone-${index}.example.com`,
+			lastSuccessAt: null,
+			lastErrorAt: null,
+			lastError: null,
+			settingsJson: JSON.stringify({ enabled: false }),
+		}))
+		const result = check(runSetupAudit(inputs({ cloudflareAnalytics: states })), "CFG-INTEG-02")
+		expect(result.status).toBe("pass")
+		expect(result.affected).toHaveLength(20)
+		expect(result.affectedCount).toBe(25)
+	})
 
 	it("CFG-INTEG-02 keeps available failures failing alongside unavailable datasets", () => {
 		const state = {
@@ -1460,7 +1475,7 @@ describe("integration checks", () => {
 		)
 		expect(result.status).toBe("fail")
 		expect(result.detail).toContain("1 Cloudflare dataset has failed")
-		expect(result.detail).toContain("1 unavailable")
+		expect(result.detail).toContain("1 dataset not included in the Cloudflare plan")
 		expect(result.affected).toEqual(
 			expect.arrayContaining([
 				expect.objectContaining({

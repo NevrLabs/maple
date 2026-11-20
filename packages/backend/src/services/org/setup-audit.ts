@@ -41,7 +41,7 @@ import {
 
 export interface AuditEvaluation {
 	readonly status: "pass" | "fail"
-	/** Human sentence describing the finding. Omitted on pass. */
+	/** Human sentence describing the finding. On pass, omitted or an informational note. */
 	readonly detail?: string
 	readonly affected?: ReadonlyArray<AuditAffectedEntity>
 	/** Total affected before capping; defaults to `affected.length`. */
@@ -1077,7 +1077,7 @@ const integrationChecks: ReadonlyArray<AuditCheck> = [
 		fixHint:
 			"A permission error means the token lacks a scope: reconnect Cloudflare in Sources and grant Analytics and Firewall read access. A 5xx from Cloudflare is retried every few minutes; reconnect if it lasts more than a few hours.",
 		evaluate: ({ config, now }) => {
-			// (PATCHES #17) A dataset whose settings mark it unavailable (the plan does not include it)
+			// A dataset whose settings mark it unavailable (the plan does not include it)
 			// is not collected on purpose: keep it visible as unavailable rather than reporting its
 			// silence as a failure.
 			const unavailable = Arr.filter(config.cloudflareAnalytics, (state) =>
@@ -1130,16 +1130,23 @@ const integrationChecks: ReadonlyArray<AuditCheck> = [
 			const unavailableEntities = Arr.map(unavailable, (state): AuditAffectedEntity => ({
 				kind: "integration",
 				name: state.zoneName ? `${state.dataset} · ${state.zoneName}` : state.dataset,
-				note: "unavailable — Cloudflare dataset settings deny collection",
+				note: state.zoneName
+					? "unavailable: the zone's Cloudflare plan does not include this dataset"
+					: "unavailable: your Cloudflare plan does not include this dataset",
 			}))
 			const capability =
 				unavailable.length === 0
 					? ""
-					: ` ${unavailable.length} unavailable (Cloudflare dataset settings deny collection).`
+					: ` ${plural(unavailable.length, "dataset")} not included in the Cloudflare plan.`
 			if (affected.length === 0)
 				return unavailable.length === 0
 					? PASS
-					: { status: "pass", detail: capability.trim(), affected: unavailableEntities }
+					: {
+							status: "pass",
+							detail: Str.trim(capability),
+							affected: Arr.take(unavailableEntities, AUDIT_AFFECTED_LIMIT),
+							affectedCount: unavailableEntities.length,
+						}
 			// The detail states the dataset count; affectedCount stays the row count v2 clients expect.
 			return {
 				...fail(

@@ -391,7 +391,8 @@ const make: Effect.Effect<SetupAuditServiceApi, never, SetupAuditServiceRequirem
 					provider: connection.provider,
 					revokedAt: connection.revokedAt,
 				})),
-				// NevrLabs selfhost (PATCHES #17): keep unavailable datasets visible even though collection is disabled.
+				// Datasets disabled by the user are not collected, so a stale error on one is not a finding.
+				// Datasets Cloudflare's settings deny stay listed so the check can report them as unavailable.
 				cloudflareAnalytics: Arr.map(
 					Arr.filter(
 						rows.cloudflare,

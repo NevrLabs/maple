@@ -56,8 +56,8 @@ jobs:
             - name: Suite — query-engine-integrations (SQL catalog incl. baseline)
               run: bun run --cwd packages/query-engine-integrations test
 
-            - name: Suite — backend setup audit (PGlite)
-              run: bun run --cwd packages/backend test src/services/org
+            - name: Suite — backend setup audit and Cloudflare analytics (PGlite)
+              run: bun run --cwd packages/backend test src/services/org src/services/integrations/CloudflareAnalyticsService.test.ts
 
             - name: Suite — backend warehouse driver
               run: bun run --cwd packages/backend test src/services/warehouse

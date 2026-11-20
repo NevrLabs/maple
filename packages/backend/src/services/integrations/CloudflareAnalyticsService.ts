@@ -947,6 +947,7 @@ const planAccountBudgets = (
 	rows: ReadonlyArray<CloudflareAnalyticsStateRow>,
 	now: number,
 	grantCap: number,
+	zoneSettings: ReadonlyMap<string, ZoneWatchSettings>,
 ): Array<AccountBudget> => {
 	// Zero once accounts outnumber the budget: then the oldest-first order alone rotates them.
 	const fairShare = Math.floor(grantCap / Math.max(1, accountIds.length))
@@ -958,11 +959,8 @@ const planAccountBudgets = (
 		const needsCall =
 			accountRows.length === 0 ||
 			head.length > 0 ||
-			Arr.some(
-				accountRows,
-				(row) =>
-					(row.enabled || cloudflareDatasetUnavailable(row.settingsJson)) &&
-					(row.settingsFetchedAt == null || now - row.settingsFetchedAt > SETTINGS_TTL_MS),
+			Arr.some(accountRows, (row) =>
+				needsSettingsProbe(row, zoneSettings.get(accountId) ?? WATCH_ALL_ZONES, now),
 			)
 		return {
 			accountId,
@@ -1282,6 +1280,20 @@ const WATCH_ALL_ZONES: ZoneWatchSettings = { watchNewZones: true, zoneOverrides:
 
 const isZoneWatched = (settings: ZoneWatchSettings, zoneId: string): boolean =>
 	settings.zoneOverrides[zoneId] ?? settings.watchNewZones
+
+/**
+ * A row whose cached settings are older than the TTL and that the settings refresh will query:
+ * enabled, or denied by its cached settings (so the daily refresh can see it come back), and for a
+ * zone dataset only while the customer still watches the zone.
+ */
+const needsSettingsProbe = (
+	row: CloudflareAnalyticsStateRow,
+	watch: ZoneWatchSettings,
+	now: number,
+): boolean =>
+	(row.enabled || cloudflareDatasetUnavailable(row.settingsJson)) &&
+	(DATASET_BY_ID.get(row.dataset)?.scope !== "zone" || isZoneWatched(watch, row.zoneId)) &&
+	(row.settingsFetchedAt == null || now - row.settingsFetchedAt > SETTINGS_TTL_MS)
 
 interface ZoneSettingsUpdate {
 	readonly accountId: string
@@ -1745,9 +1757,11 @@ export class CloudflareAnalyticsService extends Context.Service<
 				? []
 				: Arr.filter(
 						rows,
+						// Already-vanished rows (off, settings cleared) are written once, not every discovery.
 						(row) =>
 							DATASET_BY_ID.get(row.dataset)?.scope === "zone" &&
-							!seen.has(row.zoneId),
+							!seen.has(row.zoneId) &&
+							(row.enabled || row.settingsJson !== null),
 					)
 			yield* updateRows(
 				Arr.map(vanished, (row) => row.id),
@@ -1786,13 +1800,7 @@ export class CloudflareAnalyticsService extends Context.Service<
 			const first = rows[0]
 			if (first === undefined) return false
 			const watch = (yield* loadZoneSettings(first.orgId, accountId)).get(accountId) ?? WATCH_ALL_ZONES
-			const stale = Arr.filter(
-				rows,
-				(row) =>
-					(row.enabled || cloudflareDatasetUnavailable(row.settingsJson)) &&
-					(DATASET_BY_ID.get(row.dataset)?.scope !== "zone" || isZoneWatched(watch, row.zoneId)) &&
-					(row.settingsFetchedAt == null || now - row.settingsFetchedAt > SETTINGS_TTL_MS),
-			)
+			const stale = Arr.filter(rows, (row) => needsSettingsProbe(row, watch, now))
 			if (stale.length === 0) return false
 
 			const staleZone = Arr.filter(stale, (row) => DATASET_BY_ID.get(row.dataset)?.scope === "zone")
@@ -1887,21 +1895,37 @@ export class CloudflareAnalyticsService extends Context.Service<
 									const dataset = DATASET_BY_ID.get(row.dataset)
 									if (!dataset) continue
 									const settings = dataset.settingsNode(decoded, row)
-									if (settings === undefined || (settings == null && cloudflareDatasetUnavailable(row.settingsJson))) continue
-									const settingsJson = settings == null ? null : encodeJsonSync(settings)
+									if (settings === undefined) continue
+									// A denied row stays denied until Cloudflare answers definitively: a missing node or an
+									// `enabled: null` answer keeps the cached denial, but the probe is still stamped so the row
+									// waits a full TTL instead of spending a settings call every tick.
+									const answered = settings == null ? null : encodeJsonSync(settings)
+									const keepsDenial =
+										cloudflareDatasetUnavailable(row.settingsJson) &&
+										settings?.enabled !== true &&
+										!cloudflareDatasetUnavailable(answered)
+									const settingsJson = keepsDenial ? row.settingsJson : answered
 									const quantilesAvailable = quantilesFromAvailableFields(
 										settings,
 										dataset.availableFieldsNeedle,
 									)
 									const disabled = cloudflareDatasetUnavailable(settingsJson)
+									const recovered =
+										!disabled &&
+										settings?.enabled === true &&
+										cloudflareDatasetUnavailable(row.settingsJson)
 									const set: StateRowSet = {
 										settingsJson,
 										settingsFetchedAt: now,
 										quantilesAvailable,
-										...(disabled ? { enabled: false, lastError: null, lastErrorAt: null } : settings?.enabled === true && cloudflareDatasetUnavailable(row.settingsJson) ? { enabled: true } : undefined),
+										...(disabled
+											? { enabled: false, lastError: null, lastErrorAt: null }
+											: recovered
+												? { enabled: true }
+												: undefined),
 										updatedAt: now,
 									}
-									const key = `${settingsJson}|${quantilesAvailable}|${set.enabled ?? ""}`
+									const key = `${settingsJson}|${quantilesAvailable}|${disabled ? "false" : recovered ? "true" : ""}`
 									const group = updates.get(key)
 									if (group) group.ids.push(row.id)
 									else updates.set(key, { ids: [row.id], set })
@@ -2550,11 +2574,15 @@ export class CloudflareAnalyticsService extends Context.Service<
 				if (settingsWrote) rows = yield* loadStateRows(orgId, accountId)
 				// A valid connection cannot recover a dataset the upstream settings deny. Record that
 				// capability using the existing cache + enabled flag, not an old OAuth/query failure.
-				const unavailable = rows.filter((row) => cloudflareDatasetUnavailable(row.settingsJson))
+				const unavailable = Arr.filter(rows, (row) => cloudflareDatasetUnavailable(row.settingsJson))
 				yield* updateRows(
-					unavailable
-						.filter((row) => row.enabled || row.lastError !== null || row.lastErrorAt !== null)
-						.map((row) => row.id),
+					Arr.map(
+						Arr.filter(
+							unavailable,
+							(row) => row.enabled || row.lastError !== null || row.lastErrorAt !== null,
+						),
+						(row) => row.id,
+					),
 					{ enabled: false, lastError: null, lastErrorAt: null, updatedAt: now },
 				)
 				for (const row of unavailable) {
@@ -3129,6 +3157,7 @@ export class CloudflareAnalyticsService extends Context.Service<
 						: [],
 				),
 			)
+			const zoneSettings = yield* loadZoneSettings(orgId)
 			const plan =
 				pollable.length === 0
 					? []
@@ -3140,6 +3169,7 @@ export class CloudflareAnalyticsService extends Context.Service<
 							Arr.filter(stateRows, (row) => !disabled.has(row.dataset)),
 							planNow,
 							grantCap,
+							zoneSettings,
 						)
 			const sourceId = stampedSourceId(linkedSource)
 			const backedOff = yield* Effect.forEach(backoffs, ([accountId, backoff]) =>
@@ -3688,7 +3718,10 @@ export class CloudflareAnalyticsService extends Context.Service<
 				{ enabled: false, updatedAt: now },
 			)
 			yield* updateRows(
-				Arr.map(Arr.filter(resumed, (row) => !cloudflareDatasetUnavailable(row.settingsJson)), (row) => row.id),
+				Arr.map(
+					Arr.filter(resumed, (row) => !cloudflareDatasetUnavailable(row.settingsJson)),
+					(row) => row.id,
+				),
 				{ enabled: true, updatedAt: now },
 			)
 			// A resumed zone may have left Cloudflare while paused; rediscover before polling it.

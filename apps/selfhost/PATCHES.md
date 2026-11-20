@@ -437,13 +437,11 @@ query-engine-integrations SQL baseline, `setup-audit.clickhouse.e2e.test.ts`, Ci
 
 ## 17. Cloudflare datasets the plan does not include
 
-**Why:** zone discovery re-enabled datasets whose upstream settings deny collection (Free-plan
-`firewallEventsAdaptiveGroups`), they kept a stale connection error forever and CFG-INTEG-02 failed.
-**Change:** shared `packages/domain/src/cloudflare-analytics.ts` predicate (explicit `enabled=false` or
-`maxDuration=0` only); discovery and zone-watch resume respect it; daily settings refresh resumes the
-dataset when Cloudflare allows it; stale errors cleared on a valid connection; CFG-INTEG-02 lists
-unavailable datasets while available datasets with real errors still fail. No plan-name checks.
-**Verify after rebase:** CloudflareAnalyticsService + SetupAuditService tests, domain CFG-INTEG-02 tests.
+**Upstreamed in #2862 (`aac5c9655`), absorbed in run 11.** No fork code remains for this patch.
+The shared capability predicate still uses explicit denial, not plan names. Discovery and zone-watch
+resume respect denial; settings refresh preserves it on unknown answers and recovers on a definitive
+allow. CFG-INTEG-02 lists unavailable datasets even on a pass, without masking real errors.
+**Verify after rebase:** CloudflareAnalyticsService, SetupAuditService and CFG-INTEG-02 suites.
 
 ## 18. `/infra/atlas`: MongoDB Atlas replica set page (web)
 
