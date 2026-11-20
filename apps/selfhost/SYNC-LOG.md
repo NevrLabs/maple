@@ -24,7 +24,7 @@ When a PR merges upstream, the next sync absorbs it: drop or shrink the matching
 | Patch | Upstream PR | Branch / head | Pre-check |
 |---|---|---|---|
 | #15 first-mount sparkline sizing | https://github.com/MapleTechLabs/maple/pull/2498 — **merged** (`8a6f7b50c`), absorbed run 5 | `pr/sparkline-first-mount-height` `5ed2676c5` | green 43048183588 |
-| #17 capability-denied CF datasets | https://github.com/MapleTechLabs/maple/pull/2499 | `pr/cloudflare-capability-denied` `1656567f0` | green 43048191135 |
+| #17 capability-denied CF datasets | #2499 closed unmerged; [#2862](https://github.com/MapleTechLabs/maple/pull/2862) merged as `aac5c9655`, absorbed run 11 | `pr/cloudflare-capability-denied` `1656567f0` | green 43048191135 |
 | #16 TRC-01 all-kind parents | pending pre-check | `pr/trc01-all-kind-parents` `b830a0cff` | first run caught a stale upstream SQL-text pin (fixed); re-check 43096320674 |
 
 ## Run 1 — 2026-11-11 — upstream e231894bc → current upstream/main
@@ -458,3 +458,29 @@ PostgreSQL infra page. Gated green on the MacBook (20/20; web 126 files, domain 
 CT130: api/alerting/scraper/status/electric-sync on `maple-selfhost:up-c8295a73` (`0f6d7ad8`), web on
 `maple-web:up-c8295a73` (`ffa02dd5`); ingest/collector unchanged; no migrations. Probe: create+delete
 of a `mongodb_atlas`, `proxmox` and `postgresql` source via `/v2/sources` all 200.
+
+## Run 11 — 2026-11-20 — upstream 486316866 → 6854ea260
+
+Status: **COMPLETE — merged, gated (MacBook), pushed.** Branch `selfhost-homelab-up-20261120`;
+merge and gated head `0c5d3f5f6` (parents `8ee1fcc57` + `6854ea260`). Not deployed.
+
+- Frozen inputs: fork main `486316866741e5619c943fdcff7c98bf4350a44b`, selfhost tip `8ee1fcc57cb04d5e12cfc75c099ac96548487380`,
+  upstream `6854ea2608bb48d37ded826da6ea000ac8835b35`. Previous tip's MacBook ledger confirmed `DONE 8ee1fcc57cb04d5e12cfc75c099ac96548487380`.
+- Incoming range: 25 commits, 371 files (+109,903/−5,420): upstream Cloudflare capability handling (#2862),
+  status-page cards and rollout-flag removal, sidebar badges, Clerk SDK and impersonation audit, org erasure,
+  write-once audit archive, PromQL query bounds, ingest credentials, distilled integrations, and landing.
+- Mirror: fork `main` fast-forwarded to `6854ea260` and verified on origin.
+- Merge: six #17 conflicts resolved hunk-by-hunk. #2862 supersedes the fork's Cloudflare delta: it preserves
+  cached denial on an indeterminate probe, stamps the settings TTL, recovers on definitive allow, and renders
+  capped affected entities in passing Setup Health rows. The three Cloudflare-only resolutions match upstream;
+  the three shared audit files retain the #16 native-scope and all-kind-parent changes.
+- Survival sweep: 13 overlap files. All 42 missing lines were superseded #17 forms (probe/render logic, copy,
+  or fixtures); no missing fork behavior or files. Informational status/uptime, navigation and identity deltas
+  remained intact. Clerk changes leave the #5 selfhost HMAC wire format intact; the renamed audit intake queue
+  is a Worker binding change, and the new replay eraser binding is optional.
+- Gates: GitHub `selfhost gates` dispatch returned HTTP 422 (Actions disabled; no run ID).
+  MacBook ledger `~/ci/maple-gates/0c5d3f5f68e823c968fa71d8e321562bfe283fb7/ledger`: exact pushed SHA confirmed by `head=` and `DONE`.
+  SDK, bundles (no images), eight typechecks and all suites green: QE integrations 512; backend org + Cloudflare
+  577 passed / 1 skipped; backend warehouse 188 passed / 524 skipped; domain status 50; status-page 96;
+  backend uptime/status 162; scraper 14; selfhost 71; web 1115. The gate now includes CloudflareAnalyticsService.
+- bun.lock: regenerated lock byte-identical (`48758b160458c84153ee0b7abc88d15c42dbacd5d8e799a72c39851796cd98af`); no lock commit.
