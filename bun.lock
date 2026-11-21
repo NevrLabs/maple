@@ -169,12 +169,12 @@
         "@maple/domain": "workspace:*",
         "@maple/eventing-core": "workspace:*",
         "@maple/local-server": "workspace:*",
+        "@maple/promql": "workspace:*",
         "@maple/query-engine": "workspace:*",
         "effect": "catalog:effect",
       },
       "devDependencies": {
         "@effect/vitest": "catalog:effect",
-        "@maple/promql": "workspace:*",
         "@types/bun": "^1.4.4",
         "@types/node": "catalog:tooling",
         "fast-check": "^4.10.2",
@@ -351,14 +351,19 @@
         "@maple/infra": "workspace:*",
         "@maple/primitives": "workspace:*",
         "@maple/status-page": "workspace:*",
+        "@takumi-rs/wasm": "2.20.0",
         "alchemy": "catalog:alchemy",
         "effect": "catalog:effect",
       },
       "devDependencies": {
         "@cloudflare/workers-types": "catalog:alchemy",
+        "@fontsource-variable/geist": "^5.3.0",
+        "@fontsource-variable/geist-mono": "^5.3.0",
+        "@fontsource-variable/source-serif-4": "^5.3.1",
         "@types/node": "catalog:tooling",
         "typescript": "catalog:tooling",
         "vitest": "catalog:",
+        "woff2-encoder": "2.0.0",
       },
     },
     "apps/web": {
@@ -390,6 +395,7 @@
         "@maple/views": "workspace:*",
         "@maple/web-data": "workspace:*",
         "@maple/widgets": "workspace:*",
+        "@prometheus-io/lezer-promql": "0.315.1",
         "@rrweb/replay": "^2.2.2",
         "@rrweb/types": "^2.2.2",
         "@takumi-rs/helpers": "2.20.0",
@@ -409,6 +415,7 @@
       "devDependencies": {
         "@e2e-dev/web": "0.15.5",
         "@foldkit/vite-plugin": "0.29.1",
+        "@maple/promql": "workspace:*",
         "@tailwindcss/vite": "catalog:tailwind",
         "@types/d3-scale": "^4.0.9",
         "@types/node": "catalog:tooling",
@@ -1063,6 +1070,7 @@
         "@maple/domain": "workspace:*",
         "@maple/primitives": "workspace:*",
         "@maple/strings": "workspace:*",
+        "@takumi-rs/helpers": "2.20.0",
         "effect": "catalog:effect",
       },
       "devDependencies": {
@@ -1542,6 +1550,8 @@
     "@fontsource-variable/geist": ["@fontsource-variable/geist@5.3.0", "", {}, "sha512-j0m+vLQuG5XAYoHtGCVu0spvlGreR3EzpECUVzkFmI1mTVnAO38l/NEPDCFgZ177JxzYJCLSmTQibIiYPilGrA=="],
 
     "@fontsource-variable/geist-mono": ["@fontsource-variable/geist-mono@5.3.0", "", {}, "sha512-vBbuwDEo9AkrqADMXOrlAR3DFcJi4/JxeuU43FoiQERnNwsfXNnvxvReZG02cQKmyk4DZkZdBZX3oTDvy2zBAw=="],
+
+    "@fontsource-variable/source-serif-4": ["@fontsource-variable/source-serif-4@5.3.1", "", {}, "sha512-4Rtay22SC4lMvw11r/+9kxANB6P3M0X8s1NudBC2v0J1KU2y3DcMoNcT3lBoZ/CqLirzf+StlO6UlJilyrvaUg=="],
 
     "@img/colour": ["@img/colour@1.1.0", "", {}, "sha512-Td76q7j57o/tLVdgS746cYARfSyxk8iEfRxewL9h4OMzYhbW4TAcppl0mT4eyqXddh6L/jwoM75mo7ixa/pCeQ=="],
 
