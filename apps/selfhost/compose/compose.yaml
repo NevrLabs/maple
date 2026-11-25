@@ -212,13 +212,14 @@ services:
       - ingest
     mem_limit: 256m
 
-  # Status pages (PATCHES #9): apps/status handler over Postgres, same-origin at /s/<slug> (Caddy).
+  # Status pages (PATCHES #9): apps/status handler over Postgres, same-origin at /s/<org key>/<slug> (Caddy).
   status:
     image: maple-selfhost:${MAPLE_SELFHOST_TAG}
     restart: unless-stopped
     logging: *logging
     command: ["bun", "/app/status.js"]
     environment:
+      MAPLE_STATUS_ORIGINS: ${MAPLE_PUBLIC_ORIGIN},${MAPLE_STATUS_LAN_ORIGIN:-https://monitoring.home}
       MAPLE_PG_URL: postgres://maple:${POSTGRES_PASSWORD}@postgres:5432/maple
       PORT: "3478"
     depends_on:

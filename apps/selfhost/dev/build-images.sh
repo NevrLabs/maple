@@ -23,7 +23,9 @@ bundle_selfhost() {
   # PATCHES #8/#9: uptime prober (apps/scraper, unmodified entry) + status-page server.
   ( cd packages/effect-sdk && $BUN run build >/dev/null 2>&1 )
   $BUN build apps/scraper/src/main.ts      --target=bun --outfile=$C/app/scraper.js  "${EXT[@]}" | tail -1
-  $BUN build apps/selfhost/src/status.ts   --target=bun --outfile=$C/app/status.js   "${EXT[@]}" | tail -1
+  # The preview renderer emits a Wasm asset beside status.js.
+  $BUN build apps/selfhost/src/status.ts   --target=bun --outdir="$C/app"            "${EXT[@]}" | tail -1
+  cp -r apps/status/src/og-fonts "$C/app/og-fonts"
   # migrate.ts resolves ../drizzle from its own file -> place bundle at db/scripts/, assets at db/drizzle.
   mkdir -p $C/app/db/scripts
   $BUN build packages/db/scripts/migrate.ts --target=bun --outfile=$C/app/db/scripts/migrate.js "${EXT[@]}" | tail -1

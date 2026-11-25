@@ -74,7 +74,10 @@ jobs:
 
             # apps/selfhost mints the sessions upstream's packages/auth verifies (PATCHES #4/#5).
             - name: Suite — selfhost server (bun test)
-              run: bun test apps/selfhost/src
+              run: |
+                  set -e
+                  bun test apps/selfhost/src
+                  MAPLE_STATUS_BUNDLE="$RUNNER_TEMP/maple-build/ctx/selfhost/app/status.js" bun test apps/selfhost/src/status.test.ts
 
             - name: Suite — web merge surfaces
               run: bun run --cwd apps/web test src/page/services/list src/page/alerts/hub src/page/sign-in src/page/settings src/page/status-pages src/shell src/route src/platform src/view.lazy.test.ts

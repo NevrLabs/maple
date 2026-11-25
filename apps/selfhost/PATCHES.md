@@ -269,11 +269,15 @@ Worker; selfhost had `StatusPageStore.inMemory` in the api and no bindings in al
 - `ports.ts` — `StatusPageStore.fromBindings(pg shims)` when `MAPLE_PG_URL` is set (in-memory otherwise).
 - `alerting.ts` — passes the same bindings to `runScheduled`, so the escalation lane's `statusPages` tick
   (reconcile, auto incidents, publish sweep, heartbeat) runs.
-- `status.ts` (new) — Bun server running `apps/status/src/handler.ts` **unmodified** over Postgres storage
-  (colo cache = in-process map; break-glass limiter in memory). Caddy `/s/*` → `status:3478`, so pages are
-  same-origin: `https://monitoring.home/s/<slug>` and `https://monitoring.entelechia.cloud/s/<slug>` (CF Access).
+- `status.ts` — Bun server running `apps/status/src/handler.ts` **unmodified** over Postgres storage.
+  Caddy `/s/*` → `status:3478`; `MAPLE_STATUS_ORIGINS` lists the public and LAN origins that may serve
+  `/s/<org key>/<slug>`. In-process limits match the Worker's 10 attempts per client and 100 per page per minute.
+- `apps/status/src/og-image.bun.ts` — reuses upstream's Takumi renderer with bundled Wasm and fonts. Uploaded
+  logos can render inline; remote logo URLs are never fetched from the selfhost network.
 
-**Verify after rebase:** `GET /s/<slug>` 200 with the page's components; `/s/<slug>/api/v1/status.json` JSON.
+**Verify after rebase:** `bun test apps/selfhost/src/status.test.ts` exercises the real PNG route, shared-host
+routing and the password page's aggregate budget with in-memory storage. Bundle the status entry point and
+check it serves previews with only the packaged assets.
 
 ## #10 — log retention: only important logs (BRIEF-uptime 4)
 
