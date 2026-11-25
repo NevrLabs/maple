@@ -484,3 +484,26 @@ merge and gated head `0c5d3f5f6` (parents `8ee1fcc57` + `6854ea260`). Not deploy
   577 passed / 1 skipped; backend warehouse 188 passed / 524 skipped; domain status 50; status-page 96;
   backend uptime/status 162; scraper 14; selfhost 71; web 1115. The gate now includes CloudflareAnalyticsService.
 - bun.lock: regenerated lock byte-identical (`48758b160458c84153ee0b7abc88d15c42dbacd5d8e799a72c39851796cd98af`); no lock commit.
+
+## Run 12 — 2026-11-21, unblocked 2026-11-25 — upstream 6854ea260 → a0eed90f2
+
+Status: **COMPLETE — merged, gated (MacBook), pushed.** Branch `selfhost-homelab-up-20261121`;
+merge `06dfdcc04ad14db0d25f62ee934d6132f672f82e` (parents `980ea879cb68f44db41abe74b9a34d80b607a47d`
+and `a0eed90f2f95f20f9cd57709113eda66c8b88714`), gated head `07818b0548d179ffec51cbd1c4031a9ddab3f018`. Not deployed.
+
+- Incoming range: 22 commits, 365 files; Fleet and Devices, Grafana imports, Prometheus compatibility,
+  Cloudflare Access for ClickHouse, alerts and ingestion fixes, and status-page link previews (#2891).
+  Fork `main` already pointed at `a0eed90f2` on resumption and was read back unchanged.
+- The original merge passed the suites but failed in-memory preview acceptance: `env.ogImage is not a function`.
+  Upstream `5855e6e2cf` is 118 commits beyond this merge's upstream parent; the only status app change is a Wasm
+  dependency bump. It does not supply the missing selfhost ports and was not merged in this repair.
+- PATCHES #9: Bun now calls upstream's Takumi renderer with packaged Wasm and fonts. Status pages retain an
+  explicit shared-host allowlist and both password budgets; remote logo URLs are not fetched by selfhost.
+  The regression reproduced the exception before the fix. Source and bundled tests served a real 1200×630 PNG,
+  rejected an unknown shared host, and kept password previews private and password attempts bounded.
+- GitHub `selfhost gates` dispatch returned HTTP 422 (Actions disabled; no run ID). MacBook ledger
+  `~/ci/maple-gates/07818b0548d179ffec51cbd1c4031a9ddab3f018/ledger`: matching `head=` and `DONE`;
+  SDK, Docker-free bundles, eight typechecks and all suites green. QE integrations 512; backend org 577 passed /
+  1 skipped; warehouse 195 passed / 524 skipped; domain status 50; status-page 111; backend status 162;
+  scraper 14; selfhost 73; packaged status 2; web 1116.
+- bun.lock: regenerated lock byte-identical (`360d3214d7827897dc743419d212f73b3c89db95e7f4814d00fb87c41ea6b30e`); no lock commit.
