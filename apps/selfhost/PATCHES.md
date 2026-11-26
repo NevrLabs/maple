@@ -269,7 +269,7 @@ Worker; selfhost had `StatusPageStore.inMemory` in the api and no bindings in al
   `wazuh-alerts`, Zitadel activity/auth lines, ssh/sudo/su auth lines and Kubernetes `Warning` events; severity-0 lines
   only when they look like errors. (This mirror also carries the BRIEF-traces collector edits made live on CT130:
   level-token severity inference and `transform/log-trace-context`.)
-- `apps/selfhost/compose/clickhouse/retention.sql` — raw logs TTL 14 d -> 7 d.
+- `apps/selfhost/compose/clickhouse/retention.sql` — raw logs TTL 14 d -> 7 d (superseded by #19: 30 d).
 
 **Verify after rebase:** `validate --config`; isolated collector fed the 15-case fixture keeps exactly the expected 8.
 
@@ -440,3 +440,24 @@ under Infrastructure gated by `atlas` integration presence (one `mongodb_up` sam
 Registered in `infra-surfaces.ts`, `shell/{model,nav,data}.ts`, `route/{search,app-route,routers}.ts`,
 `page/registry.ts`. **Verify after rebase:** `atlas.scene.test.ts` (includes `rawSqlIssue` on all four
 statements), shell/route/view.lazy tests; `/infra/atlas` shows 3 members with one Primary.
+
+## 19. Retention: 30/30/90 raw, 3-year hourly rollups, hourly metrics rollup (selfhost compose only)
+
+**Why:** the owner wants detailed logs and traces for 30 days, raw metrics for 90 and hour-grain history for
+3 years. CT140 is local NVMe now (no Ceph/SeaweedFS budget), so the BRIEF-v4 / #10 cuts (7/14/30) are lifted
+back to upstream's raw tiers. Upstream has no general metrics rollup: past 90 days only trace-derived RED
+and AWS hourly rows survive. **Change (no upstream source touched):**
+- `apps/selfhost/compose/clickhouse/retention.sql` — raw logs/traces 30 d, raw metrics 90 d; 13 hourly rollup
+  tables 365 d -> 1095 d. Header documents the one-time `materialize_ttl_recalculate_only` step needed after
+  RAISING a TTL (with `ttl_only_drop_parts=1`, `MODIFY TTL` alone binds only new parts; rehearsed on the
+  pinned image: control dropped at the old expiry, treated part kept).
+- `apps/selfhost/compose/clickhouse/metrics-rollup.sql` (new) — `maple.metrics_hourly` (AggregatingMergeTree,
+  per series per hour: Min/Max/Sum/Count + argMax Last, temporality and monotonic kept for counters, 1095 d)
+  fed by `metrics_hourly_{gauge,sum}_mv`. Fork DDL outside the numbered migrations so upstream syncs never
+  collide; read with raw-SQL widgets (`$__orgFilter`). Histograms are not rolled up.
+- `apps/selfhost/compose/compose.yaml` — `ch-retention` also mounts and runs `metrics-rollup.sql`.
+
+**Verify after rebase:** `ch-retention` logs `retention-applied`; `SELECT count() FROM maple.metrics_hourly WHERE
+Hour >= now() - INTERVAL 2 HOUR` > 0; rehearsal `.hermes/plans/maple-metrics-rollup-rehearsal.sh` (rollup equals
+raw across two inserts and a merge). If an upstream migration recreates a raw or rollup table, re-run
+`ch-retention` and the recalculation for that table.

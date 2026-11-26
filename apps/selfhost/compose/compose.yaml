@@ -148,13 +148,34 @@ services:
     environment:
       CH_ADMIN_PASSWORD: ${CH_ADMIN_PASSWORD}
       MAPLE_CH_HOST: ${MAPLE_CH_HOST:-clickhouse}
+      # Required for external hosts: local (DELETE only) or tiered (legacy MOVE + DELETE).
+      MAPLE_CH_RETENTION_MODE: ${MAPLE_CH_RETENTION_MODE:-}
     volumes:
       - ./clickhouse/retention.sql:/retention.sql:ro
       - ./clickhouse/proxmox.sql:/proxmox.sql:ro
+      - ./clickhouse/metrics-rollup.sql:/metrics-rollup.sql:ro
       - ./clickhouse/tiering.sql:/tiering.sql:ro
-    # Local container: retention.sql. clickhouse-01: tiering.sql (same delete horizons + hot->cold move after 2 d), never both,
-    # so the TTL is not rewritten back and forth on every `up`.
-    entrypoint: ["sh", "-c", "H=$${MAPLE_CH_HOST:-clickhouse}; T=/retention.sql; [ $$H = clickhouse ] || T=/tiering.sql; clickhouse-client --host $$H --user maple_admin --password \"$$CH_ADMIN_PASSWORD\" --multiquery < $$T && clickhouse-client --host $$H --user maple_admin --password \"$$CH_ADMIN_PASSWORD\" --multiquery < /proxmox.sql && echo retention-applied $$T"]
+    entrypoint:
+      - sh
+      - -ec
+      - |
+        mode=$$MAPLE_CH_RETENTION_MODE
+        if [ -z "$$mode" ] && [ "$$MAPLE_CH_HOST" = clickhouse ]; then mode=local; fi
+        ch() { clickhouse-client --host "$$MAPLE_CH_HOST" --user maple_admin --password "$$CH_ADMIN_PASSWORD" "$$@"; }
+        case "$$mode" in
+          local)
+            # Check the policies assigned to tables, not the hostname or current part placement.
+            safe=$$(ch --query "SELECT count() > 0 AND countIf(storage_policy NOT IN (SELECT policy_name FROM system.storage_policies GROUP BY policy_name HAVING count() = 1 AND min(length(disks)) = 1 AND min(hasAll((SELECT groupArray(name) FROM system.disks WHERE type = 'Local' AND NOT is_remote), disks)) = 1)) = 0 FROM system.tables WHERE database = 'maple' AND endsWith(engine, 'MergeTree')")
+            [ "$$safe" = 1 ] || { echo 'Refusing DELETE-only retention: Maple requires single-disk local policies' >&2; exit 1; }
+            sql=/retention.sql
+            ;;
+          tiered) sql=/tiering.sql ;;
+          *) echo 'Set MAPLE_CH_RETENTION_MODE to local or tiered for external ClickHouse' >&2; exit 1 ;;
+        esac
+        ch --multiquery < "$$sql"
+        ch --multiquery < /proxmox.sql
+        ch --multiquery < /metrics-rollup.sql
+        echo "retention-applied $$sql"
 
   api:
     image: maple-selfhost:${MAPLE_SELFHOST_TAG}
