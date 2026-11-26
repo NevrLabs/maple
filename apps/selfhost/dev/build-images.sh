@@ -5,7 +5,8 @@
 set -euo pipefail
 SRC=${SRC:-$(git -C "$(dirname "$0")" rev-parse --show-toplevel)}
 OUT=${OUT:-/mnt/deepvault/maple-build}
-BUN=${BUN:-$HOME/.bun/bin/bun}
+# bun from PATH first (GitHub gate runner gets it from mise); ~/.bun is the builder fallback.
+BUN=${BUN:-$(command -v bun || echo "$HOME/.bun/bin/bun")}
 mkdir -p $OUT/cargo-target $OUT/go $OUT/ctx
 TAG=${TAG:-$(git -C "$SRC" rev-parse --short HEAD)}
 echo "building tag=$TAG"
