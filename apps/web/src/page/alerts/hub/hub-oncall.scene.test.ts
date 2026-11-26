@@ -3,16 +3,31 @@ import type { AlertsTab } from "../../../route/search"
 import { OrgId } from "@maple/domain"
 import { EscalationChainId, OnCallScheduleId } from "@maple/domain/http"
 import type { V2OnCallSchedule } from "@maple/domain/http/v2"
-import { Result, Schema, Array as Arr, String as Str } from "effect"
+import { Option, Result, Schema, Array as Arr, String as Str } from "effect"
 import * as Menu from "@maple/views/ui/menu"
 import * as Dialog from "@maple/views/ui/dialog"
 import { MountDialog } from "@maple/views/ui/dialog"
-import { expect as expectView, given, Mount, role, scene, text, within, withViewInputs } from "foldkit/scene"
+import {
+	all,
+	expect as expectView,
+	filter,
+	first,
+	given,
+	Mount,
+	role,
+	scene,
+	text,
+	within,
+	withViewInputs,
+} from "foldkit/scene"
 import { describe, expect, test } from "vitest"
 import type { PageContext } from "../../contract"
 import { chainDestinations, chainUuid } from "../shared/escalation-test-fixtures"
 import { SCHEDULE_IN_USE_CODE } from "../shared/oncall-schedules"
 import {
+	checkoutSchedule,
+	formerMemberId,
+	memberId,
 	mixedTargetChain,
 	ONCALL_NOW,
 	oncallMembers,
@@ -34,6 +49,8 @@ const names = (commands: ReadonlyArray<{ readonly name: string }> | undefined) =
 
 const ENGINEER = Policy.grantsOf(["org:engineer"])
 const MEMBER = Policy.grantsOf(["org:member"])
+/** A custom role that holds Manage on-call schedules and nothing else. */
+const ONCALL_ONLY = Policy.grantsOf(["org:custom"], ["oncall:manage"])
 const SCHEDULES = populatedSchedules(ONCALL_NOW)
 
 const onTab = (
@@ -97,6 +114,48 @@ describe("alerts hub, on-call schedules", () => {
 		)
 	})
 
+	test("a schedule with gaps ahead or a participant who left says so on its row, a healthy one says nothing", () => {
+		const row = (name: string) => first(filter(all.role("listitem"), { hasText: name }))
+		scene(
+			{ update: pageUpdate, view },
+			given(onTab("on-call", ENGINEER, SCHEDULES)),
+			expectView(within(row("Weekend coverage"), text("3 gaps in the next 14 days"))).toExist(),
+			expectView(within(row("Weekend coverage"), text(/left the org/u))).not.toExist(),
+			expectView(within(row("Platform secondary"), text("A former member left the org"))).toExist(),
+			expectView(within(row("Platform secondary"), text(/gaps? in the next/u))).not.toExist(),
+			expectView(within(row("Checkout primary"), text(/gaps? in the next/u))).not.toExist(),
+			expectView(within(row("Checkout primary"), text(/left the org/u))).not.toExist(),
+		)
+	})
+
+	test("the row names a participant who left while the member list still does, and counts several", () => {
+		const departing = (ids: ReadonlyArray<string>) =>
+			onTab("on-call", ENGINEER, [checkoutSchedule(ONCALL_NOW, ids)])
+		scene(
+			{ update: pageUpdate, view },
+			given(departing([memberId(0)])),
+			expectView(text("Ben Brook left the org")).toExist(),
+		)
+		scene(
+			{ update: pageUpdate, view },
+			given(departing([memberId(0), formerMemberId])),
+			expectView(text("2 people left the org")).toExist(),
+			expectView(text("Ben Brook left the org")).not.toExist(),
+		)
+	})
+
+	test("a single gap ahead reads in the singular", () => {
+		const weekends = Option.getOrThrow(
+			Arr.findFirst(SCHEDULES, (schedule) => schedule.name === "Weekend coverage"),
+		)
+		const one = { ...weekends, coverage_gaps: Arr.take(weekends.coverage_gaps, 1) }
+		scene(
+			{ update: pageUpdate, view },
+			given(onTab("on-call", ENGINEER, [one])),
+			expectView(text("1 gap in the next 14 days")).toExist(),
+		)
+	})
+
 	test("a member sees the schedules with create, edit and delete locked", () => {
 		scene(
 			{ update: pageUpdate, view },
@@ -104,9 +163,18 @@ describe("alerts hub, on-call schedules", () => {
 			expectView(text("Checkout primary")).toExist(),
 			expectView(role("link", { name: "New schedule" })).not.toExist(),
 			expectView(role("button", { name: "New schedule" })).toBeDisabled(),
-			expectView(role("group", { name: "Only org admins and engineers can manage alerts." })).toExist(),
+			expectView(role("group", { name: Policy.denialFor("oncall:manage").message })).toExist(),
 			// The row menu stays, its items disabled with the same reason.
 			expectView(role("button", { name: "Actions for Checkout primary" })).toExist(),
+		)
+	})
+
+	test("a custom role holding only Manage on-call schedules can create and change schedules", () => {
+		scene(
+			{ update: pageUpdate, view },
+			given(onTab("on-call", ONCALL_ONLY, SCHEDULES)),
+			expectView(role("link", { name: "New schedule" })).toExist(),
+			expectView(role("group", { name: Policy.denialFor("oncall:manage").message })).not.toExist(),
 		)
 	})
 

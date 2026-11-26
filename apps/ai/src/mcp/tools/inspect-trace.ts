@@ -2,6 +2,7 @@ import { McpInvalidInputError, type McpToolRegistrar } from "./types"
 import { warehouseToMcpHandlers } from "../lib/map-warehouse-error"
 import { withTenantExecutor } from "../lib/query-warehouse"
 import * as P from "../lib/params"
+import { readHorizonDays } from "../lib/read-horizon"
 import { buildTraceOverview, renderTraceOverview } from "../lib/render-trace"
 import { DateTime, Effect, Option, Schema } from "effect"
 import { parseWarehouseDateTime } from "@maple/query-engine"
@@ -39,6 +40,7 @@ export function registerInspectTraceTool(server: McpToolRegistrar) {
 		}),
 		untrustedOutput: true,
 		hints: { readOnly: true },
+		permission: "telemetry:read",
 		phrases: ["Inspecting a trace", "Opening a trace"],
 		handler: Effect.fn("McpTool.inspectTrace")(function* ({
 			trace_id,
@@ -55,10 +57,12 @@ export function registerInspectTraceTool(server: McpToolRegistrar) {
 							Option.map(DateTime.make(parseWarehouseDateTime(timestamp)), DateTime.toDateUtc),
 						)
 
+			// The trace index is searched as far back as the org keeps traces, not a fixed 30 days.
+			const widenedLookbackHours = (yield* readHorizonDays("traces")) * 24
 			// Every projected attribute stays in the structured output; the rendered tree trims the
 			// HTTP keys the span name already shows.
 			const result = yield* withTenantExecutor(
-				inspectTrace(trace_id, { timestampHint, includeAttributes: true }),
+				inspectTrace(trace_id, { timestampHint, includeAttributes: true, widenedLookbackHours }),
 			).pipe(
 				Effect.catchTags({
 					...warehouseToMcpHandlers("span_hierarchy"),

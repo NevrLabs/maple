@@ -15,6 +15,7 @@ export function registerListEscalationChainsTool(server: McpToolRegistrar) {
 			"Shows each chain's steps, repeats and the rules using it. Attach one to a rule with create_alert_rule / update_alert_rule escalation_chain_id.",
 		parameters: Schema.Struct({}),
 		hints: { readOnly: true },
+		permission: "telemetry:read",
 		phrases: ["Listing escalation chains"],
 		handler: Effect.fn("McpTool.listEscalationChains")(function* () {
 			const tenant = yield* CurrentMcpTenant
@@ -43,7 +44,7 @@ export function registerListEscalationChainsTool(server: McpToolRegistrar) {
 				? {
 						empty: {
 							message:
-								"No escalation chains yet. Create one with create_escalation_chain from destinations in list_alert_destinations.",
+								"No escalation chains yet. Create one with manage_escalation_chain action=create from destinations in list_alert_destinations.",
 						},
 					}
 				: undefined),

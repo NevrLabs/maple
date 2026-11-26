@@ -5,7 +5,7 @@ import { MapleApiClient } from "../platform/api-clients"
 import { SessionBearer } from "../platform/session-bearer"
 import { isViewerSession } from "../platform/selfhost-session"
 
-type Tenant = CurrentTenant.TenantSchema
+type Tenant = CurrentTenant.SessionTenantResponse
 type Entry<E> = Readonly<{ token: Option.Option<string>; result: Deferred.Deferred<Tenant, E> }>
 type SessionError = Effect.Error<ReturnType<MapleApiClient["Service"]["auth"]["session"]>>
 
@@ -67,10 +67,10 @@ export class SessionTenant extends Context.Service<
 	).pipe(Layer.provide([MapleApiClient.layer, SessionBearer.layer]))
 }
 
-/** Every permission the session's roles hold; none when the session read fails. */
+/** Every permission the session holds (a custom role's included); none when the session read fails. */
 export const readGrants: Effect.Effect<ReadonlyArray<Policy.Permission>, never, SessionTenant> = Effect.gen(
 	function* () {
 		const session = yield* (yield* SessionTenant).get
-		return isViewerSession() ? [] : Policy.grantsOf(session.roles)
+		return isViewerSession() ? [] : session.permissions
 	},
 ).pipe(Effect.orElseSucceed((): ReadonlyArray<Policy.Permission> => []))

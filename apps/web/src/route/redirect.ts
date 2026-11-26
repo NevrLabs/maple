@@ -223,20 +223,19 @@ export const routeRedirect = (route: AppRoute): Option.Option<Redirect> =>
 		() => Option.none(),
 	)
 
-const isProductAnalyticsRoute = AppRoute.isAnyOf(["ProductAnalytics"])
-
 const isCloudSecurityRoute = AppRoute.isAnyOf(["SecurityCloud", "SecurityCloudFinding"])
 
+const isLlmEvalsRoute = AppRoute.isAnyOf(["AgentSessionEvals", "AgentSessionEvaluator"])
+
 /**
- * A route an org outside its rollout cannot open goes home (`/product-analytics` without
- * `productAnalytics`, `/security/cloud` without `cloudSecurity`).
+ * A route an org outside its rollout cannot open goes home (`/security/cloud` without
+ * `cloudSecurity`, `/agent-sessions/evals` without `llmEvals`).
  */
 export const flaggedRouteRedirect = (
 	route: AppRoute,
-	flags: Pick<OrganizationFeatureFlags, "productAnalytics" | "cloudSecurity">,
+	flags: Pick<OrganizationFeatureFlags, "cloudSecurity" | "llmEvals">,
 ): Option.Option<Redirect> =>
-	(!flags.productAnalytics && isProductAnalyticsRoute(route)) ||
-	(!flags.cloudSecurity && isCloudSecurityRoute(route))
+	(!flags.cloudSecurity && isCloudSecurityRoute(route)) || (!flags.llmEvals && isLlmEvalsRoute(route))
 		? redirect(AppRoute.Home({ search: {} }), true)
 		: Option.none()
 
@@ -258,6 +257,38 @@ const isSecurityRoute = AppRoute.isAnyOf([
 	"SecurityFinding",
 ])
 
-/** The Security Center is for org admins and engineers: anyone else opening it goes home. */
+/** The Security Center needs `security:manage`: anyone else opening it goes home. */
 export const securityRouteRedirect = (route: AppRoute, canReadSecurity: boolean): Option.Option<Redirect> =>
 	!canReadSecurity && isSecurityRoute(route) ? redirect(AppRoute.Home({ search: {} }), true) : Option.none()
+
+// What a role limited to namespaces can open: the telemetry pages whose reads the API keeps to
+// its namespaces, the account, sign-in and plan pages every member has, and the status pages a
+// role may post to. The API refuses the rest.
+const isScopedRoleRoute = AppRoute.isAnyOf([
+	"Services",
+	"Service",
+	"Traces",
+	"Trace",
+	"Logs",
+	"Log",
+	"Account",
+	"Settings",
+	"RoleEditor",
+	"StatusPages",
+	"StatusPage",
+	"StatusPageView",
+	"CliLogin",
+	"McpAuthorize",
+	"QuickStart",
+	"SelectPlan",
+	"SignIn",
+	"SignUp",
+	"OrgRequired",
+	"Unsubscribe",
+	"Share",
+	"NotFound",
+])
+
+/** A role limited to namespaces opening a page it cannot read goes to Services, its first page. */
+export const scopedRoleRedirect = (route: AppRoute, isScoped: boolean): Option.Option<Redirect> =>
+	isScoped && !isScopedRoleRoute(route) ? redirect(AppRoute.Services({ search: {} }), true) : Option.none()

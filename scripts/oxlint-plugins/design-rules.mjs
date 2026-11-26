@@ -66,6 +66,8 @@ const SHADOW_TOKENS = new Set([
 	"overflow-up",
 	"rule-bottom",
 	"backdrop-below",
+	"float",
+	"key",
 	"none",
 ])
 const INSET_SHADOW_TOKENS = new Set(["highlight", "pressed", "none"])
@@ -83,7 +85,7 @@ const isRawShadow = (token) => {
 const noRawShadow = ratcheted("no-raw-shadow", {
 	description: "Depth comes from surfaces, the hairline and the shadow tokens.",
 	message:
-		"`{{token}}` is not a shadow token. Use `shadow-raised`, `shadow-popup`, `shadow-control`, `shadow-accent-start`, `shadow-overflow-up`, `shadow-rule-bottom` or `shadow-backdrop-below` (inset: `inset-shadow-highlight`, `inset-shadow-pressed`). A shadow's colour is part of its token; a new depth gets a new token in tokens.css.",
+		"`{{token}}` is not a shadow token. Use `shadow-raised`, `shadow-popup`, `shadow-float`, `shadow-control`, `shadow-accent-start`, `shadow-overflow-up`, `shadow-rule-bottom`, `shadow-backdrop-below` or `shadow-key` (inset: `inset-shadow-highlight`, `inset-shadow-pressed`). A shadow's colour is part of its token; a new depth gets a new token in tokens.css.",
 	collect: (_context, push) =>
 		classStrings((node, tokens) => {
 			for (const token of tokens) if (isRawShadow(splitToken(token).utility)) push(node, { token })
@@ -120,8 +122,7 @@ const instantState = {
 		docs: { description: "Hover and press land in the frame they happen; only movement eases." },
 		messages: {
 			bad: "`{{token}}` eases a colour on a string with hover or press states. State is instant: drop it, and transition only properties that move (opacity, translate, scale, rotate, size).",
-			color:
-				"`{{token}}` eases a colour. A colour changes with state (a parent's hover, selection, focus, open), and state is instant: drop it, and transition only properties that move (opacity, translate, scale, rotate, size).",
+			color: "`{{token}}` eases a colour. A colour changes with state (a parent's hover, selection, focus, open), and state is instant: drop it, and transition only properties that move (opacity, translate, scale, rotate, size).",
 		},
 	},
 	create(context) {
@@ -132,10 +133,7 @@ const instantState = {
 				if (variants.length > 0) return
 				const list = /^transition-\[([^\]]+)\]$/.exec(utility)
 				const props = list === null ? [] : list[1].split(",")
-				if (
-					utility === "transition-colors" ||
-					props.some((prop) => EASED_COLOR_PROPS.has(prop))
-				)
+				if (utility === "transition-colors" || props.some((prop) => EASED_COLOR_PROPS.has(prop)))
 					context.report({ node, messageId: "color", data: { token: tokens[i] } })
 				else if (
 					interactive &&
@@ -252,6 +250,38 @@ const singleTooltipDelay = {
 						if (property.type === "Property" && property.key.name === "openDelayMs")
 							context.report({ node: property, messageId: "bad" })
 				}
+			},
+		}
+	},
+}
+
+// Every page with unsaved edits shows the same pill, built in one place.
+const SAVE_BAR_HOME = "apps/web/src/page/kit/save-bar.ts"
+
+const oneSaveBar = {
+	meta: {
+		type: "problem",
+		docs: { description: "An unsaved-changes bar is the kit `saveBar`." },
+		messages: {
+			bad: "Show unsaved edits with `saveBar` (`apps/web/src/page/kit/save-bar.ts`), not an `actionBar` of your own: `changeCount`, `context` and `saveLabel` cover the variations, so every page shows the same pill.",
+		},
+	},
+	create(context) {
+		if ((context.filename ?? context.getFilename()).replaceAll("\\", "/").endsWith(SAVE_BAR_HOME))
+			return {}
+		return {
+			CallExpression(node) {
+				if (node.callee.type !== "Identifier" || node.callee.name !== "actionBar") return
+				const options = node.arguments[1]
+				if (options?.type !== "ObjectExpression") return
+				for (const property of options.properties)
+					if (
+						property.type === "Property" &&
+						property.key.name === "label" &&
+						property.value.type === "Literal" &&
+						property.value.value === "Unsaved changes"
+					)
+						context.report({ node, messageId: "bad" })
 			},
 		}
 	},
@@ -398,10 +428,8 @@ const surfaceWashes = {
 		type: "problem",
 		docs: { description: "Neutral washes and hover fills are the surface tokens." },
 		messages: {
-			alpha:
-				"`{{token}}` hand-picks a neutral wash. Use `bg-surface-faint`, `bg-surface-sunken` or `bg-surface-strong`; they read the same on any surface.",
-			hover:
-				"`{{token}}` is not a hover fill. A row, list item or chip hovers `bg-surface-sunken` (`bg-surface-strong` on an already sunken chip); a control's hover belongs to its kit component (`button` ghost).",
+			alpha: "`{{token}}` hand-picks a neutral wash. Use `bg-surface-faint`, `bg-surface-sunken` or `bg-surface-strong`; they read the same on any surface.",
+			hover: "`{{token}}` is not a hover fill. A row, list item or chip hovers `bg-surface-sunken` (`bg-surface-strong` on an already sunken chip); a control's hover belongs to its kit component (`button` ghost).",
 		},
 		schema: [
 			{
@@ -437,8 +465,7 @@ const focusRing = {
 		type: "problem",
 		docs: { description: "Focus draws one ring: solid `ring-ring`, or the input halo." },
 		messages: {
-			alpha:
-				"`{{token}}` hand-picks a focus ring alpha. A focus ring is solid `ring-ring` (`ring-1`/`ring-2`); an input's soft halo is `ring-[3px] ring-ring/24` with `border-ring`.",
+			alpha: "`{{token}}` hand-picks a focus ring alpha. A focus ring is solid `ring-ring` (`ring-1`/`ring-2`); an input's soft halo is `ring-[3px] ring-ring/24` with `border-ring`.",
 			halo: "`{{token}}` is the input halo, which is too faint to show focus alone. Add `{{border}}` (a bordered input), or use the solid `ring-2 ring-ring` (anything else).",
 		},
 	},
@@ -509,6 +536,7 @@ export const designRules = {
 	"no-dimmed-icon": noDimmedIcon,
 	"no-raw-shadow": noRawShadow,
 	"no-transition-all": noTransitionAll,
+	"one-save-bar": oneSaveBar,
 	"single-tooltip-delay": singleTooltipDelay,
 	"tone-alpha-steps": toneAlphaSteps,
 }

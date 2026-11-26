@@ -12,6 +12,7 @@ import { warehouseReadToMcpHandlers } from "../lib/map-warehouse-error"
 import { decodeUsersRequest, groupLabel, listFilter, nameAndEmail, userLabel } from "../lib/users"
 import * as P from "../lib/params"
 import { doc } from "../lib/tool-doc"
+import { PROPERTY_FILTER_FIELDS, propertyFilterArgs, propertyFiltersOf } from "../lib/attribute-filters"
 
 /** Each channel's share of the user's classified requests, most first: `mcp 92%, web 8%`. */
 const channelSplit = (channels: ReadonlyArray<UserChannel>): string => {
@@ -41,6 +42,7 @@ const filterArgs = (filters: Filters) => ({
 	search: filters.search,
 	has_errors: filters.hasErrors,
 	groups: filters.groups,
+	user_property_filters: filters.userPropertyFilters,
 })
 
 export function registerListUsersTool(server: McpToolRegistrar) {
@@ -48,7 +50,7 @@ export function registerListUsersTool(server: McpToolRegistrar) {
 		name: TOOL,
 		title: "List Users",
 		description:
-			"List the end users of the org's own apps: people identified with `identify()` or a `user.id` span attribute. One row per user, most recently seen first, with sessions, requests, errors, where the requests came from (web, mobile, api, mcp) and which signals carry them (replay, events, mcp, traces, logs). Open one with `inspect_user`. Accounts and signups in a connected auth system (Clerk) are a data source: `search_data_sources`.",
+			"List the end users of the org's own apps: people identified with `identify()` or a `user.id` span attribute. One row per user, most recently seen first, with sessions, requests, errors, where the requests came from (web, mobile, api, mcp) and which signals carry them (replay, events, mcp, traces, logs). Open one with `inspect_user`. Accounts and signups in a connected auth system (Clerk) are a data source: `list_data_sources`, listed when the org has data sources.",
 		parameters: Schema.Struct({
 			...WINDOW.fields,
 			namespaces: P.optionalList(
@@ -57,10 +59,12 @@ export function registerListUsersTool(server: McpToolRegistrar) {
 			search: P.optionalText("Part of a user's id, name or email (case-insensitive)"),
 			has_errors: P.optionalFlag("Only users with errors or failed requests in the window"),
 			groups: P.optionalList("Only users in these group ids (`identify()` group)"),
+			user_property_filters: PROPERTY_FILTER_FIELDS.user_property_filters,
 			limit: P.limit({ default: 25, max: 100, noun: "users" }),
 			cursor: P.optionalText("The `nextCursor` from a previous page, to read the next one"),
 		}),
 		hints: { readOnly: true },
+		permission: "telemetry:read",
 		scopeFamily: "users",
 		phrases: ["Listing users"],
 		handler: Effect.fn("McpTool.listUsers")(function* (params) {
@@ -68,6 +72,8 @@ export function registerListUsersTool(server: McpToolRegistrar) {
 			const { limit } = params
 			const namespaces = listFilter(params.namespaces)
 			const groups = listFilter(params.groups)
+			const { userPropertyFilters } = yield* propertyFiltersOf(params)
+			const propertyArgs = propertyFilterArgs(params)
 			const tenant = yield* CurrentMcpTenant
 			yield* Effect.annotateCurrentSpan({ orgId: tenant.orgId, "maple.users.limit": limit })
 
@@ -92,6 +98,7 @@ export function registerListUsersTool(server: McpToolRegistrar) {
 				...(params.search !== undefined && { search: params.search }),
 				...(params.has_errors === true && { hasErrors: true }),
 				...(groups !== undefined && { groups }),
+				...(userPropertyFilters !== undefined && { userPropertyFilters }),
 			})
 			const reads = yield* UsersReadService
 			const response = yield* reads
@@ -111,6 +118,9 @@ export function registerListUsersTool(server: McpToolRegistrar) {
 					...(params.search !== undefined && { search: params.search }),
 					...(params.has_errors === true && { hasErrors: true }),
 					...(groups !== undefined && { groups }),
+					...(propertyArgs.user_property_filters !== undefined && {
+						userPropertyFilters: propertyArgs.user_property_filters,
+					}),
 				},
 			}
 		}),
@@ -123,6 +133,7 @@ export function registerListUsersTool(server: McpToolRegistrar) {
 					["Time range", `${output.timeRange.start} to ${output.timeRange.end}`],
 					["Namespaces", output.filters.namespaces?.join(", ")],
 					["Search", output.filters.search],
+					["User properties", output.filters.userPropertyFilters],
 				],
 				...(users.length === 0
 					? {
@@ -131,7 +142,7 @@ export function registerListUsersTool(server: McpToolRegistrar) {
 								hints: [
 									"Widen start_time/end_time, or drop filters.",
 									"Users appear once an app calls identify() or sets the user.id span attribute.",
-									"Accounts and signups in a connected system such as Clerk: search_data_sources.",
+									"Accounts and signups in a connected system such as Clerk: list_data_sources, when the org has data sources.",
 								],
 							},
 						}

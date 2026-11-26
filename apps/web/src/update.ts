@@ -24,7 +24,6 @@ import {
 	IdentifySession,
 	SaveSessionToken,
 	WaitForAuthSettle,
-	WaitPageHold,
 	WaitPreloadDelay,
 	WriteSessionTimeRange,
 } from "./command"
@@ -42,7 +41,6 @@ import {
 	planGate,
 } from "./page/onboarding/plan-gate"
 import { type PageContext, PageOutMessage, type RootToastAction } from "./page/contract"
-import * as PageHold from "./page/page-hold"
 import * as Preload from "./page/preload"
 import {
 	changeContext,
@@ -64,12 +62,13 @@ import type { Resources } from "./platform/resources"
 import { ClerkSnapshot } from "./platform/clerk"
 import * as Policy from "@maple/domain/policy"
 import { identityOf, isSameIdentity, type SessionIdentity } from "./platform/session-identity"
-import { getActivePlan, hasSelectedPlan } from "./page/kit/billing/plan-gating"
+import { getActivePlan, getAiCardGate, hasSelectedPlan } from "./page/kit/billing/plan-gating"
 import {
 	AppRoute,
 	flaggedRouteRedirect,
 	hrefOf,
 	isPublicRoute,
+	scopedRoleRedirect,
 	type Redirect,
 	routeRedirect,
 	securityRouteRedirect,
@@ -254,12 +253,6 @@ export const pageContextOf: (model: Model) => Option.Option<PageContext> = lastB
 								remembered: model.shell.rememberedSurfaces[orgId],
 							},
 							audience: Shell.shellAudience(shellClerkOf(model)),
-							hasProductAnalytics:
-								!isClerkAuthEnabled ||
-								Option.exists(
-									clerkOrganizationOf(model),
-									(organization) => organization.flags.productAnalytics,
-								),
 							hasProfiling:
 								!isClerkAuthEnabled ||
 								Option.exists(
@@ -272,6 +265,18 @@ export const pageContextOf: (model: Model) => Option.Option<PageContext> = lastB
 									clerkOrganizationOf(model),
 									(organization) => organization.flags.cloudSecurity,
 								),
+							hasLlmEvals:
+								!isClerkAuthEnabled ||
+								Option.exists(
+									clerkOrganizationOf(model),
+									(organization) => organization.flags.llmEvals,
+								),
+							...Option.match(
+								Option.fromNullishOr(
+									isClerkAuthEnabled ? getAiCardGate(customerOf(model.customer)) : null,
+								),
+								{ onNone: () => undefined, onSome: (aiCardGate) => ({ aiCardGate }) },
+							),
 						})),
 					),
 	}),
@@ -432,13 +437,6 @@ const writePage =
 		)
 			return { model }
 		const followed = actOnPageOut(model, transition.outMessage)
-		const pageHold = PageHold.written(
-			followed.model.pageHold,
-			followed.model.page,
-			transition.slot,
-			PageHold.isRevived(followed.model.parkedPages, transition.slot),
-		)
-		const startedHold = PageHold.startedHold(followed.model.pageHold, pageHold)
 		const held = Preload.held(
 			followed.model.preload,
 			pageIdentity(transition.slot),
@@ -449,7 +447,6 @@ const writePage =
 			model: modifyFields(followed.model, {
 				page: () => transition.slot,
 				parkedPages: (parked) => parkPages(parked, followed.model.page, transition.slot),
-				pageHold: () => pageHold,
 				pageInstances: (built) => Math.max(built, transition.slot?.instance ?? 0),
 				preload: () => held.model,
 			}),
@@ -461,7 +458,6 @@ const writePage =
 					transition.commands,
 					Command.mapMessage((message) => Message.GotPageMessage({ message })),
 				),
-				...(startedHold === null ? [] : [WaitPageHold({ instance: startedHold })]),
 				...followed.outCommands,
 				...followed.toastCommands,
 			],
@@ -534,9 +530,10 @@ export const shellClerkOf = (model: Model): Shell.ShellClerk | null =>
 					maybeOrganization: inputs.maybeOrganization,
 					memberships: inputs.memberships,
 					customer: customerOf(model.customer),
-					maybeRole: Option.flatMap(
+					customerReadAtMs: model.customer.readAtMs ?? 0,
+					maybeGrants: Option.flatMap(
 						Option.fromNullishOr(model.clerkSnapshot),
-						(snapshot) => snapshot.maybeRole,
+						(snapshot) => snapshot.maybeGrants,
 					),
 				}),
 			})
@@ -785,14 +782,18 @@ const flagRedirectOf = (model: Model): Option.Option<Redirect> =>
 		: Option.none()
 
 /**
- * A Security route opened by someone whose role lacks `security:manage` (a member). Waits for
- * Clerk's membership read, so an admin is never bounced while it loads; the API refuses either way.
+ * A page the viewer's role cannot read: anything but the telemetry pages for a role limited to
+ * namespaces, a Security route for one that lacks `security:manage` (a member). Waits for Clerk's
+ * membership read, so an admin is never bounced while it loads; the API refuses either way.
  */
 const roleRedirectOf = (model: Model): Option.Option<Redirect> =>
 	isClerkAuthEnabled
 		? Option.flatMap(
-				Option.flatMap(Option.fromNullishOr(model.clerkSnapshot), (snapshot) => snapshot.maybeRole),
-				(role) => securityRouteRedirect(model.route, Policy.can([role], "security:manage")),
+				Option.flatMap(Option.fromNullishOr(model.clerkSnapshot), (snapshot) => snapshot.maybeGrants),
+				(grants) =>
+					Option.orElse(scopedRoleRedirect(model.route, Policy.isScoped(grants)), () =>
+						securityRouteRedirect(model.route, Policy.can(grants, "security:manage")),
+					),
 			)
 		: Option.none()
 
@@ -887,9 +888,19 @@ const withSettledPlan = (step: UpdateReturn): UpdateReturn => {
 	return { ...next, commands: [...(step.commands ?? []), ...(next.commands ?? [])] }
 }
 
-const settledCustomer = (model: Model, orgId: string, data: CustomerSlot["data"]): UpdateReturn => {
+const settledCustomer = (
+	model: Model,
+	orgId: string,
+	data: CustomerSlot["data"],
+	readAtMs?: number,
+): UpdateReturn => {
 	if (model.customer.orgId !== orgId) return { model }
-	const next = modifyFields(model, { customer: () => ({ orgId, data }) })
+	const next = modifyFields(model, {
+		customer: (slot) => {
+			const at = readAtMs ?? slot.readAtMs
+			return at === undefined ? { orgId, data } : { orgId, data, readAtMs: at }
+		},
+	})
 	const access = accessOf(next.customer)
 	const settled = withSettledPlan(settle(next))
 	const known = sessionIdentityOf(model)
@@ -1129,6 +1140,10 @@ const foldMessage = (model: Model, message: Message) =>
 		SucceededCheckSession: ({ orgId }) => signedIn(Option.some(orgId))(model),
 		FailedCheckSession: () => signedOut(model),
 		ChangedSelfHostedSession: () => ({ model, commands: [CheckSession()] }),
+		ElapsedTrialRefresh: () =>
+			model.customer.orgId === null
+				? { model }
+				: { model, commands: [LoadCustomer({ orgId: model.customer.orgId, refresh: true })] },
 		CompletedSaveSessionToken: () => ({ model, commands: [CheckSession()] }),
 		CompletedLoadClerk: ({ snapshot }) =>
 			appliedClerkSnapshot(snapshot, true)(modifyFields(model, { clerk: () => ClerkPhase.Loaded() })),
@@ -1136,17 +1151,11 @@ const foldMessage = (model: Model, message: Message) =>
 			signedOut(modifyFields(model, { clerk: () => ClerkPhase.Failed({ message }) })),
 		ChangedClerkSession: ({ snapshot }) => changedClerkSession(model, snapshot),
 		CompletedWaitForAuthSettle: () => (model.session._tag === "Resolving" ? signedOut(model) : { model }),
-		SucceededLoadCustomer: ({ orgId, customer }) =>
-			settledCustomer(model, orgId, CustomerData.Success({ data: customer })),
+		SucceededLoadCustomer: ({ orgId, customer, readAtMs }) =>
+			settledCustomer(model, orgId, CustomerData.Success({ data: customer }), readAtMs),
 		FailedLoadCustomer: ({ orgId }) =>
 			settledCustomer(model, orgId, CustomerData.Failure({ error: "Failed" })),
 		ElapsedCustomerGrace: ({ orgId }) => elapsedCustomerGrace(model, orgId),
-		ElapsedPageHold: ({ instance }) => {
-			const pageHold = PageHold.elapsed(model.pageHold, instance, model.page)
-			return pageHold === model.pageHold
-				? { model }
-				: { model: modifyFields(model, { pageHold: () => pageHold }) }
-		},
 		CompletedSaveSelectedPlanKnown: () => ({ model }),
 		CompletedSignOutOfClerk: () => ({ model }),
 		CompletedIdentifySession: () => ({ model }),

@@ -163,6 +163,11 @@ export const toSnapshot = (input: SnapshotInput): StatusPageSnapshot => {
 	const days = lastDays(input.nowMs, STATUS_PAGE_HISTORY_DAYS)
 	const firstDay = days[0] ?? ""
 	const daily = Arr.filter(input.daily, (row) => row.day >= firstDay)
+	const componentIdsOf = (incidentId: StatusPageIncidentId): ReadonlyArray<string> =>
+		Arr.map(
+			Arr.filter(input.incidentComponents, (link) => link.incidentId === incidentId),
+			(link) => link.componentId,
+		)
 
 	const incidents: ReadonlyArray<StatusPageSnapshotIncident> = Arr.map(
 		Arr.sort(
@@ -185,10 +190,7 @@ export const toSnapshot = (input: SnapshotInput): StatusPageSnapshot => {
 				resolvedAt: incident.resolvedAt,
 				scheduledStart: incident.scheduledStart,
 				scheduledEnd: incident.scheduledEnd,
-				componentIds: Arr.map(
-					Arr.filter(input.incidentComponents, (link) => link.incidentId === incident.id),
-					(link) => link.componentId,
-				),
+				componentIds: componentIdsOf(incident.id),
 				// The first update came from break-glass: `bg-<entry>` follow-ups still target it.
 				openedByOverlayEntryId: first?.source === "break_glass" ? first.overlayEntryId : null,
 				updates: Arr.map(updates, (update) => ({
@@ -216,6 +218,7 @@ export const toSnapshot = (input: SnapshotInput): StatusPageSnapshot => {
 			impact: incident.impact,
 			startedAt: incident.startedAt,
 			resolvedAt: incident.resolvedAt,
+			componentIds: componentIdsOf(incident.id),
 		}),
 	)
 
@@ -539,8 +542,17 @@ export class StatusPageSnapshotBuilder extends Context.Service<
 											PG.inList($.incidentId, incidentIds),
 										]),
 								)
+					// Listed incidents, and indexed ones too: the bars mark the components each touched.
+					const indexedIds = Arr.map(
+						Arr.filter(
+							incidents,
+							(incident) =>
+								isListedIncident(incident, nowMs) || isIndexedIncident(incident, nowMs),
+						),
+						(incident) => incident.id,
+					)
 					const incidentComponents =
-						incidentIds.length === 0
+						indexedIds.length === 0
 							? []
 							: yield* db.run(
 									PG.from(StatusPageIncidentComponents)
@@ -550,13 +562,13 @@ export class StatusPageSnapshotBuilder extends Context.Service<
 										}))
 										.where(($) => [
 											$.orgId.eq(orgId),
-											PG.inList($.incidentId, incidentIds),
+											PG.inList($.incidentId, indexedIds),
 										]),
 								)
 					return {
 						page: {
 							...page,
-							orgKey: statusPageOrgKey(orgId),
+							orgKey: yield* statusPageOrgKey(orgId),
 							customDomain: domain?.hostname ?? null,
 						},
 						components,
@@ -597,7 +609,7 @@ export class StatusPageSnapshotBuilder extends Context.Service<
 				page: {
 					...draft.page,
 					id: DRAFT_PAGE_ID,
-					orgKey: statusPageOrgKey(orgId),
+					orgKey: yield* statusPageOrgKey(orgId),
 					breakGlassTokenSha256: null,
 					passwordHash: null,
 					revision: 0,

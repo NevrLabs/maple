@@ -39,8 +39,8 @@ import { resourceNotFound } from "../../kit/resource-not-found"
 import { settingsSection } from "../../kit/settings-section"
 import {
 	newStatusPageHref,
-	publicAddress,
-	publicUrl,
+	publicAddressOf,
+	publicUrlOf,
 	STATUS_PAGE_BASE_URL,
 	statusPagesHref,
 } from "../shared/commands"
@@ -74,6 +74,7 @@ import {
 } from "./update"
 import { typography } from "@maple/views/ui/typography"
 import { hstack, vstack, vstackClass } from "@maple/views/ui/stack"
+import { denialReason } from "../../kit/session-grants"
 
 // `/status-pages/new`: the form on the left, the page as visitors get it on the right, and the
 // publish bar under both. Below 1000px the preview stacks under the form.
@@ -110,7 +111,8 @@ const pageSection = (h: H, model: Model): Html =>
 				hint:
 					model.slug === ""
 						? "Follows the name until you type one."
-						: publicAddress(model.orgKey, model.slug),
+						: // A blank hint of the same height until the org key lands.
+							Option.getOrElse(publicAddressOf(model.orgKey, model.slug), () => "\u00a0"),
 				error: slugError(model),
 				onInput: (value) => Message.ChangedSlug({ value }),
 			}),
@@ -359,7 +361,7 @@ const draftDocument = (model: Model): string => {
 		page: {
 			name: Str.trim(model.name) === "" ? "Status page" : Str.trim(model.name),
 			slug: isSlug(model.slug) ? model.slug : "preview",
-			orgKey: model.orgKey,
+			orgKey: Option.getOrElse(model.orgKey, () => ""),
 			description: null,
 			websiteUrl: null,
 			logoUrl: null,
@@ -402,7 +404,9 @@ const draftDocument = (model: Model): string => {
 		snapshot,
 		nowMs,
 		isSelectable: false,
-		publicUrl: isSlug(model.slug) ? publicUrl(STATUS_PAGE_BASE_URL, model.orgKey, model.slug) : null,
+		publicUrl: isSlug(model.slug)
+			? Option.getOrNull(publicUrlOf(STATUS_PAGE_BASE_URL, model.orgKey, model.slug))
+			: null,
 	})
 }
 
@@ -568,9 +572,11 @@ const agentSetup = (h: H, model: Model): Html =>
 						"Add to VS Code",
 					]),
 					typography(h, { size: "xs" }, [
-						textLink(h, { href: hrefOf(AppRoute.Settings({ search: { tab: "mcp" } })), tone: "muted" }, [
-							"Other clients",
-						]),
+						textLink(
+							h,
+							{ href: hrefOf(AppRoute.Settings({ search: { tab: "mcp" } })), tone: "muted" },
+							["Other clients"],
+						),
 					]),
 				]),
 			],
@@ -580,7 +586,8 @@ const agentSetup = (h: H, model: Model): Html =>
 			{
 				id: "status-page-agent-prompt",
 				title: "2. Give your agent this prompt",
-				description: "Run it in the repository of the product the page is for, so the agent can read its endpoints and brand.",
+				description:
+					"Run it in the repository of the product the page is for, so the agent can read its endpoints and brand.",
 			},
 			[
 				agentPromptButton(h, {
@@ -603,7 +610,8 @@ const agentSetup = (h: H, model: Model): Html =>
 			{
 				id: "status-page-agent-steps",
 				title: "What your agent does",
-				description: "It asks before each choice. The page shows up under Status pages as soon as the agent creates it.",
+				description:
+					"It asks before each choice. The page shows up under Status pages as soon as the agent creates it.",
 			},
 			[
 				numberedSteps(h, AGENT_STEPS),
@@ -621,8 +629,8 @@ const agentSetup = (h: H, model: Model): Html =>
 
 const membersOnly = (h: H): Html =>
 	resourceNotFound(h, {
-		title: "Only org admins and engineers can create status pages",
-		description: "Ask an admin to create one. You can read the existing pages.",
+		title: "Your role can't create status pages",
+		description: `${denialReason("status_pages:edit")} You can read the existing pages.`,
 		back: { href: statusPagesHref(), label: "Back to status pages" },
 	})
 

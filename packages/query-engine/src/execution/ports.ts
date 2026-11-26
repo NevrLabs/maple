@@ -26,6 +26,13 @@ export interface ExecutionTenant {
 	readonly orgId: OrgId
 	readonly userId: UserId
 	readonly authMode: string
+	/**
+	 * What the tenant holds, when the caller passed a whole tenant. The executor ignores both; a
+	 * host reads them to keep a namespace-limited role's reads to its namespaces even where the
+	 * request itself carries no data scope.
+	 */
+	readonly permissions?: ReadonlyArray<string> | undefined
+	readonly namespaces?: ReadonlyArray<string> | undefined
 }
 
 export type { SqlQueryOptions } from "../profiles"
@@ -70,6 +77,7 @@ export interface WarehouseSqlClient {
 	readonly insert: (
 		datasource: string,
 		rows: ReadonlyArray<unknown>,
+		options?: { readonly durable?: boolean },
 	) => Effect.Effect<void, WarehouseDriverError>
 }
 
@@ -87,13 +95,11 @@ export type RoutePurpose = "read" | "raw" | "ingest"
 /**
  * Whose rows a statement may see. `tenant` marks a read the executor has verified is pinned to
  * one org, so a host may run it on credentials scoped to that org and, knowing the statement, to
- * the datasources it reads. Absent for whatever needs the shared credential: writes, cross-org
- * reads and capability probes.
+ * the datasources it reads. `cross-org` marks a read declared to span organizations, which needs
+ * the shared credential and which a host refuses to a caller limited to part of one. Absent for
+ * writes and capability probes.
  */
-export interface RouteScope {
-	readonly kind: "tenant"
-	readonly sql: string
-}
+export type RouteScope = { readonly kind: "tenant"; readonly sql: string } | { readonly kind: "cross-org" }
 
 export type WarehouseTrustedRouteError = WarehouseSettingsRouteError
 export type WarehouseRawRouteError =
@@ -230,6 +236,11 @@ export interface IngestOptions {
 	 * Summed rollups such as `service_map_edges_hourly` must not.
 	 */
 	readonly retryTransient?: boolean
+	/**
+	 * Answer only once the rows are stored, not when they are buffered (Tinybird `wait=true`), so
+	 * a later write the caller orders after these (a completion marker) never lands ahead of them.
+	 */
+	readonly durable?: boolean
 }
 
 export interface WarehouseQueryServiceApi {

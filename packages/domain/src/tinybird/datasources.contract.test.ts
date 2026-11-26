@@ -43,6 +43,7 @@ const EXPECTED_TOPLEVEL_KEYS = {
 		"scope_version",
 		"scope_attributes",
 		"log_attributes",
+		"retention_days",
 	]),
 	traces: new Set([
 		"start_time",
@@ -70,6 +71,7 @@ const EXPECTED_TOPLEVEL_KEYS = {
 		"links_span_id",
 		"links_trace_state",
 		"links_attributes",
+		"retention_days",
 	]),
 	metrics_sum: new Set([...metricCommonKeys(), "value", "aggregation_temporality", "is_monotonic"]),
 	metrics_gauge: new Set([...metricCommonKeys(), "value"]),
@@ -120,6 +122,7 @@ function metricCommonKeys(): string[] {
 		"exemplars_timestamp",
 		"exemplars_value",
 		"exemplars_filtered_attributes",
+		"retention_days",
 	]
 }
 

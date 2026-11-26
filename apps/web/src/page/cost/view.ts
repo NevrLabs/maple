@@ -83,18 +83,12 @@ const onRamp = (
 					emptyMedia(h, { variant: "icon" }, [icon(h, "CircleDollarIcon")]),
 					emptyTitle(h, ["No cost source yet"]),
 					emptyDescription(h, [
-						"Add a source and Maple reads what it bills each day: an AWS account by service, region and account, an OpenRouter account by model, a GitHub organization by product and repository, a Vercel team by product and project, a Cloudflare account by product, a PlanetScale organization by database and branch, an Anthropic or OpenAI organization by model and workspace or project, a Google Cloud billing account by project, service and resource.",
+						"Add a source and Maple reads what it bills each day: an AWS account by service, region and account, an OpenRouter account by model, a GitHub organization by product and repository, a Vercel team by product and project, a Cloudflare account by product, a PlanetScale organization by database and branch, an Anthropic or OpenAI organization by model and workspace or project, a Morph organization by member, a Google Cloud billing account by project, service and resource.",
 					]),
-					// A member's save would be refused: say who can, and offer no form.
+					// A save would be refused: say which permission it needs, and offer no form.
 					...(!options.cannotManage
 						? []
-						: [
-								emptyDescription(
-									h,
-									["Only organization admins and engineers can add a cost source."],
-									"mt-3",
-								),
-							]),
+						: [emptyDescription(h, [denialReason("integrations:manage")], "mt-3")]),
 				],
 				"max-w-md",
 			),
@@ -139,6 +133,10 @@ const FIRST_SYNC = {
 	openai: {
 		alone: "It brings in this month and the last, then the two months before.",
 		named: "OpenAI brings in this month and the last, then the two months before.",
+	},
+	morph: {
+		alone: "It reads this month's spend so far, and every hour from here on.",
+		named: "Morph reads this month's spend so far, and every hour from here on.",
 	},
 	gcp: {
 		alone: "It brings in this month and the last, and older months the export holds fill in after that.",
@@ -327,7 +325,7 @@ const budgetSearch = (model: Model) => perDimension((dimension) => model.search[
 /**
  * The header's right side. Once a source exists, Add source sits here too: the Sources panel is
  * below the chart and table, out of sight. With none, the on-ramp in the body offers it. Set
- * budget is for who manages alerts, once there is cost to budget.
+ * budget is for who manages budgets, once there is cost to budget.
  */
 const headerActions = (h: H, model: Model): Html | undefined => {
 	const time = timeActions(h, model)
@@ -338,7 +336,7 @@ const headerActions = (h: H, model: Model): Html | undefined => {
 					gatedLinkButton(
 						h,
 						{ grants: model.grants },
-						"alerts:manage",
+						"slos:manage",
 						{ variant: "outline", size: "sm", href: budgetFormHref(budgetSearch(model)) },
 						[
 							icon(h, "GaugeIcon", { attributes: [h.DataAttribute("icon", "inline-start")] }),

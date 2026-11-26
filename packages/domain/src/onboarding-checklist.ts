@@ -1,4 +1,4 @@
-// The onboarding reward checklist: five activation steps a new org can finish within a window
+// The onboarding reward checklist: activation steps a new org can finish within a window
 // of its creation to earn a credit. Pure and dependency-free, same shape as `./setup-audit` —
 // one IO pass in the API populates `OnboardingChecklistInputs`, and everything here is a
 // function over it, so the status rules are testable without a database.
@@ -14,8 +14,11 @@ export const ONBOARDING_REWARD_WINDOW_MS = 24 * 60 * 60 * 1000
 export const ONBOARDING_REWARD_AMOUNT_USD = 30
 /** Id of the Autumn reward the API applies to the org's subscription; defined in `apps/api/autumn.config.ts`. */
 export const ONBOARDING_REWARD_ID = "onboarding_checklist"
+/** The service Quick Start's "Send test trace" reports as: proof the pipeline works, not an app. */
+export const ONBOARDING_TEST_TRACE_SERVICE = "maple-test"
 
 export const ONBOARDING_CHECKLIST_STEP_IDS = [
+	"add_card",
 	"send_telemetry",
 	"connect_github",
 	"create_alert_rule",
@@ -37,6 +40,8 @@ export interface OnboardingChecklistInputs {
 	/** Org creation time; `null` when the identity provider cannot say (self-hosted). */
 	readonly orgCreatedAtMs: number | null
 	readonly rewardClaimedAtMs: number | null
+	/** A card is on file: the org holds a paid plan, not the no-card trial (the reward discounts it). */
+	readonly cardAdded: boolean
 	/** Any of traces, logs or metrics is present. */
 	readonly telemetryPresent: boolean
 	readonly githubConnected: boolean
@@ -72,6 +77,7 @@ export const emptyOnboardingChecklistInputs = (
 	base: Pick<OnboardingChecklistInputs, "orgCreatedAtMs" | "rewardClaimedAtMs">,
 ): OnboardingChecklistInputs => ({
 	...base,
+	cardAdded: false,
 	telemetryPresent: false,
 	githubConnected: false,
 	alertRuleCount: 0,
@@ -84,6 +90,8 @@ export const emptyOnboardingChecklistInputs = (
 
 const stepCompleted = (id: OnboardingChecklistStepId, inputs: OnboardingChecklistInputs): boolean => {
 	switch (id) {
+		case "add_card":
+			return inputs.cardAdded
 		case "send_telemetry":
 			return inputs.telemetryPresent
 		case "connect_github":

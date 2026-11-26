@@ -106,6 +106,24 @@ const USER_ACTIVITY_HOURLY_BACKFILL = [
 	"INSERT INTO user_activity_hourly (OrgId, ServiceNamespace, UserId, Hour, ServiceName, SpanCount, ErrorSpanCount, RequestCount, FailedRequestCount, TraceIds, SessionIds, RequestDurationQuantiles, TopRoutes, LogCount, WarnLogCount, ErrorLogCount, FirstSeen, LastSeen) SELECT OrgId, ResourceAttributes['service.namespace'] AS ServiceNamespace, if(LogAttributes['user.id'] != '', LogAttributes['user.id'], LogAttributes['enduser.id']) AS UserId, toStartOfHour(TimestampTime) AS Hour, ServiceName, toUInt64(0) AS SpanCount, toUInt64(0) AS ErrorSpanCount, toUInt64(0) AS RequestCount, toUInt64(0) AS FailedRequestCount, uniqIfState(TraceId, toUInt8(0)) AS TraceIds, uniqIfState(LogAttributes['session.id'], LogAttributes['session.id'] != '') AS SessionIds, quantilesTDigestIfState(0.5, 0.95)(toUInt64(0), toUInt8(0)) AS RequestDurationQuantiles, approx_top_kState(10)('') AS TopRoutes, count() AS LogCount, countIf(SeverityNumber >= 13 AND SeverityNumber < 17) AS WarnLogCount, countIf(SeverityNumber >= 17) AS ErrorLogCount, min(TimestampTime) AS FirstSeen, max(TimestampTime) AS LastSeen FROM logs WHERE if(LogAttributes['user.id'] != '', LogAttributes['user.id'], LogAttributes['enduser.id']) != '' GROUP BY OrgId, ServiceNamespace, UserId, Hour, ServiceName",
 ] as const
 
+/** Rebuilds the users' daily rollup from the hourly one; the truncate makes a resumed step converge. */
+const USER_ACTIVITY_DAILY_BACKFILL = [
+	"TRUNCATE TABLE IF EXISTS user_activity_daily",
+	"INSERT INTO user_activity_daily (OrgId, ServiceNamespace, UserId, Day, ServiceName, RequestCount, FailedRequestCount, ErrorSpanCount, LogCount, ErrorLogCount, SessionIds) SELECT OrgId, ServiceNamespace, UserId, toStartOfDay(Hour) AS Day, ServiceName, sum(RequestCount) AS RequestCount, sum(FailedRequestCount) AS FailedRequestCount, sum(ErrorSpanCount) AS ErrorSpanCount, sum(LogCount) AS LogCount, sum(ErrorLogCount) AS ErrorLogCount, uniqIfMergeState(SessionIds) AS SessionIds FROM user_activity_hourly GROUP BY OrgId, ServiceNamespace, UserId, Day, ServiceName",
+] as const
+
+/**
+ * Fills person_properties from every source the views read, and links visitors to users from the
+ * retained server, mobile and trace events. Both targets merge duplicates away, so a resumed step
+ * converges without emptying them first.
+ */
+const PERSON_PROPERTIES_BACKFILL = [
+	"INSERT INTO person_properties (OrgId, Kind, Id, Key, SetAt, SetValue, OnceAt, OnceValue, UnsetAt, LastSeen) SELECT OrgId, if(startsWith(OpKey, '$group_'), 'group', 'user') AS Kind, if(startsWith(OpKey, '$group_'), GroupId, UserId) AS Id, substring(OpKey, position(OpKey, '.') + 1) AS Key, maxIf(Timestamp, replaceOne(substring(OpKey, 2, position(OpKey, '.') - 2), 'group_', '') = 'set') AS SetAt, argMaxIfState(Attributes[OpKey], Timestamp, replaceOne(substring(OpKey, 2, position(OpKey, '.') - 2), 'group_', '') = 'set') AS SetValue, if(countIf(replaceOne(substring(OpKey, 2, position(OpKey, '.') - 2), 'group_', '') = 'set_once') = 0, toDateTime64('2199-12-31 23:59:59', 9, 'UTC'), minIf(Timestamp, replaceOne(substring(OpKey, 2, position(OpKey, '.') - 2), 'group_', '') = 'set_once')) AS OnceAt, argMinIfState(Attributes[OpKey], Timestamp, replaceOne(substring(OpKey, 2, position(OpKey, '.') - 2), 'group_', '') = 'set_once') AS OnceValue, maxIf(Timestamp, replaceOne(substring(OpKey, 2, position(OpKey, '.') - 2), 'group_', '') = 'unset') AS UnsetAt, max(Timestamp) AS LastSeen FROM product_events ARRAY JOIN arrayFilter(k -> (startsWith(k, '$set.') OR startsWith(k, '$set_once.') OR startsWith(k, '$unset.') OR startsWith(k, '$group_set.') OR startsWith(k, '$group_set_once.') OR startsWith(k, '$group_unset.')), mapKeys(Attributes)) AS OpKey WHERE product_events.Kind != 'navigation' AND Source != 'trace' AND if(startsWith(OpKey, '$group_'), GroupId, UserId) != '' AND substring(OpKey, position(OpKey, '.') + 1) != '' GROUP BY OrgId, if(startsWith(OpKey, '$group_'), 'group', 'user'), if(startsWith(OpKey, '$group_'), GroupId, UserId), substring(OpKey, position(OpKey, '.') + 1)",
+	"INSERT INTO person_properties (OrgId, Kind, Id, Key, SetAt, SetValue, OnceAt, OnceValue, UnsetAt, LastSeen) SELECT OrgId, if(startsWith(OpKey, '$group_'), 'group', 'user') AS Kind, if(startsWith(OpKey, '$group_'), SpanAttributes['maple.product_event.group_id'], SpanAttributes['maple.product_event.user_id']) AS Id, substring(OpKey, position(OpKey, '.') + 1) AS Key, maxIf(Timestamp, replaceOne(substring(OpKey, 2, position(OpKey, '.') - 2), 'group_', '') = 'set') AS SetAt, argMaxIfState(SpanAttributes[concat('maple.product_event.', substring(OpKey, 2))], Timestamp, replaceOne(substring(OpKey, 2, position(OpKey, '.') - 2), 'group_', '') = 'set') AS SetValue, if(countIf(replaceOne(substring(OpKey, 2, position(OpKey, '.') - 2), 'group_', '') = 'set_once') = 0, toDateTime64('2199-12-31 23:59:59', 9, 'UTC'), minIf(Timestamp, replaceOne(substring(OpKey, 2, position(OpKey, '.') - 2), 'group_', '') = 'set_once')) AS OnceAt, argMinIfState(SpanAttributes[concat('maple.product_event.', substring(OpKey, 2))], Timestamp, replaceOne(substring(OpKey, 2, position(OpKey, '.') - 2), 'group_', '') = 'set_once') AS OnceValue, maxIf(Timestamp, replaceOne(substring(OpKey, 2, position(OpKey, '.') - 2), 'group_', '') = 'unset') AS UnsetAt, max(Timestamp) AS LastSeen FROM traces ARRAY JOIN arrayMap( k -> concat('$', substring(k, 21)), arrayFilter(k -> (startsWith(k, 'maple.product_event.set.') OR startsWith(k, 'maple.product_event.set_once.') OR startsWith(k, 'maple.product_event.unset.') OR startsWith(k, 'maple.product_event.group_set.') OR startsWith(k, 'maple.product_event.group_set_once.') OR startsWith(k, 'maple.product_event.group_unset.')), mapKeys(SpanAttributes)) ) AS OpKey WHERE SpanAttributes['maple.product_event.name'] != '' AND if(startsWith(OpKey, '$group_'), SpanAttributes['maple.product_event.group_id'], SpanAttributes['maple.product_event.user_id']) != '' AND substring(OpKey, position(OpKey, '.') + 1) != '' GROUP BY OrgId, if(startsWith(OpKey, '$group_'), 'group', 'user'), if(startsWith(OpKey, '$group_'), SpanAttributes['maple.product_event.group_id'], SpanAttributes['maple.product_event.user_id']), substring(OpKey, position(OpKey, '.') + 1)",
+	"INSERT INTO person_properties (OrgId, Kind, Id, Key, SetAt, SetValue, OnceAt, OnceValue, UnsetAt, LastSeen) SELECT OrgId, Trait.1 AS Kind, if(Trait.1 = 'group', GroupId, UserId) AS Id, Trait.2 AS Key, max(StartTime) AS SetAt, argMaxIfState(Trait.3, StartTime, toUInt8(1)) AS SetValue, toDateTime64('2199-12-31 23:59:59', 9, 'UTC') AS OnceAt, argMinIfState('', StartTime, toUInt8(0)) AS OnceValue, toDateTime64(0, 9, 'UTC') AS UnsetAt, max(ifNull(EndTime, StartTime)) AS LastSeen FROM session_replays ARRAY JOIN arrayConcat( arrayMap((k, v) -> ('user', k, v), mapKeys(UserTraits), mapValues(UserTraits)), [('group', 'name', GroupName)] ) AS Trait WHERE if(Trait.1 = 'group', GroupId, UserId) != '' AND Trait.2 != '' AND (Trait.1 = 'user' OR Trait.3 != '') GROUP BY OrgId, Trait.1, if(Trait.1 = 'group', GroupId, UserId), Trait.2",
+	"INSERT INTO identity_links (OrgId, VisitorId, UserId, FirstSeen) SELECT OrgId, VisitorId, UserId, min(Timestamp) AS FirstSeen FROM product_events WHERE Source != 'browser' AND VisitorId != '' AND UserId != '' GROUP BY OrgId, VisitorId, UserId",
+] as const
+
 /** Rebuilds the AWS series rollup from every retained aws.* point; the truncate makes a resumed step converge. */
 const AWS_METRICS_HOURLY_BACKFILL = [
 	"TRUNCATE TABLE IF EXISTS aws_metrics_hourly",
@@ -134,6 +152,20 @@ const SERVICE_OVERVIEW_SLO_LATENCY_COLUMNS = [
 	["EstimatedUnder2500Ms", "SimpleAggregateFunction(sum, Float64) DEFAULT 0"],
 	["EstimatedUnder5000Ms", "SimpleAggregateFunction(sum, Float64) DEFAULT 0"],
 	["EstimatedUnder10000Ms", "SimpleAggregateFunction(sum, Float64) DEFAULT 0"],
+] as const
+
+/** v66 -> v67: each raw table's RetentionDays default, the period it kept at that version. */
+const RETENTION_DAYS_DEFAULTS = [
+	["traces", 30],
+	["logs", 30],
+	["metrics_sum", 90],
+	["metrics_gauge", 90],
+	["metrics_histogram", 90],
+	["metrics_exponential_histogram", 90],
+	["session_replays", 30],
+	["session_replay_events", 30],
+	["session_events", 30],
+	["profiles", 14],
 ] as const
 
 const STEP_ROWS: ReadonlyArray<StepRow> = [
@@ -2080,6 +2112,216 @@ const STEP_ROWS: ReadonlyArray<StepRow> = [
 				disposition: "preserve-exact",
 				guarantee:
 					"The new view's source is neither read nor rewritten; only rows ingested after it count.",
+			},
+		],
+	},
+	{
+		// Fingerprint v5: the error and lineage views are recreated. No column change;
+		// stored rows keep their hashes and nothing is backfilled.
+		slug: "error-fingerprint-v5",
+		description:
+			"Recreate the error_events views for fingerprint v5 (minified names, URL path values, span-keyed bare errors)",
+		clonedBefore: "the views are replaced",
+		beforeBootstrap: [
+			dropViews("error_events_mv", "error_events_by_time_mv", "error_fingerprint_lineage_mv"),
+		],
+		plan: [
+			[
+				"rebuild-error-events-views",
+				"Drop and recreate the error-events and lineage views so new occurrences hash with fingerprint v5",
+			],
+		],
+		dispositions: [
+			TRACES_UNDER_REPLACED_VIEWS,
+			{
+				name: "error_events",
+				classification: "derived",
+				disposition: "preserve-exact",
+				guarantee:
+					"Existing rows keep their FingerprintHash untouched; new occurrences hash with v5, and the lineage table links each to its v4 hash.",
+				...ERROR_RETENTION,
+			},
+			{ ...ERROR_EVENTS_BY_TIME_FORWARD_ONLY, disposition: "preserve-exact" },
+		],
+	},
+	{
+		slug: "user-activity-daily",
+		description:
+			"Create user_activity_daily and its view over user_activity_hourly for the activity calendar",
+		clonedBefore: "any DDL runs",
+		beforeBootstrap: [],
+		afterBootstrap: [backfill(...USER_ACTIVITY_DAILY_BACKFILL)],
+		plan: [
+			[
+				"create-user-activity-daily",
+				"Create user_activity_daily and its view via the v62 bootstrap and backfill it from the retained user_activity_hourly",
+			],
+		],
+		dispositions: [
+			{
+				name: "user_activity_daily",
+				classification: "derived",
+				disposition: "rebuild-within-retention-horizon",
+				guarantee:
+					"Rebuilt from every hour user_activity_hourly retains, then filled forward by its view.",
+				preservationInterval: "source retention horizon",
+				sourceRetentionDays: 90,
+				targetRetentionDays: 365,
+			},
+		],
+	},
+	{
+		slug: "person-properties",
+		description:
+			"Create person_properties and its views, and link visitors to users from server, mobile and trace events",
+		clonedBefore: "any DDL runs",
+		beforeBootstrap: [],
+		afterBootstrap: [backfill(...PERSON_PROPERTIES_BACKFILL)],
+		plan: [
+			[
+				"create-person-properties",
+				"Create person_properties, its three views and identity_links_events_mv via the v63 bootstrap, then backfill them from the retained product events, spans and sessions",
+			],
+		],
+		dispositions: [
+			{
+				name: "person_properties",
+				classification: "derived",
+				disposition: "rebuild-within-retention-horizon",
+				guarantee:
+					"Rebuilt from the property operations and traits product_events, traces and session_replays retain, then filled forward by its views.",
+				preservationInterval: "source retention horizon",
+				sourceRetentionDays: 30,
+				targetRetentionDays: 365,
+			},
+		],
+	},
+	{
+		slug: "ai-evaluations",
+		description:
+			"Create ai_evaluations and its two views so LLM evaluation scores (gen_ai.evaluation.result) are queryable",
+		clonedBefore: "any DDL runs",
+		beforeBootstrap: [],
+		plan: [
+			[
+				"create-ai-evaluations",
+				"Create ai_evaluations, ai_evaluations_mv and ai_evaluations_span_events_mv via the v64 bootstrap (all new, IF NOT EXISTS)",
+			],
+		],
+		dispositions: [
+			{
+				name: "ai_evaluations",
+				classification: "derived",
+				disposition: "rebuild-within-retention-horizon",
+				guarantee:
+					"Scores accrue for records ingested after the migration; older evaluation events stay in raw logs and traces and are not backfilled.",
+				preservationInterval: "from the migration forward",
+				sourceRetentionDays: 30,
+				targetRetentionDays: 90,
+			},
+		],
+	},
+	{
+		// A custom key with the default placeholder extends the default grouping: the error
+		// and lineage views are recreated. No column change; nothing is backfilled.
+		slug: "error-fingerprint-default-extension",
+		description:
+			"Recreate the error_events views so a custom key with the default placeholder extends the default grouping",
+		clonedBefore: "the views are replaced",
+		beforeBootstrap: [
+			dropViews("error_events_mv", "error_events_by_time_mv", "error_fingerprint_lineage_mv"),
+		],
+		plan: [
+			[
+				"rebuild-error-events-views",
+				"Drop and recreate the error-events and lineage views so placeholder keys extend the default hash",
+			],
+		],
+		dispositions: [
+			TRACES_UNDER_REPLACED_VIEWS,
+			{
+				name: "error_events",
+				classification: "derived",
+				disposition: "preserve-exact",
+				guarantee:
+					"Existing rows keep their FingerprintHash untouched; only new occurrences whose key holds the default placeholder hash differently.",
+				...ERROR_RETENTION,
+			},
+			{ ...ERROR_EVENTS_BY_TIME_FORWARD_ONLY, disposition: "preserve-exact" },
+		],
+	},
+	{
+		// Only the post-migration view writes ClassifiedSpanCount, so a 0 there marks an
+		// older bucket's span-kind mix as unknown rather than none. Nothing is backfilled.
+		slug: "service-identity",
+		description:
+			"Keep instrumentation scopes, SDK self-report and span-kind counts per service-hour for service identity",
+		clonedBefore: "any DDL runs",
+		beforeBootstrap: [
+			addColumns("service_platforms_hourly", [
+				["ScopeNames", "SimpleAggregateFunction(groupUniqArrayArray, Array(String))"],
+				["TelemetrySdkName", "SimpleAggregateFunction(max, String)"],
+				["TelemetrySdkLanguage", "SimpleAggregateFunction(max, String)"],
+				["OsName", "SimpleAggregateFunction(max, String)"],
+				["ClassifiedSpanCount", "SimpleAggregateFunction(sum, UInt64)"],
+				["ServerSpanCount", "SimpleAggregateFunction(sum, UInt64)"],
+				["ConsumerSpanCount", "SimpleAggregateFunction(sum, UInt64)"],
+				["RootSpanCount", "SimpleAggregateFunction(sum, UInt64)"],
+			]),
+			dropViews("service_platforms_hourly_mv"),
+		],
+		counts: {
+			group: "rollupRows",
+			measure: [["platforms", "SELECT toString(count()) AS count FROM service_platforms_hourly"]],
+			checks: [unchangedRowCount("platforms")],
+		},
+		plan: [
+			[
+				"add-service-identity-columns",
+				"Add scope names, SDK self-report and span-kind counters to service_platforms_hourly",
+			],
+			[
+				"recreate-service-platforms-view",
+				"Recreate service_platforms_hourly_mv so new rows carry the service-identity columns",
+			],
+		],
+		verifies:
+			"Verify the v66 physical schema, retained raw telemetry counts, and the platforms rollup row count",
+		dispositions: [
+			{
+				name: "service_platforms_hourly",
+				classification: "derived",
+				disposition: "preserve-exact",
+				guarantee:
+					"Eight columns are added as metadata-only defaults; no part is rewritten, the row count is verified unchanged, and every existing row reads back empty or zero, which ClassifiedSpanCount marks as unclassified.",
+			},
+			TRACES_UNDER_REPLACED_VIEWS,
+		],
+	},
+	{
+		// Metadata-only: each default is the bundled period and nothing reads the column yet.
+		// A store's raised retention floor lives in its TTLs, not here: whatever makes a local
+		// TTL read this column must keep the floor above it. product_events is left out.
+		slug: "retention-days",
+		description: "Add RetentionDays to the raw tables, defaulted to the period each keeps today",
+		clonedBefore: "any DDL runs",
+		beforeBootstrap: Arr.map(RETENTION_DAYS_DEFAULTS, ([table, days]) =>
+			addColumns(table, [["RetentionDays", `UInt16 DEFAULT ${days}`]]),
+		),
+		plan: [
+			[
+				"add-retention-days-columns",
+				"Add RetentionDays to ten raw tables, each defaulted to the period the table keeps today",
+			],
+		],
+		verifies: "Verify the v67 physical schema and retained raw telemetry counts",
+		dispositions: [
+			{
+				name: "raw telemetry tables (traces, logs, metrics, session replays and events, profiles)",
+				classification: "authoritative",
+				disposition: "preserve-exact",
+				guarantee:
+					"One column is added as a metadata-only default; no part is rewritten and the row counts are verified unchanged. No TTL changes: a store with a raised retention floor still keeps its rows for the floor, which the TTL holds, while the column reads the bundled default.",
 			},
 		],
 	},

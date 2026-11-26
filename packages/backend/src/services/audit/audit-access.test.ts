@@ -1,3 +1,4 @@
+import * as Policy from "@maple/domain/policy"
 import { describe, expect, it } from "@effect/vitest"
 import { HttpServerRequest, HttpServerResponse } from "effect/http"
 import { MapleInternalApi } from "@maple/domain/http"
@@ -289,6 +290,7 @@ describe("recordMcpToolAudit", () => {
 					orgId: ORG,
 					userId: CONNECTOR_PLACEHOLDER_USER,
 					roles: [],
+					permissions: Policy.grantsOf([]),
 					authMode: "self_hosted",
 					actorId: CONNECTOR_ACTOR,
 					// The display name is the platform's, so its length is not Maple's to trust.
@@ -312,6 +314,25 @@ describe("recordMcpToolAudit", () => {
 			expect(entry?.metadata?.["display_name"]).toBe(
 				`${Str.slice(0, 200)(Str.padEnd(500, "!")("Ada"))}…`,
 			)
+		}).pipe(Effect.provide(AuditLogService.layerMemory)),
+	)
+
+	it.effect("names a family's action, so a create reads apart from an update", () =>
+		Effect.gen(function* () {
+			const audit = yield* AuditLogService
+			yield* recordMcpToolAudit({
+				...toolCall,
+				name: "manage_slo",
+				action: "create",
+				tenant: {
+					orgId: ORG,
+					userId: CONNECTOR_PLACEHOLDER_USER,
+					roles: [],
+					authMode: "self_hosted",
+				},
+			})
+			const [entry] = yield* audit.list(ORG, { limit: 10, offset: 0 })
+			expect(entry?.metadata).toMatchObject({ tool: "manage_slo", tool_action: "create" })
 		}).pipe(Effect.provide(AuditLogService.layerMemory)),
 	)
 
@@ -401,6 +422,7 @@ describe("recordMcpToolAudit", () => {
 					orgId: ORG,
 					userId: SERVICE_USER,
 					roles: [],
+					permissions: Policy.grantsOf([]),
 					authMode: "self_hosted",
 					turnOrigin: { kind: "autonomous" },
 					chatMode: "pr-review",

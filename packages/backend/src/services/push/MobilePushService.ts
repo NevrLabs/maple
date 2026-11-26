@@ -5,9 +5,13 @@ import type {
 	AlertSeverity,
 	AlertSignalType,
 	OrgId,
+	UserId,
 } from "@maple/domain/http"
 import { PublicIdPrefixes, encodePublicId } from "@maple/domain/http/v2"
-import { Cause, Clock, Context, Duration, Effect, Layer, Array as Arr, String as Str } from "effect"
+import { AuthorizationUnavailableError } from "@maple/domain/http"
+import * as Policy from "@maple/domain/policy"
+import { membershipGrants } from "@maple/auth"
+import { Cause, Clock, Context, Duration, Effect, Layer, Option, Array as Arr, String as Str } from "effect"
 import { ApnsClient, type ApnsPush } from "@maple/backend/platform/Apns"
 import { summarizeCause } from "@maple/backend/platform/describe-cause"
 import {
@@ -21,6 +25,7 @@ import {
 	anomalySummaryLine,
 } from "@maple/backend/services/alerts/alert-formatting"
 import type { SignalDisplay } from "@maple/backend/services/alerts/alert-signal-display"
+import { OrgMembershipService } from "@maple/backend/services/auth/OrgMembershipService"
 import { LiveActivitiesService, type LiveActivity } from "./LiveActivitiesService"
 import { MobileDevicesService, type MobileDevice } from "./MobileDevicesService"
 import { UPTIME_CERTIFICATE_GROUP_KEY } from "@maple/domain/uptime"
@@ -83,6 +88,8 @@ export interface IncidentPushEvent {
 	readonly value: number | null
 	/** Uptime rules only: the failing check's error. */
 	readonly detail?: string | null
+	/** A resolve no check asked for (by hand, rule deleted): said in place of a recovery. */
+	readonly resolutionNote?: string | null
 	readonly groupKey: string | null
 	/** Shown in place of the group key when set, e.g. an anomaly's "checkout (production)". */
 	readonly groupLabel?: string | null
@@ -143,6 +150,11 @@ export interface MobilePushServiceApi {
 	readonly notifyIncident: (event: IncidentPushEvent) => Effect.Effect<MobilePushSummary>
 	readonly notifyIncidentDigest: (event: IncidentDigestPushEvent) => Effect.Effect<MobilePushSummary>
 	/**
+	 * A page to one person's own phones, from an escalation step. It is not filtered by their
+	 * notification preferences: those tune what the org's incidents tell them, a page is for them.
+	 */
+	readonly pageMember: (page: MemberPagePush) => Effect.Effect<MemberPageSummary>
+	/**
 	 * Wake the organization's phones so their Home Screen widgets can refresh.
 	 *
 	 * Silent — `content-available` and nothing else. It is not a notification
@@ -152,7 +164,28 @@ export interface MobilePushServiceApi {
 	readonly refreshWidgets: (orgId: OrgId, reason: string) => Effect.Effect<MobilePushSummary>
 }
 
+/** What a page to one member's phones came to. */
+export interface MemberPageSummary extends MobilePushSummary {
+	/** False on a deployment without push credentials: nothing was tried, whatever phones exist. */
+	readonly configured: boolean
+}
+
+/** An escalation step's page to one member. */
+export interface MemberPagePush {
+	readonly orgId: OrgId
+	readonly userId: UserId
+	readonly incidentId: string
+	readonly ruleId: string
+	readonly title: string
+	readonly body: string
+	readonly linkUrl: string
+	/** One notification per incident on the phone: a later step's page replaces this one. */
+	readonly collapseId: string
+}
+
 const SEND_CONCURRENCY = 8
+/** How long a push waits on one device owner's role before sending anyway. */
+const OWNER_LOOKUP_TIMEOUT = Duration.seconds(2)
 const SEND_TIMEOUT = Duration.seconds(8)
 
 /**
@@ -292,12 +325,15 @@ export const renderIncidentPush = (
 	const rule = truncate(event.ruleName, 60)
 	const openFor = event.openForMs === null ? null : humanDuration(event.openForMs)
 
+	// Resolved by hand: no check passed and no certificate was renewed, so the note is the body.
+	const handResolved = event.eventType === "resolve" ? (event.resolutionNote ?? null) : null
+
 	// A certificate nearing expiry: a heads-up, not a page.
 	if (event.signalType === "uptime" && event.groupKey === UPTIME_CERTIFICATE_GROUP_KEY) {
-		const body = uptimeSummaryLine(event)
+		const body = handResolved === null ? uptimeSummaryLine(event) : `${handResolved}.`
 		return {
 			alert: {
-				title: `${event.eventType === "resolve" ? "Certificate renewed" : "Certificate expiring"} · ${rule}`,
+				title: `${event.eventType !== "resolve" ? "Certificate expiring" : handResolved === null ? "Certificate renewed" : "Resolved"} · ${rule}`,
 				subtitle: service ?? undefined,
 				body,
 			},
@@ -311,11 +347,17 @@ export const renderIncidentPush = (
 	if (event.signalType === "uptime") {
 		const body = uptimeSummaryLine(event)
 		if (event.eventType === "resolve") {
+			const resolvedBody =
+				handResolved !== null
+					? `${handResolved}${openFor === null ? "" : ` after ${openFor}`}.`
+					: openFor === null
+						? body
+						: `${body} Down for ${openFor}.`
 			return {
 				alert: {
 					title: `Resolved · ${rule}`,
 					subtitle: service ?? undefined,
-					body: openFor === null ? body : `${body} Down for ${openFor}.`,
+					body: resolvedBody,
 				},
 				interruptionLevel: "passive",
 				priority: 5,
@@ -356,15 +398,18 @@ export const renderIncidentPush = (
 			const now = formatSignalMetric(event.value, event.signalDisplay)
 			const after = openFor === null ? "" : ` after ${openFor}`
 			const held = event.resolvedAfterHold ?? null
+			const note = event.resolutionNote ?? null
 			const body =
-				held === null
-					? event.signalType === "anomaly"
-						? `The anomaly ended${after}.`
-						: // A budget's value is a bare percent: its check's sentence carries the money.
-							event.signalType === "cost_budget" && event.detail != null
-							? `${event.detail}${after}.`
-							: `${label} back to ${now}${after}.`
-					: `${describeHoldForPush(held.reason)} for ${humanDuration(held.heldForMs)} with no breach observed; resolved${after}.`
+				note !== null
+					? `${note}${after}.`
+					: held === null
+						? event.signalType === "anomaly"
+							? `The anomaly ended${after}.`
+							: // A budget's value is a bare percent: its check's sentence carries the money.
+								event.signalType === "cost_budget" && event.detail != null
+								? `${event.detail}${after}.`
+								: `${label} back to ${now}${after}.`
+						: `${describeHoldForPush(held.reason)} for ${humanDuration(held.heldForMs)} with no breach observed; resolved${after}.`
 			return {
 				alert: {
 					title: `Resolved · ${rule}`,
@@ -529,6 +574,161 @@ export class MobilePushService extends Context.Service<MobilePushService, Mobile
 			const apns = yield* ApnsClient
 			const devices = yield* MobileDevicesService
 			const activities = yield* LiveActivitiesService
+			const memberships = yield* OrgMembershipService
+
+			/**
+			 * The devices whose owner still reads telemetry: a push carries rule names and values. A
+			 * demotion deletes the devices outright; this covers the time before it runs (a delayed Clerk
+			 * webhook). One cached lookup per owner. A failed lookup keeps the device, so a Clerk outage
+			 * cannot silence paging.
+			 */
+			const ownedByReaders = (orgId: OrgId, listed: ReadonlyArray<MobileDevice>) =>
+				memberships.directory === "none"
+					? Effect.succeed(listed)
+					: Effect.filter(
+							Arr.dedupe(Arr.map(listed, (device) => device.userId)),
+							(userId) =>
+								memberships.verify(userId, orgId).pipe(
+									// A slow Clerk must not eat the push's own deadline.
+									Effect.timeoutOrElse({
+										duration: OWNER_LOOKUP_TIMEOUT,
+										orElse: () =>
+											Effect.fail(
+												new AuthorizationUnavailableError({
+													message: "Device owner lookup timed out",
+												}),
+											),
+									}),
+									Effect.map(
+										Option.exists((membership) =>
+											Policy.can(membershipGrants(membership), "telemetry:read"),
+										),
+									),
+									Effect.catch((error) =>
+										Effect.as(
+											Effect.logWarning(
+												"Mobile push: could not read a device owner's role, sending anyway",
+											).pipe(Effect.annotateLogs({ orgId, error: error.message })),
+											true,
+										),
+									),
+								),
+							{ concurrency: SEND_CONCURRENCY },
+						).pipe(
+							Effect.map((readers) =>
+								Arr.filter(listed, (device) => Arr.contains(readers, device.userId)),
+							),
+						)
+
+			const pageMember = Effect.fn("MobilePushService.pageMember")(function* (page: MemberPagePush) {
+				yield* Effect.annotateCurrentSpan({
+					orgId: page.orgId,
+					"maple.alert.rule_id": page.ruleId,
+					"maple.alert.incident_id": page.incidentId,
+				})
+				const empty: MemberPageSummary = {
+					sent: 0,
+					failed: 0,
+					unregistered: 0,
+					skipped: 0,
+					configured: true,
+				}
+				if (!apns.isConfigured) return { ...empty, configured: false }
+				// A read that failed is not "no phone": the page counts as failed, so it is tried again.
+				// The member's own devices only: a page is one person's, whatever the org's size.
+				const registered = yield* devices.listForUser(page.orgId, page.userId).pipe(
+					Effect.map((listed): ReadonlyArray<MobileDevice> | null => listed),
+					Effect.catch((error) =>
+						Effect.logWarning("Mobile push: could not list devices for a page").pipe(
+							Effect.annotateLogs({ orgId: page.orgId, error: error.message }),
+							Effect.as(null),
+						),
+					),
+				)
+				if (registered === null) {
+					yield* Effect.annotateCurrentSpan({ "maple.push.devices_unreadable": true })
+					return { ...empty, failed: 1 }
+				}
+				const targets = Arr.filter(registered, (device) => device.enabled)
+				yield* Effect.annotateCurrentSpan({ "maple.push.devices": targets.length })
+				if (targets.length === 0) return empty
+				const results = yield* Effect.forEach(
+					targets,
+					(device) =>
+						apns
+							.send({
+								deviceToken: device.token,
+								environment: device.environment,
+								bundleId: device.bundleId,
+								alert: { title: page.title, body: page.body },
+								interruptionLevel: "time-sensitive",
+								priority: 10,
+								collapseId: page.collapseId,
+								data: {
+									maple_kind: "alert_incident",
+									maple_event: "page",
+									maple_incident_id: encodePublicId(
+										PublicIdPrefixes.alertIncident,
+										page.incidentId,
+									),
+									maple_rule_id: encodePublicId(PublicIdPrefixes.alertRule, page.ruleId),
+									maple_org_id: page.orgId,
+									maple_url: page.linkUrl,
+								},
+							})
+							.pipe(
+								Effect.timeout(SEND_TIMEOUT),
+								Effect.map((result) => ({
+									device,
+									outcome: result.outcome,
+									reason: result.outcome === "sent" ? "" : result.reason,
+								})),
+								Effect.catch((error) =>
+									Effect.logWarning("Mobile push: a page could not be sent").pipe(
+										Effect.annotateLogs({
+											orgId: page.orgId,
+											deviceId: device.id,
+											error: error.message,
+										}),
+										Effect.as({
+											device,
+											outcome: "failed" as const,
+											reason: error.message,
+										}),
+									),
+								),
+							),
+					{ concurrency: SEND_CONCURRENCY },
+				)
+				const withOutcome = (outcome: (typeof results)[number]["outcome"]) =>
+					Arr.filter(results, (result) => result.outcome === outcome)
+				// A token Apple calls dead is switched off, as an incident push does.
+				yield* Effect.forEach(
+					withOutcome("unregistered"),
+					({ device, reason }) =>
+						devices.disable(page.orgId, device.id, reason).pipe(
+							ignoreLogged("Mobile push: could not disable a dead device", {
+								orgId: page.orgId,
+								deviceId: device.id,
+							}),
+						),
+					{ discard: true },
+				)
+				const pushed = Arr.map(withOutcome("sent"), ({ device }) => device.id)
+				yield* devices.markPushed(page.orgId, pushed).pipe(
+					ignoreLogged("Mobile push: could not record which devices were pushed", {
+						orgId: page.orgId,
+						deviceCount: pushed.length,
+					}),
+				)
+				return {
+					sent: pushed.length,
+					failed: withOutcome("failed").length,
+					unregistered: withOutcome("unregistered").length,
+					skipped: 0,
+					configured: true,
+				}
+			})
 
 			const notifyIncident = Effect.fn("MobilePushService.notifyIncident")(function* (
 				event: IncidentPushEvent,
@@ -545,7 +745,7 @@ export class MobilePushService extends Context.Service<MobilePushService, Mobile
 				// stage without Apple credentials — quiet, not a warning.
 				if (!apns.isConfigured) return empty
 
-				const registered = yield* devices
+				const listed = yield* devices
 					.listForOrg(event.orgId)
 					.pipe(
 						Effect.catch((error) =>
@@ -555,11 +755,12 @@ export class MobilePushService extends Context.Service<MobilePushService, Mobile
 							),
 						),
 					)
+				const registered = yield* ownedByReaders(event.orgId, listed)
 				// A repeat that has not reached the next rung of the escalation
 				// ladder still updates the Lock Screen below, but sends no banner.
 				const escalates = event.eventType !== "renotify" || shouldPushRenotify(event)
 				const targets = escalates ? Arr.filter(registered, (device) => wantsEvent(device, event)) : []
-				const skipped = registered.length - targets.length
+				const skipped = listed.length - targets.length
 				yield* Effect.annotateCurrentSpan({ "maple.push.escalates": escalates })
 				if (targets.length === 0) {
 					// Nobody wants the banner, but an activity already on someone's
@@ -945,9 +1146,10 @@ export class MobilePushService extends Context.Service<MobilePushService, Mobile
 					(activity) =>
 						Effect.gen(function* () {
 							const device = byDeviceId.get(activity.deviceId)
-							// The device unregistered while its activity was running.
-							// Nothing can be pushed without knowing which APNs host to
-							// use, so the row is closed rather than retried forever.
+							// The device unregistered while its activity was running, or its
+							// owner no longer reads telemetry. Nothing can be pushed without
+							// knowing which APNs host to use, so the row is closed rather
+							// than retried forever.
 							if (device === undefined) {
 								yield* activities.end(activity.id, "device_unregistered").pipe(
 									ignoreLogged("Live Activity: could not close the activity row", {
@@ -1022,15 +1224,16 @@ export class MobilePushService extends Context.Service<MobilePushService, Mobile
 				const empty: MobilePushSummary = { sent: 0, failed: 0, unregistered: 0, skipped: 0 }
 				if (!apns.isConfigured) return empty
 
-				const registered = yield* devices
+				const listed = yield* devices
 					.listForOrg(event.orgId)
 					.pipe(Effect.orElseSucceed(() => [] as ReadonlyArray<MobileDevice>))
+				const registered = yield* ownedByReaders(event.orgId, listed)
 				const targets = Arr.filter(registered, (device) =>
 					event.severity === "critical"
 						? device.preferences.criticalIncidents
 						: device.preferences.warningIncidents,
 				)
-				const skipped = registered.length - targets.length
+				const skipped = listed.length - targets.length
 				if (targets.length === 0) return { ...empty, skipped }
 
 				const rendered = renderDigestPush(event)
@@ -1069,13 +1272,23 @@ export class MobilePushService extends Context.Service<MobilePushService, Mobile
 				return { sent, failed: results.length - sent - unregistered, unregistered, skipped }
 			})
 
-			return { notifyIncident, notifyIncidentDigest, refreshWidgets } satisfies MobilePushServiceApi
+			return {
+				notifyIncident,
+				notifyIncidentDigest,
+				pageMember,
+				refreshWidgets,
+			} satisfies MobilePushServiceApi
 		}),
 	},
 ) {
 	static readonly layer = Layer.effect(this, this.make).pipe(
 		Layer.provide(
-			Layer.mergeAll(ApnsClient.layer, LiveActivitiesService.layer, MobileDevicesService.layer),
+			Layer.mergeAll(
+				ApnsClient.layer,
+				LiveActivitiesService.layer,
+				MobileDevicesService.layer,
+				OrgMembershipService.layer,
+			),
 		),
 	)
 }

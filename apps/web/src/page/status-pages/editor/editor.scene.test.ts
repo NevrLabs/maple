@@ -11,7 +11,7 @@ import {
 	type V2StatusPageCustomDomain,
 } from "@maple/domain/http/v2"
 import { DEFAULT_STATUS_PAGE_THEME } from "@maple/domain/status-page"
-import { flow, Option, Order, Result, Schema, Array as Arr, String as Str } from "effect"
+import { Effect, flow, Option, Order, Result, Schema, Array as Arr, String as Str } from "effect"
 import {
 	type AnyCommand,
 	type SceneSimulation,
@@ -88,7 +88,7 @@ import { maintenanceDurationMs } from "./view-incidents"
 import { type Focused, popupOwnsEscape } from "./subscription"
 import { removeComponentCopy, view as pageView } from "./view"
 
-const KEY = statusPageOrgKey(ORG)
+const KEY = await Effect.runPromise(statusPageOrgKey(ORG))
 
 const ADMIN = Policy.grantsOf(["org:admin"])
 const MEMBER = Policy.grantsOf(["org:member"])
@@ -177,6 +177,7 @@ const loaded = (fixture: Fixture = {}): Model => {
 	return Arr.reduce(
 		[
 			Message.ReadClock({ nowMs: Date.UTC(2026, 9, 1, 12) }),
+			Message.ComputedOrgKey({ orgKey: KEY }),
 			Message.CompletedFetchSession({ orgId: ORG, grants: fixture.grants ?? ADMIN }),
 			Message.CompletedFetchPage({
 				key: entered.page.key ?? "",
@@ -1333,7 +1334,7 @@ describe("components under Settings > Monitors", () => {
 			expectView(role("button", { name: "Reorder Component 1" })).toBeDisabled(),
 			expectView(role("button", { name: "Remove from page" })).toBeDisabled(),
 			expectView(role("textbox", { name: "Shown as" })).toBeDisabled(),
-			expectView(text("Only org admins and engineers can change components.")).toExist(),
+			expectView(text(Policy.denialFor("status_pages:edit").message)).toExist(),
 		)
 		expect(
 			pageUpdate(selected(1, { grants: MEMBER }), Message.ClickedAddComponent()).model.panel?._tag,
@@ -2628,6 +2629,25 @@ describe("live screen", () => {
 		)
 	})
 
+	test("no address, copy field or open link until the org key is derived, then the page's own", () => {
+		const url = `https://status-pr-7.maple.dev/s/${KEY}/acme-status`
+		const pending: Model = { ...live("https://status-pr-7.maple.dev"), orgKey: Option.none() }
+		scene(
+			{ update: pageUpdate, view },
+			given(pending),
+			expectView(selector("#status-page-public-url")).not.toExist(),
+			expectView(role("link", { name: "Open public page" })).not.toExist(),
+			expectView(role("link", { name: /\/s\//u })).not.toExist(),
+			expectView(text("Public address appears once a status domain is configured")).not.toExist(),
+		)
+		scene(
+			{ update: pageUpdate, view },
+			given(pageUpdate(pending, Message.ComputedOrgKey({ orgKey: KEY })).model),
+			expectView(selector("#status-page-public-url")).toHaveValue(url),
+			expectView(role("link", { name: "Open public page" })).toHaveAttr("href", url),
+		)
+	})
+
 	test("without a status domain: a note in place of the address, no link, and publishing still works", () => {
 		const model = live("")
 		scene(
@@ -3381,10 +3401,27 @@ describe("settings", () => {
 		scene(
 			{ update: pageUpdate, view },
 			given(pageUpdate(member, Message.PickedVisibility({ visibility: "password" })).model),
-			expectView(text("Only org admins and engineers can change who can view status pages.")).toExist(),
+			expectView(text(Policy.denialFor("status_pages:access").message)).toExist(),
 			expectView(role("radio", { name: "Password-protected" })).toBeDisabled(),
 			expectView(role("radio", { name: "Public" })).toBeChecked(),
 			expectView(text("Unsaved changes")).not.toExist(),
+		)
+	})
+
+	test("a visibility change saves the page, so status_pages:access alone does not offer it", () => {
+		const accessOnly = loaded({ ...ACCESS, grants: ["telemetry:read", "status_pages:access"] })
+		scene(
+			{ update: pageUpdate, view },
+			given(accessOnly),
+			expectView(text(Policy.denialFor("status_pages:edit").message)).toExist(),
+			expectView(role("radio", { name: "Password-protected" })).toBeDisabled(),
+		)
+		scene(
+			{ update: pageUpdate, view },
+			given(
+				loaded({ ...ACCESS, grants: ["telemetry:read", "status_pages:access", "status_pages:edit"] }),
+			),
+			expectView(role("radio", { name: "Password-protected" })).toBeEnabled(),
 		)
 	})
 

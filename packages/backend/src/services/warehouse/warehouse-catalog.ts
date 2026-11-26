@@ -5,6 +5,7 @@ import {
 	isDatasourceDefinition,
 } from "@maple-dev/effect-orm/tinybird"
 import * as Datasources from "@maple/domain/tinybird"
+import { PERSON_PROPERTY_VALUE_SQL } from "@maple/domain/tinybird/product-event-attributes"
 import { Array as Arr, Option, Order, Record as Rec, String as Str } from "effect"
 
 // Live introspection of the `defineDatasource` exports in
@@ -49,6 +50,12 @@ const TABLE_NOTES: Record<string, ReadonlyArray<string>> = {
 		"Where each trace's spans live in `traces`: one row per (TraceId, ServiceName, 5-minute `Bucket`), with `MinTimestamp`/`MaxTimestamp` of the spans in that bucket. No span data; use it to locate traces, then read `traces`.",
 		"A trace's time range: `SELECT min(MinTimestamp), max(MaxTimestamp) FROM trace_index WHERE OrgId = … AND TraceId = … GROUP BY TraceId`.",
 	],
+	ai_evaluations: [
+		"LLM evaluation scores, one row per score: the OTel `gen_ai.evaluation.result` event from log records and span events. `TraceId`/`SpanId` are the span the score GRADES; join to `ai_trace_index` on them for the model and agent. For the session, use the score's `SessionId` when `Scope` is 'session'; otherwise resolve `max(SessionId) GROUP BY TraceId` over `ai_trace_index`, because the graded span's row can have an empty `SessionId`.",
+		"`Name` is the evaluator (`gen_ai.evaluation.name`). `ScoreValue` is only meaningful where `HasScore = 1`; `Verdict` is 'pass'/'fail' read from `ScoreLabel`, '' when the label says neither. Pass rate = `countIf(Verdict = 'pass') / countIf(Verdict != '')`.",
+		"`Scope` is 'span', 'trace' or 'session' (session scores carry `SessionId`); `Source` is who wrote it ('otel' unless the emitter set `maple_ai.evaluation.source`); `ErrorType` non-empty means the evaluation itself failed, not the graded call.",
+		"Sorting key: `(OrgId, Name, Timestamp)` with a bloom index on `TraceId`; 90-day TTL, longer than `traces`, so an old score's trace may be gone.",
+	],
 	ai_crawler_requests: [
 		"Server spans whose user agent names an AI crawler (GPTBot, OAI-SearchBot, ChatGPT-User, ClaudeBot, Claude-SearchBot, Claude-User, PerplexityBot, Meta-ExternalAgent, Bytespider, CCBot, Amazonbot, ...), with `Crawler` (display name), `Host`, `Path` (no query string) and `HttpStatus` pre-extracted. ALWAYS prefer this over `traces` + `SpanAttributes['user_agent.original']`, which times out past about two days.",
 		"One row per SPAN: a proxied request has several Server spans in one trace, so count requests as `uniq(TraceId)`, never `count()`.",
@@ -90,6 +97,11 @@ const TABLE_NOTES: Record<string, ReadonlyArray<string>> = {
 		"One row per (`ServiceNamespace`, `UserId`, `Hour`, `ServiceName`) of spans and logs carrying `user.id` (else `enduser.id`). ALWAYS prefer this over `traces` + `SpanAttributes['user.id']` for per-user request, error and log counts.",
 		"Sum `SpanCount`, `ErrorSpanCount`, `RequestCount` (entry-point spans), `FailedRequestCount`, `LogCount`, `WarnLogCount`, `ErrorLogCount`; `min(FirstSeen)` / `max(LastSeen)`. Merge `TraceIds` / `SessionIds` with `uniqIfMerge`, `RequestDurationQuantiles` with `quantilesTDigestIfMerge(0.5, 0.95)` (NANOSECONDS), `TopRoutes` with `approx_top_kMerge(10)` (drop the '' entry).",
 		"Keeps 90 days at hour grain: snap range bounds with `toStartOfHour`. Sorting key: `(OrgId, ServiceNamespace, UserId, Hour, ServiceName)`.",
+	],
+	user_activity_daily: [
+		"`user_activity_hourly` at UTC-day grain, kept 365 days: one row per (`ServiceNamespace`, `UserId`, `Day`, `ServiceName`). Use it for per-user trends older than 90 days.",
+		"Sum `RequestCount`, `FailedRequestCount`, `ErrorSpanCount`, `LogCount`, `ErrorLogCount`; merge `SessionIds` with `uniqIfMerge`. No names, emails, routes or latency: read those from `user_activity_hourly`.",
+		"Snap range bounds with `toStartOfDay`. Sorting key: `(OrgId, ServiceNamespace, UserId, Day, ServiceName)`.",
 	],
 	service_operations_hourly: [
 		"One row per (service, env, hour, `SpanName`). Sum `SpanCount` / `ErrorCount`; p50 / p95 in NANOSECONDS are `quantilesTDigestMerge(0.5, 0.95)(DurationQuantiles)[1]` / `[2]`.",
@@ -134,6 +146,12 @@ const TABLE_NOTES: Record<string, ReadonlyArray<string>> = {
 	metrics_gauge: ["Point-in-time numeric values. Aggregate with avg/min/max/last over time buckets."],
 	product_events: [
 		"Event properties live in `Attributes` (Map(String, String)), read with `Attributes['plan']`. There is no `Properties` column.",
+		"Keys starting `$set.`, `$set_once.`, `$unset.` (and `$group_` of each) are person and group property writes, not event properties: read the result from `person_properties`.",
+	],
+	person_properties: [
+		"User (`Kind = 'user'`, `Id` = UserId) and group (`Kind = 'group'`, `Id` = GroupId) properties, from `identify()` traits and property writes on events and spans. One logical row per (`Kind`, `Id`, `Key`) spread over unmerged parts: always GROUP BY `Kind, Id, Key`.",
+		`A key's current value: \`${Str.replace(/\s+/g, " ")(PERSON_PROPERTY_VALUE_SQL)}\`; NULL means unset. \`SetValue\` / \`OnceValue\` are aggregate states: never \`SELECT *\`.`,
+		"Join it to `product_events` on `UserId = Id` (or `GroupId = Id` for groups), pinning `Kind` and `Key` first: sorting key `(OrgId, Kind, Key, Id)`. Values are current, not as of the event.",
 	],
 	metrics_histogram: [
 		"Pre-aggregated histograms (bucket counts + sum + count). Reconstruct percentiles with `quantilesExact`/`quantileBFloat16` if needed.",
@@ -176,9 +194,9 @@ const TABLE_NOTES: Record<string, ReadonlyArray<string>> = {
 	search_console_daily: [
 		"Time column: `Date`, midnight UTC holding Google's Pacific day. Filter whole days: `Date >= toStartOfDay($__startTime) AND Date <= $__endTime`. Imports run through today, so the newest days are partial (Google reports with a 2 to 3 day lag): end windows at yesterday (Pacific) or earlier for complete days.",
 		"`Grain` is 'site' (totals per Country/Device, Page and Query ''), 'page' (per Page; Country, Device and Query '') or 'query' (per Query, Page, Country and Device). Per-page Country/Device splits are not available: Google drops anonymized traffic when page is split by them. Each grain counts the same clicks again, so always filter one `Grain` and never sum across grains. The 'query' grain omits Google's anonymized queries, so it sums below 'site'.",
-		"Versions: each import of a day writes the whole day of a grain with one `IngestedAt`, only once Google returned all of it, and a re-import can drop keys an older one still holds. Keep only each day's newest import: `AND (Date, IngestedAt) IN (SELECT Date, max(IngestedAt) FROM search_console_daily WHERE <same filters> GROUP BY Date)`, never argMax per key.",
+		"Versions: each import of a day writes the whole day of a grain with one `IngestedAt`, then one zero row per grain with `SearchType` 'web:complete' marking it complete. A re-import can drop keys an older one still holds, and one that failed part-way has no marker. Each day's newest complete import is `SELECT Date, argMax(IngestedAt, (SearchType = 'web:complete', IngestedAt)) AS newest FROM search_console_daily WHERE OrgId, SiteUrl, Grain and Date filters only, SearchType IN ('web', 'web:complete') GROUP BY Date` (markers hold '' in Page, Query, Country and Device, so never filter those there). Join it on Date, keep `SearchType = 'web' AND IngestedAt >= newest`, and take each key's `argMax(<metric>, IngestedAt)`: a merge can replace a complete import's row with a newer unfinished one.",
 		"Average position is impression-weighted: `sum(PositionSum) / sum(Impressions)`, never `avg()`. CTR is `sum(Clicks) / sum(Impressions)`. Lower position is better.",
-		"`SiteUrl` is the Search Console property (`sc-domain:example.com` or `https://example.com/`); `Page` is a full URL; `Country` is lowercase ISO 3166 alpha-3; `SearchType` is 'web'.",
+		"`SiteUrl` is the Search Console property (`sc-domain:example.com` or `https://example.com/`); `Page` is a full URL; `Country` is lowercase ISO 3166 alpha-3; `SearchType` is 'web' (or 'web:complete' on a marker row).",
 		"Imported into Maple's managed warehouse only: an org on its own ClickHouse reads it empty here. search_console_queries and search_console_pages read it on any setup.",
 	],
 } satisfies Record<string, ReadonlyArray<string>>
@@ -233,6 +251,10 @@ const TABLE_NAME_ALIASES: ReadonlyMap<string, ReadonlyArray<string>> = new Map([
 	["exceptions", ["error_events"]],
 	["sessions", ["session_replays"]],
 	["events", ["product_events"]],
+	["persons", ["person_properties"]],
+	["person", ["person_properties"]],
+	["people", ["person_properties"]],
+	["groups", ["person_properties"]],
 ])
 
 /** Real tables an unknown table name most likely meant, best first; empty when nothing fits. */
@@ -320,6 +342,29 @@ export function listTrustedReadDatasourceNames(): ReadonlyArray<string> {
 		Order.String,
 	)
 }
+
+// A whole identifier, so `traces` is not found inside `traces_aggregates_hourly`. Built on first
+// use: the regexes are only needed where a read token is minted.
+const datasourceMentions = (() => {
+	const built = new Map<string, RegExp>()
+	return (name: string): RegExp => {
+		const known = built.get(name)
+		if (known !== undefined) return known
+		const pattern = new RegExp(`(?<![A-Za-z0-9_])${name}(?![A-Za-z0-9_])`)
+		built.set(name, pattern)
+		return pattern
+	}
+})()
+
+/** Which of `names` a statement mentions. A name inside a string literal counts too: it over-reports, never under. */
+export const datasourcesMentionedIn = (
+	statement: string,
+	names: ReadonlyArray<string>,
+): ReadonlyArray<string> => Arr.filter(names, (name) => datasourceMentions(name).test(statement))
+
+/** A statement with its string literals emptied, so a value that reads like a datasource name is not taken for one. */
+export const withoutStringLiterals = (statement: string): string =>
+	Str.replace(/'(?:[^'\\]|\\.|'')*'/g, "''")(statement)
 
 export function describeWarehouseTable(name: string): TableInfo | null {
 	const found = Arr.findFirst(collectDatasources(), (d) => d._name === name)

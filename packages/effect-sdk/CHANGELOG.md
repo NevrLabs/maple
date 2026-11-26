@@ -1,5 +1,36 @@
 # @maple-dev/effect-sdk
 
+## 0.16.0
+
+### Minor Changes
+
+- a49f40c: New `privacy.persistence: "cookieless"` mode. Like `"memory"`, the SDK stores nothing on the device (no cookies, Web Storage or IndexedDB). Unlike `"memory"`, unique visitors are still counted: the ingest gateway derives a visitor id that changes every UTC day, from a salt it deletes after two days. Unique visitors are counted within a day, not across days, and new vs returning is unavailable. Consent under `requireConsent`, Global Privacy Control, `respectDoNotTrack` with Do Not Track, and `persistVisitorId: false` still turn the visitor id off. If two SDKs on a page set different modes, `"memory"` wins.
+- 7601363: `MapleEvents` writes user and account properties. Any `track()` call takes `set`, `setOnce` and `unset` for the user and `groupSet`, `groupSetOnce` and `groupUnset` for the account, and two new calls send them on their own: `identify(userId, { set, setOnce, unset, visitorId })` and `groupIdentify(groupId, properties)`. Passing `visitorId` to `identify` links the device to the user, so their events before sign-in count as theirs.
+
+### Patch Changes
+
+- 0aec646: The SDK no longer depends on `std-env`: runtime and hosting provider detection for the `cloud.*`, `faas.*`, `process.runtime.*` and `os.type` resource attributes is built in, with the same rules and results. Environment variables are read only as detection needs them, and one that cannot be read (for example denied by Deno's `--deny-env`) counts as unset instead of failing telemetry startup. The package now has no runtime dependencies besides its `effect` peer.
+
+## 0.15.0
+
+### Minor Changes
+
+- e604502: Continuous CPU profiling for Node and Bun. `Maple.layer({ profiling: true })` runs the runtime's
+  sampling profiler with no native addon and exports OTLP profiles every window. Each sample is
+  linked to the span that was running, so a span can show its own flame graph. Off by default; a
+  runtime without a profiler (Cloudflare Workers) logs one warning and runs without it.
+- b7842dd: `MapleFlush.make({ profiling: true })` runs the continuous CPU profiler too, on the same endpoint
+  and key as its flushes, and starts no second profiler when its `layer` is built again while one
+  runs. An inspector that takes a session and never answers no longer holds the app's startup up:
+  after 5 seconds profiling turns off with one warning.
+
+### Patch Changes
+
+- 817980c: Session replay and session events stop sending to an endpoint that answers 404 (one without those routes, such as an older Maple Local) instead of retrying on every flush for the rest of the page.
+- dcb4277: `MapleFoldkit.make`: a `routeName` result names the navigation span as is. It no longer goes
+  through `privacy.sanitizeUrl`, which turned a label like `Home` into `[url]` when the sanitizer
+  rejects anything that is not a URL. Without `routeName`, the path fallback is still sanitized.
+
 ## 0.14.1
 
 ### Patch Changes

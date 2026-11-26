@@ -8,6 +8,7 @@ import { LIST_LIMIT_DEFAULT, wireExample, ListOf, ListQuery, Timestamp } from ".
 import { defineV2Error, V2CursorInvalid, V2ParameterInvalid } from "./errors"
 import { PublicId, PublicIdPrefixes } from "./public-id"
 import { V2WarehouseReadErrors } from "./query-errors"
+import { EndpointAccess, requires } from "../endpoint-access"
 
 /** `srep_…` public ID ⇄ internal `SessionId` (free-form string). */
 export const SessionReplayPublicId = PublicId(PublicIdPrefixes.sessionReplay, SessionId)
@@ -115,7 +116,10 @@ export type V2SessionReplayListItem = Schema.Schema.Type<typeof V2SessionReplayL
 
 export const V2SessionReplay = Schema.Struct({
 	...sessionReplayBaseFields,
-	visitor_is_new: Schema.Boolean,
+	visitor_is_new: Schema.Boolean.annotate({
+		description:
+			"Whether this was the visitor's first session. Always false for a cookieless visitor, whose history is unknown. An identified cookieless session carries `maple.visitor.mode: cookieless` in `resource_attributes`; one the gateway could not identify has an empty `visitor_id` and no history at all.",
+	}),
 	user_traits: Schema.String.annotate({ description: "Identify traits as a JSON-encoded string map." }),
 	referrer: Schema.String,
 	referrer_host: Schema.String,
@@ -673,4 +677,5 @@ export class V2SessionReplaysApiGroup extends HttpApiGroup.make("sessionReplays"
 			description:
 				"Recorded browser sessions — search them, retrieve detail, stream rrweb event chunks, read the distilled transcript, and reverse-correlate from a trace.",
 		}),
-	) {}
+	)
+	.annotate(EndpointAccess, requires("telemetry:read")) {}

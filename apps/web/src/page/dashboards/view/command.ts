@@ -26,12 +26,14 @@ import { fetchWidgetData, toWidgetFailure } from "../kit/widget-data"
 import { getWidgetServerFunction } from "@maple/web-data/warehouse/widget-data-sources"
 import { fetchVariableOptions } from "../kit/variables"
 import { deriveDefaultWidgetTitle } from "../widget/drafts"
+import { installGridFlip } from "./grid-flip"
 import { Message } from "./message"
 import { LayoutChange } from "./model"
 import { ShareMessage } from "./share"
 import { settleTo } from "@maple/views/data/load-failure"
 import { presetById } from "./picker-catalog"
 import { applySectionEdit, SectionEdit } from "./section-edit"
+import { fetchSessionGrants } from "../../kit/session-grants"
 
 export const ReadClock = readClock("ReadDashboardClock", Message.CompletedReadClock)
 
@@ -308,7 +310,10 @@ export const WatchGridHandles = Mount.defineStream("WatchDashboardGridHandles", 
 					element.addEventListener("pointerdown", onDown)
 					element.addEventListener("keydown", onKey)
 					element.addEventListener("focusout", onBlur)
+					const removeFlip =
+						element instanceof HTMLElement ? installGridFlip(element) : () => undefined
 					return () => {
+						removeFlip()
 						element.removeEventListener("pointerdown", onDown)
 						element.removeEventListener("keydown", onKey)
 						element.removeEventListener("focusout", onBlur)
@@ -559,3 +564,8 @@ export const EditSections = Command.define("EditDashboardSections", {
 			)
 		}),
 })
+
+export const FetchDashboardSession = fetchSessionGrants(
+	"FetchDashboardSession",
+	Message.CompletedFetchSession,
+)

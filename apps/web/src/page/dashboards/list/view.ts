@@ -19,6 +19,7 @@ import { listBody, listSkeleton } from "./view-list"
 import { snapshotBanner } from "../kit/live-sync"
 import { String as Str } from "effect"
 import { hstack } from "@maple/views/ui/stack"
+import { gatedControl } from "../../kit/session-grants"
 
 type H = HtmlBuilder<Message>
 
@@ -60,8 +61,14 @@ const readOnlyReason = (model: Model): string | null =>
 					? "Couldn't reach Maple. Editing is off until it reconnects."
 					: `${writeFailureCause(model.persistenceError)}. Editing is off until it recovers.`
 
+/** A write control: locked for a role without `dashboards:edit`, else off with `reason` while writes are. */
+const writeControl = (h: H, model: Model, reason: string | null, control: (isDisabled: boolean) => Html) =>
+	gatedControl(h, model, "dashboards:edit", (isLocked) =>
+		isLocked ? control(true) : withReason(h, reason, control(reason !== null)),
+	)
+
 /** Browse templates, Import (the hidden file input) and Create dashboard. */
-const actions = (h: H, reason: string | null): Html =>
+const actions = (h: H, model: Model, reason: string | null): Html =>
 	hstack(h, { gap: "1", align: "center", wrap: true }, [
 		button(
 			h,
@@ -71,28 +78,24 @@ const actions = (h: H, reason: string | null): Html =>
 				"Browse templates",
 			],
 		),
-		withReason(
-			h,
-			reason,
+		writeControl(h, model, reason, (isDisabled) =>
 			button(
 				h,
 				{
 					variant: "outline",
 					size: "sm",
-					isDisabled: reason !== null,
+					isDisabled,
 					attributes: [h.OnClick(Message.ClickedImport())],
 				},
 				[icon(h, "UploadIcon", { attributes: [h.DataAttribute("icon", "inline-start")] }), "Import"],
 			),
 		),
-		withReason(
-			h,
-			reason,
+		writeControl(h, model, reason, (isDisabled) =>
 			button(
 				h,
 				{
 					size: "sm",
-					isDisabled: reason !== null,
+					isDisabled,
 					attributes: [h.OnClick(Message.ClickedCreate())],
 				},
 				[
@@ -162,7 +165,7 @@ export const view = Submodel.defineView<Model, Message, PageViewInputs>((model, 
 		{
 			titleContent: title,
 			// NevrLabs selfhost: a viewer cannot create or import (the API gate answers 403).
-			actions: isViewerSession() ? h.empty : actions(h, reason),
+			actions: isViewerSession() ? h.empty : actions(h, model, reason),
 			sticky: persistenceBanner(h, model.persistenceError, isLoadFailed(model)),
 		},
 		isLoadFailed(model)

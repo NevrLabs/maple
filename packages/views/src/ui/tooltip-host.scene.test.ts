@@ -42,6 +42,28 @@ describe("tooltip host", () => {
 		)
 	})
 
+	test("a titled trigger opens with its title over the description", () => {
+		const hovered = update(
+			init(ID),
+			Message.EnteredTrigger({
+				triggerId: "prs",
+				shown: {
+					text: "Pull requests linked to this issue as fixes.",
+					title: "2 pull requests",
+					isIconButton: false,
+					side: "top",
+				},
+			}),
+		)
+		scene(
+			{ update, view: sceneView },
+			given(elapsed(hovered.model).model),
+			mounted,
+			expect(text("2 pull requests")).toExist(),
+			expect(text("Pull requests linked to this issue as fixes.")).toExist(),
+		)
+	})
+
 	test("moving to another trigger while open re-anchors at once with the new text", () => {
 		const open = elapsed(entered(init(ID), "a", "First").model).model
 		const moved = entered(open, "b", "Second")
@@ -63,6 +85,53 @@ describe("tooltip host", () => {
 			waits: Arr.some(next.commands ?? [], (command) => command.name === "WaitOpenDelay"),
 		}).toEqual({ isOpen: true, anchor: "b", waits: false })
 		scene({ update, view: sceneView }, given(next.model), mounted, expect(text("Second")).toExist())
+	})
+
+	test("a grouped trigger stays open across the gap and hands the tooltip to its neighbour", () => {
+		const grouped = (model: Model, triggerId: string, text: string) =>
+			update(
+				model,
+				Message.EnteredTrigger({
+					triggerId,
+					shown: { text, isIconButton: false, side: "top", isGrouped: true },
+				}),
+			)
+		const open = elapsed(grouped(init(ID), "mon", "Monday").model).model
+		const left = update(open, Message.LeftTrigger({ triggerId: "mon" }))
+		assert(left.model.tooltip.isOpen).toBe(true)
+		const next = grouped(left.model, "tue", "Tuesday")
+		assert({ isOpen: next.model.tooltip.isOpen, anchor: next.model.tooltip.triggerId }).toEqual({
+			isOpen: true,
+			anchor: "tue",
+		})
+		// The close the gap scheduled is stale once a neighbour is entered.
+		const stale = update(
+			next.model,
+			Message.ElapsedCloseGrace({ generation: left.model.closeGeneration }),
+		)
+		assert(stale.model.tooltip.isOpen).toBe(true)
+		scene({ update, view: sceneView }, given(next.model), mounted, expect(text("Tuesday")).toExist())
+	})
+
+	test("a grouped trigger closes once the grace passes with nothing entered", () => {
+		const open = elapsed(
+			update(
+				init(ID),
+				Message.EnteredTrigger({
+					triggerId: "mon",
+					shown: { text: "Monday", isIconButton: false, side: "top", isGrouped: true },
+				}),
+			).model,
+		).model
+		const left = update(open, Message.LeftTrigger({ triggerId: "mon" }))
+		const closed = update(
+			left.model,
+			Message.ElapsedCloseGrace({ generation: left.model.closeGeneration }),
+		)
+		assert({ duringGrace: left.model.tooltip.isOpen, after: closed.model.tooltip.isOpen }).toEqual({
+			duringGrace: true,
+			after: false,
+		})
 	})
 
 	test("once the warm window passes, the next trigger waits the delay again", () => {

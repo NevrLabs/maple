@@ -10,6 +10,7 @@ import { V2WarehouseReadErrors } from "./query-errors"
 import { publicErrors } from "./public-error"
 import { PublicId, PublicIdPrefixes } from "./public-id"
 import { AlertDestinationPublicId, AlertRulePublicId } from "./resource-ids"
+import { EndpointAccess, requires } from "../endpoint-access"
 
 /** `slo_…` public ID ⇄ internal `SloId` (raw UUID). */
 export const SloPublicId = PublicId(PublicIdPrefixes.slo, SloId)
@@ -212,6 +213,9 @@ export const V2SloBurnWindow = Schema.Struct({
 	),
 	total_events: ratioField("Sampling-weighted entry-point spans in the window."),
 	good_events: ratioField("The good ones among them."),
+	sample_count: ratioField(
+		"Spans actually recorded in the window, before sampling weights. A burn-rate tier needs 10 of them, 2 bad, in its long window before it fires.",
+	),
 }).annotate({ identifier: "SloBurnWindow", title: "SLO burn window" })
 
 export const V2SloStatus = Schema.Struct({
@@ -220,6 +224,9 @@ export const V2SloStatus = Schema.Struct({
 	as_of: Timestamp.annotate({ description: "When the status was read, to the minute." }),
 	total_events: ratioField("Sampling-weighted entry-point spans over the SLO window."),
 	good_events: ratioField("The good ones among them."),
+	sample_count: ratioField(
+		"Spans actually recorded over the SLO window, before sampling weights. The budget counts as spent only on 10 of them, 2 bad.",
+	),
 	sli: Schema.NullOr(Schema.Number).annotate({
 		description: "Share of good events over the SLO window (0 to 1), `null` when there were none.",
 	}),
@@ -227,7 +234,8 @@ export const V2SloStatus = Schema.Struct({
 		"Share of the window's error budget left: 1 untouched, 0 spent, negative when overspent.",
 	),
 	burn_windows: Schema.Array(V2SloBurnWindow).annotate({
-		description: "The windows the burn-rate alert reads: 5 minutes, 30 minutes, 1 hour and 6 hours.",
+		description:
+			"The windows the burn-rate alert reads: 5 minutes, 30 minutes, 1 hour, 2 hours, 6 hours and 24 hours.",
 	}),
 }).annotate({
 	identifier: "SloStatus",
@@ -299,14 +307,16 @@ export class V2SlosApiGroup extends HttpApiGroup.make("slos")
 		HttpApiEndpoint.get("statuses", "/statuses", {
 			success: V2SloStatusList,
 			error: [sloPersistence, ...V2WarehouseReadErrors],
-		}).annotateMerge(
-			OpenApi.annotations({
-				identifier: "listSloStatuses",
-				summary: "List every SLO's status",
-				description:
-					"Returns the SLI, budget left and burn windows of every SLO in the organization, read together.",
-			}),
-		),
+		})
+			.annotate(EndpointAccess, requires("telemetry:read"))
+			.annotateMerge(
+				OpenApi.annotations({
+					identifier: "listSloStatuses",
+					summary: "List every SLO's status",
+					description:
+						"Returns the SLI, budget left and burn windows of every SLO in the organization, read together.",
+				}),
+			),
 	)
 	.add(
 		HttpApiEndpoint.post("create", "/", {
@@ -368,27 +378,31 @@ export class V2SlosApiGroup extends HttpApiGroup.make("slos")
 			params: { id: SloPublicId },
 			success: V2SloStatus,
 			error: [sloNotFound, sloPersistence, ...V2WarehouseReadErrors],
-		}).annotateMerge(
-			OpenApi.annotations({
-				identifier: "getSloStatus",
-				summary: "Retrieve an SLO's status",
-				description:
-					"Returns the SLO's SLI and error budget over its window, and its current burn rates.",
-			}),
-		),
+		})
+			.annotate(EndpointAccess, requires("telemetry:read"))
+			.annotateMerge(
+				OpenApi.annotations({
+					identifier: "getSloStatus",
+					summary: "Retrieve an SLO's status",
+					description:
+						"Returns the SLO's SLI and error budget over its window, and its current burn rates.",
+				}),
+			),
 	)
 	.add(
 		HttpApiEndpoint.get("history", "/:id/history", {
 			params: { id: SloPublicId },
 			success: V2SloHistory,
 			error: [sloNotFound, sloPersistence, ...V2WarehouseReadErrors],
-		}).annotateMerge(
-			OpenApi.annotations({
-				identifier: "getSloHistory",
-				summary: "Retrieve an SLO's budget history",
-				description: "Returns the error budget left over the SLO window, one point per hour.",
-			}),
-		),
+		})
+			.annotate(EndpointAccess, requires("telemetry:read"))
+			.annotateMerge(
+				OpenApi.annotations({
+					identifier: "getSloHistory",
+					summary: "Retrieve an SLO's budget history",
+					description: "Returns the error budget left over the SLO window, one point per hour.",
+				}),
+			),
 	)
 	.prefix("/v2/slos")
 	.middleware(AuthorizationV2)
@@ -398,4 +412,5 @@ export class V2SlosApiGroup extends HttpApiGroup.make("slos")
 			description:
 				"Service level objectives over a service's entry-point spans, with an error budget measured over a rolling window.",
 		}),
-	) {}
+	)
+	.annotate(EndpointAccess, "handler") {}

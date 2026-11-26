@@ -9,6 +9,7 @@ import * as Ai from "./ai/model"
 import * as Billing from "./billing/model"
 import * as Members from "./members/model"
 import * as SelfhostMembers from "./selfhost-members/model"
+import * as Roles from "./roles/model"
 import * as General from "./general/model"
 import * as Domains from "./domains/model"
 import * as Sso from "./sso/model"
@@ -51,6 +52,7 @@ export const TabModel = Schema.Union([
 	Schema.TaggedStruct("Members", { model: Members.Model }),
 	/** NevrLabs selfhost: Members on a self-hosted deployment (the OIDC users table). */
 	Schema.TaggedStruct("SelfhostMembers", { model: SelfhostMembers.Model }),
+	Schema.TaggedStruct("Roles", { model: Roles.Model }),
 	Schema.TaggedStruct("Domains", { model: Domains.Model }),
 	Schema.TaggedStruct("Sso", { model: Sso.Model }),
 	Schema.TaggedStruct("Billing", { model: Billing.Model }),

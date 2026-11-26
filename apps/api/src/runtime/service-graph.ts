@@ -29,6 +29,7 @@ import { AlertsService } from "@maple/backend/services/alerts/AlertsService"
 import { AlertDestinationsService } from "@maple/backend/services/alerts/AlertDestinationsService"
 import { AlertReadModelsService } from "@maple/backend/services/alerts/AlertReadModelsService"
 import { AlertIncidentAckService } from "@maple/backend/services/alerts/AlertIncidentAckService"
+import { AlertIncidentResolver } from "@maple/backend/services/alerts/AlertIncidentResolver"
 import { AlertIncidentPagesService } from "@maple/backend/services/alerts/AlertIncidentPagesService"
 import { AlertRulesService } from "@maple/backend/services/alerts/AlertRulesService"
 import { EscalationChainsService } from "@maple/backend/services/alerts/EscalationChainsService"
@@ -63,6 +64,7 @@ import { WebAnalyticsDigestService } from "@maple/backend/services/digest/WebAna
 import { AiTriageService } from "@maple/backend/services/errors/AiTriageService"
 import { ErrorActorsService } from "@maple/backend/services/errors/ErrorActorsService"
 import { ErrorIssueReadModelsService } from "@maple/backend/services/errors/ErrorIssueReadModelsService"
+import { ErrorGroupingService } from "@maple/backend/services/errors/ErrorGroupingService"
 import { ErrorIssueMergeService } from "@maple/backend/services/errors/ErrorIssueMergeService"
 import { ErrorIssueWorkflowService } from "@maple/backend/services/errors/ErrorIssueWorkflowService"
 import { IssueFixVerificationService } from "@maple/backend/services/errors/IssueFixVerificationService"
@@ -92,6 +94,7 @@ import { AnthropicCostConnectionService } from "@maple/backend/services/cost/Ant
 import { FeatureRequestService } from "@maple/backend/services/feature-requests/FeatureRequestService"
 import { CloudflareCostConnectionService } from "@maple/backend/services/cost/CloudflareCostConnectionService"
 import { OpenAiCostConnectionService } from "@maple/backend/services/cost/OpenAiCostConnectionService"
+import { MorphCostConnectionService } from "@maple/backend/services/cost/MorphCostConnectionService"
 import { GithubCostSourceService } from "@maple/backend/services/cost/GithubCostSourceService"
 import { OpenRouterCostConnectionService } from "@maple/backend/services/cost/OpenRouterCostConnectionService"
 import { CostBudgetsService } from "@maple/backend/services/cost/CostBudgetsService"
@@ -117,8 +120,12 @@ import { GithubConnectService } from "@maple/backend/services/integrations/vcs/v
 import { ApiKeysService } from "@maple/backend/services/org/ApiKeysService"
 import { DemoService } from "@maple/backend/services/org/DemoService"
 import { IngestAttributeMappingService } from "@maple/backend/services/org/IngestAttributeMappingService"
+import { SourceMapService } from "@maple/backend/services/sourcemaps/SourceMapService"
+import { StackSymbolicator } from "@maple/backend/services/sourcemaps/StackSymbolicator"
 import { IngestRuleService } from "@maple/backend/services/org/IngestRuleService"
+import { IngestRulePreviewService } from "@maple/backend/services/org/IngestRulePreviewService"
 import { OnboardingChecklistService } from "@maple/backend/services/org/OnboardingChecklistService"
+import { OnboardingAgentRunService } from "@maple/backend/services/onboarding/OnboardingAgentRunService"
 import { SupportChannelService } from "@maple/backend/services/support/SupportChannelService"
 import { OrgIngestKeysService } from "@maple/backend/services/org/OrgIngestKeysService"
 import { SourcesService } from "@maple/backend/services/org/SourcesService"
@@ -137,6 +144,7 @@ import { SignalPresenceService } from "@maple/backend/services/org/SignalPresenc
 import { SessionReplayReadService } from "@maple/backend/services/session-replays/SessionReplayReadService"
 import { UsersReadService } from "@maple/backend/services/users/UsersReadService"
 import { McpReadService } from "@maple/backend/services/mcp/McpReadService"
+import { AiEvaluationReadService } from "@maple/backend/services/ai-evaluations/AiEvaluationReadService"
 import { AiSessionReadService } from "@maple/backend/services/ai-sessions/AiSessionReadService"
 import { ProductEventsService } from "@maple/backend/services/product-events/ProductEventsService"
 
@@ -204,6 +212,7 @@ export const HttpServicesLive = Layer.mergeAll(
 	SearchConsoleService.layer,
 	SearchConsoleImportService.layer,
 	OnboardingChecklistService.layer,
+	OnboardingAgentRunService.layer,
 	SupportChannelService.layer,
 	OrgIngestKeysService.layer,
 	SourcesService.layer,
@@ -232,10 +241,12 @@ export const HttpServicesLive = Layer.mergeAll(
 	PlanetScaleService.layer,
 	PlanetScaleWebhookService.layer,
 	IngestAttributeMappingService.layer,
+	// Needs the `SourceMapBucket` port, which only the deployed Worker binds.
+	SourceMapService.layer,
 	IngestRuleService.layer,
+	IngestRulePreviewService.layer,
 	AutumnClient.layer,
 	StripeClient.layer,
-	ProductEventsService.layer,
 	DailySpendService.layer,
 	BillingCustomerResolver.layer,
 	BillingOrgService.layer,
@@ -260,6 +271,7 @@ export const HttpServicesLive = Layer.mergeAll(
 	AnthropicCostConnectionService.layer,
 	FeatureRequestService.layer,
 	OpenAiCostConnectionService.layer,
+	MorphCostConnectionService.layer,
 	GithubCostSourceService.layer,
 	PlanetScaleCostSourceService.layer,
 	VercelCostSourceService.layer,
@@ -285,6 +297,7 @@ export const HttpServicesLive = Layer.mergeAll(
 	AlertDestinationsService.layer,
 	AlertReadModelsService.layer,
 	AlertIncidentAckService.layer,
+	AlertIncidentResolver.layer,
 	AlertIncidentPagesService.layer,
 	AlertRulesService.layer,
 	AlertSilencesService.layer,
@@ -298,8 +311,11 @@ export const HttpServicesLive = Layer.mergeAll(
 	ErrorActorsService.layer,
 	ErrorIssueWorkflowService.layer,
 	ErrorIssueMergeService.layer,
+	// "Why grouped" shows the frames the key was computed from, source-mapped like the tick's.
+	ErrorGroupingService.layer.pipe(Layer.provide(StackSymbolicator.layer)),
 	ErrorPolicyService.layer,
-	ErrorIssueReadModelsService.layer,
+	// Symbolicates the detail's latest stack through the org's source maps (needs `SourceMapReadBucket`).
+	ErrorIssueReadModelsService.layer.pipe(Layer.provide(StackSymbolicator.layer)),
 	ErrorsService.layer,
 	// The investigation gate's classifier, for the alert path that opens
 	// incidents from a request. Read optionally by `maybeEnqueueTriage`.
@@ -312,6 +328,7 @@ export const HttpServicesLive = Layer.mergeAll(
 	UsersReadService.layer,
 	McpReadService.layer,
 	AiSessionReadService.layer,
+	AiEvaluationReadService.layer.pipe(Layer.provide(OrganizationFeatureFlagsService.layer)),
 	DigestService.layer,
 	WebAnalyticsDigestService.layer,
 	DemoService.layer,
@@ -323,4 +340,8 @@ export const HttpServicesLive = Layer.mergeAll(
 	VcsCommitService.layer,
 	VcsSourceService.layer,
 	ChatWorkspaceService.layer,
-).pipe(Layer.provideMerge(Layer.mergeAll(Env.layer, ApiSecretsLive, EdgeCacheServiceLive)))
+).pipe(
+	// A platform service: onboarding and billing services emit through it.
+	Layer.provideMerge(ProductEventsService.layer),
+	Layer.provideMerge(Layer.mergeAll(Env.layer, ApiSecretsLive, EdgeCacheServiceLive)),
+)

@@ -10,12 +10,16 @@ import { promql } from "./commands/promql"
 import { timeseries, breakdown, compare, logDiff } from "./commands/analytics"
 import { auth, login, logout, whoami } from "./commands/auth"
 import { use } from "./commands/config"
+import { api, get, patch, post, put } from "./commands/api"
 import { start, stop, reset, checkpoint, restore } from "./commands/server"
 import { schema } from "./commands/schema"
 import { archive } from "./commands/archive"
 import { deleteCommand } from "./commands/delete"
 import { update } from "./commands/update"
 import { changelog } from "./commands/changelog"
+import { onboarding } from "./commands/onboarding"
+import { users, user, events } from "./commands/users"
+import { sourcemaps } from "./commands/sourcemaps"
 import { OutputFormatSetting } from "./lib/output"
 
 // One CLI, two backends. Local mode runs the query-engine helpers against the
@@ -70,6 +74,9 @@ export const cli = Command.make("maple").pipe(
 		attributes,
 		metrics,
 		promql,
+		users,
+		user,
+		events,
 		timeseries,
 		breakdown,
 		compare,
@@ -78,6 +85,13 @@ export const cli = Command.make("maple").pipe(
 		auth,
 		logout,
 		whoami,
+		onboarding,
 		use,
+		api,
+		get,
+		post,
+		put,
+		patch,
+		sourcemaps,
 	]),
 )

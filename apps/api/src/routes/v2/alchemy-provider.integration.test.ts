@@ -2,6 +2,7 @@ import { LiveActivitiesService } from "@maple/backend/services/push/LiveActiviti
 import { MobileDevicesService } from "@maple/backend/services/push/MobileDevicesService"
 import { ApnsClient } from "@maple/backend/platform/Apns"
 import { MobilePushService } from "@maple/backend/services/push/MobilePushService"
+import { OrgMembershipService } from "@maple/backend/services/auth/OrgMembershipService"
 import { AlertMemberNotifier } from "@maple/backend/services/alerts/AlertMemberNotifier"
 import { ChatAlertPoster } from "@maple/backend/services/alerts/ChatAlertPoster"
 /**
@@ -170,17 +171,22 @@ const makeHarness = () => {
 	const alertRulesLive = AlertRulesService.layer.pipe(
 		Layer.provide(Layer.mergeAll(testDb.layer, runtimeLive)),
 	)
+	// Incident pushes and the pages a chain step sends to a person's phone.
+	const mobilePushLive = Layer.effect(MobilePushService, MobilePushService.make).pipe(
+		Layer.provide(
+			Layer.mergeAll(
+				ApnsClient.layer,
+				MobileDevicesService.layer,
+				LiveActivitiesService.layer,
+				Layer.mock(OrgMembershipService)({ directory: "none" }),
+			),
+		),
+	)
 	const alertsLive = Layer.effect(AlertsService, AlertsService.make).pipe(
 		Layer.provide(InvestigationStarter.layer),
 		Layer.provide(FetchHttpClient.layer),
 		Layer.provide(ChatAlertPoster.layer),
-		Layer.provide(
-			Layer.effect(MobilePushService, MobilePushService.make).pipe(
-				Layer.provide(
-					Layer.mergeAll(ApnsClient.layer, MobileDevicesService.layer, LiveActivitiesService.layer),
-				),
-			),
-		),
+		Layer.provide(mobilePushLive),
 		Layer.provide(
 			Layer.mergeAll(
 				envLive,
@@ -199,6 +205,7 @@ const makeHarness = () => {
 				alertRulesLive,
 				Layer.effect(AlertMemberNotifier, AlertMemberNotifier.make).pipe(
 					Layer.provide(ChatAlertPoster.layer),
+					Layer.provide(mobilePushLive),
 					Layer.provide(
 						Layer.mergeAll(envLive, testDb.layer, runtimeLive, emailLive, orgMembersLive),
 					),

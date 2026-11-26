@@ -14,12 +14,14 @@ import {
 } from "../errors"
 import { SpanId, TraceId, UserId } from "@maple/primitives"
 import { AuditedRead } from "../audit-log"
+import { SymbolicatedStack } from "../../errors/js-stack"
 import { AuthorizationV2 } from "./auth"
 import { ListOf, ListQuery, Timestamp } from "./envelopes"
 import { defineV2Error, V2CursorInvalid, V2CursorSortMismatch, V2ParameterInvalid } from "./errors"
 import { publicErrors } from "./public-error"
 import { V2WarehouseReadErrors } from "./query-errors"
 import { ActorPublicId, ErrorIncidentPublicId, ErrorIssuePublicId } from "./resource-ids"
+import { EndpointAccess, requires } from "../endpoint-access"
 
 export const V2ErrorIssueActor = Schema.Struct({
 	id: ActorPublicId,
@@ -104,6 +106,12 @@ export const V2ErrorIssueSampleTrace = Schema.Struct({
 	timestamp: Timestamp,
 	exception_message: Schema.String,
 	duration_micros: Schema.Number,
+	/** The span's deployment environment; null when it carried none. */
+	deployment_environment: Schema.optionalKey(Schema.NullOr(Schema.String)),
+	/** The emitting build's `service.version`; null when it carried none. */
+	service_version: Schema.optionalKey(Schema.NullOr(Schema.String)),
+	/** The end user the span named; null when it named none. */
+	user_id: Schema.optionalKey(Schema.NullOr(Schema.String)),
 }).annotate({ identifier: "ErrorIssueSampleTrace" })
 export type V2ErrorIssueSampleTrace = Schema.Schema.Type<typeof V2ErrorIssueSampleTrace>
 
@@ -130,17 +138,28 @@ export const V2ErrorIncident = Schema.Struct({
 }).annotate({ identifier: "ErrorIncident", title: "Error incident" })
 export type V2ErrorIncident = Schema.Schema.Type<typeof V2ErrorIncident>
 
+export const V2SymbolicatedStack = SymbolicatedStack.annotate({
+	identifier: "SymbolicatedStack",
+	title: "Symbolicated stack",
+	description:
+		"A JavaScript stack trace mapped through uploaded source maps, top of stack first. `status` is `resolved` when every frame with a file mapped, `partial` when some did, `missing_map` when none did (`missing` lists the files with no map) and `not_applicable` when the trace has no JavaScript frames.",
+})
+
 export const V2ErrorIssueDetail = Schema.Struct({
 	...V2ErrorIssue.fields,
 	timeseries: Schema.Array(V2ErrorIssueTimeseriesPoint),
 	sample_traces: Schema.Array(V2ErrorIssueSampleTrace),
 	incidents: Schema.Array(V2ErrorIncident),
 	environments: Schema.Array(V2ErrorIssueEnvironment),
+	/** The newest stack trace in the window; null when no occurrence there carried one. */
+	latest_stacktrace: Schema.optionalKey(Schema.NullOr(Schema.String)),
+	/** `latest_stacktrace` mapped through the uploaded source maps; null when there is no stack. */
+	latest_stack: Schema.optionalKey(Schema.NullOr(V2SymbolicatedStack)),
 }).annotate({
 	identifier: "ErrorIssueDetail",
 	title: "Error issue detail",
 	description:
-		"The issue resource with its requested timeseries window, sample traces, incidents, and the environments it was seen in.",
+		"The issue resource with its requested timeseries window, sample traces, incidents, the environments it was seen in, and its newest stack trace.",
 })
 export type V2ErrorIssueDetail = Schema.Schema.Type<typeof V2ErrorIssueDetail>
 
@@ -339,14 +358,16 @@ export class V2ErrorIssuesApiGroup extends HttpApiGroup.make("errorIssues")
 			payload: V2ErrorIssueTransitionParams,
 			success: V2ErrorIssue,
 			error: [errorIssueNotFound, errorPersistence, ...actionConflicts, V2ParameterInvalid.schema],
-		}).annotateMerge(
-			OpenApi.annotations({
-				identifier: "transitionErrorIssue",
-				summary: "Transition an error issue",
-				description:
-					"Moves the issue to another workflow state as the calling user, and returns the updated issue. Requires `error_issues:write`.",
-			}),
-		),
+		})
+			.annotate(EndpointAccess, requires("error_issues:triage"))
+			.annotateMerge(
+				OpenApi.annotations({
+					identifier: "transitionErrorIssue",
+					summary: "Transition an error issue",
+					description:
+						"Moves the issue to another workflow state as the calling user, and returns the updated issue. Requires `error_issues:write`.",
+				}),
+			),
 	)
 	.add(
 		HttpApiEndpoint.post("claim", "/:id/claim", {
@@ -354,14 +375,16 @@ export class V2ErrorIssuesApiGroup extends HttpApiGroup.make("errorIssues")
 			payload: V2ErrorIssueClaimParams,
 			success: V2ErrorIssue,
 			error: [errorIssueNotFound, errorPersistence, ...actionConflicts],
-		}).annotateMerge(
-			OpenApi.annotations({
-				identifier: "claimErrorIssue",
-				summary: "Claim an error issue",
-				description:
-					"Takes the issue's lease as the calling user, so others see it is being worked on. Requires `error_issues:write`.",
-			}),
-		),
+		})
+			.annotate(EndpointAccess, requires("error_issues:triage"))
+			.annotateMerge(
+				OpenApi.annotations({
+					identifier: "claimErrorIssue",
+					summary: "Claim an error issue",
+					description:
+						"Takes the issue's lease as the calling user, so others see it is being worked on. Requires `error_issues:write`.",
+				}),
+			),
 	)
 	.add(
 		HttpApiEndpoint.post("release", "/:id/release", {
@@ -369,14 +392,16 @@ export class V2ErrorIssuesApiGroup extends HttpApiGroup.make("errorIssues")
 			payload: V2ErrorIssueReleaseParams,
 			success: V2ErrorIssue,
 			error: [errorIssueNotFound, errorPersistence, ...actionConflicts],
-		}).annotateMerge(
-			OpenApi.annotations({
-				identifier: "releaseErrorIssue",
-				summary: "Release an error issue",
-				description:
-					"Gives up the calling user's lease, optionally moving the issue to another state. Requires `error_issues:write`.",
-			}),
-		),
+		})
+			.annotate(EndpointAccess, requires("error_issues:triage"))
+			.annotateMerge(
+				OpenApi.annotations({
+					identifier: "releaseErrorIssue",
+					summary: "Release an error issue",
+					description:
+						"Gives up the calling user's lease, optionally moving the issue to another state. Requires `error_issues:write`.",
+				}),
+			),
 	)
 	.add(
 		HttpApiEndpoint.post("merge", "/:id/merge", {
@@ -384,28 +409,32 @@ export class V2ErrorIssuesApiGroup extends HttpApiGroup.make("errorIssues")
 			payload: V2ErrorIssueMergeParams,
 			success: V2ErrorIssue,
 			error: [errorIssueNotFound, errorPersistence, V2ParameterInvalid.schema],
-		}).annotateMerge(
-			OpenApi.annotations({
-				identifier: "mergeErrorIssues",
-				summary: "Merge error issues",
-				description:
-					"Folds the source issues into this one: their occurrences and fingerprints land here from now on, and each source is archived pointing at it. Returns the merged issue. Requires `error_issues:write`.",
-			}),
-		),
+		})
+			.annotate(EndpointAccess, requires("error_issues:triage"))
+			.annotateMerge(
+				OpenApi.annotations({
+					identifier: "mergeErrorIssues",
+					summary: "Merge error issues",
+					description:
+						"Folds the source issues into this one: their occurrences and fingerprints land here from now on, and each source is archived pointing at it. Returns the merged issue. Requires `error_issues:write`.",
+				}),
+			),
 	)
 	.add(
 		HttpApiEndpoint.post("unmerge", "/:id/unmerge", {
 			params: { id: ErrorIssuePublicId },
 			success: V2ErrorIssue,
 			error: [errorIssueNotFound, errorPersistence, V2ParameterInvalid.schema],
-		}).annotateMerge(
-			OpenApi.annotations({
-				identifier: "unmergeErrorIssue",
-				summary: "Unmerge an error issue",
-				description:
-					"Splits a merged issue back out: it leaves the archive and its fingerprints land on it again. Returns the restored issue. Requires `error_issues:write`.",
-			}),
-		),
+		})
+			.annotate(EndpointAccess, requires("error_issues:triage"))
+			.annotateMerge(
+				OpenApi.annotations({
+					identifier: "unmergeErrorIssue",
+					summary: "Unmerge an error issue",
+					description:
+						"Splits a merged issue back out: it leaves the archive and its fingerprints land on it again. Returns the restored issue. Requires `error_issues:write`.",
+				}),
+			),
 	)
 	.add(
 		HttpApiEndpoint.put("setSeverity", "/:id/severity", {
@@ -413,14 +442,16 @@ export class V2ErrorIssuesApiGroup extends HttpApiGroup.make("errorIssues")
 			payload: V2ErrorIssueSeverityParams,
 			success: V2ErrorIssue,
 			error: [errorIssueNotFound, errorPersistence],
-		}).annotateMerge(
-			OpenApi.annotations({
-				identifier: "setErrorIssueSeverity",
-				summary: "Set an error issue's severity",
-				description:
-					"Sets or clears the issue's manual severity as the calling user. Requires `error_issues:write`.",
-			}),
-		),
+		})
+			.annotate(EndpointAccess, requires("error_issues:triage"))
+			.annotateMerge(
+				OpenApi.annotations({
+					identifier: "setErrorIssueSeverity",
+					summary: "Set an error issue's severity",
+					description:
+						"Sets or clears the issue's manual severity as the calling user. Requires `error_issues:write`.",
+				}),
+			),
 	)
 	.prefix("/v2/error_issues")
 	.middleware(AuthorizationV2)
@@ -430,4 +461,5 @@ export class V2ErrorIssuesApiGroup extends HttpApiGroup.make("errorIssues")
 			description:
 				"Deduplicated errors and alert-backed issues tracked through Maple's triage workflow.",
 		}),
-	) {}
+	)
+	.annotate(EndpointAccess, requires("telemetry:read")) {}

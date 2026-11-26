@@ -1,5 +1,6 @@
 import {
 	UserActivityResponse,
+	UserCalendarResponse,
 	UserIssuesResponse,
 	UserLogsResponse,
 	UserOverviewResponse,
@@ -9,6 +10,7 @@ import {
 	UsersGroupsResponse,
 	UsersListResponse,
 	type UserActivityItem,
+	type UserCalendarDay,
 	type UserChannel,
 	type UserDetailRequest,
 	type UserEventItem,
@@ -16,6 +18,7 @@ import {
 	type UserListItem,
 	type UserLogItem,
 	type UserMcpSessionItem,
+	type UserOperationItem,
 	type UserProfileItem,
 	type UserService,
 	type UserSessionItem,
@@ -32,8 +35,10 @@ import { CH, formatWarehouseDateTime, parseWarehouseDateTime } from "@maple/quer
 import { WarehouseQueryService } from "@maple/backend/services/warehouse/WarehouseQueryService"
 import {
 	isMissingUserActivityChannels,
+	isMissingUserActivityDaily,
 	isMissingUserActivityHourly,
 	isMissingUserActivityIdentity,
+	isMissingPersonProperties,
 } from "@maple/backend/services/warehouse/missing-table"
 import { readUserMcpSessions } from "@maple/backend/services/mcp/mcp-reads"
 import { readUserIssueItems, readUserIssueTotalsRow, userIssueTotals } from "./user-issues"
@@ -163,6 +168,36 @@ export const newestIdentity = (
 		}),
 	)
 	return Option.match(newest, { onNone: () => null, onSome: (row) => row[field] })
+}
+
+/** A person-properties read, empty on a cluster without migration 0071. */
+const propertiesRead = <A, E, R>(
+	read: Effect.Effect<ReadonlyArray<A>, E, R>,
+): Effect.Effect<ReadonlyArray<A>, E, R> =>
+	read.pipe(Effect.catchIf(isMissingPersonProperties, () => Effect.succeed<ReadonlyArray<A>>([])))
+
+type Trait = Readonly<{ key: string; value: string }>
+type PropertyState = Readonly<{ key: string; value: string; cleared: boolean; writtenAtMs: number }>
+
+/**
+ * A profile's traits, by key the newer of two sources: the latest session's traits (resolved by
+ * session version) and the user's properties (`person_properties`). A session's traits are
+ * stamped there at its start, so a key written at or before `sessionAtMs` reads from the session;
+ * one written after it (a backend `set` or `unset`) reads from the properties, a cleared key not at all.
+ */
+export const mergeTraits = (
+	session: Readonly<{ traits: ReadonlyArray<Trait>; atMs: number }>,
+	properties: ReadonlyArray<PropertyState>,
+): ReadonlyArray<Trait> => {
+	const fromSession = new Map(Arr.map(session.traits, (trait) => [trait.key, trait.value] as const))
+	const merged = Arr.flatMap(properties, (property): ReadonlyArray<Trait> => {
+		const sessionValue = fromSession.get(property.key)
+		if (sessionValue !== undefined && property.writtenAtMs <= session.atMs)
+			return [{ key: property.key, value: sessionValue }]
+		return property.cleared ? [] : [{ key: property.key, value: property.value }]
+	})
+	const held = new Set(Arr.map(properties, (property) => property.key))
+	return [...merged, ...Arr.filter(session.traits, (trait) => !held.has(trait.key))]
 }
 
 /** A rollup identity read's one row, `None` on a cluster without migration 0056 or 0065. */
@@ -346,6 +381,7 @@ export const readUsersList = Effect.fn("UsersReads.list")(function* (
 		...(payload.hasErrors !== undefined && { hasErrors: payload.hasErrors }),
 		...(payload.hasReplay !== undefined && { hasReplay: payload.hasReplay }),
 		...(payload.groups !== undefined && { groups: payload.groups }),
+		...(payload.userPropertyFilters !== undefined && { userProperties: payload.userPropertyFilters }),
 		...(payload.after !== undefined && { after: payload.after }),
 	}
 	const params = { orgId: tenant.orgId, startTime: payload.startTime, endTime: payload.endTime }
@@ -502,6 +538,7 @@ export const readUsersGroups = Effect.fn("UsersReads.groups")(function* (
 		...(payload.hasErrors !== undefined && { hasErrors: payload.hasErrors }),
 		...(payload.hasReplay !== undefined && { hasReplay: payload.hasReplay }),
 		...(payload.groups !== undefined && { groups: payload.groups }),
+		...(payload.userPropertyFilters !== undefined && { userProperties: payload.userPropertyFilters }),
 	}
 	const params = {
 		orgId: tenant.orgId,
@@ -622,6 +659,8 @@ const ACTIVITY_LIMIT = 200
 const EVENT_DETAIL_PROPERTIES = 3
 /** Requests and log lines the Traces and Logs tabs list at most. */
 const USER_TRACES_LIMIT = 100
+/** Operations the Traces tab's summary lists at most. */
+const USER_OPERATIONS_LIMIT = 50
 const USER_LOGS_LIMIT = 200
 /** Failed or slow requests, and warnings, the Activity timeline takes at most, each. */
 const NOTABLE_LIMIT = 50
@@ -766,9 +805,21 @@ export const mergeActivity = (
 					kind: "mcp",
 					atMs: session.firstSeenMs,
 					service: session.service,
-					title: `${plural(session.calls, "tool call")} from ${session.client}`,
+					// A session that only connected (initialize, tools/list) says so, not "0 tool calls".
+					title:
+						session.calls === 0
+							? `${session.client} connected`
+							: `${plural(session.calls, "tool call")} from ${session.client}`,
 					detail: Arr.join(
-						[session.service, plural(session.tools, "tool"), `${session.errors} failed`],
+						[
+							session.service,
+							...(session.calls === 0
+								? ["no tool calls"]
+								: [
+										plural(session.tools, "distinct tool"),
+										...(session.errors === 0 ? [] : [`${session.errors} failed`]),
+									]),
+						],
 						" · ",
 					),
 					tone: session.errors > 0 ? "crit" : "neutral",
@@ -908,6 +959,7 @@ const profileIn = Effect.fn("UsersReads.profile")(function* (
 		rollupServices,
 		issueTotalsRow,
 		identity,
+		properties,
 	] = yield* Effect.all(
 		[
 			readsServices
@@ -963,6 +1015,14 @@ const profileIn = Effect.fn("UsersReads.profile")(function* (
 					profile: "list",
 					context: "userActivityIdentity",
 				}),
+			),
+			// Current values, not windowed.
+			propertiesRead(
+				warehouse.compiledQuery(
+					tenant,
+					CH.compile(CH.personPropertyStatesQuery({ kind: "user", ids: [payload.userId] }), params),
+					{ profile: "list", context: "userPersonProperties" },
+				),
 			),
 		],
 		{ concurrency: USERS_READ_CONCURRENCY },
@@ -1035,7 +1095,18 @@ const profileIn = Effect.fn("UsersReads.profile")(function* (
 		email: newestIdentity([replay[0], mcp[0], Option.getOrUndefined(identity)], "email", "emailAt"),
 		groupId,
 		groupName: profileGroupName,
-		traits: Arr.map(Arr.zip(traitKeys, traitValues), ([key, value]) => ({ key, value })),
+		traits: mergeTraits(
+			{
+				traits: Arr.map(Arr.zip(traitKeys, traitValues), ([key, value]) => ({ key, value })),
+				atMs: replay[0] === undefined ? 0 : toMs(replay[0].traitsAt),
+			},
+			Arr.map(properties, (row) => ({
+				key: row.key,
+				value: row.value,
+				cleared: row.cleared === 1,
+				writtenAtMs: row.writtenAtMs,
+			})),
+		),
 		visitorIds: Arr.map(visitors, (row) => row.visitorId),
 		firstSeenMs: Math.min(...firstSeens),
 		lastSeenMs: Math.max(...lastSeens),
@@ -1188,6 +1259,41 @@ const toTraceItem = (row: CH.UserTraceOutput): UserTraceItem => ({
 	isRoot: row.isRoot === 1,
 })
 
+const toOperationItem = (row: CH.UserOperationOutput): UserOperationItem => ({
+	service: row.serviceName,
+	spanName: row.spanName,
+	requests: row.requestCount,
+	errors: row.errorCount,
+	p50Ms: row.p50DurationMs ?? 0,
+	p95Ms: row.p95DurationMs ?? 0,
+	lastSeenMs: toMs(row.lastSeen),
+})
+
+/** The user's requests per operation, over the same services and window as the list. */
+const readOperationRows = Effect.fn("UsersReads.operationRows")(function* (
+	tenant: TenantContext,
+	payload: UserDetailRequest,
+	slices: ReadonlyArray<CH.UserActivitySliceOutput>,
+) {
+	const window = sliceWindow(requestHours(slices), payload)
+	if (window === null) return []
+	const warehouse = yield* WarehouseQueryService
+	const rows = yield* warehouse.compiledQuery(
+		tenant,
+		CH.compile(
+			CH.userOperationsQuery({
+				userId: payload.userId,
+				namespaces: payload.namespaces ?? [],
+				serviceNames: window.serviceNames,
+				limit: USER_OPERATIONS_LIMIT,
+			}),
+			{ orgId: tenant.orgId, startTime: window.startTime, endTime: window.endTime },
+		),
+		{ profile: "list", context: "userOperations" },
+	)
+	return Arr.map(rows, toOperationItem)
+})
+
 const toLogItem = (row: CH.UserLogOutput): UserLogItem => ({
 	atMs: toMs(row.timestamp),
 	severity: severityOf(row.severityText, row.severityNumber),
@@ -1257,9 +1363,18 @@ export const readUserTraces = Effect.fn("UsersReads.traces")(function* (
 ) {
 	yield* Effect.annotateCurrentSpan({ orgId: tenant.orgId })
 	const slices = yield* readSlices(tenant, payload)
-	const traces = yield* readTraceRows(tenant, payload, slices, { limit: USER_TRACES_LIMIT, notable: false })
-	yield* Effect.annotateCurrentSpan({ "maple.users.traces": traces.length })
-	return new UserTracesResponse({ traces })
+	const [traces, operations] = yield* Effect.all(
+		[
+			readTraceRows(tenant, payload, slices, { limit: USER_TRACES_LIMIT, notable: false }),
+			readOperationRows(tenant, payload, slices),
+		],
+		{ concurrency: "unbounded" },
+	)
+	yield* Effect.annotateCurrentSpan({
+		"maple.users.traces": traces.length,
+		"maple.users.operations": operations.length,
+	})
+	return new UserTracesResponse({ traces, operations })
 })
 
 /** The Logs tab: the user's log lines, newest first, read only where the rollup saw them. */
@@ -1273,6 +1388,94 @@ export const readUserLogs = Effect.fn("UsersReads.logs")(function* (
 	yield* Effect.annotateCurrentSpan({ "maple.users.logs": logs.length })
 	return new UserLogsResponse({ logs })
 })
+
+/** A daily rollup read, `None` on a cluster that has not applied migration 0070. */
+const dailyRollupRead = <A, E, R>(read: Effect.Effect<A, E, R>): Effect.Effect<Option.Option<A>, E, R> =>
+	read.pipe(
+		Effect.asSome,
+		Effect.catchIf(isMissingUserActivityDaily, () => Effect.succeedNone),
+	)
+
+/** Replays (which scope events to a namespace) are kept 30 days, so a namespaced calendar resolves its services over those. */
+const CALENDAR_SCOPE_MS = 30 * DAY_MS
+
+/**
+ * The activity calendar: the user's active days over the request's window (a year), requests and
+ * sessions from `user_activity_daily`, events from `product_events`, merged per UTC day.
+ */
+export const readUserCalendar = Effect.fn("UsersReads.calendar")(function* (
+	tenant: TenantContext,
+	payload: UserDetailRequest,
+) {
+	const warehouse = yield* WarehouseQueryService
+	yield* Effect.annotateCurrentSpan({ orgId: tenant.orgId })
+	const namespaces = payload.namespaces ?? []
+	const scope: CH.UsersScope =
+		namespaces.length === 0
+			? { namespaces, services: [], serviceNamespaces: [], mcpServices: [] }
+			: yield* loadScope(tenant, {
+					startTime: formatWarehouseDateTime(
+						parseWarehouseDateTime(payload.endTime) - CALENDAR_SCOPE_MS,
+					),
+					endTime: payload.endTime,
+					namespaces,
+				})
+	const params = detailParams(tenant, payload)
+	const [activity, events] = yield* Effect.all(
+		[
+			dailyRollupRead(
+				warehouse.compiledQuery(
+					tenant,
+					CH.compile(CH.userActivityDaysQuery({ userId: payload.userId, namespaces }), params),
+					{ profile: "list", context: "userActivityDays" },
+				),
+			),
+			CH.readsServiceSources(scope)
+				? warehouse.compiledQuery(tenant, CH.compile(CH.userEventDaysQuery(scope), params), {
+						profile: "list",
+						context: "userEventDays",
+					})
+				: Effect.succeed([]),
+		],
+		{ concurrency: 2 },
+	)
+	const days = mergeCalendarDays(
+		Option.getOrElse(activity, () => []),
+		events,
+	)
+	yield* Effect.annotateCurrentSpan({
+		"maple.users.calendar_days": days.length,
+		"maple.users.daily_rollup": Option.isSome(activity),
+	})
+	return new UserCalendarResponse({ days, indexed: Option.isSome(activity) })
+})
+
+/** The rollup's days and the events' days as one row per day, oldest first. */
+export const mergeCalendarDays = (
+	activity: ReadonlyArray<CH.UserActivityDayOutput>,
+	events: ReadonlyArray<Readonly<{ day: string; events: number }>>,
+): ReadonlyArray<UserCalendarDay> => {
+	const empty = { requests: 0, failedRequests: 0, errorLogs: 0, sessions: 0, events: 0 }
+	const byDay = new Map<string, UserCalendarDay>()
+	Arr.forEach(activity, (row) =>
+		byDay.set(row.day, {
+			...empty,
+			day: row.day,
+			requests: row.requestCount,
+			failedRequests: row.failedRequestCount,
+			errorLogs: row.errorLogCount,
+			sessions: row.sessionCount,
+		}),
+	)
+	Arr.forEach(events, (row) => {
+		const day = byDay.get(row.day) ?? { ...empty, day: row.day }
+		byDay.set(row.day, { ...day, events: row.events })
+	})
+	return Arr.sort(
+		[...byDay.values()],
+		Order.mapInput(Order.String, (day: UserCalendarDay) => day.day),
+	)
+}
 
 /** The timeline's failed or slow requests and warn/error log lines. */
 const readNotable = Effect.fn("UsersReads.notable")(function* (

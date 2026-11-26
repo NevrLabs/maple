@@ -33,6 +33,10 @@ Turn on **Filter by property** to narrow an event step to events that carry a va
 
 The same event can be two steps with different filters, for example `plan_started` with `plan = "startup"` and later `plan_started` with `plan = "scale"`.
 
+### Match a group of pages
+
+A `*` in a page step's path stands for any run of characters. `/dashboards/*` is every dashboard, `/orders/*/edit` the edit page of any order. A path without a `*` is matched exactly.
+
 ### Repeat a step
 
 List the same event twice to ask who did it twice. `product_viewed`, `product_viewed`, `add_to_cart` counts people who looked at two products before adding one to the cart. One event never counts for two steps.
@@ -41,12 +45,13 @@ List the same event twice to ask who did it twice. `product_viewed`, `product_vi
 
 **Count by** picks who is counted:
 
-| Count by | Counts                                                                                                                                  |
-| :------- | :-------------------------------------------------------------------------------------------------------------------------------------- |
-| Person   | The user id when the event has one, else the visitor. An anonymous visit and the signed-in activity of the same browser are one person. |
-| Visitor  | The anonymous browser or device id.                                                                                                     |
-| User     | Identified users only.                                                                                                                  |
-| Session  | Each browser session on its own. Server-side events have no session and take no part.                                                   |
+| Count by | Counts                                                                                                                                            |
+| :------- | :------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Person   | The user id when the event has one, else the visitor. An anonymous visit and the signed-in activity of the same browser or device are one person. |
+| Visitor  | The anonymous browser or device id.                                                                                                               |
+| User     | Identified users only.                                                                                                                            |
+| Group    | The account or team you pass as the group in `identify()`. Several users of one account are one group. Events without a group take no part.       |
+| Session  | Each browser session on its own. Server-side events have no session and take no part.                                                             |
 
 **Within** is the conversion window: every step has to happen within that long after the first step. Pick a window that fits the funnel. A checkout fits an hour. Signup to a paid plan needs days.
 
@@ -67,9 +72,10 @@ A person can try more than once. If their first try runs out of time and a later
 **Break down by** splits the funnel into groups and shows each group's conversion next to everyone's:
 
 - where the session came from: referrer, UTM source, medium, campaign, country or site;
-- an event property your events carry, such as `plan` or `method`.
+- an event property your events carry, such as `method`;
+- a [user or account property](/docs/product-events/overview#user-and-account-properties), such as the user's `plan` or the account's `tier`, at its current value.
 
-A person is counted under the first value seen for them in the range. People with no value are grouped as `(none)`. The table lists up to 20 groups, the ones most people entered first.
+A person is counted under the first value seen for them in the range. People with no value are grouped as **Not set**, or as **Direct** when the breakdown is by referrer. The table lists up to 20 groups: the ones that the most people entered.
 
 To look at one group only, use the filters on the left. They narrow the whole funnel to people with a matching session.
 
@@ -77,7 +83,9 @@ To look at one group only, use the filters on the left. They narrow the whole fu
 
 A step can come from your backend. `plan_started` usually does, because the browser leaves for the payment page. Count by **Person** and send the same `user_id` you pass to `identify()` in the browser, so the server-side step joins the visit that led to it.
 
-Mobile screen views are page steps: use the screen name as the path. For a funnel that starts before sign-in in a mobile app, count by **Visitor** and send the same `visitor_id` (your install id) on every event, before and after sign-in. Maple links a visitor to a user from browser sessions only.
+Some backend events know the account and not the user: a billing webhook reports which account started a plan, not who clicked. Send the account as `group_id` and count by **Group**. A step whose events carry no user can never be reached by Person, and would show 0% however many accounts paid.
+
+Mobile screen views are page steps: use the screen name as the path. For a funnel that starts before sign-in in a mobile app, send the same `visitor_id` (your install id) on every event, and the `user_id` too once the user signs in. The first event that carries both links the device to the user, so **Person** counts the steps before and after sign-in as one person, as it does for a browser.
 
 ## Next steps
 

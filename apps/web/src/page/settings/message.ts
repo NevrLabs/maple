@@ -8,6 +8,7 @@ import { Message as AiMessage } from "./ai/model"
 import { Message as BillingMessage } from "./billing/model"
 import { Message as MembersMessage } from "./members/model"
 import { Message as SelfhostMembersMessage } from "./selfhost-members/model"
+import { Message as RolesMessage } from "./roles/model"
 import { Message as GeneralMessage } from "./general/model"
 import { Message as DomainsMessage } from "./domains/model"
 import { Message as SsoMessage } from "./sso/model"
@@ -34,6 +35,7 @@ export const Message = defineMessageUnion({
 	GotBillingMessage: { message: BillingMessage },
 	GotMembersMessage: { message: MembersMessage },
 	GotSelfhostMembersMessage: { message: SelfhostMembersMessage },
+	GotRolesMessage: { message: RolesMessage },
 	GotGeneralMessage: { message: GeneralMessage },
 	GotDomainsMessage: { message: DomainsMessage },
 	GotSsoMessage: { message: SsoMessage },

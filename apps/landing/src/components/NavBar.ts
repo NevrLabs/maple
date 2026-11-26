@@ -6,18 +6,22 @@ import * as ContextMenuView from "@maple/views/ui/context-menu-view"
 import { MapleMark } from "@maple/views/ui/control-icons"
 import * as Dialog from "@maple/views/ui/dialog"
 import * as DialogView from "@maple/views/ui/dialog-view"
-import { iconNode } from "@maple/views/ui/icon-node"
+import { iconNode, type IconNode } from "@maple/views/ui/icon-node"
+import type { IconName } from "@maple/views/ui/icons.generated"
 import * as NavigationMenu from "@maple/views/ui/navigation-menu"
 import { Effect, Queue, Schema, Stream, Array as Arr } from "effect"
 import { Command, Mount, type Update } from "foldkit"
 import type { Html, HtmlBuilder } from "foldkit/html"
 import { defineMessageUnion } from "foldkit/message"
 import { makeIsland } from "../foldkit-island/island"
+import { brandMark, markColor, type BrandMarkId } from "../lib/brand-marks"
 import { APP_SIGN_IN_URL, APP_SIGN_UP_URL, APP_URL } from "../lib/app-urls"
 import { watchSignedInUser } from "../lib/clerk-session"
-import { features } from "../lib/features"
+import { featureBySlug, features } from "../lib/features"
+import { isPillar, PILLARS, type PillarIcon } from "../lib/feature-pillars"
+import { NAV_ICONS, RESOURCE_ICONS, type ResourceIcon } from "../lib/nav-icons"
 import { formatStars, GITHUB_REPO_URL, OCTOCAT_PATH } from "../lib/github-stars"
-import { featurePath, useCasePath } from "../lib/page-registry"
+import { featurePath, featuresIndexPath, useCasePath } from "../lib/page-registry"
 import { identifyLanding, trackLanding } from "../lib/telemetry"
 import { useCases } from "../lib/use-cases"
 import * as m from "../paraglide/messages.js"
@@ -30,18 +34,38 @@ import { broadcastSignedIn } from "./auth-signal"
 
 // LINKS
 
-type MenuLink = Readonly<{ href: string; label: () => string; desc: () => string }>
+/** `mark` is a vendor's brand mark, shown beside the label (the compare links). */
+type MenuLink = Readonly<{ href: string; label: () => string; desc?: () => string; mark?: BrandMarkId }>
 
 const localized = (locale: string, path: string): string => (locale === "en" ? path : `/${locale}${path}`)
 
-// From the registries, so adding a feature cannot leave the nav pointing at seven of eight.
+type PillarLink = MenuLink & Readonly<{ icon: PillarIcon }>
+
+// From the registry, so a renamed or retired feature cannot leave a dead pillar behind.
 // Labels stay thunks: Paraglide resolves the locale per call, at render.
-const featureLinks = (locale: string): ReadonlyArray<MenuLink> =>
-	Arr.map(features, (feature) => ({
-		href: featurePath(locale, feature.slug),
-		label: feature.navLabel,
-		desc: feature.navDesc,
-	}))
+const pillarLinks = (locale: string): ReadonlyArray<PillarLink> =>
+	Arr.flatMap(PILLARS, ({ slug, icon }) => {
+		const feature = featureBySlug(slug)
+		return feature === undefined
+			? []
+			: [
+					{
+						href: featurePath(locale, slug),
+						label: feature.navLabel,
+						desc: feature.navDesc,
+						icon,
+					},
+				]
+	})
+
+/** Every feature that is not a pillar, then Maple Local. */
+const moreLinks = (locale: string): ReadonlyArray<MenuLink> => [
+	...Arr.map(
+		Arr.filter(features, (feature) => !isPillar(feature.slug)),
+		(feature) => ({ href: featurePath(locale, feature.slug), label: feature.navLabel }),
+	),
+	{ href: localized(locale, "/local"), label: () => m.nav_local() },
+]
 
 const useCaseLinks = (locale: string): ReadonlyArray<MenuLink> =>
 	Arr.map(useCases, (useCase) => ({
@@ -73,69 +97,65 @@ const integrationLinks = (locale: string): ReadonlyArray<MenuLink> => [
 	},
 ]
 
-const compare = (locale: string, slug: string, label: () => string, desc: () => string): MenuLink => ({
-	href: localized(locale, `/compare/${slug}`),
-	label,
-	desc,
-})
-
-const compareLinks = (locale: string): ReadonlyArray<MenuLink> => [
-	compare(
-		locale,
-		"datadog",
-		() => m.nav_vs_datadog(),
-		() => m.nav_desc_vs_datadog(),
-	),
-	compare(
-		locale,
-		"grafana",
-		() => m.nav_vs_grafana(),
-		() => m.nav_desc_vs_grafana(),
-	),
-	compare(
-		locale,
-		"new-relic",
-		() => m.nav_vs_new_relic(),
-		() => m.nav_desc_vs_new_relic(),
-	),
-	compare(
-		locale,
-		"dash0",
-		() => m.nav_vs_dash0(),
-		() => m.nav_desc_vs_dash0(),
-	),
-	compare(
-		locale,
-		"signoz",
-		() => m.nav_vs_signoz(),
-		() => m.nav_desc_vs_signoz(),
-	),
-	compare(
-		locale,
-		"axiom",
-		() => m.nav_vs_axiom(),
-		() => m.nav_desc_vs_axiom(),
-	),
-	compare(
-		locale,
-		"better-stack",
-		() => m.nav_vs_better_stack(),
-		() => m.nav_desc_vs_better_stack(),
-	),
-	compare(
-		locale,
-		"honeycomb",
-		() => m.nav_vs_honeycomb(),
-		() => m.nav_desc_vs_honeycomb(),
-	),
+// Brand names, not translated; the "Switching from" heading carries the comparison.
+const COMPARE: ReadonlyArray<Readonly<{ slug: string; mark: BrandMarkId; name: string }>> = [
+	{ slug: "datadog", mark: "datadog", name: "Datadog" },
+	{ slug: "grafana", mark: "grafana", name: "Grafana" },
+	{ slug: "new-relic", mark: "newrelic", name: "New Relic" },
+	{ slug: "honeycomb", mark: "honeycomb", name: "Honeycomb" },
+	{ slug: "signoz", mark: "signoz", name: "SigNoz" },
+	{ slug: "axiom", mark: "axiom", name: "Axiom" },
+	{ slug: "better-stack", mark: "betterstack", name: "Better Stack" },
+	{ slug: "dash0", mark: "dash0", name: "Dash0" },
 ]
 
-/** The plain links beside the Product menu, in the header and the sheet. */
+const compareLinks = (locale: string): ReadonlyArray<MenuLink> =>
+	Arr.map(COMPARE, ({ slug, mark, name }) => ({
+		href: localized(locale, `/compare/${slug}`),
+		label: () => name,
+		mark,
+	}))
+
+type ResourceLink = MenuLink & Readonly<{ icon: ResourceIcon }>
+
+const resourceLinks = (locale: string): ReadonlyArray<ResourceLink> => [
+	{
+		href: "/guides",
+		label: () => m.nav_guides(),
+		desc: () => m.nav_desc_guides(),
+		icon: "BookBookmarkIcon",
+	},
+	{ href: "/blog", label: () => m.nav_blog(), desc: () => m.nav_desc_blog(), icon: "PenWritingIcon" },
+	{
+		href: "/changelog",
+		label: () => m.nav_changelog(),
+		desc: () => m.nav_desc_changelog(),
+		icon: "CircleHalfDottedClockIcon",
+	},
+	{
+		href: "/customers",
+		label: () => m.nav_customers(),
+		desc: () => m.nav_desc_customers(),
+		icon: "UsersIcon",
+	},
+	{
+		href: localized(locale, "/roadmap"),
+		label: () => m.footer_roadmap(),
+		desc: () => m.nav_desc_roadmap(),
+		icon: "RoadmapIcon",
+	},
+	{
+		href: localized(locale, "/opentelemetry"),
+		label: () => m.footer_opentelemetry(),
+		desc: () => m.nav_desc_opentelemetry(),
+		icon: "PlugIcon",
+	},
+]
+
+/** The plain links after the menus, in the header and the sheet. */
 const pageLinks = (locale: string): ReadonlyArray<Readonly<{ href: string; label: string }>> => [
-	{ href: localized(locale, "/pricing"), label: m.nav_pricing() },
-	{ href: localized(locale, "/local"), label: m.nav_local() },
 	{ href: "/docs", label: m.nav_docs() },
-	{ href: "/guides", label: m.nav_guides() },
+	{ href: localized(locale, "/pricing"), label: m.nav_pricing() },
 ]
 
 // MODEL
@@ -340,6 +360,50 @@ const MENU_ID = "site-nav"
 const SHEET_ID = "site-nav-sheet"
 const LOGO_MENU_ID = "site-logo-menu"
 
+/** `BrandMarkIcon.astro`'s markup, for the menu's compare links. */
+const brandMarkSvg = (h: H, id: BrandMarkId, className: string): Html => {
+	const mark = brandMark(id)
+	const paths =
+		mark.layers === undefined
+			? [
+					h.path(
+						[
+							h.Attribute("d", mark.path),
+							...(mark.fillRule === undefined ? [] : [h.Attribute("fill-rule", mark.fillRule)]),
+						],
+						[],
+					),
+				]
+			: Arr.map(mark.layers, (layer) =>
+					h.path([h.Attribute("d", layer.path), h.Attribute("fill", layer.fill)], []),
+				)
+	const overlay =
+		mark.overlay === undefined
+			? []
+			: [
+					h.path(
+						[
+							h.Attribute("d", mark.overlay.path),
+							h.Attribute("fill", mark.overlay.fill),
+							...(mark.overlay.fillRule === undefined
+								? []
+								: [h.Attribute("fill-rule", mark.overlay.fillRule)]),
+						],
+						[],
+					),
+				]
+	return h.svg(
+		[
+			h.Class(className),
+			h.Attribute("viewBox", mark.viewBox ?? "0 0 24 24"),
+			h.Attribute("fill", "currentColor"),
+			h.Style({ color: markColor(mark) }),
+			h.AriaHidden(true),
+		],
+		[...paths, ...overlay],
+	)
+}
+
 const octocat = (h: H, className: string): Html =>
 	h.svg(
 		[
@@ -421,86 +485,189 @@ const eyebrow = (h: H, text: string): Html =>
 		[h.span([h.Class("text-[11px] uppercase tracking-wider font-medium text-primary")], [text])],
 	)
 
+const linkLabel = (h: H, link: MenuLink, className: string): Html =>
+	h.span(
+		[h.Class(className)],
+		[
+			...(link.mark === undefined ? [] : [brandMarkSvg(h, link.mark, "h-3.5 w-3.5 shrink-0")]),
+			link.label(),
+		],
+	)
+
 const megaLink = (h: H, link: MenuLink): Html =>
 	NavigationMenu.navigationMenuLink(
 		h,
 		link.href,
 		[
-			h.span(
-				[h.Class("text-xs font-medium text-fg transition-colors group-hover/link:text-primary")],
-				[link.label()],
+			linkLabel(
+				h,
+				link,
+				"inline-flex items-center gap-1.5 text-[13px] font-medium text-fg transition-colors group-hover/link:text-primary",
 			),
-			h.span([h.Class("text-[11px] leading-snug text-fg-muted")], [link.desc()]),
+			...(link.desc === undefined
+				? []
+				: [h.span([h.Class("text-[11px] leading-snug text-fg-muted")], [link.desc()])]),
 		],
-		"group/link flex flex-col items-start gap-0.5 rounded-lg p-2 hover:bg-muted/20",
+		"group/link flex flex-col items-start gap-0.5 rounded-md px-2 py-1.5 hover:bg-muted/20",
 	)
 
-const megaColumn = (h: H, title: string, links: ReadonlyArray<MenuLink>): Html =>
+const megaColumn = (
+	h: H,
+	group: Readonly<{ title: string; lead?: string; links: ReadonlyArray<MenuLink> }>,
+	className?: string,
+): Html =>
 	h.div(
-		[h.Class("col-span-3 border-l border-border pl-2")],
+		[h.Class(cn("px-2 py-4", className))],
 		[
-			eyebrow(h, title),
+			eyebrow(h, group.title),
+			...(group.lead === undefined
+				? []
+				: [h.p([h.Class("px-2 pt-0.5 text-[11px] leading-snug text-fg-muted")], [group.lead])]),
 			h.div(
 				[h.Class("mt-2 flex flex-col gap-0.5")],
-				Arr.map(links, (link) => megaLink(h, link)),
+				Arr.map(group.links, (link) => megaLink(h, link)),
 			),
 		],
 	)
 
-/** Features (2x4), use cases and integrations; the compare row; the footer strip. */
-const productMenu = (h: H, locale: string): ReadonlyArray<Html> => [
-	h.div(
-		[h.Class("w-[820px] max-w-[calc(100vw-1.5rem)]")],
+/** A link with its icon in a bordered square, the label and a two-line description beside it. */
+const iconTile = (h: H, link: MenuLink, icon: IconNode, iconName: IconName): Html =>
+	NavigationMenu.navigationMenuLink(
+		h,
+		link.href,
 		[
-			h.div(
-				[h.Class("grid grid-cols-12 gap-x-2 p-4")],
+			h.span(
 				[
-					h.div(
-						[h.Class("col-span-6")],
-						[
-							eyebrow(h, m.nav_features()),
-							h.div(
-								[h.Class("mt-2 grid grid-cols-2 gap-0.5")],
-								Arr.map(featureLinks(locale), (link) => megaLink(h, link)),
-							),
-						],
+					h.Class(
+						"flex size-8 shrink-0 items-center justify-center rounded-md border border-border text-fg-muted transition-colors group-hover/pillar:border-primary/40 group-hover/pillar:text-primary",
 					),
-					megaColumn(h, m.nav_use_cases(), useCaseLinks(locale)),
-					megaColumn(h, m.nav_integrations(), integrationLinks(locale)),
+				],
+				[iconNode(h, icon, iconName, { size: 16 })],
+			),
+			h.span(
+				[h.Class("flex min-w-0 flex-col gap-0.5")],
+				[
+					h.span([h.Class("text-[13px] font-medium text-fg")], [link.label()]),
+					...(link.desc === undefined
+						? []
+						: [
+								h.span(
+									[h.Class("line-clamp-2 text-[11px] leading-snug text-fg-muted")],
+									[link.desc()],
+								),
+							]),
 				],
 			),
-			h.div(
-				[h.Class("border-t border-border px-4 pt-3 pb-4")],
+		],
+		"group/pillar flex flex-row items-start gap-3 rounded-lg p-2.5 hover:bg-muted/20",
+	)
+
+const pillarTile = (h: H, link: PillarLink): Html => iconTile(h, link, NAV_ICONS[link.icon], link.icon)
+
+const resourceTile = (h: H, link: ResourceLink): Html =>
+	iconTile(h, link, RESOURCE_ICONS[link.icon], link.icon)
+
+const alsoLink = (h: H, link: MenuLink): Html =>
+	NavigationMenu.navigationMenuLink(
+		h,
+		link.href,
+		[link.label()],
+		"inline-flex w-auto flex-none rounded-md px-2 py-1 text-xs font-medium text-fg-muted hover:bg-muted/20 hover:text-fg",
+	)
+
+const menuFooter = (h: H, href: string, label: string, cta: string): Html =>
+	NavigationMenu.navigationMenuLink(
+		h,
+		href,
+		[
+			h.span([h.Class("text-xs text-fg-muted")], [label]),
+			h.span(
 				[
-					eyebrow(h, m.nav_compare()),
+					h.Class(
+						"inline-flex items-center gap-1 text-xs text-primary transition-transform group-hover/cta:translate-x-0.5",
+					),
+				],
+				[cta],
+			),
+		],
+		"group/cta flex items-center justify-between rounded-none border-t border-border px-4 py-3 hover:bg-muted/20",
+	)
+
+/** Nine pillars, the rest of the platform as one quiet line, the way to all of it below. */
+const productMenu = (h: H, locale: string): ReadonlyArray<Html> => [
+	h.div(
+		[h.Class("w-[840px] max-w-[calc(100vw-1.5rem)]")],
+		[
+			h.div(
+				[h.Class("grid grid-cols-3 gap-1 p-3")],
+				Arr.map(pillarLinks(locale), (link) => pillarTile(h, link)),
+			),
+			h.div(
+				[h.Class("border-t border-border px-4 py-3")],
+				[
+					h.span(
+						[h.Class("text-[11px] uppercase tracking-wider font-medium text-primary")],
+						[m.nav_also_in_maple()],
+					),
 					h.div(
-						[h.Class("mt-2 grid grid-cols-4 gap-0.5")],
+						[h.Class("-mx-2 mt-1.5 flex flex-wrap gap-0.5")],
+						Arr.map(moreLinks(locale), (link) => alsoLink(h, link)),
+					),
+				],
+			),
+			menuFooter(h, featuresIndexPath(locale), m.nav_product_footer(), m.nav_product_footer_cta()),
+		],
+	),
+]
+
+/** Who it is for and how to get there: use cases, SDKs, and the tools people move from. */
+const solutionsMenu = (h: H, locale: string): ReadonlyArray<Html> => [
+	h.div(
+		[h.Class("grid w-[760px] max-w-[calc(100vw-1.5rem)] grid-cols-[1fr_1fr_1.2fr]")],
+		[
+			megaColumn(h, { title: m.nav_use_cases(), links: useCaseLinks(locale) }),
+			megaColumn(
+				h,
+				{ title: m.nav_integrations(), links: integrationLinks(locale) },
+				"border-l border-border",
+			),
+			h.div(
+				[h.Class("border-l border-border px-2 py-4")],
+				[
+					eyebrow(h, m.nav_switching_from()),
+					h.div(
+						[h.Class("mt-2 grid grid-cols-2 gap-0.5")],
 						Arr.map(compareLinks(locale), (link) => megaLink(h, link)),
 					),
 				],
-			),
-			NavigationMenu.navigationMenuLink(
-				h,
-				localized(locale, "/"),
-				[
-					h.span([h.Class("text-xs font-medium text-fg")], [m.nav_product_footer()]),
-					h.span(
-						[
-							h.Class(
-								"inline-flex items-center gap-1 text-xs text-primary transition-transform group-hover/cta:translate-x-0.5",
-							),
-						],
-						[m.nav_product_footer_cta()],
-					),
-				],
-				"group/cta flex items-center justify-between rounded-none border-t border-border bg-muted/10 px-6 py-3.5 hover:bg-muted/20",
 			),
 		],
 	),
 ]
 
+const resourcesMenu = (h: H, locale: string): ReadonlyArray<Html> => [
+	h.div(
+		[h.Class("grid w-[560px] max-w-[calc(100vw-1.5rem)] grid-cols-2 gap-1 p-3")],
+		Arr.map(resourceLinks(locale), (link) => resourceTile(h, link)),
+	),
+]
+
 const PAGE_LINK_CLASS =
 	"inline-flex h-10 w-max items-center justify-center bg-transparent px-2.5 py-1.5 text-[15px] font-medium text-fg-muted hover:bg-muted/20 hover:text-fg transition-all"
+
+const trigger = (
+	value: string,
+	label: string,
+	content: ReadonlyArray<Html>,
+): NavigationMenu.NavigationMenuItem => ({
+	_tag: "Trigger",
+	value,
+	label,
+	className:
+		"h-10 bg-transparent hover:bg-muted/20 text-[15px] text-fg-muted hover:text-fg data-popup-open:text-fg",
+	contentClassName: "p-0",
+	content,
+})
 
 const desktopMenu = (h: H, model: Model): Html =>
 	h.div(
@@ -513,15 +680,9 @@ const desktopMenu = (h: H, model: Model): Html =>
 				viewInputs: {
 					className: "flex",
 					items: [
-						{
-							_tag: "Trigger",
-							value: "product",
-							label: m.nav_product(),
-							className:
-								"h-10 bg-transparent hover:bg-muted/20 text-[15px] text-fg-muted hover:text-fg data-popup-open:text-fg",
-							contentClassName: "p-0",
-							content: productMenu(h, model.locale),
-						},
+						trigger("product", m.nav_product(), productMenu(h, model.locale)),
+						trigger("solutions", m.nav_solutions(), solutionsMenu(h, model.locale)),
+						trigger("resources", m.nav_resources(), resourcesMenu(h, model.locale)),
 						...Arr.map(pageLinks(model.locale), (link): NavigationMenu.NavigationMenuItem => ({
 							_tag: "Item",
 							content: [h.a([h.Href(link.href), h.Class(PAGE_LINK_CLASS)], [link.label])],
@@ -535,6 +696,9 @@ const desktopMenu = (h: H, model: Model): Html =>
 
 const MENU_ICON_LINES = ["6", "12", "18"]
 
+const sheetHeading = (h: H, text: string): Html =>
+	h.span([h.Class("text-[11px] text-primary uppercase tracking-wider font-medium")], [text])
+
 const sheetGroup = (h: H, title: string, links: ReadonlyArray<MenuLink>): Html =>
 	h.div(
 		[],
@@ -547,9 +711,11 @@ const sheetGroup = (h: H, title: string, links: ReadonlyArray<MenuLink>): Html =
 						[
 							h.Href(link.href),
 							h.OnClick(Message.ClickedSheetLink()),
-							h.Class("text-xs text-fg-muted hover:text-fg transition-colors py-1.5"),
+							h.Class(
+								"inline-flex items-center gap-2 text-xs text-fg-muted hover:text-fg transition-colors py-1.5",
+							),
 						],
-						[link.label()],
+						[linkLabel(h, link, "inline-flex items-center gap-2")],
 					),
 				),
 			),
@@ -573,20 +739,41 @@ const sheetContent = (h: H, model: Model, isSignedIn: boolean): ReadonlyArray<Ht
 			h.div(
 				[h.Class("py-4 border-b border-border")],
 				[
-					h.span(
-						[h.Class("text-[11px] text-primary uppercase tracking-wider font-medium")],
-						[m.nav_product()],
-					),
+					sheetHeading(h, m.nav_product()),
 					h.div(
-						[h.Class("mt-3 flex flex-col gap-5")],
+						[h.Class("mt-3 grid grid-cols-2 gap-x-4 gap-y-5")],
 						[
-							sheetGroup(h, m.nav_features(), featureLinks(model.locale)),
+							sheetGroup(h, m.nav_features(), pillarLinks(model.locale)),
+							sheetGroup(h, m.nav_also_in_maple(), moreLinks(model.locale)),
+						],
+					),
+					h.a(
+						[
+							h.Href(featuresIndexPath(model.locale)),
+							h.OnClick(Message.ClickedSheetLink()),
+							h.Class("mt-5 inline-flex py-1.5 text-xs font-medium text-primary"),
+						],
+						[m.nav_product_footer_cta()],
+					),
+				],
+			),
+			h.div(
+				[h.Class("py-4 border-b border-border")],
+				[
+					sheetHeading(h, m.nav_solutions()),
+					h.div(
+						[h.Class("mt-3 grid grid-cols-2 gap-x-4 gap-y-5")],
+						[
 							sheetGroup(h, m.nav_use_cases(), useCaseLinks(model.locale)),
 							sheetGroup(h, m.nav_integrations(), integrationLinks(model.locale)),
-							sheetGroup(h, m.nav_compare(), compareLinks(model.locale)),
+							sheetGroup(h, m.nav_switching_from(), compareLinks(model.locale)),
 						],
 					),
 				],
+			),
+			h.div(
+				[h.Class("py-4 border-b border-border")],
+				[sheetGroup(h, m.nav_resources(), resourceLinks(model.locale))],
 			),
 			h.div(
 				[h.Class("py-4 border-b border-border flex flex-col gap-1")],

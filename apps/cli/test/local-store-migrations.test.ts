@@ -203,6 +203,9 @@ describe("current local schema identity", () => {
 		expect(Arr.filter([...currentNames], (name) => !v5Names.has(name))).toEqual([
 			"ai_crawler_requests",
 			"ai_crawler_requests_mv",
+			"ai_evaluations",
+			"ai_evaluations_mv",
+			"ai_evaluations_span_events_mv",
 			"ai_trace_index",
 			"ai_trace_index_mv",
 			"audit_log",
@@ -218,7 +221,12 @@ describe("current local schema identity", () => {
 			"error_fingerprint_lineage",
 			"error_fingerprint_lineage_mv",
 			"identity_links",
+			"identity_links_events_mv",
 			"identity_links_mv",
+			"person_properties",
+			"person_properties_events_mv",
+			"person_properties_traces_mv",
+			"person_properties_traits_mv",
 			"product_events",
 			"product_events_mv",
 			"product_events_traces_mv",
@@ -244,6 +252,8 @@ describe("current local schema identity", () => {
 			"trace_facets_hourly_mv",
 			"trace_index",
 			"trace_index_mv",
+			"user_activity_daily",
+			"user_activity_daily_mv",
 			"user_activity_hourly",
 			"user_activity_hourly_logs_mv",
 			"user_activity_hourly_traces_mv",
@@ -329,10 +339,11 @@ describe("current local schema identity", () => {
 				{ onNone: () => [], onSome: (object) => Arr.map(object.columns, (column) => column.name) },
 			)
 		expect(sessionEventColumns(localSchemaSnapshot(10).manifest)).not.toContain("VisitorId")
-		expect(sessionEventColumns(LOCAL_SCHEMA_MANIFEST).slice(-3)).toEqual([
+		expect(sessionEventColumns(LOCAL_SCHEMA_MANIFEST).slice(-4)).toEqual([
 			"VisitorId",
 			"UserId",
 			"GroupId",
+			"RetentionDays",
 		])
 		const v10Names = new Set(Arr.map(localSchemaSnapshot(10).manifest.objects, (object) => object.name))
 		// The frozen v11 manifest, not the current one: v14 adds objects of its
@@ -365,6 +376,9 @@ describe("current local schema identity", () => {
 		expect(Arr.filter([...currentSchemaNames], (name) => !v13Names.has(name))).toEqual([
 			"ai_crawler_requests",
 			"ai_crawler_requests_mv",
+			"ai_evaluations",
+			"ai_evaluations_mv",
+			"ai_evaluations_span_events_mv",
 			"ai_trace_index",
 			"ai_trace_index_mv",
 			"audit_log",
@@ -379,6 +393,11 @@ describe("current local schema identity", () => {
 			"cost_daily",
 			"error_fingerprint_lineage",
 			"error_fingerprint_lineage_mv",
+			"identity_links_events_mv",
+			"person_properties",
+			"person_properties_events_mv",
+			"person_properties_traces_mv",
+			"person_properties_traits_mv",
 			"product_events_traces_mv",
 			"profiles",
 			"scanner_requests",
@@ -402,6 +421,8 @@ describe("current local schema identity", () => {
 			"trace_facets_hourly_mv",
 			"trace_index",
 			"trace_index_mv",
+			"user_activity_daily",
+			"user_activity_daily_mv",
 			"user_activity_hourly",
 			"user_activity_hourly_logs_mv",
 			"user_activity_hourly_traces_mv",

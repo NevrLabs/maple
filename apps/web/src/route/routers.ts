@@ -167,6 +167,7 @@ const routers = {
 		Route.mapTo(AppRoute.IngestRule),
 	),
 	BillingAiCredits: pipe(path("settings", "billing", "ai-credits"), Route.mapTo(AppRoute.BillingAiCredits)),
+	RoleEditor: pipe(path("settings", "roles"), slash(segment("roleId")), Route.mapTo(AppRoute.RoleEditor)),
 	// Retired: `routeRedirect` sends it to `/status-pages/$pageId`.
 	AlertsStatusPage: pipe(
 		path("alerts", "status-pages"),
@@ -498,6 +499,17 @@ const routers = {
 		search(Search.AgentSessionToolsSearch),
 		Route.mapTo(AppRoute.AgentSessionTools),
 	),
+	AgentSessionEvals: pipe(
+		path("agent-sessions", "evals"),
+		search(Search.AgentSessionEvalsSearch),
+		Route.mapTo(AppRoute.AgentSessionEvals),
+	),
+	AgentSessionEvaluator: pipe(
+		path("agent-sessions", "evals"),
+		slash(segment("name")),
+		search(Search.AgentSessionEvaluatorSearch),
+		Route.mapTo(AppRoute.AgentSessionEvaluator),
+	),
 	ErrorIssues: pipe(
 		path("errors", "issues"),
 		search(Search.ErrorIssuesSearch),
@@ -679,6 +691,7 @@ export const urlToAppRoute = Route.parseUrlWithFallback(
 		routers.McpServerTool,
 		routers.McpServer,
 		routers.AgentSessionTools,
+		routers.AgentSessionEvals,
 		routers.ErrorIssues,
 		routers.UserDetail,
 		...Rec.values(routers),

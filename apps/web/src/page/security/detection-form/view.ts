@@ -147,8 +147,12 @@ const matchesSection = (h: H, form: Form): Html => {
 				],
 			}),
 			typography(h, { size: "xs", tone: "muted", as: "p" }, [
-				"The platform's own action name, matched exactly, for example ",
+				"The platform's own action name, for example ",
 				inlineCode(h, { variant: "plain" }, ["team.member.role.updated"]),
+				". It also counts the action's sub-actions: ",
+				inlineCode(h, { variant: "plain" }, ["push.forced"]),
+				" counts ",
+				inlineCode(h, { variant: "plain" }, ["push.forced.default_branch"]),
 				". Empty counts every action.",
 			]),
 		]),
@@ -306,7 +310,7 @@ export const view = Submodel.defineView<Model, Message, PageViewInputs>((model, 
 	if (isRefused(model))
 		return managersOnlyPage(h, {
 			header,
-			title: "Only org admins can create or change detections",
+			permission: "audit_log:read",
 			back: BACK,
 		})
 	if (model.isMissing)

@@ -6,14 +6,15 @@ import {
 	formatLatency,
 	formatNumber,
 	formatPercent,
-	formatPercentColumn,
 } from "@maple/ui/lib/format"
 import { cn } from "@maple/ui/lib/utils"
+import { errorRateLevel } from "@maple/ui/lib/error-rate"
+import { TONE_SOFT, type Tone } from "@maple/ui/lib/tone"
 import type { Html, HtmlBuilder } from "foldkit/html"
 import { button } from "@maple/views/ui/button"
 import { columnClass } from "@maple/views/ui/column"
 import { detailRailGroup, detailRailRow, detailRailStats } from "@maple/views/ui/detail-rail"
-import { badge } from "@maple/views/ui/display"
+import { badge, separator } from "@maple/views/ui/display"
 import {
 	empty,
 	emptyDescription,
@@ -24,6 +25,8 @@ import {
 } from "@maple/views/ui/empty"
 import { eyebrow } from "@maple/views/ui/eyebrow"
 import { icon, type IconName } from "@maple/views/ui/icon"
+import { tooltipTrigger } from "@maple/views/ui/tooltip-host"
+import { browserIconFor, osIconFor } from "../replays/kit/sessions-parts"
 import { severityBadge } from "@maple/views/ui/logs/severity-badge"
 import { meter } from "@maple/views/ui/meter"
 import { pageDescription, pageTitle } from "@maple/views/ui/page-layout"
@@ -32,9 +35,10 @@ import { selectableRow } from "@maple/views/ui/selectable-row"
 import { hstack, vstack } from "@maple/views/ui/stack"
 import { statusDot } from "@maple/views/ui/status-dot"
 import { textLink } from "@maple/views/ui/text-link"
+import { toneGlyph } from "@maple/views/ui/tone-glyph"
 import { typography, typographyClass } from "@maple/views/ui/typography"
 import { serviceLabel } from "@maple/views/ui/service-label"
-import { Array as Arr, Order } from "effect"
+import { Array as Arr, Order, String as Str } from "effect"
 import {
 	th,
 	toolTable,
@@ -49,9 +53,11 @@ import { clientIcon, kindTag } from "../mcp/view-kit"
 import { statRail, statRailItem } from "../kit/stat-rail"
 import { type LinkTab, linkTabStrip } from "../kit/underline-tabs"
 import type { ActivityItem, ActivityKind, UserDetail, UserProfile, UserTab } from "./data"
-import { namespacesOf, perUserText, USER_TABS, userLabel } from "./data"
+import { foldRepeats, namespacesOf, perUserText, USER_TABS, userLabel } from "./data"
 import { WORKFLOW_LABEL, workflowRingIcon } from "../kit/issue-workflow"
 import { userAvatar } from "./view-kit"
+import { sectionHeading } from "../kit/section-heading"
+import { activityCalendar, type ActivityCalendarOptions } from "./activity-calendar"
 
 // `/users/$userId`: one end user's identity, then everything Maple holds for them, by tab.
 
@@ -74,6 +80,8 @@ export type UserDetailOptions<M> = Readonly<{
 	onSelectTab: (tab: UserTab) => M
 	/** Drawn in place of the tab's rows while they load or after their read failed. */
 	tabContent?: Html | undefined
+	/** The Activity tab's calendar over the last year; none draws no card. */
+	calendar?: Omit<ActivityCalendarOptions, "nowMs"> | undefined
 }>
 
 type Clock = Readonly<{ nowMs: number; timeZone: string }>
@@ -90,35 +98,38 @@ const clockOf = (atMs: number, timeZone: string): string =>
 export const userTitle = <M>(h: HtmlBuilder<M>, profile: UserProfile, clock: Clock): Html =>
 	hstack(h, { gap: "3", align: "start" }, [
 		userAvatar(h, profile, "lg"),
-		vstack(h, { gap: "0.5", className: "min-w-0" }, [
+		vstack(h, { gap: "1", className: "min-w-0" }, [
 			pageTitle(h, { title: userLabel(profile), className: "leading-8" }, [userLabel(profile)]),
 			pageDescription(
 				h,
 				[
-					hstack(h, { gap: "3", wrap: true, as: "span", className: "gap-y-0.5" }, [
+					hstack(h, { gap: "4", wrap: true, as: "span", className: "gap-y-1" }, [
 						...(profile.email === null || profile.email === userLabel(profile)
 							? []
-							: [typography(h, { as: "span" }, [profile.email])]),
-						typography(h, { as: "span" }, [
-							"user.id ",
-							typography(h, { mono: true, tone: "soft", as: "span" }, [profile.userId]),
-						]),
+							: [titleFact(h, "EnvelopeIcon", [profile.email], "Email")]),
+						titleFact(
+							h,
+							"IdBadgeIcon",
+							[typography(h, { mono: true, tone: "soft", as: "span" }, [profile.userId])],
+							"user.id",
+						),
 						...(profile.groupId === null
 							? []
 							: [
-									profile.groupName === null
-										? typography(h, { mono: true, as: "span" }, [profile.groupId])
-										: typography(
-												h,
-												{
-													as: "span",
-													attributes: [h.Title(`group ${profile.groupId}`)],
-												},
-												[profile.groupName],
-											),
+									titleFact(
+										h,
+										"UsersIcon",
+										[
+											profile.groupName === null
+												? typography(h, { mono: true, as: "span" }, [profile.groupId])
+												: profile.groupName,
+										],
+										`group ${profile.groupId}`,
+									),
 								]),
 						hstack(h, { gap: "1.5", as: "span" }, [
 							statusDot(h, { tone: "ok" }),
+							"Seen",
 							listRelativeTime(h, {
 								value: profile.lastSeenMs,
 								nowMs: clock.nowMs,
@@ -131,6 +142,18 @@ export const userTitle = <M>(h: HtmlBuilder<M>, profile: UserProfile, clock: Clo
 				"text-sm",
 			),
 		]),
+	])
+
+/** One fact under the user's name, led by its glyph; `title` names it on hover. */
+const titleFact = <M>(
+	h: HtmlBuilder<M>,
+	iconName: IconName,
+	content: ReadonlyArray<Html | string>,
+	title: string,
+): Html =>
+	hstack(h, { gap: "1.5", as: "span", className: "min-w-0", attributes: [h.Title(title)] }, [
+		icon(h, iconName, { size: 14, className: "shrink-0 text-foreground-subtle" }),
+		...content,
 	])
 
 // --- tabs ---------------------------------------------------------------------------------------
@@ -221,7 +244,7 @@ const errorsStat = <M>(h: HtmlBuilder<M>, profile: UserProfile): Html => {
 }
 
 const userStats = <M>(h: HtmlBuilder<M>, profile: UserProfile): Html =>
-	statRail(h, { columns: 5, isFlush: true }, [
+	statRail(h, { columns: 5, isFlush: true, isOnPageGutter: true }, [
 		statRailItem(h, {
 			eyebrow: "Sessions",
 			value: formatNumber(profile.sessions),
@@ -243,7 +266,7 @@ const userStats = <M>(h: HtmlBuilder<M>, profile: UserProfile): Html =>
 						: profile.failedRate === null
 							? "failure rate not available"
 							: `${formatPercent(profile.failedRate)} failed`,
-			tone: profile.failedRate !== null && profile.failedRate > 0 ? "warn" : "neutral",
+			tone: profile.failedRate === null ? "neutral" : errorRateLevel(profile.failedRate),
 			spark: Arr.some(profile.activity, (count) => count > 0) ? profile.activity : undefined,
 			compact: true,
 		}),
@@ -291,7 +314,7 @@ export type UserGroupStats =
 	| null
 
 const shareOf = (count: number, of: number): string | undefined =>
-	count === 0 ? undefined : formatPercentColumn(count / Math.max(1, of))
+	count === 0 ? undefined : `${formatPercent(count / Math.max(1, of))} of group`
 
 /** The group's name, a link to its users, over its id when the name stands in for it. */
 const groupHeading = <M>(
@@ -405,6 +428,64 @@ const groupSection = <M>(
 				]),
 			]
 
+/** The browser's mark, or none for a browser without one (the globe fallback says nothing). */
+const browserIconOf = (browser: string): IconName | undefined => {
+	const name = browserIconFor(browser)
+	return name === "GlobeIcon" ? undefined : name
+}
+
+const VERSION = /\s+v?(\d+)[\d.]*$/
+
+/**
+ * A browser or OS as its mark and major version ("Chrome 130" is the Chrome mark and 130); the name
+ * when it has no mark. `isNamedWithoutVersion` puts the name beside a versionless mark, for the OS,
+ * whose Apple mark covers both macOS and iOS.
+ */
+const platformMark = <M>(
+	h: HtmlBuilder<M>,
+	mark: IconName | undefined,
+	name: string,
+	isNamedWithoutVersion: boolean,
+): Html => {
+	if (mark === undefined)
+		return typography(h, { size: "xs", tone: "soft", truncate: true, as: "span" }, [name])
+	const version = VERSION.exec(name)?.[1]
+	const detail = version ?? (isNamedWithoutVersion ? name : undefined)
+	return hstack(h, { gap: "1", as: "span", inline: true }, [
+		icon(h, mark, { className: "size-3.5", attributes: [h.AriaHidden(true)] }),
+		...(detail === undefined
+			? []
+			: [typography(h, { size: "2xs", tone: "muted", numeric: true, as: "span" }, [detail])]),
+	])
+}
+
+/**
+ * One pill for the browser and the OS it ran on, since they describe one device; named on hover
+ * and on focus. A device with only one half known draws that half alone.
+ */
+const deviceBadge = <M>(h: HtmlBuilder<M>, device: Readonly<{ browser: string; os: string }>): Html => {
+	const browser =
+		device.browser === "" ? [] : [platformMark(h, browserIconOf(device.browser), device.browser, false)]
+	const os = device.os === "" ? [] : [platformMark(h, osIconFor(device.os), device.os, true)]
+	const name = Arr.join(
+		Arr.filter([device.browser, device.os], (part) => part !== ""),
+		" on ",
+	)
+	return badge(
+		h,
+		{
+			variant: "outline",
+			size: "lg",
+			pill: true,
+			className: "cursor-default gap-2",
+			attributes: [h.AriaLabel(name), h.Role("img"), h.Tabindex(0), ...tooltipTrigger(h, name)],
+		},
+		Arr.isReadonlyArrayEmpty(browser) || Arr.isReadonlyArrayEmpty(os)
+			? [...browser, ...os]
+			: [...browser, separator(h, "vertical", "h-3"), ...os],
+	)
+}
+
 /** The right rail: identity, the user's group, where their activity lives, traits and devices. */
 export const userRail = <M>(
 	h: HtmlBuilder<M>,
@@ -427,14 +508,22 @@ export const userRail = <M>(
 		[h.AriaLabel("User details"), h.Class("flex flex-col")],
 		[
 			detailRailGroup(h, "Identity", [
-				detailRailRow(h, { label: "user.id" }, [railValue(h, profile.userId)]),
+				detailRailRow(h, { icon: "IdBadgeIcon", label: "user.id" }, [railValue(h, profile.userId)]),
 				...(profile.email === null
 					? []
-					: [detailRailRow(h, { label: "Email" }, [railValue(h, profile.email, false)])]),
+					: [
+							detailRailRow(h, { icon: "EnvelopeIcon", label: "Email" }, [
+								railValue(h, profile.email, false),
+							]),
+						]),
 				...(onlyNamespace === undefined
 					? []
-					: [detailRailRow(h, { label: "Namespace" }, [railValue(h, onlyNamespace.name)])]),
-				detailRailRow(h, { label: "First seen" }, [
+					: [
+							detailRailRow(h, { icon: "LayersIcon", label: "Namespace" }, [
+								railValue(h, onlyNamespace.name),
+							]),
+						]),
+				detailRailRow(h, { icon: "CalendarIcon", label: "First seen" }, [
 					listRelativeTime(h, {
 						value: profile.firstSeenMs,
 						nowMs: clock.nowMs,
@@ -448,6 +537,7 @@ export const userRail = <M>(
 							detailRailRow(
 								h,
 								{
+									icon: "FingerprintIcon",
 									label: "Visitor ids",
 									title: "Anonymous visitor ids identify() linked to this user at sign-in",
 								},
@@ -456,7 +546,11 @@ export const userRail = <M>(
 						]),
 				...(profile.location === null
 					? []
-					: [detailRailRow(h, { label: "Location" }, [railValue(h, profile.location, false)])]),
+					: [
+							detailRailRow(h, { icon: "GlobeIcon", label: "Location" }, [
+								railValue(h, profile.location, false),
+							]),
+						]),
 			]),
 			...groupSection(h, profile, groupStats, groupHref, scope.active === null || scope.isPinned),
 			...(onlyNamespace === undefined ? [namespacesGroup(h, namespaces, scope)] : []),
@@ -467,7 +561,12 @@ export const userRail = <M>(
 				Arr.isReadonlyArrayEmpty(profile.traits)
 					? [typography(h, { size: "xs", tone: "subtle" }, ["No traits recorded for this user"])]
 					: Arr.map(profile.traits, ([key, value]) =>
-							detailRailRow(h, { label: key }, [railValue(h, value)]),
+							// A trait key is the user's own name for it: the label sizes to it, the value truncates.
+							detailRailRow(
+								h,
+								{ icon: "TagIcon", label: key, labelWidth: "minmax(88px, max-content)" },
+								[railValue(h, value)],
+							),
 						),
 			),
 			detailRailGroup(
@@ -476,8 +575,11 @@ export const userRail = <M>(
 				Arr.isReadonlyArrayEmpty(profile.devices)
 					? [typography(h, { size: "xs", tone: "subtle" }, ["no recorded sessions"])]
 					: Arr.map(profile.devices, (device) =>
-							detailRailRow(h, { label: device.browser, hint: device.os }, [
-								railValue(h, countLabel(device.sessions, "session"), false),
+							hstack(h, { gap: "2", className: "min-h-8 min-w-0" }, [
+								hstack(h, { as: "span", className: "min-w-0 flex-1" }, [
+									deviceBadge(h, device),
+								]),
+								railNumber(h, countLabel(device.sessions, "session")),
 							]),
 						),
 			),
@@ -493,7 +595,7 @@ const servicesGroup = <M>(h: HtmlBuilder<M>, profile: UserProfile, isOneNamespac
 		Arr.isReadonlyArrayEmpty(profile.services)
 			? [typography(h, { size: "xs", tone: "subtle" }, ["no service named in this window"])]
 			: Arr.map(profile.services, (service) =>
-					hstack(h, { gap: "2", className: "min-h-7 min-w-0" }, [
+					hstack(h, { gap: "2", className: "min-h-8 min-w-0" }, [
 						serviceLabel(h, {
 							serviceName: service.service,
 							size: "xs",
@@ -522,7 +624,8 @@ const servicesGroup = <M>(h: HtmlBuilder<M>, profile: UserProfile, isOneNamespac
 								mono: true,
 								tone: "muted",
 								numeric: true,
-								className: "shrink-0",
+								align: "right",
+								className: "w-10 shrink-0",
 							},
 							[formatNumber(service.signals)],
 						),
@@ -589,17 +692,25 @@ const namespaceScopeBar = <M>(
 	const all = Arr.map(namespacesOf(profile), (namespace) => namespace.name)
 	if (scope.active === null) {
 		if (all.length < 2) return null
-		return hstack(h, { gap: "2", wrap: true, className: "border-b border-border-subtle px-6 py-2.5" }, [
-			icon(h, "LayersIcon", { size: 14, className: "text-foreground-subtle" }),
-			typography(h, { size: "xs", tone: "muted", as: "span" }, [
-				`Across ${all.length} namespaces: ${Arr.join(all, ", ")}`,
-			]),
-		])
+		return hstack(
+			h,
+			{ gap: "2", wrap: true, className: "border-b border-border-subtle px-(--page-gutter) py-2.5" },
+			[
+				icon(h, "LayersIcon", { size: 14, className: "text-foreground-subtle" }),
+				typography(h, { size: "xs", tone: "muted", as: "span" }, [
+					`Across ${all.length} namespaces: ${Arr.join(all, ", ")}`,
+				]),
+			],
+		)
 	}
 	const hidden = Arr.filter(all, (name) => name !== scope.active)
 	return hstack(
 		h,
-		{ gap: "2", wrap: true, className: "border-b border-border-subtle bg-surface-faint px-6 py-2.5" },
+		{
+			gap: "2",
+			wrap: true,
+			className: "border-b border-border-subtle bg-surface-faint px-(--page-gutter) py-2.5",
+		},
 		[
 			icon(h, "LayersIcon", { size: 14, className: "text-foreground-subtle" }),
 			typography(h, { size: "xs", as: "span" }, ["Namespace"]),
@@ -648,6 +759,25 @@ const KIND_ICON = {
 	mcp: "PlugIcon",
 } satisfies { readonly [K in ActivityKind]: IconName }
 
+/** Only the kinds that ask for a look get a colour (errors, replays, MCP); the routine ones stay neutral. */
+const KIND_TONE = {
+	error: "crit",
+	request: "neutral",
+	event: "neutral",
+	session: "done",
+	log: "neutral",
+	mcp: "live",
+} satisfies { readonly [K in ActivityKind]: Tone }
+
+const KIND_LABEL = {
+	error: "Error",
+	request: "Request",
+	event: "Event",
+	session: "Replay",
+	log: "Log",
+	mcp: "MCP session",
+} satisfies { readonly [K in ActivityKind]: string }
+
 const KIND_ACTION = {
 	error: "Issue",
 	request: "Trace",
@@ -657,7 +787,32 @@ const KIND_ACTION = {
 	mcp: "Open session",
 } satisfies { readonly [K in ActivityKind]: string }
 
-const ACTIVITY_ROW_CLASS = "grid grid-cols-[3rem_1rem_minmax(0,1fr)_auto] items-start gap-3 px-2.5 py-2"
+/** A failing row's tile turns red and a slow request or warning amber; any other keeps its kind's colour. */
+const activityTone = (item: ActivityItem): Tone =>
+	item.tone === "crit" ? "crit" : item.tone === "warn" ? "warn" : KIND_TONE[item.kind]
+
+const ACTIVITY_ROW_CLASS = "grid grid-cols-[3rem_1.5rem_minmax(0,1fr)_auto] items-center gap-3 px-2.5 py-2"
+
+/** An event property in a detail line (`tool=run_sql`), kept by `split` as its own part. */
+const PROPERTY = /([\w.-]+=[^,·]+)/
+const PAIR = /^([\w.-]+=)([^,·]+)$/
+
+/** A detail line with its `key=value` properties split, the value in the foreground. */
+const activityDetail = <M>(h: HtmlBuilder<M>, detail: string): Html =>
+	typography(
+		h,
+		{ size: "2xs", tone: "muted", mono: true, truncate: true, attributes: [h.Title(detail)] },
+		Arr.flatMap(Str.split(detail, PROPERTY), (part) => {
+			if (part === "") return []
+			const pair = PAIR.exec(part)
+			return pair === null
+				? [part]
+				: [
+						pair[1] ?? "",
+						typography(h, { size: "2xs", mono: true, tone: "soft", as: "span" }, [pair[2] ?? ""]),
+					]
+		}),
+	)
 
 /** One timeline row; a row with a page (a replay, an MCP session, a trace) is a link to it. */
 const activityRow = <M>(h: HtmlBuilder<M>, item: ActivityItem, timeZone: string): Html =>
@@ -669,34 +824,37 @@ const activityRow = <M>(h: HtmlBuilder<M>, item: ActivityItem, timeZone: string)
 			className:
 				item.href === null
 					? ACTIVITY_ROW_CLASS
-					: `${ACTIVITY_ROW_CLASS} hover:bg-surface-faint active:bg-surface-faint`,
+					: `group ${ACTIVITY_ROW_CLASS} hover:bg-surface-faint active:bg-surface-faint`,
 		},
 		[
-			typography(h, { size: "xs", mono: true, numeric: true, tone: "muted", className: "pt-px" }, [
+			typography(h, { size: "xs", mono: true, numeric: true, tone: "muted" }, [
 				clockOf(item.atMs, timeZone),
 			]),
-			icon(h, KIND_ICON[item.kind], {
-				size: 14,
-				className:
-					item.tone === "crit"
-						? "mt-0.5 text-severity-error"
-						: item.tone === "warn"
-							? "mt-0.5 text-severity-warn"
-							: "mt-0.5 text-muted-foreground",
-			}),
-			vstack(h, { gap: "0.5", className: "min-w-0" }, [
-				typography(
-					h,
-					{ size: "xs", tone: item.tone === "crit" ? "error" : "foreground", truncate: true },
-					[item.title],
-				),
-				typography(h, { size: "2xs", tone: "muted", mono: true, truncate: true }, [item.detail]),
+			// The tile turns red on a failure; the tag always names the kind in its own colour.
+			toneGlyph(h, { iconName: KIND_ICON[item.kind], tone: activityTone(item) }),
+			vstack(h, { gap: "1", className: "min-w-0" }, [
+				hstack(h, { gap: "2", className: "min-w-0" }, [
+					badge(h, { variant: "tag", className: cn("shrink-0", TONE_SOFT[KIND_TONE[item.kind]]) }, [
+						KIND_LABEL[item.kind],
+					]),
+					typography(h, { size: "xs", weight: "medium", truncate: true }, [item.title]),
+				]),
+				activityDetail(h, item.detail),
 			]),
 			item.href === null
 				? h.span([h.AriaHidden(true)], [])
-				: typography(h, { size: "xs", tone: "primary", className: "pt-px" }, [
-						KIND_ACTION[item.kind],
-					]),
+				: hstack(
+						h,
+						{
+							gap: "1",
+							as: "span",
+							className: "text-muted-foreground group-hover:text-primary",
+						},
+						[
+							typography(h, { size: "xs", as: "span" }, [KIND_ACTION[item.kind]]),
+							icon(h, "ChevronRightIcon", { size: 12 }),
+						],
+					),
 		],
 	)
 
@@ -716,7 +874,7 @@ const activityBody = <M>(h: HtmlBuilder<M>, items: ReadonlyArray<ActivityItem>, 
 			const dayItems = days[key] ?? []
 			const first = dayItems[0]
 			return vstack(h, { as: "section" }, [
-				eyebrow(h, { variant: "mono", className: "px-2.5 pb-1" }, [
+				eyebrow(h, { className: "px-2.5 pb-1" }, [
 					first === undefined ? key : dayLabel(first.atMs, clock),
 				]),
 				vstack(
@@ -951,41 +1109,137 @@ const errorsBody = <M>(h: HtmlBuilder<M>, detail: UserDetail, clock: Clock): Htm
 /** A request this slow reads as a warning. */
 const SLOW_MS = 2000
 
-/** The user's requests, one row per entry span; each opens its trace. */
+const latencyCell = <M>(h: HtmlBuilder<M>, ms: number, className = "w-20 shrink-0"): Html =>
+	cellText(h, formatLatency(ms), className, {
+		right: true,
+		mono: false,
+		tone: ms >= SLOW_MS ? "warning" : "foreground",
+	})
+
+/** Operations the API lists at most (`USER_OPERATIONS_LIMIT`); a full list says it is the top ones. */
+const OPERATIONS_CAP = 50
+
+/** Set off from the latency columns beside it, so "P95" and "Last seen" don't read as one. */
+const LAST_SEEN_LANE = "w-24 shrink-0 pl-4"
+
+/** What the user calls, busiest first: requests, failures and latency per operation. */
+const operationsTable = <M>(h: HtmlBuilder<M>, detail: UserDetail, clock: Clock): Html =>
+	toolTable(h, [
+		toolTableHead(h, [
+			th(h, { label: "Operation", width: columnClass({ min: "0" }) }),
+			th(h, { label: "Requests", width: "w-20 shrink-0", align: "right" }),
+			th(h, { label: "Failed", width: "w-20 shrink-0", align: "right" }),
+			th(h, { label: "P50", width: "w-20 shrink-0", align: "right" }),
+			th(h, { label: "P95", width: "w-20 shrink-0", align: "right" }),
+			th(h, { label: "Last seen", width: LAST_SEEN_LANE }),
+		]),
+		toolTableBody(
+			h,
+			Arr.map(detail.operations, (operation) =>
+				toolTableRow(h, { href: operation.href, className: "h-12" }, [
+					vstack(h, { gap: "0.5", className: "w-0 min-w-0 flex-1" }, [
+						typography(h, { size: "xs", mono: true, truncate: true }, [operation.name]),
+						serviceLabel(h, { serviceName: operation.service, size: "2xs", tone: "muted" }),
+					]),
+					cellText(h, formatNumber(operation.requests), "w-20 shrink-0", {
+						right: true,
+						mono: false,
+					}),
+					cellText(
+						h,
+						operation.errors === 0
+							? EMPTY_VALUE
+							: formatPercent(operation.errors / operation.requests, { floor: 0.001 }),
+						"w-20 shrink-0",
+						{ right: true, mono: false, tone: operation.errors === 0 ? "muted" : "error" },
+					),
+					latencyCell(h, operation.p50Ms),
+					latencyCell(h, operation.p95Ms),
+					timeCell(h, operation.lastSeenMs, clock, LAST_SEEN_LANE),
+				]),
+			),
+		),
+	])
+
+/** The latest requests, repeats folded into one row that opens the run's slowest. */
+const recentRequestsTable = <M>(h: HtmlBuilder<M>, detail: UserDetail, clock: Clock): Html =>
+	toolTable(h, [
+		toolTableHead(h, [
+			th(h, { label: "Time", width: "w-20 shrink-0" }),
+			th(h, { label: "Request", width: columnClass({ min: "0" }) }),
+			th(h, { label: "Service", width: SERVICE_LANE }),
+			th(h, { label: "Duration", width: "w-20 shrink-0", align: "right" }),
+			th(h, { label: "Status", width: "w-16 shrink-0", align: "right" }),
+		]),
+		toolTableBody(
+			h,
+			Arr.map(foldRepeats(detail.traces), (run) =>
+				toolTableRow(h, { href: run.slowest.href }, [
+					timeCell(h, run.newest.atMs, clock),
+					hstack(h, { gap: "2", as: "span", className: "w-0 min-w-0 flex-1" }, [
+						typography(h, { size: "xs", mono: true, truncate: true, as: "span" }, [
+							run.newest.rootSpan,
+						]),
+						...(run.count === 1
+							? []
+							: [
+									badge(
+										h,
+										{ variant: "muted", size: "sm", mono: true, className: "shrink-0" },
+										[`×${formatNumber(run.count)}`],
+									),
+								]),
+					]),
+					serviceCell(h, run.newest.service),
+					latencyCell(h, run.slowest.durationMs),
+					cellText(h, run.newest.status, "w-16 shrink-0", {
+						right: true,
+						mono: false,
+						tone: run.newest.isError ? "error" : "muted",
+					}),
+				]),
+			),
+		),
+	])
+
+/** The user's requests: a per-operation summary over the window, then the latest ones. */
 const tracesBody = <M>(h: HtmlBuilder<M>, detail: UserDetail, clock: Clock): Html =>
 	indexedTabState(detail.profile.requests, detail.traces) === "unindexed"
 		? unavailableTab(h, "LayersIcon", "Requests are not indexed per user here", UNINDEXED_DESCRIPTION)
 		: Arr.isReadonlyArrayEmpty(detail.traces)
 			? noRows(h, "No requests from this user in this window")
-			: toolTable(h, [
-					toolTableHead(h, [
-						th(h, { label: "Time", width: "w-20 shrink-0" }),
-						th(h, { label: "Root span", width: columnClass({ min: "0" }) }),
-						th(h, { label: "Service", width: SERVICE_LANE }),
-						th(h, { label: "Duration", width: "w-20 shrink-0", align: "right" }),
-						th(h, { label: "Status", width: "w-16 shrink-0", align: "right" }),
-					]),
-					toolTableBody(
-						h,
-						Arr.map(detail.traces, (trace) =>
-							toolTableRow(h, { href: trace.href }, [
-								timeCell(h, trace.atMs, clock),
-								cellText(h, trace.rootSpan, "w-0 flex-1"),
-								serviceCell(h, trace.service),
-								cellText(h, formatLatency(trace.durationMs), "w-20 shrink-0", {
-									right: true,
-									mono: false,
-									tone: trace.durationMs >= SLOW_MS ? "warning" : "foreground",
-								}),
-								cellText(h, trace.status, "w-16 shrink-0", {
-									right: true,
-									mono: false,
-									tone: trace.isError ? "error" : "muted",
-								}),
+			: vstack(h, { gap: "8", className: "min-w-0" }, [
+					...(Arr.isReadonlyArrayEmpty(detail.operations)
+						? []
+						: [
+								requestSection(
+									h,
+									"Operations",
+									formatNumber(detail.operations.length),
+									detail.operations.length >= OPERATIONS_CAP
+										? `Top ${OPERATIONS_CAP}, busiest first`
+										: "Busiest first",
+									operationsTable(h, detail, clock),
+								),
 							]),
+					requestSection(
+						h,
+						"Recent requests",
+						formatNumber(detail.traces.length),
+						"Newest first, repeats folded",
+						cappedList(
+							h,
+							recentRequestsTable(h, detail, clock),
+							detail.traces.length,
+							detail.profile.requests ?? detail.traces.length,
+							"request",
 						),
 					),
 				])
+
+/** One block of the Traces tab: its titled, counted heading over its table. */
+const requestSection = <M>(h: HtmlBuilder<M>, title: string, count: string, hint: string, body: Html): Html =>
+	vstack(h, { gap: "3", className: "min-w-0" }, [sectionHeading(h, { as: "h3", title, count, hint }), body])
 
 /** The user's log lines; one inside a trace opens it. */
 const logsBody = <M>(h: HtmlBuilder<M>, detail: UserDetail, clock: Clock): Html =>
@@ -1135,9 +1389,21 @@ export const userDetailBody = <M>(
 	options: UserDetailOptions<M>,
 ): Html => {
 	const clock = { nowMs: options.nowMs, timeZone: options.timeZone }
+	const content = options.tabContent ?? tabBody(h, detail, options.tab, clock)
+	const calendar = options.tab === "activity" ? options.calendar : undefined
 	return vstack(h, { shrink: true, className: "@container/panel" }, [
 		userStats(h, detail.profile),
 		namespaceScopeBar(h, detail.profile, options.namespace),
-		h.div([h.Class("min-w-0 px-6 py-5")], [options.tabContent ?? tabBody(h, detail, options.tab, clock)]),
+		h.div(
+			[h.Class("min-w-0 px-(--page-gutter) py-5")],
+			[
+				calendar === undefined
+					? content
+					: vstack(h, { gap: "6" }, [
+							activityCalendar(h, { ...calendar, nowMs: clock.nowMs }),
+							content,
+						]),
+			],
+		),
 	])
 }

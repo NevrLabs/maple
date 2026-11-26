@@ -33,6 +33,8 @@ import {
 	Actors,
 	ErrorIssues,
 	ErrorFingerprintCandidates,
+	ErrorGroupingKeys,
+	ErrorGroupingConfigs,
 	ErrorIssueFingerprints,
 	ErrorIssueEvents,
 	ErrorIssueStates,
@@ -59,12 +61,14 @@ import { McpOAuthClients, McpOAuthAuthorizations, McpOAuthRefreshTokens } from "
 import { MobileDevices } from "./mobile-devices"
 import { OAuthConnections, OAuthAuthStates } from "./oauth-connections"
 import { OrgOnboardingState } from "./onboarding"
+import { OnboardingAgentRuns } from "./onboarding-agent-runs"
 import { OrgClickHouseSchemaApplyRuns } from "./org-clickhouse-schema-apply-runs"
 import { OrgClickHouseSettings } from "./org-clickhouse-settings"
 import { OrgIngestAttributeMappings } from "./org-ingest-attribute-mappings"
 import { OrgIngestRules, OrgIngestRuleSettings, OrgIngestRuleStats } from "./org-ingest-rules"
 import { OrgIngestKeys } from "./org-ingest-keys"
 import { OrgIngestSamplingPolicies } from "./org-ingest-sampling-policies"
+import { OrgRetentionPolicies } from "./org-retention-policies"
 import { Sources } from "./sources"
 import { ExternalDataSources, ExternalDataSourceCatalogEntries } from "./external-data-sources"
 import { OrgRecommendationIssues } from "./org-recommendation-issues"
@@ -76,6 +80,7 @@ import {
 	PlanetscaleIssueReceipts,
 } from "./planetscale-inventory"
 import { CostConnections } from "./cost-connections"
+import { CookielessSalts, CookielessVisits } from "./cookieless-visitors"
 import { FeatureRequests } from "./feature-requests"
 import { DevicePolicyFindings, DeviceVulnerabilityFindings } from "./device-findings"
 import { FleetConnections } from "./fleet"
@@ -88,6 +93,7 @@ import { SavedViews } from "./saved-views"
 import { ScrapeTargets, ScrapeTargetChecks } from "./scrape-targets"
 import { SearchConsoleSites } from "./search-console-sites"
 import { ServiceMapWorldEntities } from "./service-map-world"
+import { SourceMapFiles } from "./source-maps"
 import {
 	SecurityAuditEvents,
 	SecurityAuditFindings,
@@ -155,6 +161,7 @@ export * from "./escalation-chains"
 export * from "./oncall-schedules"
 export * from "./aws-connections"
 export * from "./cost-sources"
+export * from "./cookieless-visitors"
 export * from "./gcp-connectors"
 export * from "./gcp-cost-exports"
 export * from "./gcp-resources"
@@ -165,12 +172,14 @@ export * from "./mcp-oauth"
 export * from "./mobile-devices"
 export * from "./oauth-connections"
 export * from "./onboarding"
+export * from "./onboarding-agent-runs"
 export * from "./org-clickhouse-schema-apply-runs"
 export * from "./org-clickhouse-settings"
 export * from "./org-ingest-attribute-mappings"
 export * from "./org-ingest-rules"
 export * from "./org-ingest-keys"
 export * from "./org-ingest-sampling-policies"
+export * from "./org-retention-policies"
 export * from "./org-recommendation-issues"
 export * from "./planetscale-connections"
 export * from "./planetscale-inventory"
@@ -188,6 +197,7 @@ export * from "./scrape-targets"
 export * from "./search-console-sites"
 export * from "./security-audit"
 export * from "./service-map-world"
+export * from "./source-maps"
 export * from "./sources"
 export * from "./status-pages"
 export * from "./supabase"
@@ -233,6 +243,8 @@ export const allTables: ReadonlyArray<PgSchemaTable<string, ColumnDefs>> = [
 	Actors,
 	ErrorIssues,
 	ErrorFingerprintCandidates,
+	ErrorGroupingKeys,
+	ErrorGroupingConfigs,
 	ErrorIssueFingerprints,
 	ErrorIssueEvents,
 	ErrorIssueStates,
@@ -266,6 +278,7 @@ export const allTables: ReadonlyArray<PgSchemaTable<string, ColumnDefs>> = [
 	OAuthConnections,
 	OAuthAuthStates,
 	OrgOnboardingState,
+	OnboardingAgentRuns,
 	OrgClickHouseSchemaApplyRuns,
 	OrgClickHouseSettings,
 	OrgIngestAttributeMappings,
@@ -274,8 +287,11 @@ export const allTables: ReadonlyArray<PgSchemaTable<string, ColumnDefs>> = [
 	OrgIngestRuleStats,
 	OrgIngestKeys,
 	OrgIngestSamplingPolicies,
+	OrgRetentionPolicies,
 	OpenRouterCostConnections,
 	CostConnections,
+	CookielessSalts,
+	CookielessVisits,
 	FeatureRequests,
 	OrgErasures,
 	OrgOpenRouterKeys,
@@ -302,6 +318,7 @@ export const allTables: ReadonlyArray<PgSchemaTable<string, ColumnDefs>> = [
 	ServiceMapWorldEntities,
 	ScrapeTargetChecks,
 	SearchConsoleSites,
+	SourceMapFiles,
 	SecurityAuditTargets,
 	SecurityAuditRuns,
 	SecurityAuditUnits,

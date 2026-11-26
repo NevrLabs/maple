@@ -4,7 +4,6 @@ import { Array as Arr, Option } from "effect"
 
 const OFF: NavFlags = {
 	cloudSecurity: false,
-	productAnalytics: false,
 	securityAudit: false,
 }
 
@@ -55,7 +54,6 @@ describe("isNavItemActive", () => {
 	test("a flagged page with its own row highlights only that row", () => {
 		const on = {
 			cloudSecurity: false,
-			productAnalytics: true,
 			securityAudit: true,
 		}
 		expect(activeTitles("/security", on)).toEqual(["Security"])
@@ -106,6 +104,23 @@ describe("navGroups for an analyst", () => {
 	})
 })
 
+describe("navGroups for a role limited to namespaces", () => {
+	const hrefs = (flags: NavFlags) =>
+		Arr.dedupe(
+			Arr.flatMap(navGroups(flags, "scoped"), (group) =>
+				Arr.flatMap(group.items, (item) => [
+					item.href,
+					...Arr.map(item.subItems ?? [], (sub) => sub.href),
+				]),
+			),
+		)
+
+	test("links to the telemetry pages its reads are kept to its namespaces on, and nothing else", () => {
+		expect(hrefs(OFF)).toEqual(["/services", "/traces", "/logs"])
+		expect(hrefs({ cloudSecurity: true, securityAudit: true })).toEqual(hrefs(OFF))
+	})
+})
+
 describe("navGroups", () => {
 	const titles = (flags: NavFlags) =>
 		Arr.flatMap(navGroups(flags), (group) => Arr.map(group.items, (item) => item.title))
@@ -116,7 +131,7 @@ describe("navGroups", () => {
 		expect(titles({ ...OFF, securityAudit: true })).toContain("Security")
 	})
 
-	test("Product analytics sits under Explore only for an org in the productAnalytics rollout", () => {
+	test("Product analytics sits under Explore for every org", () => {
 		const exploreSubs = (flags: NavFlags) =>
 			Arr.map(
 				Option.getOrUndefined(
@@ -127,9 +142,8 @@ describe("navGroups", () => {
 				)?.subItems ?? [],
 				(sub) => sub.title,
 			)
-		expect(exploreSubs(OFF)).not.toContain("Product analytics")
-		expect(exploreSubs({ ...OFF, productAnalytics: true })).toContain("Product analytics")
-		expect(titles({ ...OFF, productAnalytics: true })).not.toContain("Product analytics")
+		expect(exploreSubs(OFF)).toContain("Product analytics")
+		expect(titles(OFF)).not.toContain("Product analytics")
 	})
 
 	test("the Cloud cost row shows for every org, marked Beta under Monitor", () => {

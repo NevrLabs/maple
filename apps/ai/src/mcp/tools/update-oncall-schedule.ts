@@ -1,4 +1,4 @@
-import { McpInvalidInputError, type McpToolRegistrar } from "./types"
+import { McpInvalidInputError, type McpToolFamilyBuilder } from "./types"
 import { Effect, Schema } from "effect"
 import { OnCallScheduleUpdateRequest } from "@maple/domain/http"
 import { OnCallSchedulesService } from "@maple/backend/services/alerts/OnCallSchedulesService"
@@ -17,10 +17,8 @@ import { doc } from "../lib/tool-doc"
 
 const decodeUpdateRequest = Schema.decodeUnknownEffect(OnCallScheduleUpdateRequest)
 
-export function registerUpdateOnCallScheduleTool(server: McpToolRegistrar) {
-	server.define({
-		name: "update_oncall_schedule",
-		title: "Update On-Call Schedule",
+export const updateOnCallScheduleAction = (family: McpToolFamilyBuilder<"manage_oncall_schedule">) =>
+	family.action("update", {
 		description:
 			"Change an on-call schedule's name, time zone, layers or description. Pass only what changes; layers replaces every layer. " +
 			"Overrides are kept. Ids from list_oncall_schedules.",
@@ -32,7 +30,7 @@ export function registerUpdateOnCallScheduleTool(server: McpToolRegistrar) {
 			description: P.optionalText("New notes"),
 		}),
 		hints: { readOnly: false, destructive: false, idempotent: true },
-		phrases: ["Updating an on-call schedule"],
+		permission: "oncall:manage",
 		handler: Effect.fn("McpTool.updateOnCallSchedule")(function* (params) {
 			const scheduleId = yield* P.decodeResourceId("oncallSchedule", "schedule_id")(params.schedule_id)
 			if (
@@ -63,7 +61,7 @@ export function registerUpdateOnCallScheduleTool(server: McpToolRegistrar) {
 			const tenant = yield* CurrentMcpTenant
 			const schedules = yield* OnCallSchedulesService
 			const schedule = yield* schedules
-				.update(tenant.orgId, tenant.userId, tenant.roles, scheduleId, request)
+				.update(tenant.orgId, tenant.userId, tenant.permissions, scheduleId, request)
 				.pipe(Effect.catchTags(updateScheduleErrors))
 			const names = yield* memberNames(tenant.orgId)
 			return { schedule: toScheduleRow(schedule, names) }
@@ -74,4 +72,3 @@ export function registerUpdateOnCallScheduleTool(server: McpToolRegistrar) {
 			next: [doc.next("who_is_on_call", { schedule: output.schedule.id }, "who is on call now")],
 		}),
 	})
-}

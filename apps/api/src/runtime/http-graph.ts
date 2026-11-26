@@ -7,6 +7,7 @@ import { API_CORS_OPTIONS } from "@maple/backend/http/api-cors"
 import { rawRoutes } from "@maple/backend/http/raw-routes"
 import { Env } from "@maple/backend/platform/Env"
 import { HttpAiModelsInternalLive } from "@/routes/internal/ai-models.http"
+import { HttpAiEvaluationsInternalLive } from "@/routes/internal/ai-evaluations.http"
 import { HttpAiSessionsInternalLive } from "@/routes/internal/ai-sessions.http"
 import { HttpMcpInternalLive } from "@/routes/internal/mcp.http"
 import { HttpUsersInternalLive } from "@/routes/internal/users.http"
@@ -15,6 +16,7 @@ import { HttpAnthropicCostLive } from "@/routes/internal/anthropic-cost.http"
 import { HttpFeatureRequestsLive } from "@/routes/internal/feature-requests.http"
 import { HttpCloudflareCostLive } from "@/routes/internal/cloudflare-cost.http"
 import { HttpOpenAiCostLive } from "@/routes/internal/openai-cost.http"
+import { HttpMorphCostLive } from "@/routes/internal/morph-cost.http"
 import { HttpGithubCostLive } from "@/routes/internal/github-cost.http"
 import { HttpOpenRouterCostLive } from "@/routes/internal/openrouter-cost.http"
 import { HttpCostBudgetsLive } from "@/routes/internal/cost-budgets.http"
@@ -35,6 +37,8 @@ import { AwsOidcRouter } from "@/routes/aws-oidc.http"
 import { DiscoveryRouter, instanceApiV2, NotFoundRouter } from "@/routes/discovery.http"
 import { HttpDigestLive } from "@/routes/internal/digest.http"
 import { HttpSavedViewsLive } from "@/routes/internal/saved-views.http"
+import { HttpRolesLive } from "@/routes/internal/roles.http"
+import { RolesService } from "@maple/backend/services/roles/RolesService"
 import { HttpCodeReviewLive } from "@/routes/internal/code-review.http"
 import { HttpAuditTrailLive } from "@/routes/internal/audit-trail.http"
 import { HttpCloudSecurityLive } from "@/routes/internal/cloud-security.http"
@@ -45,6 +49,7 @@ import { HttpErrorsLive } from "@/routes/internal/errors.http"
 import { HttpIntegrationsLive } from "@/routes/internal/integrations.http"
 import { IntegrationsCallbackRouter } from "@/routes/integrations-callback.http"
 import { OAuthDiscoveryRouter } from "@/routes/oauth-discovery.http"
+import { OnCallCalendarRouter } from "@/routes/oncall-calendar.http"
 import { HttpOrgClickHouseSettingsLive } from "@/routes/internal/org-clickhouse-settings.http"
 import {
 	HttpOrganizationCreationLive,
@@ -72,6 +77,7 @@ import { HttpV2AlertRulesLive } from "@/routes/v2/alert-rules.http"
 import { HttpV2AnomaliesLive } from "@/routes/v2/anomalies.http"
 import { HttpV2ApiKeysLive } from "@/routes/v2/api-keys.http"
 import { HttpV2AttributeMappingsLive } from "@/routes/v2/attribute-mappings.http"
+import { HttpV2SourceMapsLive } from "@/routes/v2/source-maps.http"
 import { HttpV2DataSourcesLive } from "@/routes/v2/data-sources.http"
 import { HttpV2IngestRulesLive } from "@/routes/v2/ingest-rules.http"
 import { HttpV2DashboardsLive } from "@/routes/v2/dashboards.http"
@@ -97,6 +103,7 @@ import { HttpV2SlosLive } from "@/routes/v2/slos.http"
 import { HttpV2StatusPageIncidentsLive, HttpV2StatusPagesLive } from "@/routes/v2/status-pages.http"
 import { HttpV2InstrumentationAuditLive } from "@/routes/v2/setup-audit.http"
 import { HttpV2OnboardingChecklistLive } from "@/routes/v2/onboarding-checklist.http"
+import { HttpV2OnboardingAgentRunLive } from "@/routes/v2/onboarding-agent-run.http"
 import { HttpV2SupportChannelLive } from "@/routes/v2/support-channel.http"
 import { HttpV2TelemetrySignalsLive } from "@/routes/v2/telemetry-signals.http"
 import { HttpV2SessionReplaysLive } from "@/routes/v2/session-replays.http"
@@ -173,6 +180,7 @@ const ApiInternalRoutes = HttpApiBuilder.layer(MapleInternalApi).pipe(
 			HttpQueryEngineLive,
 			HttpSessionReplaysInternalLive,
 			HttpAiSessionsInternalLive,
+			HttpAiEvaluationsInternalLive,
 			HttpAiModelsInternalLive,
 			HttpMcpInternalLive,
 			HttpUsersInternalLive,
@@ -190,10 +198,14 @@ const ApiInternalRoutes = HttpApiBuilder.layer(MapleInternalApi).pipe(
 			HttpDependencyScanLive,
 			HttpDigestLive,
 			HttpSavedViewsLive,
+			// Provided here, like the Clerk webhook's revocation sweep: it needs the audit log, which
+			// the auth layers provide below the service graph.
+			HttpRolesLive.pipe(Layer.provide(RolesService.layer)),
 			HttpCloudflareCostLive,
 			HttpAnthropicCostLive,
 			HttpFeatureRequestsLive,
 			HttpOpenAiCostLive,
+			HttpMorphCostLive,
 			HttpGithubCostLive,
 			HttpPlanetScaleCostLive,
 			HttpOpenRouterCostLive,
@@ -240,6 +252,7 @@ const ApiV2Routes = HttpApiBuilder.layer(MapleApiV2).pipe(
 			HttpV2AwsIntegrationsLive,
 			HttpV2ErrorIssuesLive,
 			HttpV2AttributeMappingsLive,
+			HttpV2SourceMapsLive,
 			HttpV2DataSourcesLive,
 			HttpV2IngestRulesLive,
 			HttpV2AuditLogLive,
@@ -251,6 +264,7 @@ const ApiV2Routes = HttpApiBuilder.layer(MapleApiV2).pipe(
 			HttpV2InstrumentationRecommendationsLive,
 			HttpV2InstrumentationAuditLive,
 			HttpV2OnboardingChecklistLive,
+			HttpV2OnboardingAgentRunLive,
 			HttpV2SupportChannelLive,
 			HttpV2TelemetrySignalsLive,
 			HttpV2SharePublicLive,
@@ -295,6 +309,7 @@ const RawRoutes = rawRoutes<Layer.Success<ApiPortsLayer>>()(
 		DocsRoute,
 		DocsV2Route,
 		DiscoveryRouter,
+		OnCallCalendarRouter,
 		AwsOidcRouter,
 		// Last by convention only — find-my-way ranks the wildcard below every other
 		// route regardless of registration order.

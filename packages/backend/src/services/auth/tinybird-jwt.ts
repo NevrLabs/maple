@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto"
 import { escapeClickHouseString } from "@maple-dev/effect-orm/sql"
-import { Array as Arr, String as Str } from "effect"
+import { Array as Arr, Option, String as Str } from "effect"
 import { signHs256Jwt } from "@maple/backend/platform/jwt"
 
 // Tinybird "Forward" enforces row-level security via self-signed JWTs: a token
@@ -22,6 +22,20 @@ export interface TinybirdJwtScope {
 }
 
 /**
+ * Hides a datasource's rows older than `days`, by `column`. The caller passes a whole number of
+ * days and a column name of Maple's own; neither ever comes from a request.
+ */
+export interface ReadBound {
+	readonly column: string
+	readonly days: number
+	/**
+	 * How long a row of `column` stands for, in whole minutes, when it is a bucket start: the
+	 * bound keeps a bucket the horizon cuts through, since it still locates rows that are kept.
+	 */
+	readonly bucketMinutes?: number
+}
+
+/**
  * What reads with the token: SQL a customer wrote, or a query Maple compiled. Each draws from its
  * own Tinybird rate bucket, so a customer's raw SQL cannot starve the org's alert evaluation.
  */
@@ -36,6 +50,14 @@ export interface MintOrgReadJwtInput {
 	readonly orgId: string
 	/** Every datasource the token may read. Each gets an `OrgId = '<org>'` filter. */
 	readonly datasourceNames: ReadonlyArray<string>
+	/** Datasources whose filter also stops at the org's read horizon. The rest keep the bare org filter. */
+	readonly readBounds?: ReadonlyMap<string, ReadBound>
+	/**
+	 * For a caller limited to part of the org's rows: a further condition per datasource, ANDed to
+	 * its filter. When given, a datasource it has no condition for is left out of the token, which
+	 * Tinybird then refuses outright.
+	 */
+	readonly rowFilters?: ReadonlyMap<string, string> | undefined
 	/** Current time in whole seconds (Unix epoch). */
 	readonly nowSeconds: number
 	/** Token lifetime in seconds. */
@@ -54,24 +76,69 @@ export interface MintOrgReadJwtInput {
 const tokenNameForOrg = (orgId: string, use: OrgReadJwtUse): string =>
 	`${use === "raw-sql" ? "maple-raw-sql" : "maple-read"}-${Str.slice(0, 16)(createHash("sha256").update(orgId).digest("hex"))}`
 
+// Verified on Tinybird Local: the time bound is ANDed onto every scan like the org filter, hides
+// the older rows, and `OR 1=1`, subqueries and `UNION ALL` do not escape it.
+const scopeFilter = (orgLiteral: string, bound: ReadBound | undefined): string =>
+	bound === undefined
+		? orgLiteral
+		: `${orgLiteral} AND ${bound.column} >= now() - INTERVAL ${bound.days} DAY${
+				bound.bucketMinutes === undefined ? "" : ` - INTERVAL ${bound.bucketMinutes} MINUTE`
+			}`
+
 /**
  * Mint a per-org Tinybird read JWT scoped to `datasourceNames`, each filtered to
- * `OrgId = '<orgId>'`. HS256, signed with the workspace admin token.
+ * `OrgId = '<orgId>'`, and to its read bound where it has one. HS256, signed with the
+ * workspace admin token.
  */
 export function mintOrgReadJwt(input: MintOrgReadJwtInput): string {
 	const orgLiteral = `OrgId = '${escapeClickHouseString(input.orgId)}'`
-	const scopes: ReadonlyArray<TinybirdJwtScope> = Arr.map(input.datasourceNames, (resource) => ({
-		type: "DATASOURCES:READ",
-		resource,
-		filter: orgLiteral,
-	}))
+	const { rowFilters } = input
+	const filterOf = (resource: string) => scopeFilter(orgLiteral, input.readBounds?.get(resource))
+	const scopes: ReadonlyArray<TinybirdJwtScope> =
+		rowFilters === undefined
+			? Arr.map(input.datasourceNames, (resource) => ({
+					type: "DATASOURCES:READ",
+					resource,
+					filter: filterOf(resource),
+				}))
+			: Arr.getSomes(
+					Arr.map(input.datasourceNames, (resource) =>
+						Option.map(
+							Option.fromUndefinedOr(rowFilters.get(resource)),
+							// Parenthesized: the condition narrows the filter and can never widen it.
+							(condition): TinybirdJwtScope => ({
+								type: "DATASOURCES:READ",
+								resource,
+								filter: `${filterOf(resource)} AND (${condition})`,
+							}),
+						),
+					),
+				)
+	// A limited token is named for its filters too, so it shares nothing Tinybird keys by name
+	// with the org's unlimited tokens.
+	const limit =
+		rowFilters === undefined
+			? ""
+			: `-limited-${Str.slice(
+					0,
+					12,
+				)(
+					createHash("sha256")
+						.update(
+							Arr.join(
+								Arr.map(scopes, (scope) => `${scope.resource}\u0000${scope.filter}`),
+								"\u0001",
+							),
+						)
+						.digest("hex"),
+				)}`
 
 	return signHs256Jwt(
 		input.signingKey,
 		{ alg: "HS256", typ: "JWT" },
 		{
 			workspace_id: input.workspaceId,
-			name: tokenNameForOrg(input.orgId, input.use ?? "raw-sql"),
+			name: `${tokenNameForOrg(input.orgId, input.use ?? "raw-sql")}${limit}`,
 			exp: input.nowSeconds + input.ttlSeconds,
 			scopes,
 			...(!(input.rpsLimit === undefined) ? { limits: { rps: input.rpsLimit } } : undefined),

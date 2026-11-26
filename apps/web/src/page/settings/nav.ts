@@ -11,6 +11,7 @@ export type SettingsTab = (typeof settingsTabValues)[number]
 export const settingsTabLabels = {
 	general: "General",
 	members: "Members",
+	roles: "Roles",
 	domains: "Verified domains",
 	sso: "SSO & SCIM",
 	billing: "Billing & usage",
@@ -39,6 +40,7 @@ const navSections: ReadonlyArray<NavShellSection<SettingsTab>> = [
 		items: [
 			tab("general", "GearIcon"),
 			tab("members", "UserIcon"),
+			tab("roles", "ShieldCheckIcon"),
 			tab("domains", "GlobeIcon"),
 			tab("billing", "CreditCardIcon"),
 			tab("audit-log", "HistoryIcon"),
@@ -88,17 +90,22 @@ export type Visibility = Readonly<{
 const isVisible = (id: string, visibility: Visibility): boolean => {
 	// NevrLabs selfhost: Members is the OIDC users table on a self-hosted deployment.
 	if (id === "members") return visibility.isClerk || oidcProvider !== null
-	if (id === "general" || id === "billing") return visibility.isClerk
+	if (id === "general" || id === "roles" || id === "billing") return visibility.isClerk
 	// SSO lives in Clerk; every member reads it, admins change it.
 	if (id === "sso") return visibility.isClerk
 	// Clerk refuses a member reading the domains, so the tab is for admins only.
-	if (id === "domains") return visibility.isClerk && Policy.has(visibility.grants, "organization:manage")
+	if (id === "domains") return visibility.isClerk && Policy.can(visibility.grants, "organization:manage")
 	if (!visibility.isClerk) return true
 	if (id === "data-platform")
 		return visibility.canAccessDataPlatform || visibility.isDataPlatformLocked === true
 	if (id === "data-sources") return visibility.hasDataSources
-	if (id === "audit-log") return Policy.has(visibility.grants, "audit_log:read")
-	if (id === "ai") return Policy.has(visibility.grants, "llm_keys:manage")
+	if (id === "audit-log") return Policy.can(visibility.grants, "audit_log:read")
+	// The model provider and auto-triage each have their own permission; either opens the tab.
+	if (id === "ai")
+		return (
+			Policy.can(visibility.grants, "llm_keys:manage") ||
+			Policy.can(visibility.grants, "ai_triage:configure")
+		)
 	return true
 }
 

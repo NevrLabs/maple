@@ -4,14 +4,15 @@
 	"type": "module",
 	"sideEffects": false,
 	"exports": {
-		".": "./src/index.ts"
+		".": "./src/index.ts",
+		"./root-password": "./src/root-password.ts"
 	},
 	"scripts": {
 		"test": "vitest run",
 		"typecheck": "tsrs --noEmit"
 	},
 	"dependencies": {
-		"@clerk/backend": "^3.29.0",
+		"@clerk/backend": "^3.31.4",
 		"@distilled.cloud/clerk": "1.0.0-rc.20",
 		"@distilled.cloud/core": "1.0.0-rc.20",
 		"@maple/domain": "workspace:*",

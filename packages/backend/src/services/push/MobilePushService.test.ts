@@ -1,7 +1,10 @@
 import { assert, describe, expect, it } from "@effect/vitest"
 import { encodePublicId } from "@maple/domain/http/v2"
+import { MobileDevicePersistenceError } from "@maple/domain/http"
 import { MobileDeviceId, OrgId, UserId } from "@maple/primitives"
-import { Effect, Layer, Schema, Array as Arr } from "effect"
+import { AuthorizationUnavailableError, RoleName } from "@maple/domain/http"
+import { Effect, Layer, Order, Schema, Array as Arr } from "effect"
+import { OrgMembershipService } from "@maple/backend/services/auth/OrgMembershipService"
 import {
 	ApnsClient,
 	type ApnsBackgroundPush,
@@ -88,11 +91,15 @@ interface LiveActivityRecorder {
 	readonly ended: Array<string>
 }
 
+/** Self-hosted: no membership directory, so every device's owner reads. */
+const noDirectory = Layer.mock(OrgMembershipService)({ directory: "none" })
+
 /** Every silent widget wake-up a run produced. */
 const background: Array<ApnsBackgroundPush> = []
 
 const makeLayer = (
-	devices: ReadonlyArray<MobileDevice>,
+	// `null`: the device read fails, as when the database is down.
+	devices: ReadonlyArray<MobileDevice> | null,
 	sendImpl: (push: ApnsPush) => ApnsSendResult,
 	sent: Array<ApnsPush>,
 	// Device writes as `disable:<org>:<id>:<reason>` and `pushed:<org>:<ids>`, so the org each write is scoped to is asserted.
@@ -104,10 +111,12 @@ const makeLayer = (
 		outcome: "sent",
 		apnsId: null,
 	}),
+	directory: Layer.Layer<OrgMembershipService> = noDirectory,
 ) =>
 	Layer.effect(MobilePushService, MobilePushService.make).pipe(
 		Layer.provide(
 			Layer.mergeAll(
+				directory,
 				Layer.succeed(ApnsClient, {
 					isConfigured: configured,
 					send: (push) => {
@@ -127,8 +136,14 @@ const makeLayer = (
 					register: () => Effect.die("unused"),
 					unregister: () => Effect.die("unused"),
 					find: () => Effect.die("unused"),
-					listForUser: () => Effect.die("unused"),
-					listForOrg: () => Effect.succeed(devices),
+					listForUser: (_orgId, userId) =>
+						devices === null
+							? Effect.fail(new MobileDevicePersistenceError({ message: "database is down" }))
+							: Effect.succeed(Arr.filter(devices, (one) => one.userId === userId)),
+					listForOrg: () =>
+						devices === null
+							? Effect.fail(new MobileDevicePersistenceError({ message: "database is down" }))
+							: Effect.succeed(devices),
 					disable: (orgId, id, reason) => {
 						deviceWrites.push(`disable:${orgId}:${id}:${reason}`)
 						return Effect.void
@@ -221,6 +236,18 @@ describe("renderIncidentPush", () => {
 		expect(resolved.sound).toBe(null)
 	})
 
+	it("says who resolved an incident by hand, not that its value came back", () => {
+		const resolved = renderIncidentPush(
+			event({
+				eventType: "resolve",
+				value: null,
+				openForMs: 2 * 3_600_000,
+				resolutionNote: "Resolved by Dana Kim",
+			}),
+		)
+		expect(resolved.alert.body).toBe("Resolved by Dana Kim after 2h.")
+	})
+
 	it("says what the telemetry did when a resolve ends a hold, not 'back to'", () => {
 		// No recovered value was ever measured: the breach stopped showing up
 		// while traffic was thin, and the hold ceiling elapsed. "Back to 0%"
@@ -258,6 +285,30 @@ describe("renderIncidentPush", () => {
 				"Certificate for checkout.example.com expires in 9 days (2026-11-24).",
 				"active",
 				"Certificate renewed · Checkout health",
+			],
+		)
+	})
+
+	it("does not say a monitor passed or a certificate renewed when someone resolved it by hand", () => {
+		const byHand = { eventType: "resolve", value: null, resolutionNote: "Resolved by Dana Kim" } as const
+		const monitor = renderIncidentPush(
+			event({ ...byHand, signalType: "uptime", ruleName: "Checkout health", openForMs: 2 * 3_600_000 }),
+		)
+		const certificate = renderIncidentPush(
+			event({
+				...byHand,
+				signalType: "uptime",
+				ruleName: "Checkout health",
+				groupKey: "__tls_certificate__",
+			}),
+		)
+		assert.deepStrictEqual(
+			[monitor.alert.title, monitor.alert.body, certificate.alert.title, certificate.alert.body],
+			[
+				"Resolved · Checkout health",
+				"Resolved by Dana Kim after 2h.",
+				"Resolved · Checkout health",
+				"Resolved by Dana Kim.",
 			],
 		)
 	})
@@ -435,6 +486,62 @@ describe("MobilePushService.notifyIncident", () => {
 		)
 	})
 
+	it.effect("skips the phones of an owner who no longer reads telemetry, and ends their activity", () => {
+		const sent: Array<ApnsPush> = []
+		const live: LiveActivityRecorder = { pushes: [], ended: [] }
+		const READER = Schema.decodeSync(UserId)("user_reader")
+		const DEMOTED = Schema.decodeSync(UserId)("user_demoted")
+		const UNREADABLE = Schema.decodeSync(UserId)("user_clerk_down")
+		const directory = Layer.mock(OrgMembershipService)({
+			directory: "clerk",
+			verify: (userId, orgId) =>
+				userId === UNREADABLE
+					? Effect.fail(new AuthorizationUnavailableError({ message: "Clerk is down" }))
+					: Effect.succeedSome({
+							orgId,
+							role: Schema.decodeSync(RoleName)("org:custom"),
+							customPermissions: userId === READER ? ["telemetry:read"] : ["billing:manage"],
+						}),
+		})
+		return Effect.gen(function* () {
+			const push = yield* MobilePushService
+			const summary = yield* push.notifyIncident(event({ eventType: "resolve" }))
+			// A lookup that failed keeps the phone: an outage must not silence paging.
+			assert.deepStrictEqual(summary, { sent: 2, failed: 0, unregistered: 0, skipped: 1 })
+			assert.deepStrictEqual(
+				Arr.map(sent, (p) => p.deviceToken),
+				["token-1", "token-3"],
+			)
+			// Nothing reaches the demoted owner's Lock Screen; the row is closed instead.
+			assert.deepStrictEqual(
+				Arr.map(live.pushes, (p) => p.pushToken),
+				["update-1"],
+			)
+			assert.deepStrictEqual(Arr.sort(live.ended, Order.String), [
+				"act-1:incident_resolved",
+				"act-2:device_unregistered",
+			])
+		}).pipe(
+			Effect.provide(
+				makeLayer(
+					[
+						device(1, { userId: READER }),
+						device(2, { userId: DEMOTED }),
+						device(3, { userId: UNREADABLE }),
+					],
+					() => ({ outcome: "sent", apnsId: null }),
+					sent,
+					[],
+					true,
+					live,
+					[activity(1), activity(2)],
+					undefined,
+					directory,
+				),
+			),
+		)
+	})
+
 	it.effect("is a no-op without APNs credentials", () => {
 		const sent: Array<ApnsPush> = []
 		return Effect.gen(function* () {
@@ -447,6 +554,140 @@ describe("MobilePushService.notifyIncident", () => {
 				makeLayer([device(1)], () => ({ outcome: "sent", apnsId: null }), sent, [], false),
 			),
 		)
+	})
+})
+
+describe("MobilePushService.pageMember", () => {
+	const OTHER = Schema.decodeSync(UserId)("user_push_other")
+	const page = {
+		orgId: ORG,
+		userId: USER,
+		incidentId: "00000000-0000-4000-8000-0000000000a1",
+		ruleId: "00000000-0000-4000-8000-0000000000b1",
+		title: "You are paged · Checkout error rate",
+		body: "Critical incident, unacknowledged. Open it to acknowledge.",
+		linkUrl: "https://app.maple.test/alerts/incidents/x",
+		collapseId: "page:x",
+	}
+	// Everything off: what the org's incidents tell this person is their choice, a page is not.
+	const muted = {
+		criticalIncidents: false,
+		warningIncidents: false,
+		resolvedIncidents: false,
+		newErrorIssues: false,
+		anomalies: false,
+	}
+
+	it.effect("reaches the member's own phones whatever their preferences, and nobody else's", () => {
+		const sent: Array<ApnsPush> = []
+		const deviceWrites: Array<string> = []
+		return Effect.gen(function* () {
+			const push = yield* MobilePushService
+			const summary = yield* push.pageMember(page)
+			assert.deepStrictEqual(summary, {
+				sent: 1,
+				failed: 0,
+				unregistered: 0,
+				skipped: 0,
+				configured: true,
+			})
+			assert.deepStrictEqual(
+				Arr.map(sent, (one) => [one.deviceToken, one.interruptionLevel, one.alert?.title]),
+				[["token-1", "time-sensitive", page.title]],
+			)
+			// Opens the incident by its public id, as an incident push does.
+			assert.match(String(sent[0]?.data?.maple_incident_id), /^inc_/)
+			assert.deepStrictEqual(deviceWrites, [`pushed:${ORG}:${deviceId(1)}`])
+		}).pipe(
+			Effect.provide(
+				makeLayer(
+					[
+						device(1, { preferences: muted }),
+						device(2, { userId: OTHER }),
+						device(3, { enabled: false }),
+					],
+					() => ({ outcome: "sent", apnsId: null }),
+					sent,
+					deviceWrites,
+				),
+			),
+		)
+	})
+
+	it.effect("switches off a phone Apple says is gone, and reports that nothing landed", () => {
+		const deviceWrites: Array<string> = []
+		return Effect.gen(function* () {
+			const push = yield* MobilePushService
+			const summary = yield* push.pageMember(page)
+			assert.deepStrictEqual(summary, {
+				sent: 0,
+				failed: 0,
+				unregistered: 1,
+				skipped: 0,
+				configured: true,
+			})
+			assert.deepStrictEqual(deviceWrites, [
+				`disable:${ORG}:${deviceId(1)}:Unregistered`,
+				`pushed:${ORG}:`,
+			])
+		}).pipe(
+			Effect.provide(
+				makeLayer(
+					[device(1)],
+					() => ({ outcome: "unregistered", reason: "Unregistered" }),
+					[],
+					deviceWrites,
+				),
+			),
+		)
+	})
+
+	it.effect("counts a device read that failed as a failed page, not as no phone", () => {
+		const sent: Array<ApnsPush> = []
+		return Effect.gen(function* () {
+			const push = yield* MobilePushService
+			// Failed, so the page is tried again once the read works; "no phone" would settle it.
+			assert.deepStrictEqual(yield* push.pageMember(page), {
+				sent: 0,
+				failed: 1,
+				unregistered: 0,
+				skipped: 0,
+				configured: true,
+			})
+			assert.lengthOf(sent, 0)
+		}).pipe(Effect.provide(makeLayer(null, () => ({ outcome: "sent", apnsId: null }), sent, [])))
+	})
+
+	it.effect("sends nothing for a member without a phone, or without APNs credentials", () => {
+		const sent: Array<ApnsPush> = []
+		const none = { sent: 0, failed: 0, unregistered: 0, skipped: 0 }
+		const withoutPhone = Effect.gen(function* () {
+			const push = yield* MobilePushService
+			assert.deepStrictEqual(yield* push.pageMember(page), { ...none, configured: true })
+		}).pipe(
+			Effect.provide(
+				makeLayer(
+					[device(2, { userId: OTHER })],
+					() => ({ outcome: "sent", apnsId: null }),
+					sent,
+					[],
+				),
+			),
+		)
+		const unconfigured = Effect.gen(function* () {
+			const push = yield* MobilePushService
+			// Told apart from a member without a phone: this one has one, the deployment cannot push.
+			assert.deepStrictEqual(yield* push.pageMember(page), { ...none, configured: false })
+		}).pipe(
+			Effect.provide(
+				makeLayer([device(1)], () => ({ outcome: "sent", apnsId: null }), sent, [], false),
+			),
+		)
+		return Effect.gen(function* () {
+			yield* withoutPhone
+			yield* unconfigured
+			assert.lengthOf(sent, 0)
+		})
 	})
 })
 

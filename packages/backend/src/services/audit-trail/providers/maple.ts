@@ -25,6 +25,7 @@ const CATEGORY_BY_RESOURCE = {
 	api_key: "credential",
 	attribute_mapping: "configuration",
 	ingest_rule: "configuration",
+	source_map: "configuration",
 	data_source: "configuration",
 	dashboard: "resource",
 	chat_integration: "configuration",
@@ -54,6 +55,8 @@ const CATEGORY_BY_RESOURCE = {
 	cost_source_key: "credential",
 	member: "membership",
 	organization: "configuration",
+	// A custom role is a set of grants.
+	role: "permission",
 	scrape_target: "configuration",
 	uptime_monitor: "configuration",
 	slo: "configuration",

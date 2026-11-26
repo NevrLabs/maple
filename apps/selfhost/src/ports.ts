@@ -16,12 +16,14 @@ import {
 	EmailSender,
 	MapleDbConnection,
 	McpOAuthRateLimit,
+	ObjectStoreError,
 	PlanetScaleWebhookQueueProducer,
 	type QueueProducer,
 	type RateLimiter,
 	ReplayBlobBucket,
 	SchemaApplyWorkflow,
 	ShareLinkRateLimit,
+	sourceMapBucketLayer,
 	VcsBackfillQueueProducer,
 	VcsSyncQueueProducer,
 	type WorkflowStarter,
@@ -107,6 +109,11 @@ const statusPageStoreLayer = () => {
 	return bindings === null ? StatusPageStore.inMemory : StatusPageStore.fromBindings(bindings.kv, bindings.bucket)
 }
 
+const sourceMapsUnavailable = () => Effect.fail(new ObjectStoreError({
+	message: "Source map storage is not configured on selfhost",
+	cause: undefined,
+}))
+
 /** : the Postgres-backed queue (vcs-queue.ts, PATCHES #6); without it VCS jobs are dropped as before. */
 export const selfhostPorts = (env: Record<string, unknown>, vcsSync?: QueueProducer) =>
 	Layer.mergeAll(
@@ -121,6 +128,13 @@ export const selfhostPorts = (env: Record<string, unknown>, vcsSync?: QueueProdu
 		Layer.succeed(CliAuthRateLimit, memoryLimiter(30, 60)),
 		Layer.succeed(McpOAuthRateLimit, memoryLimiter(60, 60)),
 		Layer.succeed(ReplayBlobBucket, { getBytes: () => Effect.succeed(Option.none()) }),
+		// Keep the graph usable without silently accepting uploads into volatile storage.
+		sourceMapBucketLayer({
+			getBytes: () => Effect.succeed(Option.none()),
+			put: sourceMapsUnavailable,
+			delete: sourceMapsUnavailable,
+			list: sourceMapsUnavailable,
+		}),
 		// PATCHES #9: status-page KV/R2 in Postgres (status-store.ts), served by status.ts; in-memory without a DB.
 		statusPageStoreLayer(),
 		Layer.succeed(EmailSender, Option.none()),

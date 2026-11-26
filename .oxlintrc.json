@@ -101,6 +101,7 @@
 				"maple/no-raw-shadow": "error",
 				"maple/no-transition-all": "error",
 				"maple/single-tooltip-delay": "error",
+				"maple/one-save-bar": "error",
 				"maple/tone-alpha-steps": "error",
 				"maple/no-raw-color": "error",
 				"maple/no-arbitrary-text-size": "error",
@@ -566,7 +567,7 @@
 								"message": "The sdk-core root tier is bundled server-side; it must not import the DOM tier."
 							},
 							{
-								"name": "web-vitals",
+								"regex": "^web-vitals($|/)",
 								"message": "The sdk-core root tier is bundled server-side; it must not import the DOM tier."
 							}
 						]

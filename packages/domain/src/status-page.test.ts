@@ -1,4 +1,4 @@
-import { Option, Result, Schema, Array as Arr, String as Str } from "effect"
+import { Effect, Option, Result, Schema, Array as Arr, String as Str } from "effect"
 import { assert, describe, expect, it } from "vitest"
 import { StatusPageComponentId, StatusPageId } from "@maple/primitives"
 import {
@@ -17,7 +17,7 @@ import {
 	type StatusPageTheme,
 	themeContrastIssue,
 	isListedIncident,
-	dayState,
+	classifyDay,
 	isInformationalGroup,
 	deriveComponentStatus,
 	fillDays,
@@ -27,6 +27,8 @@ import {
 	overlayIncidentId,
 	pageFreshness,
 	sha256Base64Url,
+	statusPageAddress,
+	statusPageOrgKey,
 	STATUS_PAGE_STALE_AFTER_MS,
 	StatusPageThemePreset,
 	type StatusPageOverlayEntry,
@@ -79,6 +81,23 @@ const snapshot = (overrides: Partial<StatusPageSnapshot> = {}): StatusPageSnapsh
 	...overrides,
 })
 
+describe("statusPageOrgKey", () => {
+	// `printf %s <id> | shasum -a 256`, first 12 hex digits: hosted addresses must never move.
+	it.each([
+		["org_2abcDEF123", "18cf636952b0"],
+		["org_é", "448e40b16da8"],
+		["", "e3b0c44298fc"],
+	])("keys %j as the SHA-256 hex prefix", async (orgId, key) => {
+		expect(await Effect.runPromise(statusPageOrgKey(orgId))).toBe(key)
+	})
+
+	it("prefixes the slug with the org key", async () => {
+		expect(await Effect.runPromise(statusPageAddress("org_2abcDEF123", "status"))).toBe(
+			"18cf636952b0/status",
+		)
+	})
+})
+
 describe("isStatusPageImageDataUrl", () => {
 	/** Base64 that decodes to exactly `bytes` bytes. */
 	const payloadOf = (bytes: number): string => {
@@ -128,10 +147,34 @@ describe("deriveComponentStatus", () => {
 })
 
 describe("bars", () => {
-	it("colours a day by its worst moment and reports uptime as the share of checks not down", () => {
-		expect(dayState({ day: "2026-10-28", checks: 0, failures: 0, downChecks: 0 })).toBe("none")
-		expect(dayState({ day: "2026-10-28", checks: 10, failures: 1, downChecks: 0 })).toBe("degraded")
-		expect(dayState({ day: "2026-10-28", checks: 10, failures: 3, downChecks: 2 })).toBe("down")
+	const bar = (checks: number, failures: number, downChecks: number) => ({
+		day: "2026-10-28",
+		checks,
+		failures,
+		downChecks,
+	})
+
+	it.each([
+		["no checks", bar(0, 0, 0), "operational", "none"],
+		["clean checks", bar(1440, 0, 0), "operational", "ok"],
+		["a few scattered failed checks", bar(1431, 4, 0), "operational", "ok"],
+		["failed checks short of 5%", bar(1000, 49, 0), "operational", "ok"],
+		["5% of checks failed without going down", bar(1000, 50, 0), "operational", "degraded"],
+		["a minute of downtime", bar(1424, 9, 1), "operational", "degraded"],
+		["downtime short of 1% of the day", bar(1000, 9, 9), "operational", "degraded"],
+		["downtime of 1% of the day", bar(1000, 10, 10), "operational", "down"],
+		["a minor incident on a clean day", bar(1440, 0, 0), "degraded", "degraded"],
+		["a minor incident with an outage's downtime", bar(1000, 50, 50), "degraded", "down"],
+		["a major incident on a clean day", bar(1440, 0, 0), "partial_outage", "down"],
+		["a critical incident on a day without checks", bar(0, 0, 0), "major_outage", "down"],
+		["maintenance on a clean day", bar(1440, 0, 0), "maintenance", "maintenance"],
+		["downtime during maintenance", bar(1000, 300, 300), "maintenance", "maintenance"],
+		["maintenance on a day without checks", bar(0, 0, 0), "maintenance", "maintenance"],
+	] as const)("classifies %s", (_, day, incident, expected) => {
+		expect(classifyDay(day, incident)).toBe(expected)
+	})
+
+	it("reports uptime as the share of checks not down", () => {
 		expect(
 			uptimePercent([
 				{ day: "2026-10-27", checks: 100, failures: 0, downChecks: 0 },
@@ -724,7 +767,7 @@ describe("informational tier", () => {
 	})
 
 	it("never shows a green row icon next to a day with failed checks", () => {
-		const degradedToday = component({ days: [{ day: "2026-10-28", checks: 10, failures: 2, downChecks: 0 }] })
+		const degradedToday = component({ days: [{ day: "2026-10-28", checks: 100, failures: 1, downChecks: 0 }] })
 		expect(rowStatus(degradedToday)).toBe("degraded")
 		expect(rowStatus(component({}))).toBe("operational")
 		expect(rowStatus(component({ ...degradedToday, status: "major_outage" }))).toBe("major_outage")

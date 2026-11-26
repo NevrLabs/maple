@@ -212,6 +212,7 @@ export const accountTabValues = [
 export const settingsTabValues = [
 	"general",
 	"members",
+	"roles",
 	"domains",
 	"sso",
 	"billing",
@@ -226,7 +227,7 @@ export const settingsTabValues = [
 	"automation",
 ] as const
 
-export const ISSUE_TABS = ["overview", "occurrences", "activity"] as const
+export const ISSUE_TABS = ["overview", "occurrences", "activity", "grouping"] as const
 export const INVESTIGATION_TABS = ["overview", "evidence", "chat", "transcript"] as const
 
 const SortDirParam = Schema.optional(Schema.Literals(["asc", "desc"]))
@@ -399,6 +400,11 @@ export const AlertsEscalationChainSearch = Schema.Struct({})
 /** `/settings/ingestion/rules/new`: `template` prefills the editor from an empty-state template. */
 export const IngestRuleNewSearch = Schema.Struct({
 	template: StringParam,
+	/** A suggested rule (`ingest-rule/suggested.ts`): its service, log level or span name, keep percent. */
+	service: StringParam,
+	level: StringParam,
+	span: StringParam,
+	keep: NumberParam,
 })
 
 /** The retired `/alerts/status-pages/$pageId`: `tab` picks the view its redirect opens. */
@@ -492,6 +498,8 @@ export const MetricSearch = Schema.Struct({
 	groupBy: StringParam,
 	step: StringParam,
 	bd: StringParam,
+	/** A histogram's chart: absent is the aggregation's line, `distribution` the bucket heatmap. */
+	display: Schema.optional(Schema.Literals(["distribution"])),
 	...TimeRangeSearchFields,
 })
 
@@ -947,6 +955,16 @@ export const AgentSessionToolsSearch = Schema.Struct({
 	...TimeRangeSearchFields,
 })
 
+export const AgentSessionEvalsSearch = Schema.Struct({
+	...TimeRangeSearchFields,
+})
+
+/** `failing` keeps the failing scores alone in the scores table. */
+export const AgentSessionEvaluatorSearch = Schema.Struct({
+	failing: BooleanParam,
+	...TimeRangeSearchFields,
+})
+
 export const InfraCloudflareSearch = Schema.Struct({
 	...TimeRangeSearchFields,
 	view: Schema.optional(Schema.Literals(CLOUDFLARE_VIEWS)),
@@ -1222,7 +1240,7 @@ export const SecurityDetectionNewSearch = Schema.Struct({
 	provider: StringParam,
 	category: StringParam,
 	outcome: StringParam,
-	/** The platform's own action name, matched exactly. */
+	/** The platform's own action name; a detection also counts its sub-actions. */
 	action: StringParam,
 })
 export type SecurityDetectionNewSearch = typeof SecurityDetectionNewSearch.Type

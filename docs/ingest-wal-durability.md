@@ -25,11 +25,11 @@ flowchart TD
 
 ## Ingest rules
 
-Customer drop and redact rules ([ingest-rules.md](ingest-rules.md)) run in
+Customer drop, parse and redact rules ([ingest-rules.md](ingest-rules.md)) run in
 `process_decoded_payload`, before the payload splits into the native WAL path and the collector
-forward. A dropped record is never appended and a redacted value is rewritten first, so the raw
-value never reaches the WAL on disk, the segments shipped to S3, or the collector. Replaying a WAL
-or an S3 segment therefore never needs the rules again.
+forward. A dropped record is never appended, parsed attributes are added and a redacted value is
+rewritten first, so the raw value never reaches the WAL on disk, the segments shipped to S3, or the
+collector. Replaying a WAL or an S3 segment therefore never needs the rules again.
 
 ## The log
 
@@ -56,6 +56,15 @@ every later frame in it, whatever org wrote them. So a new tag rolls out in two 
 binary that reads it to every task first, then ship whatever writes it. Tag 8 is profiles, read
 since 2026-11-16 and written from the deploy after that; never roll a gateway back past the build
 that reads a tag while frames carrying it may still be queued.
+
+Every raw row carries `retention_days`, the period the gateway resolved for the row's source
+(`apps/ingest/src/retention.rs`, held to `packages/domain/src/retention.ts` by a shared fixture).
+A frame holds rows of one period, and a Tinybird export batch holds frames of one period: the
+Events API refuses an insert that touches more than 30 partitions, so a batch must not multiply its
+days by its periods. The frame head carries no period, since a new field there would need the same
+two-step rollout as a tag. The period stays in memory beside the queued frame, and a frame replayed
+from the WAL or recovered from S3 reads it back from its first row. Rows written before the stamp
+existed have none and take their signal's default period, which is what their table keeps them for.
 
 Syncs are **group commits**. An append writes its frame under the lane's append lock, then waits
 for a sync that started after the write. If no sync is running it leads one: it takes every frame
@@ -164,7 +173,11 @@ has an S3 gateway endpoint and no NAT, so this traffic is free.
 | `INGEST_REQUEST_TIMEOUT_SECS`     | 30                                  | Gateway request deadline; 0 disables                    |
 
 The bucket, its lifecycle rule (7-day expiry as a backstop for deletes that were lost) and the
-task-role policy are in `apps/ingest/alchemy.run.ts`.
+task-role policy are in `apps/ingest/alchemy.run.ts`. New objects are encrypted with the WAL's own
+KMS key (`alias/<bucket>`, bucket key on), whose policy (`apps/ingest/alchemy/wal-key.ts`) lets only
+the gateway's task role, and the prd deploy role, use it through S3. Objects written before the
+switch keep the SSE-S3 encryption recorded on each of them and stay readable. The key's policy names
+the task role, so the key and the bucket are declared after the ECS service.
 
 ## What bounds the backlog
 
@@ -243,9 +256,12 @@ reservation while the pieces are built and appended one after another: build a p
 sized from its estimate, append its frames to the WAL, then build the next. What a request holds
 at once is one piece, whatever it expands to, and requests no longer wait on each other's whole
 rows. Every piece goes to the shard the whole request always went to, so its frames stay in order
-on one lane. A row that would take its buffer past the estimate is refused before any of it is
-written, through a writer bounded by the buffer's reserved size, so the buffer never reallocates
-and a wrong estimate is an error, never memory nothing reserved. Under attribute mappings the
+on one lane. A piece also ends where the next resource is stored for another period, so each of
+its frames holds one period; the gateway first orders a request that names sources of several
+periods by period, which bounds that at one more piece per period. A row that would take its
+buffer past the estimate is refused before any of it is written, through a writer bounded by the
+buffer's reserved size, so the buffer never reallocates and a wrong estimate is an error, never
+memory nothing reserved. Under attribute mappings the
 estimate assumes every rule copies the longest value either side holds, since a copied value can
 be copied again by a later rule, and the gateway applies at most 64 rules with 16 KiB of keys per
 org, in a stable order.
@@ -315,14 +331,14 @@ attribute such as a JVM command line sits on every row of small items. The only 
 single item whose own row cannot fit the whole budget beside its decoded request, which no
 telemetry comes near; it is a 413 counted as `payload_too_large`.
 
-| Variable                        | Default | Notes                                                    |
-| ------------------------------- | ------- | -------------------------------------------------------- |
-| `INGEST_MAX_REQUEST_BODY_BYTES` | 20 MiB  | Body as received                                         |
-| `INGEST_MAX_DECODED_BODY_BYTES` | 8x body | Body after gzip                                          |
-| `INGEST_MAX_DECODE_HEAP_BYTES`  | 768 MiB | One request's decoded form                               |
-| `INGEST_MAX_ROW_EXPANSION`      | 512     | Rows as a multiple of the metered bytes; 0 turns it off  |
-| `INGEST_DECODE_MEMORY_BYTES`    | 1 GiB   | Shared by all requests; at least one request plus 16 MiB |
-| `INGEST_ORG_QUEUE_MAX_BYTES`    | 1 GiB   | Most rows one request may store; reserved up front       |
+| Variable                        | Default | Notes                                                            |
+| ------------------------------- | ------- | ---------------------------------------------------------------- |
+| `INGEST_MAX_REQUEST_BODY_BYTES` | 20 MiB  | Body as received                                                 |
+| `INGEST_MAX_DECODED_BODY_BYTES` | 8x body | Body after gzip                                                  |
+| `INGEST_MAX_DECODE_HEAP_BYTES`  | 768 MiB | One request's decoded form                                       |
+| `INGEST_MAX_ROW_EXPANSION`      | 512     | Rows as a multiple of the metered bytes; 0 turns it off          |
+| `INGEST_DECODE_MEMORY_BYTES`    | 1 GiB   | Shared by all requests; at least one request plus 16 MiB         |
+| `INGEST_ORG_QUEUE_MAX_BYTES`    | 1 GiB   | Most rows one request may store; reserved up front               |
 | `INGEST_QUEUE_CHANNEL_CAPACITY` | 100,000 | Most frames one request may store (one per datasource and piece) |
 
 Frames waiting in a lane's channel are not in this budget: they are bounded per org by

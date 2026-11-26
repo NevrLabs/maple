@@ -27,7 +27,7 @@ function formatTimestamp(iso: string | null): string | undefined {
 }
 
 const channelLabel = (channel: string): string =>
-	channel === "email" ? "email" : `${Str.capitalize(channel)} DM`
+	channel === "email" ? "email" : channel === "push" ? "phone" : `${Str.capitalize(channel)} DM`
 
 interface PageRow {
 	readonly userId: string
@@ -167,6 +167,7 @@ export function registerGetIncidentTimelineTool(server: McpToolRegistrar) {
 			limit: P.limit({ default: 20, max: MAX_LIMIT, noun: "incidents" }),
 		}),
 		hints: { readOnly: true },
+		permission: "telemetry:read",
 		phrases: ["Loading the incident timeline", "Building the incident timeline"],
 		handler: Effect.fn("McpTool.getIncidentTimeline")(function* (params) {
 			const tenant = yield* CurrentMcpTenant

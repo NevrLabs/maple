@@ -3,7 +3,13 @@ import { Array as Arr, Effect, Schema } from "effect"
 import { OnCallSchedulesService } from "@maple/backend/services/alerts/OnCallSchedulesService"
 import { CurrentMcpTenant } from "../tenant"
 import { toMcpHttpError } from "../lib/map-http-error"
-import { formatLayers, formatOnCallNow, memberNames, toScheduleRow } from "../lib/oncall-schedules"
+import {
+	formatCoverageWarning,
+	formatLayers,
+	formatOnCallNow,
+	memberNames,
+	toScheduleRow,
+} from "../lib/oncall-schedules"
 import { doc } from "../lib/tool-doc"
 
 export function registerListOnCallSchedulesTool(server: McpToolRegistrar) {
@@ -15,6 +21,7 @@ export function registerListOnCallSchedulesTool(server: McpToolRegistrar) {
 			"Shows each schedule's layers, participants and who is on call right now. Ask about one instant with who_is_on_call.",
 		parameters: Schema.Struct({}),
 		hints: { readOnly: true },
+		permission: "telemetry:read",
 		phrases: ["Listing on-call schedules"],
 		handler: Effect.fn("McpTool.listOnCallSchedules")(function* () {
 			const tenant = yield* CurrentMcpTenant
@@ -39,13 +46,25 @@ export function registerListOnCallSchedulesTool(server: McpToolRegistrar) {
 				? {
 						empty: {
 							message:
-								"No on-call schedules yet. Create one with create_oncall_schedule from your workspace members.",
+								"No on-call schedules yet. Create one with manage_oncall_schedule action=create from your workspace members.",
 						},
 					}
 				: undefined),
 			blocks: Arr.flatMap(output.schedules, (schedule) => [
 				doc.heading(`${schedule.name} (${schedule.id})`),
-				doc.text(`${schedule.timeZone}: ${formatOnCallNow(schedule)}\n${formatLayers(schedule)}`),
+				doc.text(
+					Arr.join(
+						Arr.filter(
+							[
+								`${schedule.timeZone}: ${formatOnCallNow(schedule)}`,
+								formatLayers(schedule),
+								formatCoverageWarning(schedule),
+							],
+							(line) => line !== null,
+						),
+						"\n",
+					),
+				),
 			]),
 			next: Arr.take(
 				Arr.map(output.schedules, (schedule) =>

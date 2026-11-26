@@ -171,6 +171,9 @@ const EXPECTED_TAGS = new Set([
 	"@maple/cli/ReadOnlyQueryError",
 	"@maple/cli/ServerStateError",
 	"@maple/cli/CheckpointPreconditionError",
+	"@maple/cli/LoginRefusedError",
+	// A flag or env var `maple start` cannot use: the person's config to fix.
+	"@maple/cli/ServerOptionError",
 ])
 
 /** Pipe names of the warehouse calls that run the user's own SQL (local and remote `maple query`). */
@@ -191,6 +194,17 @@ export const describeFailure = (error: unknown): FailureReport => {
 			message: messageOf(mode),
 			...(hint === undefined ? undefined : { hint }),
 			expected: true,
+		}
+	}
+
+	// A raw `maple get|post|...` the workspace refused: a 4xx is the request to fix, a 5xx is not.
+	if (tag === "@maple/cli/ApiResponseError") {
+		const hint = stringField(error, "hint")
+		return {
+			tag,
+			message: messageOf(error),
+			...(hint === undefined ? undefined : { hint }),
+			expected: (numberField(error, "status") ?? 500) < 500,
 		}
 	}
 

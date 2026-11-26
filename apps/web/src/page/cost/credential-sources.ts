@@ -1,6 +1,7 @@
 import {
 	ANTHROPIC_COST_KEY_MAX_LENGTH,
 	CLOUDFLARE_COST_TOKEN_MAX_LENGTH,
+	MORPH_COST_KEY_MAX_LENGTH,
 	OPENAI_COST_KEY_MAX_LENGTH,
 	OPENROUTER_KEY_MAX_LENGTH,
 } from "@maple/domain/http"
@@ -9,10 +10,12 @@ import type { Resources } from "../../platform/resources"
 import {
 	RemoveAnthropicCostKey,
 	RemoveCloudflareCostToken,
+	RemoveMorphCostKey,
 	RemoveOpenAiCostKey,
 	RemoveOpenRouterCostKey,
 	SaveAnthropicCostKey,
 	SaveCloudflareCostToken,
+	SaveMorphCostKey,
 	SaveOpenAiCostKey,
 	SaveOpenRouterCostKey,
 } from "./command"
@@ -207,5 +210,41 @@ export const CREDENTIAL_SOURCES = {
 		},
 		save: (apiKey) => SaveOpenAiCostKey({ apiKey }),
 		delete: () => RemoveOpenAiCostKey(),
+	},
+	morph: {
+		pick: {
+			meta: "Daily spend by model",
+			addedMeta: "Replace its key in the Sources panel",
+		},
+		field: {
+			label: "API key",
+			placeholder: "sk-...",
+			maxLength: MORPH_COST_KEY_MAX_LENGTH,
+			tooLong: "That is too long to be a Morph API key.",
+			help: {
+				before: "Create one under ",
+				link: "API keys",
+				href: "https://www.morphllm.com/dashboard/api-keys",
+				after: " in Morph. A key of your organization reads the organization's spend, a personal key your own. Morph has no read-only key, so this one can also run models: Maple only reads spend with it, and stores it encrypted.",
+			},
+		},
+		add: {
+			title: "Add Morph",
+			description: THREE_MONTHS_ADD,
+			toast: "Morph added",
+		},
+		replace: {
+			title: "Replace the Morph key",
+			description: "The source and its history stay. Use a key of the same Morph account.",
+			label: "Replace key",
+			toast: "Morph key replaced",
+		},
+		remove: {
+			title: "Remove the Morph source?",
+			description:
+				"Maple deletes the key and the spend it has read, and its cost leaves this page. Morph keeps no history, so adding it again starts from that day. Revoke the key in Morph too if nothing else uses it.",
+		},
+		save: (apiKey) => SaveMorphCostKey({ apiKey }),
+		delete: () => RemoveMorphCostKey(),
 	},
 } satisfies Record<CredentialProvider, CredentialSource>

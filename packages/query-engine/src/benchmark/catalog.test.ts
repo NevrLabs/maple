@@ -60,8 +60,11 @@ import * as webAnalyticsAiQueries from "../ch/queries/web-analytics-ai"
 import * as securityTelemetryQueries from "../ch/queries/security-telemetry"
 import * as cloudResourceQueries from "../ch/queries/cloud-resources"
 import * as userActivityQueries from "../ch/queries/user-activity"
+import * as personPropertiesQueries from "../ch/queries/person-properties"
 import * as productEventQueries from "../ch/queries/product-events"
 import * as productEventPathQueries from "../ch/queries/product-events-paths"
+import * as productEventRetentionQueries from "../ch/queries/product-events-retention"
+import * as productEventCohortQueries from "../ch/queries/product-events-cohort"
 import * as productEventExploreQueries from "../ch/queries/product-events-explore"
 import * as topOperationQueries from "../ch/queries/top-operations"
 import * as traceQueries from "../ch/queries/traces"
@@ -317,8 +320,11 @@ const QUERY_MODULES: Record<string, Record<string, unknown>> = {
 	"security-telemetry": securityTelemetryQueries,
 	"cloud-resources": cloudResourceQueries,
 	"user-activity": userActivityQueries,
+	"person-properties": personPropertiesQueries,
 	"product-events": productEventQueries,
 	"product-events-paths": productEventPathQueries,
+	"product-events-retention": productEventRetentionQueries,
+	"product-events-cohort": productEventCohortQueries,
 	"product-events-explore": productEventExploreQueries,
 	traces: traceQueries,
 	users: userQueries,

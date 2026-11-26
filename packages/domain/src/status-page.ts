@@ -1,5 +1,3 @@
-import { sha256 } from "@noble/hashes/sha2"
-import { bytesToHex, utf8ToBytes } from "@noble/hashes/utils"
 import { Effect, Option, Schema, SchemaTransformation, Struct, Array as Arr, String as Str } from "effect"
 import {
 	StatusPageComponentId,
@@ -12,6 +10,8 @@ import {
 	StatusPageVisibility,
 	type UptimeMonitorStatus,
 } from "@maple/primitives"
+import { WebCrypto } from "effect/crypto"
+import { Hex } from "effect/encoding"
 
 // Status pages: the snapshot the publisher writes to edge storage and `apps/status` serves
 // without touching Maple, plus the pure rules both sides share (component status, bars,
@@ -79,11 +79,19 @@ export type StatusPageSlug = Schema.Schema.Type<typeof StatusPageSlug>
  * The org's part of a hosted address: the first 12 hex digits of SHA-256 over the org id. It
  * keeps slugs per org without putting the org id in the URL; web and the publisher both derive it.
  */
-export const statusPageOrgKey = (orgId: string): string =>
-	Str.slice(0, 12)(bytesToHex(sha256(utf8ToBytes(orgId))))
+export const statusPageOrgKey = (orgId: string): Effect.Effect<string> =>
+	// Effect's WebCrypto reference: `globalThis.crypto` in Workers, the browser and Node alike.
+	Effect.gen(function* () {
+		const crypto = yield* WebCrypto.WebCrypto
+		const digest = yield* Effect.promise(() =>
+			crypto.subtle.digest("SHA-256", new TextEncoder().encode(orgId)),
+		)
+		return Str.slice(0, 12)(Hex.encode(new Uint8Array(digest)))
+	})
 
 /** A page's hosted address on Maple's status domain, without the `/s/` prefix: `<org key>/<slug>`. */
-export const statusPageAddress = (orgId: string, slug: string): string => `${statusPageOrgKey(orgId)}/${slug}`
+export const statusPageAddress = (orgId: string, slug: string): Effect.Effect<string> =>
+	Effect.map(statusPageOrgKey(orgId), (orgKey) => `${orgKey}/${slug}`)
 
 const STATUS_PAGE_SLUG_MAX = 48
 
@@ -251,7 +259,8 @@ export const StatusPageCustomDomainHostname = Schema.String.pipe(
 /** `YYYY-MM-DD`, UTC. */
 export const StatusPageDay = Schema.String.check(Schema.isPattern(/^\d{4}-\d{2}-\d{2}$/u))
 
-export const StatusPageDayState = Schema.Literals(["none", "ok", "degraded", "down"])
+/** How one day of a component's uptime bar reads, mildest first; {@link classifyDay} decides it. */
+export const StatusPageDayState = Schema.Literals(["none", "ok", "maintenance", "degraded", "down"])
 export type StatusPageDayState = Schema.Schema.Type<typeof StatusPageDayState>
 
 export const StatusPageDayBar = Schema.Struct({
@@ -316,6 +325,8 @@ export const StatusPageIncidentHistoryEntry = Schema.Struct({
 	impact: StatusPageIncidentImpact,
 	startedAt: Schema.Number,
 	resolvedAt: Schema.NullOr(Schema.Number),
+	/** The components it affected, so their bars carry it; older snapshots carry none. */
+	componentIds: Schema.Array(Schema.String).pipe(Schema.withDecodingDefaultTypeKey(Effect.succeed([]))),
 })
 export type StatusPageIncidentHistoryEntry = Schema.Schema.Type<typeof StatusPageIncidentHistoryEntry>
 
@@ -1104,8 +1115,52 @@ export const overallStatus = (snapshot: StatusPagePublicSnapshot): StatusPageCom
 		),
 	)
 
-export const dayState = (bar: StatusPageDayBar): StatusPageDayState =>
-	bar.checks === 0 ? "none" : bar.downChecks > 0 ? "down" : bar.failures > 0 ? "degraded" : "ok"
+/** Downtime share of a day's checks (about 15 minutes at one check a minute) that makes it `down`. */
+export const DAY_DOWN_SHARE = 0.01
+/** Failed share of a day's checks that makes it `degraded` while the monitor never went down. */
+export const DAY_FAILED_SHARE = 0.05
+
+export const DAY_STATE_RANK = {
+	none: 0,
+	ok: 1,
+	maintenance: 2,
+	degraded: 3,
+	down: 4,
+} as const satisfies Record<StatusPageDayState, number>
+
+export const worstDayState = (states: ReadonlyArray<StatusPageDayState>): StatusPageDayState =>
+	Arr.reduce<StatusPageDayState, StatusPageDayState>(states, "none", (worst, state) =>
+		DAY_STATE_RANK[state] > DAY_STATE_RANK[worst] ? state : worst,
+	)
+
+/** What the checks alone say: scattered failed checks are noise, sustained ones and downtime are not. */
+const checksDayState = (bar: StatusPageDayBar): StatusPageDayState => {
+	if (bar.checks === 0) return "none"
+	if (bar.downChecks >= bar.checks * DAY_DOWN_SHARE) return "down"
+	if (bar.downChecks > 0 || bar.failures >= bar.checks * DAY_FAILED_SHARE) return "degraded"
+	return "ok"
+}
+
+const INCIDENT_DAY_STATE = {
+	operational: "none",
+	maintenance: "maintenance",
+	degraded: "degraded",
+	partial_outage: "down",
+	major_outage: "down",
+} as const satisfies Record<StatusPageComponentStatus, StatusPageDayState>
+
+/**
+ * A day of a component's bar. `incident` is the worst status an incident or maintenance gave the
+ * component that day (`operational` for none). Incidents raise the checks' verdict; maintenance
+ * replaces it, since downtime it announced was planned.
+ */
+export const classifyDay = (
+	bar: StatusPageDayBar,
+	incident: StatusPageComponentStatus = "operational",
+): StatusPageDayState => {
+	const fromIncident = INCIDENT_DAY_STATE[incident]
+	return fromIncident === "maintenance" ? fromIncident : worstDayState([fromIncident, checksDayState(bar)])
+}
 
 /**
  * Share of checks that passed, as a percentage; null when nothing was checked. (Selfhost fork,
@@ -1125,8 +1180,9 @@ export const uptimePercent = (days: ReadonlyArray<StatusPageDayBar>): number | n
  */
 export const rowStatus = (component: StatusPageSnapshotComponent): StatusPageComponentStatus => {
 	const today = component.days.at(-1)
-	const state = today === undefined || !component.showUptime ? "none" : dayState(today)
-	return state === "degraded" || state === "down" ? worstStatus([component.status, "degraded"]) : component.status
+	return component.showUptime && today !== undefined && today.failures > 0
+		? worstStatus([component.status, "degraded"])
+		: component.status
 }
 
 export const utcDay = (ms: number): string => Str.slice(0, 10)(new Date(ms).toISOString())

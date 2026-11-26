@@ -4,6 +4,7 @@ description: "Add the Maple bot to a Discord server. Mention it in a channel to 
 group: "Integrations"
 order: 5.5
 author: "jeremyfunk"
+icon: "discord"
 ---
 
 The Discord integration adds the Maple bot to a Discord server and links that server to your Maple organization. Mention the bot in a channel and it answers in a thread, using the same assistant as Maple's chat. Once the server is linked, its channels are also available as [alert destinations](/docs/alerting/notification-destinations).
@@ -23,12 +24,12 @@ To link more servers to the same organization, click **Add another workspace**. 
 
 ### Permissions
 
-The bot asks for no member, role, channel, or moderation permissions.
+The bot asks for no member, role, channel or moderation permissions.
 
 | Permission                                      | Used for                                    |
 | ----------------------------------------------- | ------------------------------------------- |
 | View Channels, Read Message History             | Reading the conversation it is replying in. |
-| Send Messages, Embed Links                      | Posting answers, charts, and alerts.        |
+| Send Messages, Embed Links                      | Posting answers, charts and alerts.         |
 | Create Public Threads, Send Messages in Threads | Answering in a thread on your message.      |
 | Add Reactions                                   | Marking a request as picked up.             |
 
@@ -43,7 +44,7 @@ The link asks Discord for your user ID and nothing else. It adds no permissions 
 
 ## Ask the bot a question
 
-Mention the bot in any channel it can see, for example `@Maple why is checkout slow?`. If your account is not linked, the bot replies with a link to do it and reads nothing.
+Mention the bot in any channel it can see, for example `@Maple why is checkout slow?`. If your account is not linked, the bot replies with a **Link your account** link and reads nothing.
 
 The bot starts a thread on your message and edits its reply there as the answer comes in. It reads the surrounding messages for context, so a follow-up like "and the payments call?" works.
 
@@ -84,8 +85,8 @@ To unlink your own account, click **Unlink** under **Your Discord account**.
 
 ## Troubleshooting
 
-- **"This workspace isn't connected to a Maple organization yet."** The bot is in the server but the server is not linked. An admin runs **Add to Discord** from Maple.
-- **"Only org admins and engineers can manage integrations."** Ask an admin or engineer in your organization to install it.
+- **"This workspace isn't connected to a Maple organization yet."** The bot is in the server but the server is not linked. An admin or engineer runs **Add to Discord** from Maple.
+- **"You need Manage integrations to manage integrations. Admin and Engineer have it."** Ask an admin or engineer in your organization to install it.
 - **"Link your Discord account to Maple to ask it questions."** Link your account in Maple, then mention the bot again.
 - **"Link your Discord account to Maple to approve this."** Link your account in Maple, then press **Run** again.
 - **"The Maple account this chat account is linked to is no longer in this organization."** Ask an admin to add you back, or link a different Maple account.

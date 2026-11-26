@@ -535,7 +535,11 @@ WHERE name = 'enable_full_text_index'`,
 			tenant,
 			purpose,
 			pipe,
-			execution === "trusted" ? { kind: "tenant", sql } : undefined,
+			execution === "trusted"
+				? { kind: "tenant", sql }
+				: execution === "cross-org"
+					? { kind: "cross-org" }
+					: undefined,
 		)
 		// Safety net for the silent-empty-table failure: an ingest-pinned table
 		// read against an org's own BYO ClickHouse returns no rows, not an error.
@@ -1308,7 +1312,7 @@ WHERE name = 'enable_full_text_index'`,
 
 		const bestEffort = options?.bestEffort === true
 
-		yield* client.insert(datasource, rows).pipe(
+		yield* client.insert(datasource, rows, { durable: options?.durable === true }).pipe(
 			// Classify like the read path so an auth failure or quota breach on
 			// insert surfaces with its real tag instead of a generic query error.
 			// Authorship stays the default "caller": inserts are not DSL-generated

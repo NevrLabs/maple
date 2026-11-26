@@ -1,6 +1,11 @@
 import { ConfigProvider, Effect, Layer, ManagedRuntime, Schema } from "effect"
-import { mcpServicesWithFeatureFlags } from "../../runtime/mcp-tool-graph"
-import { OrganizationFeatureFlagsService } from "@maple/backend/services/org/OrganizationFeatureFlagsService"
+import * as Policy from "@maple/domain/policy"
+import { McpToolPlatformLive, mcpServicesWithFeatureFlags } from "../../runtime/mcp-tool-graph"
+import { McpRuntimeServicesLive } from "../tools/runtime-services"
+import {
+	OrganizationFeatureFlagsService,
+	type OrganizationFeatureFlagsRequirements,
+} from "@maple/backend/services/org/OrganizationFeatureFlagsService"
 import { Env } from "@maple/backend/platform/Env"
 import type { Database } from "@maple/backend/platform/DatabaseLive"
 import type { ExternalDataSourceService } from "@maple/backend/services/data-sources/ExternalDataSourceService"
@@ -55,7 +60,7 @@ export const makeEvalRuntime = (
 	featureFlags: Layer.Layer<
 		OrganizationFeatureFlagsService,
 		never,
-		Env
+		OrganizationFeatureFlagsRequirements
 	> = OrganizationFeatureFlagsService.layer,
 	/** Fake data source drivers; the runtime then also serves the service, for seeding. */
 	dataSources?: Layer.Layer<ExternalDataSourceService, DataSourcePersistenceError, Database | Env>,
@@ -74,7 +79,11 @@ export const makeEvalRuntime = (
 		dataSources === undefined
 			? mcpServicesWithFeatureFlags(featureFlags)
 			: Layer.mergeAll(mcpServicesWithFeatureFlags(featureFlags, dataSources), dataSources)
-	const layer = services.pipe(
+	// The tools' own services are served beside the executor, so a world can seed through them.
+	const layer = Layer.mergeAll(
+		services,
+		McpRuntimeServicesLive.pipe(Layer.provide(McpToolPlatformLive)),
+	).pipe(
 		Layer.provide(
 			Layer.mergeAll(
 				configLive,
@@ -105,12 +114,15 @@ export const makeEvalRuntime = (
 /** A person who may run queries on connected data sources: the role the data source tools are exercised under. */
 export const ENGINEER_CALLER = { roles: [Schema.decodeSync(RoleName)("org:engineer")] }
 
-/** The same runtime, called by someone else. `EVAL_TENANT` alone holds no role and names no starter. */
+/**
+ * The same runtime, called by someone else, holding what their roles grant unless `permissions`
+ * says otherwise. `EVAL_TENANT` alone holds no role and names no starter.
+ */
 export const asCaller = (
 	rt: EvalRuntime,
 	caller: Pick<TenantContext, "roles"> &
-		Partial<Pick<TenantContext, "userId" | "turnOrigin" | "turnStarter" | "scopes">>,
-): EvalRuntime => ({ ...rt, tenant: { ...rt.tenant, ...caller } })
+		Partial<Pick<TenantContext, "permissions" | "userId" | "turnOrigin" | "turnStarter" | "scopes">>,
+): EvalRuntime => ({ ...rt, tenant: { ...rt.tenant, permissions: Policy.grantsOf(caller.roles), ...caller } })
 
 class StructuredOutputTooDeep extends Schema.TaggedError<StructuredOutputTooDeep>()(
 	"@maple/ai/evals/StructuredOutputTooDeep",

@@ -115,6 +115,8 @@ describe("materialized projection order", () => {
 	it("keeps materialized projections aligned with target datasource column order", () => {
 		const targets = [
 			["ai_trace_index", "ai_trace_index_mv"],
+			["ai_evaluations", "ai_evaluations_mv"],
+			["ai_evaluations", "ai_evaluations_span_events_mv"],
 			["service_usage", "service_usage_logs_mv"],
 			["service_usage", "service_usage_traces_mv"],
 			["service_usage", "service_usage_metrics_sum_mv"],
@@ -127,6 +129,7 @@ describe("materialized projection order", () => {
 			["service_runtimes_hourly", "service_runtimes_hourly_mv"],
 			["user_activity_hourly", "user_activity_hourly_traces_mv"],
 			["user_activity_hourly", "user_activity_hourly_logs_mv"],
+			["user_activity_daily", "user_activity_daily_mv"],
 			["aws_metrics_hourly", "aws_metrics_hourly_sum_mv"],
 			["aws_metrics_hourly", "aws_metrics_hourly_gauge_mv"],
 			["ci_runs", "ci_runs_mv"],

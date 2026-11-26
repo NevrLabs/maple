@@ -12,12 +12,14 @@ import { skeleton } from "@maple/views/ui/skeleton"
 import { switchControl } from "@maple/views/ui/switch"
 import type { PageViewInputs } from "../../contract"
 import { dashboardPage } from "../../kit/dashboard-page"
+import { managersOnlyPage } from "../../kit/form-section"
 import { draftProblems } from "./form"
 import { ingestionHref } from "./hrefs"
 import { Message } from "./message"
 import { canManage, type Model } from "./model"
 import { actionClause } from "./view-action"
 import { conditionsClause, type H, signalsClause } from "./view-form"
+import { impactPanel } from "./view-impact"
 import { previewPanel } from "./view-preview"
 import { typographyClass } from "@maple/views/ui/typography"
 import { hstack, vstack } from "@maple/views/ui/stack"
@@ -127,17 +129,14 @@ const backLink = (h: H) =>
 export const view = Submodel.defineView<Model, Message, PageViewInputs>((model, _inputs, h) => {
 	const header = {
 		title: model.editingId === null && !model.isBadId ? "New ingest rule" : "Edit ingest rule",
-		description: "Drop or redact telemetry before Maple stores or bills it.",
+		description: "Drop, parse or redact telemetry before Maple stores or bills it.",
 	}
 	if (model.isSessionLoaded && !canManage(model))
-		return dashboardPage(h, header, [
-			alert(h, { variant: "info" }, [
-				icon(h, "ShieldIcon"),
-				alertTitle(h, ["Only org admins and engineers can create or change ingest rules"]),
-				alertDescription(h, ["Ask an admin to make this change."]),
-			]),
-			backLink(h),
-		])
+		return managersOnlyPage(h, {
+			header,
+			permission: "ingest_rules:manage",
+			back: { href: ingestionHref(), label: "Back to ingestion" },
+		})
 	if (model.isBadId)
 		return dashboardPage(h, header, [
 			alert(h, { variant: "warn" }, [
@@ -154,8 +153,9 @@ export const view = Submodel.defineView<Model, Message, PageViewInputs>((model, 
 	if (model.editingId !== null && !AsyncData.isSuccess(model.existing))
 		return dashboardPage(h, header, [skeleton(h, "h-10 w-full"), skeleton(h, "h-80 w-full")])
 	return dashboardPage(h, { ...header, gap: "lg" }, [
+		...impactPanel(h, model),
 		h.div(
-			[h.Class("grid gap-6 lg:grid-cols-[minmax(0,1fr)_380px]")],
+			[h.Class("grid grid-cols-[minmax(0,1fr)] gap-6 lg:grid-cols-[minmax(0,1fr)_380px]")],
 			[
 				vstack(h, { gap: "5", shrink: true }, [
 					nameRow(h, model),

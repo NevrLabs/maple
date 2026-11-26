@@ -1,5 +1,6 @@
 import { HttpApi, OpenApi } from "effect/http-api"
 import { AiModelsInternalApiGroup } from "./ai-models"
+import { AiEvaluationsInternalApiGroup } from "./ai-evaluations"
 import { AiSessionsInternalApiGroup } from "./ai-sessions"
 import { McpInternalApiGroup } from "./mcp"
 import { AiTriageApiGroup } from "./ai-triage"
@@ -13,6 +14,7 @@ import { AnthropicCostApiGroup } from "./anthropic-cost"
 import { FeatureRequestApiGroup } from "./feature-requests"
 import { CloudflareCostApiGroup } from "./cloudflare-cost"
 import { OpenAiCostApiGroup } from "./openai-cost"
+import { MorphCostApiGroup } from "./morph-cost"
 import { DependencyScanApiGroup } from "./dependency-scan"
 import { DigestApiGroup } from "./digest"
 import { ErrorsApiGroup } from "./errors"
@@ -30,6 +32,7 @@ import {
 	OrganizationsApiGroup,
 } from "./organizations"
 import { QueryEngineApiGroup } from "./query-engine"
+import { RolesApiGroup } from "./roles"
 import { SavedViewsApiGroup } from "./saved-views"
 import { SecurityAuditReadsApiGroup } from "./security-audit"
 import { ServiceMapWorldApiGroup } from "./service-map-world"
@@ -65,6 +68,7 @@ import { ApiSchemaErrors, ApiUnexpectedErrors } from "./api-boundary"
 export class MapleInternalApi extends HttpApi.make("MapleInternalApi")
 	.add(AiModelsInternalApiGroup)
 	.add(AiSessionsInternalApiGroup)
+	.add(AiEvaluationsInternalApiGroup)
 	.add(AiTriageApiGroup)
 	.add(AuditTrailApiGroup)
 	.add(BillingApiGroup)
@@ -84,6 +88,7 @@ export class MapleInternalApi extends HttpApi.make("MapleInternalApi")
 	.add(AnthropicCostApiGroup)
 	.add(FeatureRequestApiGroup)
 	.add(OpenAiCostApiGroup)
+	.add(MorphCostApiGroup)
 	.add(GithubCostApiGroup)
 	.add(PlanetScaleCostApiGroup)
 	.add(VercelCostApiGroup)
@@ -94,6 +99,7 @@ export class MapleInternalApi extends HttpApi.make("MapleInternalApi")
 	.add(OrganizationCreationApiGroup)
 	.add(OrganizationRegionApiGroup)
 	.add(QueryEngineApiGroup)
+	.add(RolesApiGroup)
 	.add(SavedViewsApiGroup)
 	// The security audit's reads; its writes stay on the ai Worker (`MapleAiApi`).
 	.add(SecurityAuditReadsApiGroup)

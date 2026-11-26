@@ -20,6 +20,7 @@ import {
 	text,
 	withViewInputs,
 } from "foldkit/scene"
+import { Lazy } from "foldkit/test"
 import { describe, expect, test } from "vitest"
 import { encodePublicId, PublicIdPrefixes, publicError, V2AlertIncident } from "@maple/domain/http/v2"
 import { toLoadFailure } from "@maple/views/data/load-failure"
@@ -176,7 +177,7 @@ describe("alerts hub", () => {
 			{ update: pageUpdate, view },
 			given(asMember),
 			expectView(role("button", { name: "New silence" })).toBeDisabled(),
-			expectView(role("group", { name: "Only org admins and engineers can manage alerts." })).toExist(),
+			expectView(role("group", { name: Policy.denialFor("alerts:manage").message })).toExist(),
 			expectView(newRule).not.toExist(),
 		)
 	})
@@ -206,16 +207,20 @@ describe("alerts hub", () => {
 				expectView(newRule).not.toExist(),
 				expectView(role("button", { name: "More rule types" })).not.toExist(),
 			)
-			// A member's empty state offers nothing to create, so the header keeps its action.
+			// A member's empty state offers nothing to create, so the header keeps its action, locked.
 			scene(
 				{ update: pageUpdate, view },
 				given(firstRun({ tab }, Policy.grantsOf(["org:member"]))),
 				expectView(role("link", { name: "Start from scratch" })).not.toExist(),
-				expectView(newRule).toExist(),
+				expectView(role("button", { name: "New rule" })).toBeDisabled(),
 			)
 		})
 		// Still loading: nothing says the org is empty yet.
-		scene({ update: pageUpdate, view }, given(entered().model), expectView(newRule).toExist())
+		scene(
+			{ update: pageUpdate, view },
+			given(entered().model),
+			expectView(role("button", { name: "New rule" })).toExist(),
+		)
 	})
 
 	test("moving between sections keeps what was read: the Inbox and Rules share it, a section reads its own once", () => {
@@ -257,6 +262,7 @@ describe("alerts hub", () => {
 		acknowledged_at: null,
 		acknowledged_by: null,
 		acknowledged_via: null,
+		first_acknowledged_at: null,
 		error_issue_id: null,
 		escalation: null,
 		silence_id: null,
@@ -275,6 +281,7 @@ describe("alerts hub", () => {
 						acknowledged_at: new Date(NOW - 60_000).toISOString(),
 						acknowledged_by_name: "Dana Kim",
 						acknowledged_via: "slack",
+						first_acknowledged_at: new Date(NOW - 60_000).toISOString(),
 					}),
 				],
 			}),
@@ -284,7 +291,8 @@ describe("alerts hub", () => {
 			given(acknowledged),
 			expectView(text("0 firing")).toExist(),
 			expectView(text(/1 acknowledged/)).toExist(),
-			expectView(text(/^Acknowledged by Dana Kim ·/)).toExist(),
+			// Opened 110 minutes ago, acknowledged a minute ago.
+			expectView(text(/^Acknowledged by Dana Kim, 1h 49m after it opened ·/)).toExist(),
 			expectView(role("button", { name: "Unacknowledge P95 latency 1.84s" })).toExist(),
 		)
 		const clicked = pageUpdate(
@@ -670,5 +678,23 @@ describe("alerts hub", () => {
 		expect(done.outMessage).toEqual(
 			PageOutMessage.RequestedToast({ type: "success", title: "Destination deleted", description: "" }),
 		)
+	})
+})
+
+describe("alerts hub lazy sections", () => {
+	test.each(["inbox", "rules"] as const)(
+		"the %s tab reuses its dialogs and rows on an unchanged render",
+		(tab) => {
+			Lazy.expectAllReused({ view, model: loaded({ tab }) })
+		},
+	)
+
+	test("a live resend of unchanged rows keeps the model's rows", () => {
+		const model = loaded()
+		const resent = pageUpdate(
+			model,
+			Message.UpdatedRules({ orgId: ORG, rows: Arr.map(model.rules ?? [], (row) => ({ ...row })) }),
+		).model
+		expect(resent.rules).toBe(model.rules)
 	})
 })

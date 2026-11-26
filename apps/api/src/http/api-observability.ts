@@ -1,4 +1,4 @@
-import { Layer } from "effect"
+import { Layer, String as Str } from "effect"
 import { Headers, HttpMiddleware, UrlParams } from "effect/http"
 import { VCS_SYNC_BATCH_PATH } from "../worker/vcs-sync-dispatch"
 
@@ -21,8 +21,27 @@ const OAUTH_CALLBACK_PATH =
 // for opting a subscriber out; `DigestService.unsubscribeByToken` owns the span.
 const EMAIL_UNSUBSCRIBE_PATH = /^\/api\/email\/unsubscribe(?:\?|$)/
 
-// An uptime heartbeat ping's path segment is the monitor's secret token.
-const HEARTBEAT_PING_PATH = /^\/hb\//
+// An uptime heartbeat ping's path segment is the monitor's secret token. The ping routes
+// (`UptimeHeartbeatRouter`: GET and POST on these two shapes) redact it. Any other method or path
+// under `/hb/` matches no route, so nothing would. Only a segment in the token alphabet counts as
+// routed: one with `%` can fail to decode before the router records the redacted path.
+const HEARTBEAT_PATH = /^\/hb\//
+const HEARTBEAT_PING_ROUTE = /^\/hb\/[A-Za-z0-9_-]+(?:\/fail)?(?:[?#]|$)/
+const isUnroutedHeartbeat = (request: { url: string; method: string }) =>
+	HEARTBEAT_PATH.test(request.url) &&
+	!(HEARTBEAT_PING_ROUTE.test(request.url) && (request.method === "GET" || request.method === "POST"))
+
+// An on-call calendar feed's path holds the feed's token, the only credential it has, and calendar
+// apps poll it for as long as the link lives. The server span would keep that token in telemetry,
+// so it is suppressed for the whole prefix; `OnCallCalendarRouter` carries its own span without it.
+// The router matches without regard to case and collapses repeated slashes, so the filter does too.
+const ONCALL_CALENDAR_PATH = /^\/+calendar\/+oncall(?:\/|$)/i
+
+// Paths whose next segment is a credential: an on-call calendar link and a heartbeat ping. What
+// logs a request path outside a span (a route graph that failed to build, a cause that escaped it)
+// writes this form of it.
+const CREDENTIAL_SEGMENT = /^(\/+(?:calendar\/+oncall|hb)\/+)[^/?#]+/i
+export const loggablePath = (path: string): string => Str.replace(CREDENTIAL_SEGMENT, "$1[redacted]")(path)
 
 // The `TracerDisabledWhen` filter and the header-redaction list — both
 // references `HttpMiddleware.tracer` reads regardless of which Tracer is
@@ -40,7 +59,8 @@ export const ApiObservabilityLive = Layer.mergeAll(
 			request.method === "OPTIONS" ||
 			OAUTH_CALLBACK_PATH.test(request.url) ||
 			EMAIL_UNSUBSCRIBE_PATH.test(request.url) ||
-			HEARTBEAT_PING_PATH.test(request.url) ||
+			isUnroutedHeartbeat(request) ||
+			ONCALL_CALENDAR_PATH.test(request.url) ||
 			/\.(png|ico|jpg|jpeg|gif|css|js|svg|webp|woff2?)(\?.*)?$/i.test(request.url),
 	),
 	// Spans record only the allowlisted headers (`MapleHttpTracingLive`), none of

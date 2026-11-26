@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
+import * as Policy from "@maple/domain/policy"
 import { Option, Schema, Array as Arr, Record as Rec, String as Str } from "effect"
 import {
 	DeleteSloOutput,
@@ -36,9 +37,10 @@ const fixtures: FixtureRule[] = [
 		rows: () =>
 			perService((service) =>
 				Rec.fromEntries(
-					Arr.flatMap([5, 30, 60, 360], (minutes) => [
+					Arr.flatMap([5, 30, 60, 120, 360, 1440], (minutes) => [
 						[`total${minutes}`, minutes * 1000],
 						[`good${minutes}`, minutes * (1000 - BAD_PER_MILLE[service])],
+						[`samples${minutes}`, minutes * 1000],
 					]),
 				),
 			),
@@ -50,25 +52,27 @@ const fixtures: FixtureRule[] = [
 			perService((service) => ({
 				total: 1_000_000,
 				good: BAD_PER_MILLE[service] > 0 ? 999_500 : 1_000_000,
+				samples: 1_000_000,
 			})),
 	},
-	// The burn read: 400 minute buckets of uniform traffic ending just before now.
+	// The burn read: 1500 minute buckets of uniform traffic ending just before now.
 	{
 		match: (sql) =>
 			Str.includes("FROM service_overview_spans")(sql) && Str.includes("INTERVAL 60 SECOND")(sql),
 		rows: (sql) => {
 			const minute = Math.floor(Date.now() / 60_000) * 60_000
-			return Arr.makeBy(400, (index) => ({
+			return Arr.makeBy(1500, (index) => ({
 				bucket: formatWarehouseDateTime(minute - (index + 1) * 60_000),
 				total: 1000,
 				good: 1000 - badOf(sql),
+				samples: 1000,
 			}))
 		},
 	},
 	// The window totals: half of a 99.9% budget spent on checkout, none on search.
 	{
 		match: (sql) => Str.includes("FROM service_overview_spans")(sql),
-		rows: (sql) => [{ total: 1_000_000, good: badOf(sql) > 0 ? 999_500 : 1_000_000 }],
+		rows: (sql) => [{ total: 1_000_000, good: badOf(sql) > 0 ? 999_500 : 1_000_000, samples: 1_000_000 }],
 	},
 ]
 
@@ -80,7 +84,14 @@ let admin: EvalRuntime
 beforeAll(() => {
 	installFakeWarehouse(fixtures, (sql) => failStatusReads && Str.includes("AS serviceName")(sql))
 	member = makeEvalRuntime()
-	admin = { ...member, tenant: { ...member.tenant, roles: [Schema.decodeSync(RoleName)("org:admin")] } }
+	admin = {
+		...member,
+		tenant: {
+			...member.tenant,
+			roles: [Schema.decodeSync(RoleName)("org:admin")],
+			permissions: Policy.grantsOf(["org:admin"]),
+		},
+	}
 })
 afterAll(async () => {
 	restoreWarehouse()
@@ -90,7 +101,7 @@ afterAll(async () => {
 const decode = <S extends Schema.Codec<unknown, unknown>>(schema: S, result: McpToolResult) =>
 	Schema.decodeSync(schema)(result.structuredContent)
 
-const DENIED = "only org admins and engineers"
+const DENIED = Policy.denialFor("slos:manage").message
 
 describe("create_slo", () => {
 	it("is refused for a member who is not an admin or engineer", async () => {
@@ -243,7 +254,9 @@ describe("inspect_slo", () => {
 			"5m",
 			"30m",
 			"1h",
+			"2h",
 			"6h",
+			"24h",
 		])
 		for (const window of output.status.burnWindows) {
 			expect(window.total).toBe(window.windowMinutes * 1000)
@@ -252,6 +265,7 @@ describe("inspect_slo", () => {
 		expect(output.status.tiers).toMatchObject([
 			{ severity: "critical", factor: 14.4, longWindow: "1h", shortWindow: "5m", breached: true },
 			{ severity: "warning", factor: 6, longWindow: "6h", shortWindow: "30m", breached: true },
+			{ severity: "warning", factor: 3, longWindow: "24h", shortWindow: "2h", breached: true },
 		])
 		expect(output.status).toMatchObject({ total: 1_000_000, good: 999_500 })
 		expect(markdown(result)).toContain("The critical tier is breaching")
@@ -363,5 +377,49 @@ describe("delete_slo", () => {
 		expect(deleted).toMatchObject({ deleted: true, name: "Search latency" })
 		const listed = decode(ListSlosOutput, await runToolDirect(member, "list_slos", {}))
 		expect(Arr.map(listed.slos, (row) => row.name)).toEqual(["Checkout availability"])
+	})
+})
+
+describe("manage_slo", () => {
+	it("runs the action it is given and says which one ran", async () => {
+		const result = await runToolDirect(admin, "manage_slo", {
+			action: "update",
+			slo: "Checkout availability",
+			description: "Checkout stays up.",
+		})
+		expect(result.structuredContent).toMatchObject({
+			action: "update",
+			result: { action: "updated", slo: { description: "Checkout stays up." } },
+		})
+		expect(markdown(result)).toContain("SLO updated")
+	})
+
+	it("answers a retired name in the shape that name published", async () => {
+		const result = await runToolDirect(admin, "update_slo", {
+			slo: "Checkout availability",
+			description: "Checkout stays up.",
+		})
+		expect(result.structuredContent).toMatchObject({
+			action: "updated",
+			slo: { description: "Checkout stays up." },
+		})
+	})
+
+	it("names its actions when the call gives none, or one it does not have", async () => {
+		const missing = await runToolDirect(admin, "manage_slo", { slo: "Checkout availability" })
+		expect(missing.failureCategory).toBe("invalid_parameters")
+		expect(markdown(missing)).toContain("Missing required `action`: one of create, update, delete.")
+		const unknown = await runToolDirect(admin, "manage_slo", {
+			action: "archive",
+			slo: "Checkout availability",
+		})
+		expect(markdown(unknown)).toContain('`action` "archive" is not one of create, update, delete.')
+	})
+
+	it("says which parameter the action is missing, not the family's whole list", async () => {
+		const result = await runToolDirect(admin, "manage_slo", { action: "create", name: "Search" })
+		expect(result.failureCategory).toBe("invalid_parameters")
+		expect(markdown(result)).toContain("Missing required `service`")
+		expect(markdown(result)).not.toContain("confirm")
 	})
 })

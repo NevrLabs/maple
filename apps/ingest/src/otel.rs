@@ -310,6 +310,7 @@ pub fn grpc_server_span(rpc_service: &'static str, signal_path: &'static str) ->
         "maple.ingest.rules.count" = Empty,
         "maple.ingest.rules.dropped_items" = Empty,
         "maple.ingest.rules.redacted_values" = Empty,
+        "maple.ingest.rules.parse_failed" = Empty,
     )
 }
 
@@ -499,6 +500,8 @@ pub fn export_client_span(
         "maple.ingest.datasource" = datasource,
         "maple.ingest.attempt" = attempt,
         "maple.ingest.row_count" = rows,
+        // The one stamp a Tinybird batch's rows carry; unset for unstamped tables.
+        "maple.ingest.retention_days" = Empty,
         "maple.ingest.outcome" = Empty,
         "maple.org_id" = Empty,
     )

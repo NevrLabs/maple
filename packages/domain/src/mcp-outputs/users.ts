@@ -5,6 +5,7 @@
 import { Schema } from "effect"
 import {
 	UserActivityItem,
+	UserEventItem,
 	UserIssueItem,
 	UserListItem,
 	UserMcpSessionItem,
@@ -19,6 +20,8 @@ export const ListUsersFilters = Schema.Struct({
 	search: Schema.optionalKey(Schema.String),
 	hasErrors: Schema.optionalKey(Schema.Boolean),
 	groups: Schema.optionalKey(Schema.Array(Schema.String)),
+	/** The `user_property_filters` JSON as the call passed it. */
+	userPropertyFilters: Schema.optionalKey(Schema.String),
 })
 
 export const ListUsersOutput = Schema.Struct({
@@ -38,6 +41,8 @@ export const InspectUserOutput = Schema.Struct({
 	profile: Schema.NullOr(UserProfileItem),
 	/** Browser sessions, newest first, capped. */
 	sessions: Schema.Array(UserSessionItem),
+	/** The user's product events and page views, latest first, capped. */
+	events: Schema.Array(UserEventItem),
 	/** MCP sessions on every MCP server in scope, latest first, capped. */
 	mcpSessions: Schema.Array(UserMcpSessionItem),
 	/** The issues the user hit, most hits first, capped. */

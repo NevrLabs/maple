@@ -25,6 +25,7 @@ import { OrganizationService } from "@maple/backend/services/org/OrganizationSer
 import { readOrgCreatedAt } from "@maple/backend/services/org/org-created-at"
 import { SignalPresenceService } from "@maple/backend/services/org/SignalPresenceService"
 import { SupportChannelService } from "@maple/backend/services/support/SupportChannelService"
+import { ProductEventsService } from "@maple/backend/services/product-events/ProductEventsService"
 
 const trackedDbs: TestDb[] = []
 afterEach(() => cleanupTestDbs(trackedDbs))
@@ -49,6 +50,9 @@ interface World {
 	membersFail: boolean
 	rulesFail: boolean
 	customerStatus: number
+	/** Only this customer read (1-based) answers `customerStatus`; the others succeed. All when unset. */
+	customerFailingRead?: number
+	customerReads: number
 	redeemStatus: number
 	/** Autumn's customer subscriptions, already camelized as the client returns them. */
 	subscriptions: Array<{ planId: string; status: string; addOn?: boolean }>
@@ -69,6 +73,7 @@ const freshWorld = (): World => ({
 	membersFail: false,
 	rulesFail: false,
 	customerStatus: 200,
+	customerReads: 0,
 	redeemStatus: 200,
 	subscriptions: [
 		{ planId: "bringyourowncloud", status: "active", addOn: true },
@@ -170,11 +175,16 @@ const stubs = (world: World) =>
 		}),
 		Layer.succeed(AutumnClient, {
 			getOrCreateCustomer: () =>
-				Effect.sync(() =>
-					world.customerStatus === 200
-						? ok({ id: ORG, subscriptions: world.subscriptions })
-						: { statusCode: world.customerStatus, response: { message: "autumn down" } },
-				),
+				Effect.sync(() => {
+					world.customerReads += 1
+					const fails =
+						world.customerStatus !== 200 &&
+						(world.customerFailingRead === undefined ||
+							world.customerFailingRead === world.customerReads)
+					return fails
+						? { statusCode: world.customerStatus, response: { message: "autumn down" } }
+						: ok({ id: ORG, subscriptions: world.subscriptions })
+				}),
 			aggregateEvents: die,
 			attach: die,
 			previewAttach: die,
@@ -214,7 +224,7 @@ const makeLayer = (world: World, testDb: TestDb) => {
 		Layer.provideMerge(
 			Layer.mergeAll(
 				stubs(world),
-				OnboardingService.layer,
+				OnboardingService.layer.pipe(Layer.provide(ProductEventsService.noop)),
 				ApiKeysService.layer,
 				VcsRepository.layer,
 				EdgeCacheService.layer.pipe(Layer.provide(MemoryCacheBackendLive)),
@@ -279,7 +289,7 @@ describe("OnboardingChecklistService.read", () => {
 			const service = yield* OnboardingChecklistService
 			const report = yield* service.read(tenant)
 			assert.strictEqual(report.status, "claimable")
-			assert.strictEqual(report.completedCount, 4)
+			assert.strictEqual(report.completedCount, 5)
 			assert.strictEqual(report.deadlineAtMs, ONBOARDING_REWARD_WINDOW_MS)
 		}).pipe(Effect.provide(makeLayer(world, testDb)))
 	})
@@ -339,7 +349,7 @@ describe("OnboardingChecklistService.read", () => {
 					?.completed,
 				false,
 			)
-			assert.strictEqual(report.completedCount, 3)
+			assert.strictEqual(report.completedCount, 4)
 		}).pipe(Effect.provide(makeLayer(world, testDb)))
 	})
 
@@ -394,7 +404,12 @@ describe("first-data stamping on an org without onboarding state", () => {
 	const stampFirstData = Effect.gen(function* () {
 		const onboarding = yield* OnboardingService
 		const organizations = yield* OrganizationService
-		return yield* onboarding.recordFirstDataReceived(ORG, readOrgCreatedAt(organizations, ORG))
+		return yield* onboarding.recordFirstDataReceived(
+			ORG,
+			readOrgCreatedAt(organizations, ORG),
+			{ signals: ["traces"], firstSeenMs: null, windowStartMs: 0 },
+			null,
+		)
 	})
 
 	it.effect("dates the new row by the org's real creation time, so the window stays closed", () => {
@@ -516,6 +531,8 @@ describe("OnboardingChecklistService.claim", () => {
 	it.effect("gives the lease back when the customer lookup fails, since nothing was applied", () => {
 		const world = freshWorld()
 		world.customerStatus = 503
+		// The card step's read (1) succeeds; the claim's own lookup (2) is the one that fails.
+		world.customerFailingRead = 2
 		const testDb = createTestDb(trackedDbs)
 		return Effect.gen(function* () {
 			yield* useMcpKey
@@ -533,7 +550,25 @@ describe("OnboardingChecklistService.claim", () => {
 		}).pipe(Effect.provide(makeLayer(world, testDb)))
 	})
 
-	it.effect("refuses an org without a plan and gives the lease back", () => {
+	it.effect("leaves the card step undone while Autumn is unreachable, so nothing is reserved", () => {
+		const world = freshWorld()
+		world.customerStatus = 503
+		const testDb = createTestDb(trackedDbs)
+		return Effect.gen(function* () {
+			yield* useMcpKey
+			yield* connectGithub(testDb)
+			const service = yield* OnboardingChecklistService
+			const error = yield* Effect.flip(service.claim(tenant))
+			assert.strictEqual(
+				error._tag === "@maple/http/errors/OnboardingRewardNotClaimableError" ? error.reason : null,
+				"incomplete",
+			)
+			assert.strictEqual(world.redeems.length, 0)
+			assert.strictEqual(yield* reservedAtInDb(testDb), null)
+		}).pipe(Effect.provide(makeLayer(world, testDb)))
+	})
+
+	it.effect("refuses an org whose plan lapsed: no card on file, so the card step is undone", () => {
 		const world = freshWorld()
 		world.subscriptions = [{ planId: "startup", status: "expired" }]
 		const testDb = createTestDb(trackedDbs)
@@ -544,7 +579,27 @@ describe("OnboardingChecklistService.claim", () => {
 			const error = yield* Effect.flip(service.claim(tenant))
 			assert.strictEqual(
 				error._tag === "@maple/http/errors/OnboardingRewardNotClaimableError" ? error.reason : null,
-				"no_subscription",
+				"incomplete",
+			)
+			assert.strictEqual(world.redeems.length, 0)
+			assert.strictEqual(yield* reservedAtInDb(testDb), null)
+		}).pipe(Effect.provide(makeLayer(world, testDb)))
+	})
+
+	it.effect("keeps the card step undone on the no-card trial, so the reward waits for a card", () => {
+		const world = freshWorld()
+		world.subscriptions = [{ planId: "trial", status: "active" }]
+		const testDb = createTestDb(trackedDbs)
+		return Effect.gen(function* () {
+			yield* useMcpKey
+			yield* connectGithub(testDb)
+			const service = yield* OnboardingChecklistService
+			const report = yield* service.read(tenant)
+			assert.isFalse(Arr.some(report.steps, (step) => step.id === "add_card" && step.completed))
+			const error = yield* Effect.flip(service.claim(tenant))
+			assert.strictEqual(
+				error._tag === "@maple/http/errors/OnboardingRewardNotClaimableError" ? error.reason : null,
+				"incomplete",
 			)
 			assert.strictEqual(world.redeems.length, 0)
 			assert.strictEqual(yield* reservedAtInDb(testDb), null)

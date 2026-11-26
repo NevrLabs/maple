@@ -32,16 +32,19 @@ import { relativeTime } from "../kit/relative-time"
 import { Message } from "./message"
 import type { Model } from "./model"
 import type { ScrapeIntegration } from "./flow-prometheus"
-import { hostnameOf } from "./prometheus"
+import { hostnameOf, PrometheusMessage } from "./prometheus"
 import { prometheusTargets } from "./update-prometheus"
 import { targetDetails } from "./view-prometheus-details"
-import { targetDialogs } from "./view-prometheus-form"
+import { targetDialogs, toHub } from "./view-prometheus-form"
 import { typography, typographyClass } from "@maple/views/ui/typography"
 import { hstack, vstack } from "@maple/views/ui/stack"
 import { tooltipTrigger } from "@maple/views/ui/tooltip-host"
 import { textLink } from "@maple/views/ui/text-link"
 import { pressable } from "@maple/views/ui/pressable"
 import { providerBrand } from "../kit/providers"
+import * as Policy from "@maple/domain/policy"
+import { gatedEntries, gatedSwitch } from "../kit/gated-controls"
+import { gatedControl } from "../kit/session-grants"
 
 type H = HtmlBuilder<Message>
 
@@ -152,6 +155,8 @@ const targetRow = (h: H, model: Model, target: V2ScrapeTarget, timeZone: string)
 	const isSelected = target.id === card.selectedId
 	const menuId = `scrape-target-menu-${target.id}`
 	const isManaged = target.managed_by !== null
+	// Every write here, a probe included, needs `scrape_targets:manage`.
+	const canManageTargets = Policy.can(model.grants, "scrape_targets:manage")
 	return h.div(
 		[
 			h.Class(
@@ -166,7 +171,7 @@ const targetRow = (h: H, model: Model, target: V2ScrapeTarget, timeZone: string)
 			pressable(
 				h,
 				{
-					onClick: Message.ClickedTarget({ id: target.id }),
+					onClick: toHub(PrometheusMessage.ClickedTarget({ id: target.id })),
 					isSelected,
 					className: "flex min-w-0 flex-1 items-center gap-3 py-3 pl-3 text-left",
 				},
@@ -273,23 +278,35 @@ const targetRow = (h: H, model: Model, target: V2ScrapeTarget, timeZone: string)
 			),
 			h.div(
 				[],
-				switchControl(h, {
-					id: `scrape-target-switch-${target.id}`,
-					inputId: `scrape-target-switch-input-${target.id}`,
-					isChecked: target.enabled,
-					isDisabled: card.toggling.includes(target.id),
-					onToggle: Message.ClickedToggleTarget({ id: target.id }),
-				}),
+				gatedSwitch(
+					h,
+					model,
+					"scrape_targets:manage",
+					switchControl(h, {
+						id: `scrape-target-switch-${target.id}`,
+						inputId: `scrape-target-switch-input-${target.id}`,
+						isChecked: target.enabled,
+						isDisabled: card.toggling.includes(target.id) || !canManageTargets,
+						onToggle: toHub(PrometheusMessage.ClickedToggleTarget({ id: target.id })),
+					}),
+				),
 			),
-			button(
-				h,
-				{
-					variant: "outline",
-					size: "sm",
-					isLoading: card.probing.includes(target.id),
-					attributes: [h.OnClick(Message.ClickedProbe({ id: target.id }), { propagation: "Stop" })],
-				},
-				[icon(h, "ArrowRotateClockwiseIcon"), "Sync now"],
+			gatedControl(h, model, "scrape_targets:manage", (isLocked) =>
+				button(
+					h,
+					{
+						variant: "outline",
+						size: "sm",
+						isDisabled: isLocked,
+						isLoading: card.probing.includes(target.id),
+						attributes: [
+							h.OnClick(toHub(PrometheusMessage.ClickedProbe({ id: target.id })), {
+								propagation: "Stop",
+							}),
+						],
+					},
+					[icon(h, "ArrowRotateClockwiseIcon"), "Sync now"],
+				),
 			),
 			h.div(
 				[],
@@ -303,7 +320,7 @@ const targetRow = (h: H, model: Model, target: V2ScrapeTarget, timeZone: string)
 							hoverTone: "foreground",
 							className: "shrink-0",
 						}),
-						entries: [
+						entries: gatedEntries(model, "scrape_targets:manage", [
 							{
 								_tag: "Item",
 								value: "edit",
@@ -320,9 +337,9 @@ const targetRow = (h: H, model: Model, target: V2ScrapeTarget, timeZone: string)
 								variant: "destructive",
 								isDisabled: isManaged,
 							},
-						],
+						]),
 						toParentMessage: (message) =>
-							Message.GotTargetMenuMessage({ id: target.id, message }),
+							toHub(PrometheusMessage.GotTargetMenuMessage({ id: target.id, message })),
 					}),
 				],
 			),

@@ -10,7 +10,6 @@ vi.hoisted(() => {
 })
 import { Message } from "./message"
 import { ClerkPhase, type Model, Session } from "./model"
-import * as PageHold from "./page/page-hold"
 import { initCustomer } from "./page/onboarding/plan-gate"
 import * as Preload from "./page/preload"
 import * as SignIn from "./page/sign-in"
@@ -36,7 +35,6 @@ const base = (knownToRenderApp: Record<string, boolean>): Model => ({
 	page: null,
 	pageInstances: 0,
 	parkedPages: [],
-	pageHold: PageHold.Model.None(),
 	onboarding: null,
 	clerkSnapshot: null,
 	customer: initCustomer(),
@@ -61,13 +59,14 @@ const snapshot: ClerkSnapshot = {
 			aiAutoTriage: false,
 			cloudSecurity: false,
 			dataSources: false,
-			productAnalytics: false,
+			llmEvals: false,
 			profiling: false,
 			securityAudit: false,
 		},
 	}),
 	memberships: [],
 	maybeRole: Option.none(),
+	maybeGrants: Option.none(),
 	maybePendingTask: Option.none(),
 }
 
@@ -106,7 +105,7 @@ describe("plan gate splash on a slow customer read", () => {
 		expect(Option.isNone(Option.flatMap(planGateOf(elapsed.model), (gate) => gate.redirect))).toBe(true)
 
 		const customer = new BillingCustomer({ id: orgId, subscriptions: [] })
-		const settled = update(elapsed.model, Message.SucceededLoadCustomer({ orgId, customer }))
+		const settled = update(elapsed.model, Message.SucceededLoadCustomer({ orgId, customer, readAtMs: 0 }))
 		const redirect = Option.flatMap(planGateOf(settled.model), (gate) => gate.redirect)
 		expect(Option.map(redirect, ({ url }) => Str.startsWith("/quick-start")(url))).toEqual(
 			Option.some(true),
@@ -114,34 +113,11 @@ describe("plan gate splash on a slow customer read", () => {
 	})
 })
 
-describe("productAnalytics rollout", () => {
-	const withFlag = (productAnalytics: boolean): ClerkSnapshot => ({
-		...snapshot,
-		maybeOrganization: Option.map(snapshot.maybeOrganization, (organization) => ({
-			...organization,
-			flags: { ...organization.flags, productAnalytics },
-		})),
-	})
-	const atProductAnalytics = (): Model => ({
-		...base({ [orgId]: true }),
-		route: AppRoute.ProductAnalytics({ search: {} }),
-	})
-	const linksOf = (model: Model) =>
-		Option.map(pageContextOf(model), (context) => context.hasProductAnalytics)
-
-	test("an org outside the rollout is sent home, and its pages are told not to link there", () => {
-		const loaded = update(atProductAnalytics(), Message.CompletedLoadClerk({ snapshot: withFlag(false) }))
-		expect(loaded.model.page).toBeNull()
-		expect(namesOf(loaded)).toContain("ReplaceUrl")
-		expect(linksOf(loaded.model)).toEqual(Option.some(false))
-	})
-
-	test("an org in the rollout gets the page, and its pages may link there", () => {
-		const loaded = update(atProductAnalytics(), Message.CompletedLoadClerk({ snapshot: withFlag(true) }))
-		expect(loaded.model.page).not.toBeNull()
-		expect(namesOf(loaded)).not.toContain("ReplaceUrl")
-		expect(linksOf(loaded.model)).toEqual(Option.some(true))
-	})
+test("every org gets the Product analytics page, with no rollout flag", () => {
+	const at: Model = { ...base({ [orgId]: true }), route: AppRoute.ProductAnalytics({ search: {} }) }
+	const loaded = update(at, Message.CompletedLoadClerk({ snapshot }))
+	expect(loaded.model.page).not.toBeNull()
+	expect(namesOf(loaded)).not.toContain("ReplaceUrl")
 })
 
 describe("profiling rollout", () => {
@@ -164,5 +140,28 @@ describe("profiling rollout", () => {
 	test("a service page is told whether its org is in the rollout", () => {
 		expect(profilingOf(false)).toEqual(Option.some(false))
 		expect(profilingOf(true)).toEqual(Option.some(true))
+	})
+})
+
+describe("Maple AI on the no-card trial", () => {
+	const withPlans = (subscriptions: ReadonlyArray<Record<string, unknown>>) => {
+		const loaded = update(base({ [orgId]: true }), Message.CompletedLoadClerk({ snapshot }))
+		const customer = Schema.decodeUnknownSync(BillingCustomer)({ id: orgId, subscriptions })
+		return update(loaded.model, Message.SucceededLoadCustomer({ orgId, customer, readAtMs: 0 })).model
+	}
+	const gateOf = (model: Model) => Option.map(pageContextOf(model), (context) => context.aiCardGate)
+
+	test("pages are told AI waits for a card on the trial, and not once Startup holds a card", () => {
+		const onTrial = withPlans([{ planId: "trial", status: "active", trialEndsAt: Date.UTC(2026, 11, 9) }])
+		const subscribed = withPlans([
+			{ planId: "trial", status: "expired" },
+			{ planId: "startup", status: "active" },
+		])
+		expect([gateOf(onTrial), gateOf(subscribed)]).toEqual([Option.some("trial"), Option.some(undefined)])
+	})
+
+	test("the hourly trial tick re-reads the customer, so the countdown and caps stay current", () => {
+		const onTrial = withPlans([{ planId: "trial", status: "active", trialEndsAt: Date.UTC(2026, 11, 9) }])
+		expect(namesOf(update(onTrial, Message.ElapsedTrialRefresh()))).toEqual(["LoadCustomer"])
 	})
 })

@@ -26,17 +26,17 @@ export const Message = defineMessageUnion({
 	SucceededCheckSession: { orgId: OrgId },
 	FailedCheckSession: { failure: SessionCheckFailure },
 	ChangedSelfHostedSession: {},
+	ElapsedTrialRefresh: {},
 	CompletedSaveSessionToken: {},
 	CompletedLoadClerk: { snapshot: ClerkSnapshot },
 	FailedLoadClerk: { message: Schema.String },
 	ChangedClerkSession: { snapshot: ClerkSnapshot },
 	CompletedWaitForAuthSettle: {},
-	SucceededLoadCustomer: { orgId: Schema.String, customer: BillingCustomer },
+	/** `readAtMs`: when it was read, the clock the trial banners count days by. */
+	SucceededLoadCustomer: { orgId: Schema.String, customer: BillingCustomer, readAtMs: Schema.Number },
 	FailedLoadCustomer: { orgId: Schema.String },
 	/** The plan gate's splash waited out its grace: a slow customer read no longer holds the app. */
 	ElapsedCustomerGrace: { orgId: Schema.String },
-	/** `PAGE_HOLD_MS` ran out for the page built as `instance`: it shows, loaded or not. */
-	ElapsedPageHold: { instance: Schema.Number },
 	CompletedSaveSelectedPlanKnown: {},
 	CompletedReconnectOrgCollections: {},
 	/** The Undo's write: `error` is why the widgets could not be put back. */

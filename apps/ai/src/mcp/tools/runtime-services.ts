@@ -17,7 +17,9 @@ import { DashboardPersistenceService } from "@maple/backend/services/dashboards/
 import { ErrorActorsService } from "@maple/backend/services/errors/ErrorActorsService"
 import { ErrorIssueReadModelsService } from "@maple/backend/services/errors/ErrorIssueReadModelsService"
 import { UsersReadService } from "@maple/backend/services/users/UsersReadService"
+import { AiEvaluationReadService } from "@maple/backend/services/ai-evaluations/AiEvaluationReadService"
 import { AiSessionReadService } from "@maple/backend/services/ai-sessions/AiSessionReadService"
+import { ErrorGroupingService } from "@maple/backend/services/errors/ErrorGroupingService"
 import { ErrorIssueMergeService } from "@maple/backend/services/errors/ErrorIssueMergeService"
 import { ErrorIssueWorkflowService } from "@maple/backend/services/errors/ErrorIssueWorkflowService"
 import { ErrorPolicyService } from "@maple/backend/services/errors/ErrorPolicyService"
@@ -26,6 +28,8 @@ import { InvestigationService } from "@maple/backend/services/errors/Investigati
 import { IssueFixVerificationService } from "@maple/backend/services/errors/IssueFixVerificationService"
 import { RecommendationIssueService } from "@maple/backend/services/errors/RecommendationIssueService"
 import { SetupAuditService } from "@maple/backend/services/org/SetupAuditService"
+import { IngestSetupService } from "@maple/backend/services/onboarding/IngestSetupService"
+import { OnboardingAgentRunService } from "@maple/backend/services/onboarding/OnboardingAgentRunService"
 import { RailwayMetricsService } from "@maple/backend/services/integrations/RailwayMetricsService"
 import { ScrapeTargetsService } from "@maple/backend/services/integrations/ScrapeTargetsService"
 import { SearchConsoleService } from "@maple/backend/services/integrations/SearchConsoleService"
@@ -41,6 +45,7 @@ import { SourcesService } from "@maple/backend/services/org/SourcesService"
 import { AgentFeedbackService } from "@maple/backend/services/feedback/AgentFeedbackService"
 import { QueryEngineService } from "@maple/backend/services/warehouse/QueryEngineService"
 import { PromqlQueryService } from "@maple/backend/services/promql/PromqlQueryService"
+import { RetentionService } from "@maple/backend/services/retention/RetentionService"
 import { SecurityAuditStore } from "@maple/backend/services/security-audit/SecurityAuditStore"
 import { DependencyScanReader } from "@maple/backend/services/dependency-scan/DependencyScanService"
 import { RuntimeReleaseCatalog } from "@maple/backend/services/security/RuntimeReleaseCatalog"
@@ -77,17 +82,22 @@ export const McpRuntimeServicesLive = Layer.mergeAll(
 	ErrorIssueReadModelsService.layer,
 	ErrorIssueWorkflowService.layer,
 	ErrorIssueMergeService.layer,
+	ErrorGroupingService.layer,
 	ErrorPolicyService.layer,
 	ErrorsService.layer,
+	IngestSetupService.layer,
 	IntegrationInventoryService.layer,
 	SourcesService.layer,
 	InvestigationService.layer,
 	IssueFixVerificationService.layer,
+	OnboardingAgentRunService.layer,
 	QueryEngineService.layer,
 	PromqlQueryService.layer,
 	RailwayMetricsService.layer,
 	RecommendationIssueService.layer,
 	RepoSandboxService.layer,
+	// The same layer `WarehouseQueryService.layer` provides itself, so both share one horizon cache.
+	RetentionService.layer,
 	RuntimeAdvisoryCatalog.layer,
 	RuntimeReleaseCatalog.layer,
 	ScrapeTargetsService.layer,
@@ -101,6 +111,7 @@ export const McpRuntimeServicesLive = Layer.mergeAll(
 	UptimeMonitorsService.layer,
 	UsersReadService.layer,
 	AiSessionReadService.layer,
+	AiEvaluationReadService.layer,
 	IngestRuleService.layer,
 	VcsCommitService.layer,
 	VcsSourceService.layer,

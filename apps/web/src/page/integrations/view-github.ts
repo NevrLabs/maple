@@ -17,9 +17,13 @@ import { integrationNotice } from "./kit/notice"
 import { Message } from "./message"
 import { integrationStatusCard } from "./view-integration-card"
 import { manageLock, type Model } from "./model"
-import { auditLogShown, ciTracesShown, githubStatusOf } from "./update-github"
+import { auditCategoryShown, auditLogShown, ciTracesShown, githubStatusOf } from "./update-github"
+import { GITHUB_AUDIT_CATEGORIES } from "@maple/domain/github-audit"
+import { dividedList } from "@maple/views/ui/rule"
+import { switchRow } from "../kit/switch-row"
 import { disconnectDialog } from "./view-disconnect"
-import { repositoriesPanels, repoDialogs } from "./view-github-repos"
+import { repositoriesPanels, repoDialogs, toHub } from "./view-github-repos"
+import { GithubMessage } from "./github"
 import { typography } from "@maple/views/ui/typography"
 import { hstack, vstack } from "@maple/views/ui/stack"
 import { Array as Arr } from "effect"
@@ -103,9 +107,11 @@ export const githubInstallationPicker = (h: H, model: Model): ReadonlyArray<Html
 								attributes: [
 									h.AriaLabel(`Connect ${choice.accountLogin}`),
 									h.OnClick(
-										Message.ClickedSelectGithubInstallation({
-											installationId: choice.id,
-										}),
+										toHub(
+											GithubMessage.ClickedSelectGithubInstallation({
+												installationId: choice.id,
+											}),
+										),
 									),
 								],
 							},
@@ -136,6 +142,36 @@ export const githubInstallationPicker = (h: H, model: Model): ReadonlyArray<Html
 	]
 }
 
+/**
+ * What the audit log collects, one switch per category, nested under its row on the card. A
+ * category that needs a permission the App asks for separately says which.
+ */
+const auditCategoryList = (h: H, model: Model, lockReason: string | undefined): Html =>
+	dividedList(
+		h,
+		{ as: "div", className: "mt-3 rounded-md" },
+		Arr.map(GITHUB_AUDIT_CATEGORIES, (spec) => {
+			const saving = Arr.some(
+				model.githubCard.auditCategories,
+				(entry) => entry.id === spec.id && entry.isSaving,
+			)
+			return switchRow(h, {
+				id: `github-audit-${spec.id}`,
+				className: "px-3 py-2",
+				size: "sm",
+				label: spec.title,
+				description:
+					"needsPermission" in spec
+						? `${spec.summary} Needs ${spec.needsPermission}.`
+						: spec.summary,
+				isChecked: auditCategoryShown(model, spec.id),
+				isDisabled: saving,
+				onToggle: toHub(GithubMessage.ToggledAuditCategory({ id: spec.id })),
+				...(lockReason !== undefined && { lockReason }),
+			})
+		}),
+	)
+
 /** CI traces and the audit log switch here; PR review is per repository, so its row counts them and links there. */
 /** GitHub's switches: a titled panel on the card, a plain list inside the flow's Choose data step. */
 export const githubFeatures = (
@@ -151,20 +187,31 @@ export const githubFeatures = (
 		IntegrationFeatureSpec<"auditLog">,
 		IntegrationFeatureSpec<"prReview">,
 	] = INTEGRATION_FEATURES.github
+	const lockReason = manageLock(model)
 	const active = Arr.filter(status.repositories, (repo) => repo.status === "active")
+	const collected = Arr.filter(GITHUB_AUDIT_CATEGORIES, (spec) => auditCategoryShown(model, spec.id)).length
+	const auditLogOn = auditLogShown(model)
 	const reviewed = Arr.filter(active, (repo) => repo.prReviewEnabled).length
 	const rows: ReadonlyArray<FeatureRow<Message>> = [
 		{
 			spec: ciTraces,
 			isChecked: ciTracesShown(model),
 			isDisabled: model.githubCard.isSavingCiTraces,
-			onToggle: Message.ToggledCiTraces(),
+			onToggle: toHub(GithubMessage.ToggledCiTraces()),
 		},
 		{
 			spec: auditLog,
-			isChecked: auditLogShown(model),
+			isChecked: auditLogOn,
 			isDisabled: model.githubCard.isSavingAuditLog,
-			onToggle: Message.ToggledAuditLog(),
+			onToggle: toHub(GithubMessage.ToggledAuditLog()),
+			...(place === "card" &&
+				auditLogOn && {
+					note: {
+						_tag: "Info",
+						text: `${collected} of ${GITHUB_AUDIT_CATEGORIES.length} categories`,
+					},
+					children: [auditCategoryList(h, model, lockReason)],
+				}),
 		},
 		{
 			spec: prReview,
@@ -175,7 +222,6 @@ export const githubFeatures = (
 			},
 		},
 	]
-	const lockReason = manageLock(model)
 	return place === "card"
 		? featurePanel(h, { idPrefix: "github", title: "What Maple does", rows, error: null, lockReason })
 		: featureList(h, { idPrefix: "github", rows, lockReason })
@@ -230,7 +276,7 @@ const connectedView = (h: H, model: Model, status: GithubIntegrationStatus, time
 					h,
 					[
 						refreshButton(h, {
-							onRefresh: Message.ClickedGithubRefresh(),
+							onRefresh: toHub(GithubMessage.ClickedGithubRefresh()),
 							isPending: model.githubCard.isRefreshing,
 						}),
 						button(
@@ -271,7 +317,7 @@ export const githubCard = (h: H, model: Model, timeZone: string): ReadonlyArray<
 		failureTitle: "Couldn't load the GitHub integration",
 		render: (data) => byState(h, model, data, timeZone),
 		loading: () => loadingState(h),
-		onRetry: Message.ClickedGithubRefresh(),
+		onRetry: toHub(GithubMessage.ClickedGithubRefresh()),
 	})
 	return [body, disconnectDialog(h, model, "github"), ...repoDialogs(h, model)]
 }

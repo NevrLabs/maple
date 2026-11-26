@@ -1,11 +1,14 @@
 import type { AlertIncidentId } from "@maple/domain/http"
+import * as Policy from "@maple/domain/policy"
 import type { AlertsOverviewReady } from "@maple/web-data/alerts/overview"
 import { isViewerSession } from "../../../platform/selfhost-session"
 import { makeClientErrorBody } from "@maple/web-data/lib/error-messages"
 import { Option, Array as Arr } from "effect"
 import { AsyncData, Submodel } from "foldkit"
-import type { Html, HtmlBuilder } from "foldkit/html"
+import { createLazy, type Html, type HtmlBuilder } from "foldkit/html"
+import { stableValue } from "../../kit/stable-slice"
 import { button, linkButton } from "@maple/views/ui/button"
+import { gatedLinkButton } from "../../kit/gated-controls"
 import { splitButtonClass } from "@maple/views/ui/split-button"
 import { cn } from "@maple/ui/lib/utils"
 import { confirmDialog } from "@maple/views/ui/confirm-dialog"
@@ -105,13 +108,11 @@ const newRuleItem = (
 const newRuleButton = (h: H, model: Model): Html => {
 	const serviceName = model.search.serviceName
 	return hstack(h, { align: "center" }, [
-		linkButton(
+		gatedLinkButton(
 			h,
-			{
-				size: "sm",
-				href: createHref({ serviceName }),
-				className: splitButtonClass("lead"),
-			},
+			model,
+			"alerts:manage",
+			{ size: "sm", href: createHref({ serviceName }), className: splitButtonClass("lead") },
 			[icon(h, "PlusIcon"), "New rule"],
 		),
 		h.submodel({
@@ -126,6 +127,7 @@ const newRuleButton = (h: H, model: Model): Html => {
 						"Telemetry rule",
 						"ChartLineIcon",
 						"Error rate, latency or any query on traces, logs and metrics.",
+						lockFor(model, "alerts:manage"),
 					),
 					newRuleItem(
 						h,
@@ -133,15 +135,16 @@ const newRuleButton = (h: H, model: Model): Html => {
 						"Anomaly rule",
 						"PulseIcon",
 						"Route what Maple's anomaly detector finds for some services, environments or signals.",
+						lockFor(model, "alerts:manage"),
 					),
-					// Uptime monitors and SLOs are for org admins and engineers; the API refuses members too.
+					// Each kind is locked by the permission the API checks on its create.
 					newRuleItem(
 						h,
 						"uptime",
 						"Uptime check",
 						"GlobeIcon",
 						"Check a URL, port, DNS record or cron job from outside.",
-						manageLock(model),
+						lockFor(model, "uptime_monitors:manage"),
 					),
 					newRuleItem(
 						h,
@@ -149,7 +152,7 @@ const newRuleButton = (h: H, model: Model): Html => {
 						"SLO",
 						"GaugeIcon",
 						"An error budget on a service's availability or latency, with burn-rate alerts.",
-						manageLock(model),
+						lockFor(model, "slos:manage"),
 					),
 				],
 				align: "end",
@@ -178,12 +181,12 @@ const newRuleButton = (h: H, model: Model): Html => {
 const hasRows = <A>(rows: Option.Option<ReadonlyArray<A>>): boolean =>
 	Option.exists(rows, (list) => list.length > 0)
 
-/** The denial a create item shows to a viewer who may not manage alerts, else none. */
-const manageLock = (model: Model): string | undefined =>
-	canManageAlerts(model) ? undefined : denialReason("alerts:manage")
+/** The denial a create item shows to a viewer without `permission`, else none. */
+const lockFor = (model: Model, permission: Policy.Permission): string | undefined =>
+	Policy.can(model.grants, permission) ? undefined : denialReason(permission)
 
-const primaryLink = (h: H, model: Model, href: string, label: string): Html =>
-	gatedControl(h, model, "alerts:manage", (isDisabled) =>
+const primaryLink = (h: H, model: Model, href: string, label: string, permission: Policy.Permission): Html =>
+	gatedControl(h, model, permission, (isDisabled) =>
 		isDisabled
 			? button(h, { size: "sm", isDisabled }, [icon(h, "PlusIcon"), label])
 			: linkButton(h, { size: "sm", href }, [icon(h, "PlusIcon"), label]),
@@ -224,11 +227,17 @@ const headerActions = (
 	switch (tab) {
 		case "uptime":
 			return hasRows(AsyncData.getData(model.monitors.data))
-				? primaryLink(h, model, newMonitorHref({ serviceName }), "New monitor")
+				? primaryLink(
+						h,
+						model,
+						newMonitorHref({ serviceName }),
+						"New monitor",
+						"uptime_monitors:manage",
+					)
 				: undefined
 		case "slos":
 			return hasRows(AsyncData.getData(model.slos.data))
-				? primaryLink(h, model, newSloHref({ serviceName }), "New SLO")
+				? primaryLink(h, model, newSloHref({ serviceName }), "New SLO", "slos:manage")
 				: undefined
 		case "silences":
 			return primaryButton(h, model, Message.ClickedNewSilence(), "New silence")
@@ -237,7 +246,9 @@ const headerActions = (
 				? primaryButton(h, model, Message.ClickedNewWindow(), "New window", model.nowMs === null)
 				: undefined
 		case "on-call":
-			return hasSchedules(model) ? primaryLink(h, model, newScheduleHref(), "New schedule") : undefined
+			return hasSchedules(model)
+				? primaryLink(h, model, newScheduleHref(), "New schedule", "oncall:manage")
+				: undefined
 		case "routing":
 			return destinationsOf(model).length > 0
 				? primaryButton(h, model, Message.ClickedNewDestination(), "Add destination")
@@ -356,6 +367,47 @@ const deleteDialog = (h: H, model: Model): Html => {
 	})
 }
 
+// The dialogs render closed on every hub message; each keeps its tree until its own model or
+// inputs change.
+const destinationDialog = (h: H, dialog: Model["destinationDialog"], grants: Model["grants"]): Html =>
+	h.submodel({
+		slotId: "alerts-destination",
+		model: dialog,
+		view: DestinationDialogView.view,
+		viewInputs: { id: "alerts-destination", grants },
+		toParentMessage: (message) => Message.GotDestinationDialogMessage({ message }),
+	})
+
+const silenceDialog = (
+	h: H,
+	dialog: Model["silenceDialog"],
+	suggestions: ReturnType<typeof silenceSuggestionsOf>,
+): Html =>
+	h.submodel({
+		slotId: "alerts-silence",
+		model: dialog,
+		view: SilenceDialogView.view,
+		viewInputs: { id: "alerts-silence", suggestions },
+		toParentMessage: (message) => Message.GotSilenceDialogMessage({ message }),
+	})
+
+const windowRulesOf = stableValue((model: Model) =>
+	model.rules === null ? null : Arr.map(model.rules, ({ id, name }) => ({ id, name })),
+)
+
+const windowDialog = (h: H, dialog: Model["windowDialog"], rules: ReturnType<typeof windowRulesOf>): Html =>
+	h.submodel({
+		slotId: WINDOW_DIALOG_ID,
+		model: dialog,
+		view: WindowDialogView.view,
+		viewInputs: { id: WINDOW_DIALOG_ID, rules },
+		toParentMessage: (message) => Message.GotWindowDialogMessage({ message }),
+	})
+
+const destinationDialogSlot = createLazy()
+const silenceDialogSlot = createLazy()
+const windowDialogSlot = createLazy()
+
 export const view = Submodel.defineView<Model, Message, PageViewInputs>((model, inputs, h) => {
 	const tab = model.tab
 	const overview = overviewOf(model)
@@ -393,31 +445,9 @@ export const view = Submodel.defineView<Model, Message, PageViewInputs>((model, 
 			deleteChainDialog(h, model),
 			deleteScheduleDialog(h, model),
 			deleteWindowDialog(h, model),
-			h.submodel({
-				slotId: "alerts-destination",
-				model: model.destinationDialog,
-				view: DestinationDialogView.view,
-				viewInputs: { id: "alerts-destination" },
-				toParentMessage: (message) => Message.GotDestinationDialogMessage({ message }),
-			}),
-			h.submodel({
-				slotId: "alerts-silence",
-				model: model.silenceDialog,
-				view: SilenceDialogView.view,
-				viewInputs: { id: "alerts-silence", suggestions: silenceSuggestionsOf(model) },
-				toParentMessage: (message) => Message.GotSilenceDialogMessage({ message }),
-			}),
-			h.submodel({
-				slotId: WINDOW_DIALOG_ID,
-				model: model.windowDialog,
-				view: WindowDialogView.view,
-				viewInputs: {
-					id: WINDOW_DIALOG_ID,
-					rules:
-						model.rules === null ? null : Arr.map(model.rules, ({ id, name }) => ({ id, name })),
-				},
-				toParentMessage: (message) => Message.GotWindowDialogMessage({ message }),
-			}),
+			destinationDialogSlot(destinationDialog, [h, model.destinationDialog, model.grants]),
+			silenceDialogSlot(silenceDialog, [h, model.silenceDialog, silenceSuggestionsOf(model)]),
+			windowDialogSlot(windowDialog, [h, model.windowDialog, windowRulesOf(model)]),
 		],
 	)
 })

@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "@effect/vitest"
+import * as Policy from "@maple/domain/policy"
 import { ConfigProvider, Effect, Layer, Schema } from "effect"
 import { GitCommitSha, OrgId, UserId } from "@maple/domain/http"
 import { Env } from "@maple/backend/platform/Env"
@@ -9,6 +10,7 @@ import { CurrentMcpTenant } from "../tenant"
 import { renderToolDoc } from "../lib/tool-doc"
 import { registerCompareCommitsTool } from "./compare-commits"
 import type { McpToolError, McpToolRegistrar } from "./types"
+import { ignoreFamily } from "./types"
 import type { McpToolRequirements } from "./runtime-services"
 import { unimplementedMcpToolServices } from "../../../test/mcp/unimplemented-tool-services"
 
@@ -25,6 +27,7 @@ type Invoke = (
 const compareTool = (): Invoke => {
 	let invoke: Invoke = () => Effect.die("unregistered")
 	const registrar: McpToolRegistrar = {
+		family: ignoreFamily,
 		define: (spec) => {
 			invoke = (params) =>
 				Schema.decodeEffect(spec.parameters)(params).pipe(
@@ -80,6 +83,7 @@ const run = (params: Readonly<Record<string, unknown>>) =>
 					orgId: Schema.decodeSync(OrgId)("org_compare"),
 					userId: Schema.decodeSync(UserId)("user_compare"),
 					roles: [],
+					permissions: Policy.grantsOf([]),
 					authMode: "self_hosted",
 				}),
 			).pipe(

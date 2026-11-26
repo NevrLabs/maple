@@ -38,8 +38,8 @@ export const Model = Schema.Struct({
 	isSeeded: Schema.Boolean,
 	name: Schema.String,
 	slug: Schema.String,
-	/** `statusPageOrgKey` of the org: the address is `/s/<org key>/<slug>`. */
-	orgKey: Schema.String,
+	/** `statusPageOrgKey` of the org, none until computed: the address is `/s/<org key>/<slug>`. */
+	orgKey: Schema.Option(Schema.String),
 	/** An optional custom domain (`status.acme.com`), set right after the page is created. */
 	customDomain: Schema.String,
 	/** The user typed an address; until then it follows the name. */
@@ -73,4 +73,4 @@ export type Model = typeof Model.Type
 
 /** The viewer may change what this page edits (`status_pages:edit`). */
 export const canManage = (model: Pick<Model, "grants">): boolean =>
-	Policy.has(model.grants, "status_pages:edit")
+	Policy.can(model.grants, "status_pages:edit")

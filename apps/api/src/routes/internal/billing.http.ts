@@ -1,10 +1,11 @@
 import { HttpApiBuilder } from "effect/http-api"
 import { Clock, Effect, Option, Schema, Array as Arr } from "effect"
-import { EdgeCacheService } from "@maple/cache"
+import { EdgeCacheService, sharedAcrossPartitions } from "@maple/cache"
 import {
 	AttachResult,
 	BillingAccountOrgUsage,
 	BillingAccountUsageResponse,
+	BillingConflictError,
 	BillingCustomer,
 	type BillingCustomerId,
 	BillingForbiddenError,
@@ -37,7 +38,14 @@ import {
 	aiCreditUsageOf,
 	AutumnGroupedAggregate,
 } from "@maple/backend/services/billing/ai-credit-usage"
-import { AI_CREDITS_FEATURE_ID } from "@maple/domain/billing"
+import {
+	AI_CREDITS_FEATURE_ID,
+	hasHadPlan,
+	STARTUP_PLAN_ID,
+	startupTrialDays,
+	TRIAL_DURATION_DAYS,
+	TRIAL_PLAN_ID,
+} from "@maple/domain/billing"
 import { StripeClient } from "@maple/backend/services/billing/stripe-http"
 import {
 	ensureStripeCustomerId,
@@ -137,9 +145,15 @@ const orgUsageTotals = (orgId: OrgId, spend: DailySpendResponse) =>
 		productEvents: Arr.reduce(spend.days, 0, (sum, day) => sum + (day.productEvents ?? 0)),
 	})
 
+/** Autumn's `trials_used` (expanded): the trials a customer has started, ended ones included. */
+const TrialsUsed = Schema.Struct({
+	trialsUsed: Schema.optionalKey(Schema.NullOr(Schema.Array(Schema.Struct({ planId: Schema.String })))),
+})
+
 export const HttpBillingLive = HttpApiBuilder.group(MapleInternalApi, "billing", (handlers) =>
 	Effect.gen(function* () {
-		const edgeCache = yield* EdgeCacheService
+		// Shared by every caller of the org, so never filed under a caller's cache partition.
+		const edgeCache = yield* Effect.map(EdgeCacheService, sharedAcrossPartitions)
 		const dailySpend = yield* DailySpendService
 		const autumn = yield* AutumnClient
 		const codeReviews = yield* PrReviewAnalyticsService
@@ -200,12 +214,53 @@ export const HttpBillingLive = HttpApiBuilder.group(MapleInternalApi, "billing",
 				Effect.withSpan("HttpBilling.nameCustomerAfterOrg"),
 			)
 
+		// The trial an attach carries (`trialDays`; `undefined` keeps the plan's own), or `isHeld`
+		// for a trial already running (a double click). The no-card trial is once per org, read
+		// from Autumn's `trials_used` too, so it holds even if an ended trial's row is gone.
+		const trialTermsFor = Effect.fn("HttpBilling.trialTermsFor")(function* (
+			customerId: BillingCustomerId,
+			planId: string,
+		) {
+			const planTerms = { isHeld: false, trialDays: undefined }
+			if (planId !== TRIAL_PLAN_ID && planId !== STARTUP_PLAN_ID) return planTerms
+			const read = yield* autumn.getOrCreateCustomer(customerId, { expand: ["trials_used"] })
+			const response = yield* ensureOk(read)
+			const customer = yield* decodeUpstream(BillingCustomer, response)
+			const { trialsUsed } = yield* decodeUpstream(TrialsUsed, response)
+			if (planId === STARTUP_PLAN_ID) {
+				const now = yield* Clock.currentTimeMillis
+				const carried = startupTrialDays(customer.subscriptions, now)
+				// An org that never held a plan or a trial gets the trial as a card trial: Startup
+				// no longer has one of its own, and the trial is still once per org.
+				const isFirstPlan =
+					!hasHadPlan(customer.subscriptions) && Arr.isReadonlyArrayEmpty(trialsUsed ?? [])
+				return {
+					isHeld: false,
+					trialDays: carried === undefined && isFirstPlan ? TRIAL_DURATION_DAYS : carried,
+				}
+			}
+			if (
+				Arr.some(
+					customer.subscriptions,
+					(sub) => sub.planId === TRIAL_PLAN_ID && sub.status === "active",
+				)
+			)
+				return { isHeld: true, trialDays: undefined }
+			const hasUsedTrial = Arr.some(trialsUsed ?? [], (trial) => trial.planId === TRIAL_PLAN_ID)
+			if (!hasUsedTrial && !hasHadPlan(customer.subscriptions)) return planTerms
+			return yield* new BillingConflictError({
+				message: "This organization has already had its free trial.",
+				code: "trial_already_used",
+				upstreamStatus: 409,
+			})
+		})
+
 		// The billing-details writes share one preamble: admins only, and a Stripe
 		// customer to write to (created through Autumn on first use).
 		const stripeCustomerForWrite = (tenant: CurrentTenant.TenantSchema) =>
 			Effect.gen(function* () {
 				yield* Policy.check(
-					tenant.roles,
+					tenant.permissions,
 					"billing:manage",
 					(denial) => new BillingForbiddenError({ message: denial.message }),
 				)
@@ -350,6 +405,14 @@ export const HttpBillingLive = HttpApiBuilder.group(MapleInternalApi, "billing",
 				.handle("getDailySpend", () =>
 					Effect.gen(function* () {
 						const tenant = yield* CurrentTenant.Context
+						// Billing managers see what they pay for; telemetry readers see their volume.
+						if (!Policy.can(tenant.permissions, "telemetry:read")) {
+							yield* Policy.check(
+								tenant.permissions,
+								"billing:manage",
+								(denial) => new BillingForbiddenError({ message: denial.message }),
+							)
+						}
 						// The cycle window comes from the subscription, not the calendar:
 						// an org that subscribed mid-month is billed on its own anniversary
 						// and a calendar-month chart would disagree with the invoice.
@@ -386,7 +449,7 @@ export const HttpBillingLive = HttpApiBuilder.group(MapleInternalApi, "billing",
 					Effect.gen(function* () {
 						const tenant = yield* CurrentTenant.Context
 						yield* Policy.check(
-							tenant.roles,
+							tenant.permissions,
 							"billing:manage",
 							(denial) =>
 								new BillingForbiddenError({
@@ -428,7 +491,7 @@ export const HttpBillingLive = HttpApiBuilder.group(MapleInternalApi, "billing",
 						// Starting or changing a plan is an org-wide spend decision, so
 						// it is gated like every other billing write in this group.
 						yield* Policy.check(
-							tenant.roles,
+							tenant.permissions,
 							"billing:manage",
 							(denial) =>
 								new BillingForbiddenError({
@@ -443,10 +506,28 @@ export const HttpBillingLive = HttpApiBuilder.group(MapleInternalApi, "billing",
 						})
 						const customerId = yield* billingCustomers.requireOwnBilling(tenant.orgId)
 						yield* nameCustomerAfterOrg(tenant.orgId, customerId)
-						const result = yield* autumn.attach(customerId, {
+						const { isHeld, trialDays } = yield* trialTermsFor(customerId, payload.planId)
+						yield* Effect.annotateCurrentSpan({
+							"maple.billing.trial_days": trialDays === undefined ? "plan" : String(trialDays),
+						})
+						if (isHeld) return new AttachResult({})
+						const attempt = yield* autumn.attach(customerId, {
 							planId: payload.planId,
 							successUrl: payload.successUrl,
+							trialDays,
 						})
+						// An Autumn env without the trial plan yet (the rollout window): a card trial of the
+						// same length, stated here rather than left to Startup's config, which drops its own.
+						const isTrialMissing = payload.planId === TRIAL_PLAN_ID && attempt.statusCode === 404
+						yield* Effect.annotateCurrentSpan({ "maple.billing.trial_missing": isTrialMissing })
+						const attachedPlanId = isTrialMissing ? STARTUP_PLAN_ID : payload.planId
+						const result = isTrialMissing
+							? yield* autumn.attach(customerId, {
+									planId: attachedPlanId,
+									successUrl: payload.successUrl,
+									trialDays: TRIAL_DURATION_DAYS,
+								})
+							: attempt
 						const response = yield* classifyAutumn(result).pipe(
 							Effect.catchTag(
 								"@maple/http/errors/BillingConflictError",
@@ -465,7 +546,7 @@ export const HttpBillingLive = HttpApiBuilder.group(MapleInternalApi, "billing",
 										autumn.getOrCreateCustomer(customerId, {
 											expand: ["subscriptions.plan"],
 										}),
-										payload.planId,
+										attachedPlanId,
 										conflict,
 									),
 							),
@@ -488,7 +569,8 @@ export const HttpBillingLive = HttpApiBuilder.group(MapleInternalApi, "billing",
 							emitPlanStartedFromAttach(productEvents, {
 								orgId: tenant.orgId,
 								userId: tenant.userId,
-								planId: payload.planId,
+								// The plan actually attached: Startup when the rollout fallback ran.
+								planId: attachedPlanId,
 								result: attached,
 							}),
 						)
@@ -514,7 +596,7 @@ export const HttpBillingLive = HttpApiBuilder.group(MapleInternalApi, "billing",
 						// payment methods and invoice history — admin-only, like the
 						// billing-details writes it overlaps with.
 						yield* Policy.check(
-							tenant.roles,
+							tenant.permissions,
 							"billing:manage",
 							(denial) =>
 								new BillingForbiddenError({
@@ -647,7 +729,7 @@ export const HttpBillingLive = HttpApiBuilder.group(MapleInternalApi, "billing",
 						return yield* billingOrgs.link({
 							orgId: tenant.orgId,
 							userId: tenant.userId,
-							roles: tenant.roles,
+							permissions: tenant.permissions,
 							billingOrgId: payload.billingOrgId,
 						})
 					}),
@@ -657,7 +739,7 @@ export const HttpBillingLive = HttpApiBuilder.group(MapleInternalApi, "billing",
 						const tenant = yield* CurrentTenant.Context
 						return yield* billingOrgs.unlink({
 							orgId: tenant.orgId,
-							roles: tenant.roles,
+							permissions: tenant.permissions,
 							memberOrgId: params.orgId,
 						})
 					}),

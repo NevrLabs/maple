@@ -2,15 +2,12 @@
  * Every MCP tool's output schema, by tool name: the one list both the registry (which checks
  * each tool declares exactly this schema) and the chat UI's `StructuredToolOutput` derive from.
  */
+import { familyOutput } from "./shared"
 import { ListMapleFeedbackOutput, SendMapleFeedbackOutput } from "./feedback"
 import { InspectInfraOutput, ListInfraOutput } from "./infra"
-import { ListSourcesOutput } from "./sources"
-import {
-	DescribeDataSourceOutput,
-	ListDataSourcesOutput,
-	QueryDataSourceOutput,
-	SearchDataSourcesOutput,
-} from "./data-sources"
+import { DeleteSourceOutput, ListSourcesOutput, SourceMutationOutput } from "./sources"
+import { ListDataSourcesOutput, QueryDataSourceOutput } from "./data-sources"
+import { GetEvaluationScoresOutput, ListEvaluationsOutput } from "./evaluations"
 import { SearchConsolePagesOutput, SearchConsoleQueriesOutput } from "./search-console"
 import { InspectUserOutput, ListUsersOutput } from "./users"
 import {
@@ -57,10 +54,14 @@ import {
 	GetIncidentTimelineOutput,
 	ListAlertChecksOutput,
 	PreviewAlertRuleOutput,
+	ResolveAlertIncidentOutput,
 	ListAlertDestinationsOutput,
 	ListAlertIncidentsOutput,
 	ListAlertRulesOutput,
 	UpdateAlertRuleOutput,
+	AlertDestinationMutationOutput,
+	DeleteAlertDestinationOutput,
+	TestAlertDestinationOutput,
 } from "./alerts"
 import {
 	DeleteEscalationChainOutput,
@@ -87,9 +88,11 @@ import {
 	ReplaceDashboardWidgetsOutput,
 	UpdateDashboardOutput,
 	UpdateDashboardWidgetOutput,
+	DeleteDashboardOutput,
 } from "./dashboards"
 import { ErrorDetailOutput, FindErrorsOutput } from "./errors"
 import { QueryPromqlOutput } from "./promql"
+import { GetMetricExemplarsOutput } from "./metrics"
 import { GetInvestigationOutput } from "./investigations"
 import {
 	ClaimErrorIssueOutput,
@@ -103,6 +106,9 @@ import {
 	ReleaseErrorIssueOutput,
 	SetIssueSeverityOutput,
 	MergeErrorIssuesOutput,
+	ExplainErrorGroupingOutput,
+	ListSimilarErrorIssuesOutput,
+	DetachErrorFingerprintOutput,
 	TransitionErrorIssueOutput,
 	TransitionErrorIssuesOutput,
 	GetErrorNotificationPolicyOutput,
@@ -130,7 +136,10 @@ import {
 	GetSessionTranscriptOutput,
 	ListAgentSessionsOutput,
 	ListProductEventsOutput,
+	QueryCohortOutput,
 	QueryFunnelOutput,
+	QueryPathsOutput,
+	QueryRetentionOutput,
 	SearchSessionsOutput,
 } from "./sessions"
 import {
@@ -155,6 +164,7 @@ import {
 	ServiceDeploymentsOutput,
 } from "./service-activity"
 import { ProfileHotspotsOutput } from "./profiles"
+import { GetIngestSetupOutput, OnboardingStatusUpdateOutput } from "./onboarding"
 import {
 	FindSlowTracesOutput,
 	InspectSpanOutput,
@@ -165,6 +175,74 @@ import {
 	SearchTracesOutput,
 } from "./traces"
 
+/**
+ * The tools that are one resource's write actions under an `action` parameter, and what each action
+ * returns. A family's output is `{ action, result }` (see {@link familyOutput}).
+ */
+export const McpToolFamilyActions = {
+	manage_alert_destination: {
+		create: AlertDestinationMutationOutput,
+		update: AlertDestinationMutationOutput,
+		delete: DeleteAlertDestinationOutput,
+		test: TestAlertDestinationOutput,
+	},
+	manage_alert_silence: {
+		create: AlertSilenceMutationOutput,
+		end: AlertSilenceMutationOutput,
+	},
+	manage_escalation_chain: {
+		create: EscalationChainMutationOutput,
+		update: EscalationChainMutationOutput,
+		delete: DeleteEscalationChainOutput,
+	},
+	manage_ingest_rule: {
+		create: IngestRuleMutationOutput,
+		update: IngestRuleMutationOutput,
+		delete: DeleteIngestRuleOutput,
+	},
+	manage_ingest_source: {
+		pause: SourceMutationOutput,
+		resume: SourceMutationOutput,
+		update: SourceMutationOutput,
+		delete: DeleteSourceOutput,
+	},
+	manage_maintenance_window: {
+		create: MaintenanceWindowMutationOutput,
+		update: MaintenanceWindowMutationOutput,
+		delete: DeleteMaintenanceWindowOutput,
+	},
+	manage_oncall_schedule: {
+		create: OnCallScheduleMutationOutput,
+		update: OnCallScheduleMutationOutput,
+		delete: DeleteOnCallScheduleOutput,
+		add_override: OnCallOverrideMutationOutput,
+		remove_override: DeleteOnCallOverrideOutput,
+	},
+	manage_scrape_target: {
+		create: ScrapeTargetMutationOutput,
+		update: ScrapeTargetMutationOutput,
+		delete: DeleteScrapeTargetOutput,
+	},
+	manage_slo: {
+		create: SloMutationOutput,
+		update: SloMutationOutput,
+		delete: DeleteSloOutput,
+	},
+	manage_status_page: {
+		create: CreateStatusPageOutput,
+		apply_config: ApplyStatusPageConfigOutput,
+		publish: PublishStatusPageOutput,
+		set_domain: SetStatusPageDomainOutput,
+		post_update: StatusPageIncidentMutationOutput,
+	},
+	manage_uptime_monitor: {
+		create: UptimeMonitorMutationOutput,
+		update: UptimeMonitorMutationOutput,
+		delete: DeleteUptimeMonitorOutput,
+	},
+} as const
+
+export type McpToolFamilyName = keyof typeof McpToolFamilyActions
 export const McpToolOutputs = {
 	add_dashboard_widget: AddDashboardWidgetOutput,
 	audit_setup: AuditSetupOutput,
@@ -176,31 +254,15 @@ export const McpToolOutputs = {
 	compare_log_patterns: CompareLogPatternsOutput,
 	compare_operations: CompareOperationsOutput,
 	create_alert_rule: CreateAlertRuleOutput,
-	create_escalation_chain: EscalationChainMutationOutput,
-	create_maintenance_window: MaintenanceWindowMutationOutput,
-	create_oncall_override: OnCallOverrideMutationOutput,
-	create_oncall_schedule: OnCallScheduleMutationOutput,
-	create_alert_silence: AlertSilenceMutationOutput,
-	create_ingest_rule: IngestRuleMutationOutput,
-	create_scrape_target: ScrapeTargetMutationOutput,
 	create_dashboard: CreateDashboardOutput,
-	create_slo: SloMutationOutput,
-	create_uptime_monitor: UptimeMonitorMutationOutput,
 	db_query_volume: DbQueryVolumeOutput,
-	delete_ingest_rule: DeleteIngestRuleOutput,
-	delete_scrape_target: DeleteScrapeTargetOutput,
 	delete_alert_rule: DeleteAlertRuleOutput,
-	delete_escalation_chain: DeleteEscalationChainOutput,
-	delete_maintenance_window: DeleteMaintenanceWindowOutput,
-	delete_oncall_override: DeleteOnCallOverrideOutput,
-	delete_oncall_schedule: DeleteOnCallScheduleOutput,
+	delete_dashboard: DeleteDashboardOutput,
 	acknowledge_alert_incident: AcknowledgeAlertIncidentOutput,
-	delete_slo: DeleteSloOutput,
-	delete_uptime_monitor: DeleteUptimeMonitorOutput,
+	resolve_alert_incident: ResolveAlertIncidentOutput,
 	describe_dashboard_schema: DescribeDashboardSchemaOutput,
 	describe_warehouse_tables: DescribeWarehouseTablesOutput,
 	diagnose_service: DiagnoseServiceOutput,
-	end_alert_silence: AlertSilenceMutationOutput,
 	error_detail: ErrorDetailOutput,
 	explore_attributes: ExploreAttributesOutput,
 	find_errors: FindErrorsOutput,
@@ -211,8 +273,11 @@ export const McpToolOutputs = {
 	get_agent_tools_overview: GetAgentToolsOverviewOutput,
 	get_alert_rule: GetAlertRuleOutput,
 	get_dashboard: GetDashboardOutput,
+	get_evaluation_scores: GetEvaluationScoresOutput,
 	get_incident_timeline: GetIncidentTimelineOutput,
+	get_ingest_setup: GetIngestSetupOutput,
 	get_investigation: GetInvestigationOutput,
+	get_metric_exemplars: GetMetricExemplarsOutput,
 	get_instrumentation_recommendations: GetInstrumentationRecommendationsOutput,
 	get_service_top_operations: GetServiceTopOperationsOutput,
 	profile_hotspots: ProfileHotspotsOutput,
@@ -231,6 +296,7 @@ export const McpToolOutputs = {
 	link_pull_request: LinkPullRequestOutput,
 	list_agent_sessions: ListAgentSessionsOutput,
 	list_alert_checks: ListAlertChecksOutput,
+	list_evaluations: ListEvaluationsOutput,
 	list_ingest_rules: ListIngestRulesOutput,
 	preview_alert_rule: PreviewAlertRuleOutput,
 	list_alert_destinations: ListAlertDestinationsOutput,
@@ -251,29 +317,26 @@ export const McpToolOutputs = {
 	list_slos: ListSlosOutput,
 	list_ingest_sources: ListSourcesOutput,
 	list_data_sources: ListDataSourcesOutput,
-	search_data_sources: SearchDataSourcesOutput,
-	describe_data_source: DescribeDataSourceOutput,
 	query_data_source: QueryDataSourceOutput,
 	list_uptime_monitors: ListUptimeMonitorsOutput,
 	list_users: ListUsersOutput,
 	get_status_page: GetStatusPageOutput,
-	apply_status_page_config: ApplyStatusPageConfigOutput,
-	post_status_page_update: StatusPageIncidentMutationOutput,
-	create_status_page: CreateStatusPageOutput,
-	publish_status_page: PublishStatusPageOutput,
-	set_status_page_domain: SetStatusPageDomainOutput,
 	list_metrics: ListMetricsOutput,
 	list_product_events: ListProductEventsOutput,
 	list_services: ListServicesOutput,
 	list_source_repositories: ListSourceRepositoriesOutput,
 	mine_log_patterns: MineLogPatternsOutput,
+	onboarding_status_update: OnboardingStatusUpdateOutput,
 	pr_changed_files: PrChangedFilesOutput,
 	pr_context: PrContextOutput,
 	pr_file_diff: PrFileDiffOutput,
 	preview_ingest_rule: PreviewIngestRuleOutput,
 	propose_fix: ProposeFixOutput,
 	query_data: QueryDataOutput,
+	query_cohort: QueryCohortOutput,
 	query_funnel: QueryFunnelOutput,
+	query_paths: QueryPathsOutput,
+	query_retention: QueryRetentionOutput,
 	query_promql: QueryPromqlOutput,
 	read_source_file: ReadSourceFileOutput,
 	register_agent: RegisterAgentOutput,
@@ -300,18 +363,26 @@ export const McpToolOutputs = {
 	sync_railway: SyncRailwayOutput,
 	sync_vercel: SyncVercelOutput,
 	set_issue_severity: SetIssueSeverityOutput,
+	manage_alert_destination: familyOutput(McpToolFamilyActions.manage_alert_destination),
+	manage_alert_silence: familyOutput(McpToolFamilyActions.manage_alert_silence),
+	manage_escalation_chain: familyOutput(McpToolFamilyActions.manage_escalation_chain),
+	manage_ingest_rule: familyOutput(McpToolFamilyActions.manage_ingest_rule),
+	manage_ingest_source: familyOutput(McpToolFamilyActions.manage_ingest_source),
+	manage_maintenance_window: familyOutput(McpToolFamilyActions.manage_maintenance_window),
+	manage_oncall_schedule: familyOutput(McpToolFamilyActions.manage_oncall_schedule),
+	manage_scrape_target: familyOutput(McpToolFamilyActions.manage_scrape_target),
+	manage_slo: familyOutput(McpToolFamilyActions.manage_slo),
+	manage_status_page: familyOutput(McpToolFamilyActions.manage_status_page),
+	manage_uptime_monitor: familyOutput(McpToolFamilyActions.manage_uptime_monitor),
 	merge_error_issues: MergeErrorIssuesOutput,
+	explain_error_grouping: ExplainErrorGroupingOutput,
+	list_similar_error_issues: ListSimilarErrorIssuesOutput,
+	detach_error_fingerprint: DetachErrorFingerprintOutput,
 	transition_error_issue: TransitionErrorIssueOutput,
 	transition_error_issues: TransitionErrorIssuesOutput,
 	update_alert_rule: UpdateAlertRuleOutput,
-	update_escalation_chain: EscalationChainMutationOutput,
-	update_oncall_schedule: OnCallScheduleMutationOutput,
 	update_dashboard: UpdateDashboardOutput,
 	update_dashboard_widget: UpdateDashboardWidgetOutput,
-	update_ingest_rule: IngestRuleMutationOutput,
-	update_scrape_target: ScrapeTargetMutationOutput,
-	update_slo: SloMutationOutput,
-	update_uptime_monitor: UptimeMonitorMutationOutput,
 	get_error_notification_policy: GetErrorNotificationPolicyOutput,
 	update_error_notification_policy: UpdateErrorNotificationPolicyOutput,
 	who_is_on_call: WhoIsOnCallOutput,

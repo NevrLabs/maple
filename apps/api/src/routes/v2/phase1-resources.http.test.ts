@@ -1,3 +1,4 @@
+import * as Policy from "@maple/domain/policy"
 import { afterEach, describe, expect, it } from "@effect/vitest"
 import {
 	ConfigProvider,
@@ -347,10 +348,15 @@ const errorIssueDetailFixture = new ErrorIssueDetailResponse({
 			timestamp: decodeIso("2026-07-15T09:18:00.000Z"),
 			exceptionMessage: "upstream timed out",
 			durationMicros: 1200,
+			deploymentEnv: "production",
+			serviceVersion: "",
+			userId: "",
 		}),
 	],
 	incidents: [errorIncidentFixture],
 	environments: [new ErrorIssueEnvironment({ name: "production", count: 12 })],
+	latestStacktrace: null,
+	latestStack: null,
 })
 
 const die = () => Effect.die(new Error("not exercised in this test harness"))
@@ -734,7 +740,11 @@ const makeHarness = (
 		}
 	}
 
-	const bootstrapKey = (scopes?: ReadonlyArray<string>, roles?: ReadonlyArray<string>) =>
+	const bootstrapKey = (
+		scopes?: ReadonlyArray<string>,
+		roles?: ReadonlyArray<string>,
+		permissionCodes?: ReadonlyArray<number>,
+	) =>
 		runtime.runPromise(
 			Effect.gen(function* () {
 				const service = yield* ApiKeysService
@@ -743,7 +753,16 @@ const makeHarness = (
 					scopes,
 					...(roles === undefined
 						? undefined
-						: { metadataJson: { source: "maple_cli", roles, deviceName: "laptop" } }),
+						: {
+								metadataJson: {
+									source: "maple_cli",
+									roles,
+									deviceName: "laptop",
+									...(permissionCodes === undefined
+										? undefined
+										: { permissions: permissionCodes }),
+								},
+							}),
 				})
 			}),
 		)
@@ -924,7 +943,28 @@ describe("v2 error_issues over HTTP", () => {
 		})
 		expect(refused.status).toBe(403)
 		expect(refused.body.error.code).toBe("insufficient_permissions")
-		expect(refused.body.error.message).toContain("Analysts can read Maple")
+		expect(refused.body.error.message).toContain("You need Triage error issues")
+		expect(harness.issueActions()).toEqual([])
+		await harness.dispose()
+	})
+
+	it("refuses triage to a custom role that holds only telemetry:read", async () => {
+		const harness = makeHarness()
+		const key = await harness.bootstrapKey(
+			undefined,
+			["org:custom"],
+			Policy.encodePermissions(["telemetry:read"]),
+		)
+
+		const read = await harness.request("GET", `/v2/error_issues/${ISS_ID}`, { token: key.secret })
+		expect(read.status).toBe(200)
+
+		const refused = await harness.request("POST", `/v2/error_issues/${ISS_ID}/claim`, {
+			token: key.secret,
+			body: {},
+		})
+		expect(refused.status).toBe(403)
+		expect(refused.body.error.message).toContain("You need Triage error issues")
 		expect(harness.issueActions()).toEqual([])
 		await harness.dispose()
 	})
@@ -2105,6 +2145,7 @@ describe("v2 users wire mapping over HTTP", () => {
 				country: "GB",
 				traitKeys: ["plan"],
 				traitValues: ["pro"],
+				traitsAt: "2026-11-01 02:00:00",
 				firstSeen: "2026-11-01 02:00:00",
 				lastSeen: "2026-11-01 10:00:00",
 			},
@@ -2429,7 +2470,7 @@ describe("v2 users wire mapping over HTTP", () => {
 					timestamp: "2026-11-01T08:10:00.000Z",
 					service_name: "maple-mcp",
 					title: "109 tool calls from claude-code",
-					detail: "maple-mcp · 127 tools · 113 failed",
+					detail: "maple-mcp · 127 distinct tools · 113 failed",
 					tone: "crit",
 					mcp_session_id: "mcp_sess_ada",
 				},

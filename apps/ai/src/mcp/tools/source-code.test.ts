@@ -1,5 +1,6 @@
 /** The GitHub-backed source tools: typed output, and VCS failures mapped to what a model can act on. */
 import { assert, describe, it } from "@effect/vitest"
+import * as Policy from "@maple/domain/policy"
 import { IntegrationsUpstreamError, OrgId, UserId } from "@maple/domain/http"
 import { McpToolOutputs, ReadSourceFileOutput } from "@maple/domain/mcp-outputs"
 import {
@@ -11,6 +12,7 @@ import { CurrentMcpTenant } from "../tenant"
 import { renderToolDoc } from "../lib/tool-doc"
 import { matchLines, registerSourceCodeTools, splitSearchPath } from "./source-code"
 import type { McpToolError, McpToolRegistrar } from "./types"
+import { ignoreFamily } from "./types"
 
 interface Answer {
 	readonly text: string
@@ -23,6 +25,7 @@ type Run = (
 
 const tools = new Map<string, Run>()
 registerSourceCodeTools({
+	family: ignoreFamily,
 	define: (spec) => {
 		const run = (params: Readonly<Record<string, unknown>>) =>
 			Schema.decodeEffect(spec.parameters)(params).pipe(
@@ -40,6 +43,7 @@ const tenant = Layer.succeed(CurrentMcpTenant, {
 	orgId: Schema.decodeSync(OrgId)("org_tools"),
 	userId: Schema.decodeSync(UserId)("user_tools"),
 	roles: [],
+	permissions: Policy.grantsOf([]),
 	authMode: "self_hosted",
 } as CurrentMcpTenant["Service"])
 

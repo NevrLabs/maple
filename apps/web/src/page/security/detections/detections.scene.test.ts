@@ -53,7 +53,7 @@ const init = () => enter(context, true)
 const ADMIN = Policy.allPermissions
 const ENGINEER = Policy.grantsOf(["org:engineer"])
 const table = role("table", { name: "Detections" })
-const adminsOnly = text("Only org admins can see and change detections")
+const adminsOnly = text("Your role can't see or change detections")
 
 const fold = (model: Model, messages: ReadonlyArray<(model: Model) => Message>): Model =>
 	Arr.reduce(messages, model, (current, toMessage) => pageUpdate(current, toMessage(current)).model)
@@ -200,7 +200,7 @@ describe("security detections", () => {
 			given(loaded()),
 			expectView(
 				text(
-					"Every member of the org can see a detection's name and that it fired. Only org admins see the events it counted.",
+					"Every member of the org can see a detection's name and that it fired. Only roles that read the audit log see the events it counted.",
 				),
 			).toExist(),
 		)
@@ -341,7 +341,6 @@ describe("security detections", () => {
 	})
 
 	test("with no detections the page offers the ready-made ones, each opening the editor filled in", () => {
-		expect(DETECTION_TEMPLATES).toHaveLength(5)
 		scene(
 			{ update: pageUpdate, view },
 			given(loaded(noDetections)),
@@ -354,6 +353,9 @@ describe("security detections", () => {
 				),
 			),
 			expectView(text("Fires on 5 or more failed sign-ins within 10 minutes.")).toExist(),
+			expectView(
+				role("link", { name: "Use template: Force push to someone else's pull request" }),
+			).toHaveAttr("href", "/security/detections/new?template=force_push_non_author"),
 			expectView(role("link", { name: "Start from scratch" })).toHaveAttr(
 				"href",
 				"/security/detections/new",

@@ -13,7 +13,13 @@ import { Command, Dom, type Update } from "foldkit"
 import { type Attribute, type Html, type HtmlBuilder } from "foldkit/html"
 import { defineMessageUnion } from "foldkit/message"
 import { Side } from "./overlay/position"
+import { personCard } from "./person-avatar"
 import { timestampCard } from "./timestamp"
+import { typography } from "./typography"
+import { icon } from "./icon"
+import { ICON_TREES, type IconName } from "./icons.generated"
+import { cn } from "@maple/ui/lib/utils"
+import { TONE_FILL, TONE_SOFT, TONE_TEXT, type Tone } from "@maple/ui/lib/tone"
 import * as Tooltip from "./tooltip"
 
 /**
@@ -23,11 +29,20 @@ import * as Tooltip from "./tooltip"
 
 const CONTENT_ATTRIBUTE = "data-tooltip"
 const LAYOUT_ATTRIBUTE = "data-tooltip-layout"
+const TITLE_ATTRIBUTE = "data-tooltip-title"
+const ICON_ATTRIBUTE = "data-tooltip-icon"
+const TONE_ATTRIBUTE = "data-tooltip-tone"
 const SIDE_ATTRIBUTE = "data-tooltip-side"
 const OVERFLOW_ATTRIBUTE = "data-tooltip-overflow"
+const ROWS_ATTRIBUTE = "data-tooltip-rows"
+const FOOTER_ATTRIBUTE = "data-tooltip-footer"
+const GROUP_ATTRIBUTE = "data-tooltip-group"
 const INSTANT_ATTRIBUTE = "data-tooltip-instant"
 const ZONE_ATTRIBUTE = "data-tooltip-zone"
 const NOW_ATTRIBUTE = "data-tooltip-now"
+const PERSON_ATTRIBUTE = "data-tooltip-person"
+const PERSON_IMAGE_ATTRIBUTE = "data-tooltip-person-image"
+const PERSON_DETAIL_ATTRIBUTE = "data-tooltip-person-detail"
 const ID_PREFIX = "maple-tooltip-trigger-"
 
 export type TriggerOptions = Readonly<{
@@ -37,7 +52,33 @@ export type TriggerOptions = Readonly<{
 	side?: Side
 	/** Opens only while the trigger's text is cut off (`TruncatedText tooltip="overflow"`). */
 	isOverflowOnly?: boolean
+	/** A bold first line; the content becomes its muted description, wrapped at a reading width. */
+	title?: string
+	/** With `title`: a tinted tile beside it, in `tone` (the shared status colours, neutral by default). */
+	icon?: IconName
+	tone?: Tone
+	/** With `title`: label and value rows in place of the description, each led by a dot in its tone. */
+	rows?: ReadonlyArray<TooltipRow>
+	/** With `title`: a quiet last line under a rule, such as what a click does. */
+	footer?: string
+	/**
+	 * Triggers packed side by side (a calendar's days): leaving one waits a moment before closing,
+	 * so moving onto the next across the gap hands it the open tooltip instead of closing and reopening.
+	 */
+	isGrouped?: boolean
 }>
+
+/** One row of a titled tooltip: the label, its value right-aligned, a dot in `tone` before them. */
+export type TooltipRow = Readonly<{ label: string; value: string; tone?: Tone }>
+
+const Row = Schema.Struct({
+	label: Schema.String,
+	value: Schema.String,
+	tone: Schema.optionalKey(Schema.String),
+})
+const RowsJson = Schema.fromJsonString(Schema.Array(Row))
+const decodeRows = Schema.decodeUnknownOption(RowsJson)
+const encodeRows = Schema.encodeSync(RowsJson)
 
 /** `<TooltipTrigger>` + `<TooltipPopup>{content}</TooltipPopup>`. */
 export const tooltipTrigger = <Message>(
@@ -49,16 +90,39 @@ export const tooltipTrigger = <Message>(
 	...(options.layout === undefined ? [] : [h.DataAttribute("tooltip-layout", options.layout)]),
 	...(options.side === undefined ? [] : [h.DataAttribute("tooltip-side", options.side)]),
 	...(options.isOverflowOnly === true ? [h.DataAttribute("tooltip-overflow", "")] : []),
+	...(options.title === undefined ? [] : [h.DataAttribute("tooltip-title", options.title)]),
+	...(options.icon === undefined ? [] : [h.DataAttribute("tooltip-icon", options.icon)]),
+	...(options.tone === undefined ? [] : [h.DataAttribute("tooltip-tone", options.tone)]),
+	...(options.rows === undefined || options.rows.length === 0
+		? []
+		: [h.DataAttribute("tooltip-rows", encodeRows(options.rows))]),
+	...(options.footer === undefined ? [] : [h.DataAttribute("tooltip-footer", options.footer)]),
+	...(options.isGrouped === true ? [h.DataAttribute("tooltip-group", "")] : []),
 ]
 
 /** A `timestampTrigger`'s instant, zone and the page clock its text read (else the hover's). */
 const Instant = Schema.Struct({ epochMs: Schema.Number, timeZone: Schema.String, nowMs: Schema.Number })
 
+/** A `personTrigger`'s person, drawn as the person card. */
+const Person = Schema.Struct({
+	name: Schema.String,
+	imageUrl: Schema.optionalKey(Schema.String),
+	detail: Schema.optionalKey(Schema.String),
+})
+type Person = { -readonly [K in keyof typeof Person.Type]: (typeof Person.Type)[K] }
+
 const Shown = Schema.Struct({
 	text: Schema.String,
+	title: Schema.optionalKey(Schema.String),
+	icon: Schema.optionalKey(Schema.String),
+	tone: Schema.optionalKey(Schema.String),
+	rows: Schema.optionalKey(Schema.Array(Row)),
+	footer: Schema.optionalKey(Schema.String),
+	isGrouped: Schema.optionalKey(Schema.Boolean),
 	isIconButton: Schema.Boolean,
 	side: Side,
 	instant: Schema.optionalKey(Instant),
+	person: Schema.optionalKey(Person),
 })
 type Shown = typeof Shown.Type
 
@@ -71,11 +135,16 @@ export const Model = Schema.Struct({
 	warmGeneration: Schema.Number,
 	/** A trigger is hovered or focused: its tooltip is pending or open. */
 	isEngaged: Schema.Boolean,
+	/** Bumped by every enter and grouped leave: a pending close that is no longer the latest is dropped. */
+	closeGeneration: Schema.Number,
 })
 export type Model = typeof Model.Type
 
 /** `TooltipProvider`'s `timeout`: how long after a close the next trigger skips the delay. */
 const WARM_WINDOW_MS = 400
+
+/** How long a grouped trigger's tooltip outlives the pointer leaving it: enough to cross a gap. */
+const GROUP_CLOSE_GRACE_MS = 120
 
 export const init = (id: string, options: Tooltip.InitOptions = {}): Model => ({
 	tooltip: Tooltip.init(id, options),
@@ -83,6 +152,7 @@ export const init = (id: string, options: Tooltip.InitOptions = {}): Model => ({
 	isWarm: false,
 	warmGeneration: 0,
 	isEngaged: false,
+	closeGeneration: 0,
 })
 
 export const Message = defineMessageUnion({
@@ -99,6 +169,7 @@ export const Message = defineMessageUnion({
 	/** The press ended: a trigger that took no focus no longer holds its press. */
 	ReleasedPointer: {},
 	ElapsedWarmWindow: { generation: Schema.Number },
+	ElapsedCloseGrace: { generation: Schema.Number },
 	GotTooltipMessage: { message: Tooltip.Message },
 })
 export type Message = typeof Message.Type
@@ -137,6 +208,15 @@ const WaitWarmWindow = Command.define("WaitTooltipWarmWindow", {
 		),
 })
 
+const WaitCloseGrace = Command.define("WaitTooltipCloseGrace", {
+	args: { generation: Schema.Number },
+	messages: [Message.ElapsedCloseGrace],
+	execute: ({ generation }) =>
+		Effect.sleep(Duration.millis(GROUP_CLOSE_GRACE_MS)).pipe(
+			Effect.as(Message.ElapsedCloseGrace({ generation })),
+		),
+})
+
 /** Enters the trigger; while warm, opens at once instead of waiting the delay. */
 const enter = (model: Model, triggerId: string): UpdateReturn => {
 	const entered = Tooltip.update(model.tooltip, Tooltip.Message.EnteredTrigger({ triggerId }))
@@ -159,15 +239,24 @@ const leave = (model: Model): UpdateReturn => {
 	}
 }
 
+/** Leaving an open grouped trigger: close only if no trigger is entered within the grace. */
+const graceClose = (model: Model): UpdateReturn => {
+	const generation = model.closeGeneration + 1
+	return { model: { ...model, closeGeneration: generation }, commands: [WaitCloseGrace({ generation })] }
+}
+
 /** A dismissal for the trigger the tooltip belongs to, which also ends the engagement. */
 const dismiss = (model: Model, triggerId: string, step: (model: Model) => UpdateReturn): UpdateReturn =>
 	triggerId === model.tooltip.triggerId ? step({ ...model, isEngaged: false }) : { model }
 
 export const update = (model: Model, message: Message): UpdateReturn =>
 	Message.match<UpdateReturn>(message, {
-		EnteredTrigger: ({ triggerId, shown }) => {
-			return enter(remember(model, triggerId, shown), triggerId)
-		},
+		// Entering cancels a grouped trigger's pending close: the open tooltip moves to this trigger.
+		EnteredTrigger: ({ triggerId, shown }) =>
+			enter(
+				remember({ ...model, closeGeneration: model.closeGeneration + 1 }, triggerId, shown),
+				triggerId,
+			),
 		FocusedTrigger: ({ triggerId, shown }) => {
 			const next = remember(model, triggerId, shown)
 			return lift(next, Tooltip.update(next.tooltip, Tooltip.Message.FocusedTrigger({ triggerId })))
@@ -187,7 +276,14 @@ export const update = (model: Model, message: Message): UpdateReturn =>
 				: { model },
 		ElapsedWarmWindow: ({ generation }) =>
 			generation === model.warmGeneration ? { model: { ...model, isWarm: false } } : { model },
-		LeftTrigger: ({ triggerId }) => dismiss(model, triggerId, leave),
+		LeftTrigger: ({ triggerId }) =>
+			model.tooltip.isOpen && model.shown[triggerId]?.isGrouped === true
+				? triggerId === model.tooltip.triggerId
+					? graceClose(model)
+					: { model }
+				: dismiss(model, triggerId, leave),
+		ElapsedCloseGrace: ({ generation }) =>
+			generation === model.closeGeneration ? leave({ ...model, isEngaged: false }) : { model },
 		PressedTrigger: ({ triggerId }) =>
 			dismiss(model, triggerId, (next) =>
 				lift(next, Tooltip.update(next.tooltip, Tooltip.Message.PressedTrigger())),
@@ -245,13 +341,46 @@ const instantOf = (trigger: HTMLElement): Option.Option<typeof Instant.Type> => 
 		: Option.none()
 }
 
+const personOf = (trigger: HTMLElement): Option.Option<Person> => {
+	const name = trigger.getAttribute(PERSON_ATTRIBUTE)
+	if (name === null || name === "") return Option.none()
+	const person: Person = { name }
+	const imageUrl = trigger.getAttribute(PERSON_IMAGE_ATTRIBUTE)
+	if (imageUrl !== null) person.imageUrl = imageUrl
+	const detail = trigger.getAttribute(PERSON_DETAIL_ATTRIBUTE)
+	if (detail !== null) person.detail = detail
+	return Option.some(person)
+}
+
 const shownOf = (trigger: HTMLElement) => ({
 	triggerId: anchorIdOf(trigger),
 	shown: {
 		text: trigger.getAttribute(CONTENT_ATTRIBUTE) ?? "",
+		...Option.match(Option.fromNullishOr(trigger.getAttribute(TITLE_ATTRIBUTE)), {
+			onNone: () => ({}),
+			onSome: (title) => ({ title }),
+		}),
+		...Option.match(Option.fromNullishOr(trigger.getAttribute(ICON_ATTRIBUTE)), {
+			onNone: () => ({}),
+			onSome: (icon) => ({ icon }),
+		}),
+		...Option.match(Option.fromNullishOr(trigger.getAttribute(TONE_ATTRIBUTE)), {
+			onNone: () => ({}),
+			onSome: (tone) => ({ tone }),
+		}),
+		...Option.match(decodeRows(trigger.getAttribute(ROWS_ATTRIBUTE) ?? ""), {
+			onNone: () => ({}),
+			onSome: (rows) => ({ rows }),
+		}),
+		...Option.match(Option.fromNullishOr(trigger.getAttribute(FOOTER_ATTRIBUTE)), {
+			onNone: () => ({}),
+			onSome: (footer) => ({ footer }),
+		}),
+		...(trigger.hasAttribute(GROUP_ATTRIBUTE) && { isGrouped: true }),
 		isIconButton: trigger.getAttribute(LAYOUT_ATTRIBUTE) === "icon-button",
 		side: Option.getOrElse(decodeSide(trigger.getAttribute(SIDE_ATTRIBUTE)), (): Side => "top"),
 		...Option.match(instantOf(trigger), { onNone: () => ({}), onSome: (instant) => ({ instant }) }),
+		...Option.match(personOf(trigger), { onNone: () => ({}), onSome: (person) => ({ person }) }),
 	},
 })
 
@@ -388,6 +517,124 @@ export const whileEngaged: Stream.Stream<Message> = Stream.mergeAll([escapes, tr
 export const isEngaged = (model: Model): boolean =>
 	model.isEngaged || model.tooltip.isOpen || model.tooltip.isPressingTrigger
 
+// The attributes carry plain strings; only a known icon or tone is drawn.
+const ICON_NAMES: ReadonlySet<string> = new Set(Rec.keys(ICON_TREES))
+const TONES: ReadonlySet<string> = new Set(Rec.keys(TONE_SOFT))
+const isIconName = (name: string): name is IconName => ICON_NAMES.has(name)
+const isTone = (tone: string): tone is Tone => TONES.has(tone)
+
+/** A titled tooltip's tinted icon tile, in its tone; none without a known icon. */
+const tileOf = <M>(h: HtmlBuilder<M>, shown: Shown): ReadonlyArray<Html> => {
+	const tone: Tone = shown.tone !== undefined && isTone(shown.tone) ? shown.tone : "neutral"
+	return shown.icon !== undefined && isIconName(shown.icon)
+		? [
+				h.span(
+					[
+						h.Class(
+							cn(
+								"flex size-6 shrink-0 items-center justify-center rounded-md",
+								TONE_SOFT[tone],
+							),
+						),
+						h.AriaHidden(true),
+					],
+					[icon(h, shown.icon, { size: 14 })],
+				),
+			]
+		: []
+}
+
+/** A titled tooltip: an optional tinted icon tile, the title, its description muted below. */
+const titledCard = <M>(h: HtmlBuilder<M>, shown: Shown & { title: string }): Html =>
+	shown.rows !== undefined && shown.rows.length > 0
+		? rowsCard(h, { ...shown, rows: shown.rows })
+		: h.div(
+				[
+					h.Class("flex max-w-72 items-start gap-2.5 px-0.5 py-1.5 text-left text-pretty"),
+					h.DataAttribute("slot", "tooltip-card"),
+				],
+				[
+					...tileOf(h, shown),
+					h.div(
+						[h.Class("flex min-w-0 flex-col gap-0.5")],
+						[
+							typography(h, { size: "xs", weight: "medium", as: "div" }, [shown.title]),
+							...(shown.text === ""
+								? []
+								: [typography(h, { size: "xs", tone: "muted", as: "div" }, [shown.text])]),
+						],
+					),
+				],
+			)
+
+/**
+ * A titled tooltip of figures: the tile and title, then the rows across the card (a dot, the label,
+ * the value right-aligned), then the footer under a rule that spans the whole popup.
+ */
+const rowsCard = <M>(
+	h: HtmlBuilder<M>,
+	shown: Shown & { title: string; rows: ReadonlyArray<typeof Row.Type> },
+): Html =>
+	h.div(
+		[
+			h.Class("flex w-52 flex-col gap-2.5 pt-1.5 pb-1 text-left whitespace-normal"),
+			h.DataAttribute("slot", "tooltip-card"),
+		],
+		[
+			h.div(
+				[h.Class("flex items-center gap-2")],
+				[
+					...tileOf(h, shown),
+					typography(h, { size: "xs", weight: "medium", truncate: true, as: "div" }, [shown.title]),
+				],
+			),
+			h.div(
+				[h.Class("grid grid-cols-[auto_1fr_auto] items-center gap-x-2 gap-y-1.5 pl-1")],
+				Arr.flatMap(shown.rows, (row) => {
+					const tone: Tone = row.tone !== undefined && isTone(row.tone) ? row.tone : "neutral"
+					return [
+						h.span(
+							[h.Class(cn("size-1.5 rounded-full", TONE_FILL[tone])), h.AriaHidden(true)],
+							[],
+						),
+						typography(h, { size: "xs", tone: "muted", as: "span" }, [row.label]),
+						typography(
+							h,
+							{
+								size: "xs",
+								weight: "medium",
+								numeric: true,
+								align: "right",
+								as: "span",
+								className: tone === "crit" ? TONE_TEXT.crit : undefined,
+							},
+							[row.value],
+						),
+					]
+				}),
+			),
+			...(shown.footer === undefined
+				? []
+				: [
+						// Out to the popup's edges: the card's own inset and the viewport's padding.
+						h.div(
+							[
+								h.Class(
+									"-mx-2 flex items-center gap-1.5 border-t border-border-subtle px-2 pt-2",
+								),
+							],
+							[
+								icon(h, "CursorPointerIcon", {
+									size: 12,
+									className: "text-foreground-subtle",
+								}),
+								typography(h, { size: "2xs", tone: "subtle", as: "span" }, [shown.footer]),
+							],
+						),
+					]),
+		],
+	)
+
 /**
  * The portal, inside a wrapper that keeps its place in the parent: place it before any sibling
  * whose children change, since the portal itself moves to `<body>`.
@@ -416,9 +663,11 @@ export const view = <ParentMessage>(
 					className: "whitespace-pre-line",
 					toContent: (triggerId) => {
 						const shown = model.shown[triggerId]
-						return shown?.instant === undefined
-							? [shown?.text ?? ""]
-							: [timestampCard(h, shown.instant)]
+						if (shown?.instant !== undefined) return [timestampCard(h, shown.instant)]
+						if (shown?.person !== undefined) return [personCard(h, shown.person)]
+						if (shown?.title !== undefined)
+							return [titledCard(h, { ...shown, title: shown.title })]
+						return [shown?.text ?? ""]
 					},
 					toView: ({ portal }) => portal ?? h.empty,
 				},

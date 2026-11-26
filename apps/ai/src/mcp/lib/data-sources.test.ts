@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest"
+import * as Policy from "@maple/domain/policy"
 import { Array as Arr, Effect, Schema, String as Str } from "effect"
 import { ExternalDataSourceId, type ExternalDataSourceDocument } from "@maple/domain/data-sources"
 import { dataSourcesPromptSection, MAX_PROMPT_SOURCES } from "./data-sources"
@@ -58,7 +59,7 @@ describe("dataSourcesPromptSection", () => {
 	it("switches to a count and search past the cap", () => {
 		const text = dataSourcesPromptSection(Arr.makeBy(MAX_PROMPT_SOURCES + 1, source)) ?? ""
 		expect(text).toContain(
-			`There are ${MAX_PROMPT_SOURCES + 1} data sources; use \`search_data_sources\``,
+			`There are ${MAX_PROMPT_SOURCES + 1} data sources; use \`list_data_sources\` with a \`query\``,
 		)
 		expect(text).not.toContain("src-0 (")
 	})
@@ -70,8 +71,8 @@ describe("dataSourcesPromptSection for a turn that cannot query", () => {
 		const withoutQuery = dataSourcesPromptSection([source(0)], false) ?? ""
 		expect(withQuery).toContain("`query_data_source`")
 		expect(withoutQuery).not.toContain("query_data_source")
-		expect(withoutQuery).toContain("`describe_data_source`")
-		expect(withoutQuery).toContain("engineer or admin role")
+		expect(withoutQuery).toContain("`list_data_sources`")
+		expect(withoutQuery).toContain(Policy.permissions["data_sources:query"].label)
 		expect(withoutQuery).toContain("- src-0 (")
 	})
 })
@@ -90,6 +91,7 @@ describe("readDataSourcesResource", () => {
 		orgId: Schema.decodeSync(OrgId)("org_resource"),
 		userId: Schema.decodeSync(UserId)("user_resource"),
 		roles: [Schema.decodeSync(RoleName)("org:admin")],
+		permissions: Policy.grantsOf(["org:admin"]),
 		authMode: "self_hosted",
 	} as const
 	const read = (scopes: ReadonlyArray<string> | undefined) => {

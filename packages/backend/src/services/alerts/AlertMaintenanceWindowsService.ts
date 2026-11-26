@@ -12,7 +12,6 @@ import {
 	type AlertMaintenanceWindowUpdateRequest,
 	type AlertSilenceMatchers,
 	type OrgId,
-	type RoleName,
 	type StoredAlertMaintenanceSchedule,
 	type UserId,
 } from "@maple/domain/http"
@@ -46,6 +45,14 @@ const onceEndsAtOf = (schedule: StoredAlertMaintenanceSchedule): number | null =
 
 const decodeWindowIdSync = Schema.decodeUnknownSync(AlertMaintenanceWindowIdSchema)
 
+/** Writes one edit may lose to concurrent edits before it gives up. */
+const REVISE_ATTEMPTS = 3
+
+/** The fields to change, given the window as stored now. */
+export type MaintenanceWindowChange<E> = (
+	current: AlertMaintenanceWindowDocument,
+) => Effect.Effect<AlertMaintenanceWindowUpdateRequest, E>
+
 export interface MaterializeResult {
 	readonly windows: number
 	readonly silencesUpserted: number
@@ -70,7 +77,7 @@ export interface AlertMaintenanceWindowsServiceApi {
 	readonly create: (
 		orgId: OrgId,
 		userId: UserId,
-		roles: ReadonlyArray<RoleName>,
+		permissions: Policy.Grants,
 		request: AlertMaintenanceWindowCreateRequest,
 	) => Effect.Effect<
 		AlertMaintenanceWindowDocument,
@@ -79,7 +86,7 @@ export interface AlertMaintenanceWindowsServiceApi {
 	readonly update: (
 		orgId: OrgId,
 		userId: UserId,
-		roles: ReadonlyArray<RoleName>,
+		permissions: Policy.Grants,
 		windowId: AlertMaintenanceWindowId,
 		request: AlertMaintenanceWindowUpdateRequest,
 	) => Effect.Effect<
@@ -89,11 +96,29 @@ export interface AlertMaintenanceWindowsServiceApi {
 		| AlertPersistenceError
 		| AlertMaintenanceWindowNotFoundError
 	>
+	/**
+	 * `update`, with the request built from the window as it is when the write lands. `change` runs
+	 * again when another edit got in first, so a merge of a few fields never restores stale ones.
+	 */
+	readonly revise: <E>(
+		orgId: OrgId,
+		userId: UserId,
+		permissions: Policy.Grants,
+		windowId: AlertMaintenanceWindowId,
+		change: MaintenanceWindowChange<E>,
+	) => Effect.Effect<
+		AlertMaintenanceWindowDocument,
+		| E
+		| AlertForbiddenError
+		| AlertValidationError
+		| AlertPersistenceError
+		| AlertMaintenanceWindowNotFoundError
+	>
 	/** Deletes the window, ends an occurrence in progress now and drops the ones still ahead. */
 	readonly delete: (
 		orgId: OrgId,
 		userId: UserId,
-		roles: ReadonlyArray<RoleName>,
+		permissions: Policy.Grants,
 		windowId: AlertMaintenanceWindowId,
 	) => Effect.Effect<
 		AlertMaintenanceWindowDocument,
@@ -117,14 +142,13 @@ export class AlertMaintenanceWindowsService extends Context.Service<
 		const runtime = yield* AlertRuntime
 		const dbExecute = makeDbExecute(database, "AlertMaintenanceWindowsService", makePersistenceError)
 
-		const requireManage = (roles: ReadonlyArray<RoleName>) =>
+		const requireManage = (permissions: Policy.Grants) =>
 			Policy.check(
-				roles,
+				permissions,
 				"alerts:manage",
 				(denial) =>
 					new AlertForbiddenError({
 						message: denial.message,
-						...(roles.length > 0 ? { roles: [...roles] } : undefined),
 					}),
 			)
 
@@ -239,10 +263,10 @@ export class AlertMaintenanceWindowsService extends Context.Service<
 		const create = Effect.fn("AlertMaintenanceWindowsService.create")(function* (
 			orgId: OrgId,
 			userId: UserId,
-			roles: ReadonlyArray<RoleName>,
+			permissions: Policy.Grants,
 			request: AlertMaintenanceWindowCreateRequest,
 		) {
-			yield* requireManage(roles)
+			yield* requireManage(permissions)
 			const nowMs = yield* runtime.now
 			const schedule = toStoredMaintenanceSchedule(request.schedule)
 			yield* validateSchedule(schedule, nowMs)
@@ -293,16 +317,15 @@ export class AlertMaintenanceWindowsService extends Context.Service<
 			return yield* toDocument(window, nowMs)
 		})
 
-		const update = Effect.fn("AlertMaintenanceWindowsService.update")(function* (
+		/** Writes `request` over `current` only while the row still has the revision that was read. */
+		const writeChange = Effect.fnUntraced(function* (
 			orgId: OrgId,
 			userId: UserId,
-			roles: ReadonlyArray<RoleName>,
 			windowId: AlertMaintenanceWindowId,
+			current: DecodedMaintenanceWindow,
 			request: AlertMaintenanceWindowUpdateRequest,
+			nowMs: number,
 		) {
-			yield* requireManage(roles)
-			const nowMs = yield* runtime.now
-			const current = yield* findRow(orgId, windowId)
 			const schedule =
 				request.schedule === undefined
 					? current.schedule
@@ -328,11 +351,11 @@ export class AlertMaintenanceWindowsService extends Context.Service<
 				matchers: request.matchers ?? current.matchers,
 				schedule,
 			}
-			yield* dbExecute((db) =>
+			const written = yield* dbExecute((db) =>
 				db.transaction(
 					Effect.gen(function* () {
 						// The bumped revision voids any materialize pass that read the row before this edit.
-						const written = yield* db.run(
+						const rows = yield* db.run(
 							PG.update(AlertMaintenanceWindows)
 								.set(($) => ({
 									name: next.row.name,
@@ -346,11 +369,15 @@ export class AlertMaintenanceWindowsService extends Context.Service<
 									updatedAt: nowMs,
 									updatedBy: userId,
 								}))
-								.where(($) => [$.orgId.eq(orgId), $.id.eq(windowId)])
+								.where(($) => [
+									$.orgId.eq(orgId),
+									$.id.eq(windowId),
+									$.revision.eq(current.row.revision),
+								])
 								.returning("revision"),
 						)
-						const revision = written[0]?.revision
-						if (revision === undefined) return
+						const revision = rows[0]?.revision
+						if (revision === undefined) return false
 						if (next.row.enabled)
 							yield* syncWindow(
 								db,
@@ -360,19 +387,68 @@ export class AlertMaintenanceWindowsService extends Context.Service<
 								true,
 							)
 						else yield* retireSilences(db, orgId, windowId, nowMs, userId)
+						return true
 					}),
 				),
 			)
-			return yield* toDocument(next, nowMs)
+			if (!written) return Option.none()
+			const document = yield* toDocument(next, nowMs)
+			return Option.some(document)
 		})
+
+		const reviseAttempt = <E>(
+			orgId: OrgId,
+			userId: UserId,
+			windowId: AlertMaintenanceWindowId,
+			change: MaintenanceWindowChange<E>,
+			attemptsLeft: number,
+		): Effect.Effect<
+			AlertMaintenanceWindowDocument,
+			E | AlertValidationError | AlertPersistenceError | AlertMaintenanceWindowNotFoundError
+		> =>
+			Effect.gen(function* () {
+				const nowMs = yield* runtime.now
+				const current = yield* findRow(orgId, windowId)
+				const document = yield* toDocument(current, nowMs)
+				const request = yield* change(document)
+				const written = yield* writeChange(orgId, userId, windowId, current, request, nowMs)
+				if (Option.isSome(written)) return written.value
+				// Another edit landed between the read and the write: build the change again on top of it.
+				if (attemptsLeft <= 1) {
+					return yield* new AlertPersistenceError({
+						message: "The maintenance window kept changing while it was being saved. Try again.",
+					})
+				}
+				return yield* reviseAttempt(orgId, userId, windowId, change, attemptsLeft - 1)
+			})
+
+		const revise = <E>(
+			orgId: OrgId,
+			userId: UserId,
+			permissions: Policy.Grants,
+			windowId: AlertMaintenanceWindowId,
+			change: MaintenanceWindowChange<E>,
+		) =>
+			requireManage(permissions).pipe(
+				Effect.andThen(reviseAttempt(orgId, userId, windowId, change, REVISE_ATTEMPTS)),
+				Effect.withSpan("AlertMaintenanceWindowsService.update"),
+			)
+
+		const update = (
+			orgId: OrgId,
+			userId: UserId,
+			permissions: Policy.Grants,
+			windowId: AlertMaintenanceWindowId,
+			request: AlertMaintenanceWindowUpdateRequest,
+		) => revise(orgId, userId, permissions, windowId, () => Effect.succeed(request))
 
 		const remove = Effect.fn("AlertMaintenanceWindowsService.delete")(function* (
 			orgId: OrgId,
 			userId: UserId,
-			roles: ReadonlyArray<RoleName>,
+			permissions: Policy.Grants,
 			windowId: AlertMaintenanceWindowId,
 		) {
-			yield* requireManage(roles)
+			yield* requireManage(permissions)
 			const nowMs = yield* runtime.now
 			const current = yield* findRow(orgId, windowId)
 			yield* dbExecute((db) =>
@@ -498,6 +574,7 @@ export class AlertMaintenanceWindowsService extends Context.Service<
 			get,
 			create,
 			update,
+			revise,
 			delete: remove,
 			materialize,
 		} satisfies AlertMaintenanceWindowsServiceApi

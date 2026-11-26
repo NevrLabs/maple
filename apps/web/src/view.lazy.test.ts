@@ -9,7 +9,6 @@ import { describe, expect, test, vi } from "vitest"
 vi.hoisted(() => Object.assign(globalThis, { window: new EventTarget() }))
 import type { Message } from "./message"
 import { ClerkPhase, type Model, Session } from "./model"
-import * as PageHold from "./page/page-hold"
 import { initCustomer } from "./page/onboarding/plan-gate"
 import * as Preload from "./page/preload"
 import { pages } from "./page/registry"
@@ -28,6 +27,7 @@ const NOW = Date.parse("2026-10-01T12:00:00Z")
 const SAMPLE_PATHS = [
 	"/settings/ingestion/rules/new",
 	"/settings/billing/ai-credits",
+	"/settings/roles/role_1",
 	"/services",
 	"/",
 	"/metrics",
@@ -110,6 +110,8 @@ const SAMPLE_PATHS = [
 	"/agent-sessions",
 	"/agent-sessions/tools",
 	"/agent-sessions/tools/run_sql",
+	"/agent-sessions/evals",
+	"/agent-sessions/evals/faithfulness",
 	"/agent-sessions/session_1",
 	"/mcp-servers",
 	"/mcp-servers/maple-ai",
@@ -148,7 +150,6 @@ const entered = (path: string): Model =>
 		page: null,
 		pageInstances: 0,
 		parkedPages: [],
-		pageHold: PageHold.Model.None(),
 		onboarding: null,
 		clerkSnapshot: null,
 		customer: initCustomer(),

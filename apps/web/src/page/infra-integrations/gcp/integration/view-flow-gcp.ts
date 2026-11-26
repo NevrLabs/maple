@@ -29,7 +29,9 @@ import { collectsLabel, flowConnector, gcpFlow, scopeCheck } from "./flow-gcp"
 import { createRequest } from "./gcp-configure-derive"
 import { DOCS, SCOPES } from "./gcp-configure-copy"
 import type { ConfigureModel, SetupMethod } from "./gcp-configure-schema"
-import { Message } from "../../../integrations/message"
+import type { Message } from "../../../integrations/message"
+import { GcpMessage } from "./gcp"
+import { toHub } from "./view-gcp-parts"
 import type { Model } from "../../../integrations/model"
 import { gcpConnectors, gcpInfraHref, gcpLogsHref } from "./update-gcp"
 import { metricsAvailable } from "./update-gcp-configure"
@@ -39,6 +41,7 @@ import { methodSetup } from "./view-gcp-configure-method"
 import { scriptSection } from "./view-gcp-configure-run"
 import { scopeFields } from "./view-gcp-configure-scope"
 import { vstack } from "@maple/views/ui/stack"
+import { ruledSection } from "../../../kit/ruled-section"
 
 // Google Cloud in the connect flow: a scope by ID and how to apply the setup, what to collect,
 // then the setup itself and a checklist that ticks as Google Cloud reports back.
@@ -75,7 +78,7 @@ const METHODS = [
 >
 
 const methodChoice = (h: H, configure: ConfigureModel): Html =>
-	vstack(h, { gap: "3", className: "border-t border-border pt-5" }, [
+	ruledSection(h, [
 		heading(h, { level: 3, variant: "subsection" }, ["How do you want to apply the setup?"]),
 		choiceTiles(
 			h,
@@ -84,7 +87,7 @@ const methodChoice = (h: H, configure: ConfigureModel): Html =>
 				description: method.description,
 				tag: method.tag ?? undefined,
 				isSelected: configure.method === method.value,
-				onSelect: Message.ClickedGcpMethod({ method: method.value }),
+				onSelect: toHub(GcpMessage.ClickedGcpMethod({ method: method.value })),
 			})),
 		),
 	])
@@ -243,7 +246,7 @@ const chooseStep = (h: H, model: Model, configure: ConfigureModel): Html => {
 						className: "w-fit",
 						isLoading: configure.isCreating,
 						isDisabled: Option.isNone(createRequest(configure)),
-						attributes: [h.OnClick(Message.SubmittedGcpCreate())],
+						attributes: [h.OnClick(toHub(GcpMessage.SubmittedGcpCreate()))],
 					},
 					["Create connection"],
 				),

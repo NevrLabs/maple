@@ -11,6 +11,8 @@ import { AlertMaintenanceWindowsService } from "@maple/backend/services/alerts/A
 import { AnomalyAlertSource } from "@maple/backend/services/alerts/anomaly/AnomalyAlertSource"
 import { CloudflareAnalyticsService } from "@maple/backend/services/integrations/CloudflareAnalyticsService"
 import { DigestService } from "@maple/backend/services/digest/DigestService"
+import { FirstDataSweepService } from "@maple/backend/services/org/FirstDataSweepService"
+import { ProductEventsService } from "@maple/backend/services/product-events/ProductEventsService"
 import { WebAnalyticsDigestService } from "@maple/backend/services/digest/WebAnalyticsDigestService"
 import { EdgeCacheServiceLive } from "@maple/backend/platform/CacheBackendLive"
 import { Env } from "@maple/backend/platform/Env"
@@ -23,6 +25,7 @@ import {
 	GithubAppWebhookSecret,
 	LinearOAuthClientSecret,
 	PlanetScaleOAuthClientSecret,
+	ProductEventsIngestKey,
 	SearchConsoleClientSecret,
 	StatusDomainsApiToken,
 	SupabaseOAuthClientSecret,
@@ -59,7 +62,16 @@ import {
 import { layerMapleDbConnection } from "@maple/backend/platform/pg-connection-source"
 import { summarizeCause } from "@maple/backend/platform/describe-cause"
 import { withPgConnectionScope } from "@maple/backend/platform/pg-connection-scope"
-import { EmailSender, type EmailSenderClient } from "@maple/backend/platform/bindings"
+import {
+	EmailSender,
+	type EmailSenderClient,
+	type ObjectStore,
+	SourceMapReadBucket,
+} from "@maple/backend/platform/bindings"
+import {
+	StackSymbolicator,
+	type StackSymbolicatorApi,
+} from "@maple/backend/services/sourcemaps/StackSymbolicator"
 import { type ChatSessionNamespace, chatSessionsLayerIfBound } from "@maple/backend/platform/chat-sessions"
 import { envPorts } from "@maple/backend/platform/env-ports"
 import { Cause, Clock, Effect, Layer, Option, Array as Arr, Record as Rec } from "effect"
@@ -83,6 +95,33 @@ const statusPagesLayerIfBound = (bindings: Option.Option<StatusPageBindings>) =>
 			),
 	})
 
+/**
+ * The symbolicator over the read-only source map bucket, built once per isolate by the shell
+ * (`worker.ts`) so its caches outlive a tick. Its database holds only the connection string;
+ * each execute uses the running lane's connection scope.
+ */
+export const makeStackSymbolicator = (
+	env: AlertingWorkerEnv,
+	bucket: ObjectStore,
+): Effect.Effect<StackSymbolicatorApi> =>
+	Effect.service(StackSymbolicator).pipe(
+		// oxlint-disable-next-line effecttsgo/strict-effect-provide
+		Effect.provide(
+			StackSymbolicator.layer.pipe(
+				Layer.provide(Layer.succeed(SourceMapReadBucket, bucket)),
+				Layer.provide(DatabasePgLive),
+				Layer.provide(layerMapleDbConnection(env)),
+			),
+		),
+	)
+
+/** Source-mapped grouping keys, only where the shell bound the source map bucket. */
+const stackSymbolicatorIfBound = (symbolicator: Option.Option<StackSymbolicatorApi>) =>
+	Option.match(symbolicator, {
+		onNone: () => Layer.empty,
+		onSome: (api) => Layer.succeed(StackSymbolicator, api),
+	})
+
 /** The secrets the ticks' services read. Unbound here, a secret reads as absent (`resources/env.ts`). */
 const TickSecretsLive = Layer.mergeAll(
 	ApnsPrivateKey.layer,
@@ -93,6 +132,7 @@ const TickSecretsLive = Layer.mergeAll(
 	GithubAppWebhookSecret.layer,
 	LinearOAuthClientSecret.layer,
 	PlanetScaleOAuthClientSecret.layer,
+	ProductEventsIngestKey.layer,
 	SearchConsoleClientSecret.layer,
 	StatusDomainsApiToken.layer,
 	SupabaseOAuthClientSecret.layer,
@@ -110,6 +150,7 @@ export const layerTick = (
 	email: Option.Option<EmailSenderClient> = Option.none(),
 	chatSessions?: ChatSessionNamespace,
 	statusPages: Option.Option<StatusPageBindings> = Option.none(),
+	symbolicator: Option.Option<StackSymbolicatorApi> = Option.none(),
 ) =>
 	Layer.mergeAll(
 		AlertsService.layer,
@@ -134,7 +175,8 @@ export const layerTick = (
 		SupabaseInsightsService.layer,
 		DigestService.layer,
 		WebAnalyticsDigestService.layer,
-		ErrorsService.layer,
+		FirstDataSweepService.layer,
+		ErrorsService.layer.pipe(Layer.provide(stackSymbolicatorIfBound(symbolicator))),
 		FixVerificationTickService.layer,
 		EscalationService.layer,
 		ServiceMapRollupService.layer,
@@ -144,6 +186,7 @@ export const layerTick = (
 		IncidentClassifier.layer,
 		statusPagesLayerIfBound(statusPages),
 	).pipe(
+		Layer.provide(ProductEventsService.layerFor("maple-alerting")),
 		Layer.provide(
 			Layer.mergeAll(
 				Env.layer,
@@ -529,6 +572,15 @@ const vercelTick = makeTick(
 			: undefined,
 )
 
+const firstDataTick = makeTick(
+	FirstDataSweepService.use((sweep) => sweep.runTick()),
+	"first_data",
+	(result) =>
+		result.candidates > 0
+			? { candidates: result.candidates, stamped: result.stamped, failures: result.failures }
+			: undefined,
+)
+
 const searchConsoleTick = makeTick(
 	SearchConsoleImportService.use((searchConsole) => searchConsole.pollAllSites),
 	"search_console",
@@ -673,6 +725,7 @@ const scheduledTicks = {
 	escalation: escalationTick,
 	fleet: fleetTick,
 	fleetFindings: fleetFindingsTick,
+	firstData: firstDataTick,
 	fixVerification: fixVerificationTick,
 	gcpMetrics: gcpMetricsTick,
 	maintenanceWindows: maintenanceWindowsTick,
@@ -733,6 +786,7 @@ const LANE_TICKS = {
 	supabase_insights: ["supabaseInsights"],
 	maintenance_windows: ["maintenanceWindows"],
 	search_console: ["searchConsole"],
+	first_data: ["firstData"],
 	cost_sync: ["costSync"],
 	aws_security: ["awsSecurity"],
 	fleet: ["fleet"],
@@ -790,10 +844,11 @@ export const runScheduled = (
 	email: Option.Option<EmailSenderClient>,
 	chatSessions: ChatSessionNamespace,
 	statusPages: Option.Option<StatusPageBindings>,
+	symbolicator: Option.Option<StackSymbolicatorApi> = Option.none(),
 ) =>
 	withPgConnectionScope(selectLaneProgram<ScheduledServices>(cron, lane, scheduledTicks)).pipe(
 		// One lane is one application run: the layer is built here and released
 		// with it, as the async entry's ManagedRuntime was.
 		// oxlint-disable-next-line effecttsgo/strict-effect-provide
-		Effect.provide(layerTick(env, email, chatSessions, statusPages)),
+		Effect.provide(layerTick(env, email, chatSessions, statusPages, symbolicator)),
 	)

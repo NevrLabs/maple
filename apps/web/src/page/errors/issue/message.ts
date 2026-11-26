@@ -3,7 +3,10 @@ import { RequestMode } from "@maple/views/data/keyed"
 import {
 	ErrorIssueAffectedUsersResponse,
 	ErrorIssueEventsResponse,
+	ErrorIssueGroupingResponse,
+	ErrorIssueId,
 	ErrorIssuePullRequestsResponse,
+	ErrorIssueSimilarResponse,
 	ErrorIssueVerificationsResponse,
 	GithubIntegrationStatus,
 	IssueEscalationAttemptsResponse,
@@ -18,6 +21,7 @@ import * as Chart from "@maple/views/charts/chart"
 import { LoadFailure } from "@maple/views/data/load-failure"
 import { TimeWindow } from "../../../data/time-range"
 import * as Combobox from "@maple/views/ui/combobox"
+import * as HoverCard from "@maple/views/ui/hover-card"
 import * as CopyButton from "@maple/views/ui/copy-button"
 import * as Dialog from "@maple/views/ui/dialog"
 import * as Menu from "@maple/views/ui/menu"
@@ -67,6 +71,17 @@ export const Message = defineMessageUnion({
 	CompletedFetchAnomalies: result(Schema.Array(V2AnomalyIncident)),
 	CompletedFetchGithubStatus: result(GithubIntegrationStatus),
 	CompletedFetchVcsPullRequests: result(VcsPullRequestsResponse),
+	CompletedFetchGrouping: result(ErrorIssueGroupingResponse),
+	CompletedFetchSimilar: result(ErrorIssueSimilarResponse),
+	ClickedRetryGrouping: {},
+	ClickedRetrySimilar: {},
+	ToggledSkippedFrames: { fingerprintHash: Schema.String },
+	ToggledStackRow: { key: Schema.String },
+	ToggledRawStack: {},
+	ClickedSplitOut: { fingerprintHash: Schema.String },
+	CompletedSplitOut: { fingerprintHash: Schema.String, result: Schema.Result(Schema.Null, LoadFailure) },
+	ClickedMergeSimilar: { sourceIssueId: ErrorIssueId },
+	CompletedMergeSimilar: { sourceIssueId: ErrorIssueId, result: Schema.Result(Schema.Null, LoadFailure) },
 	UpdatedDestinations: { orgId: Schema.String, destinations: Schema.Array(DestinationName) },
 	TickedLeaseClock: { nowMs: Schema.Number },
 	...ChartEnvMessages,
@@ -74,6 +89,8 @@ export const Message = defineMessageUnion({
 	CompletedReloadSpin: { version: Schema.Number },
 	ClickedRetry: {},
 	ClickedResetTimeRange: {},
+	/** A click on the occurrences chart: zoom the page into the hovered bar's bucket. */
+	ClickedOccurrenceBar: {},
 	ClickedInvestigation: { id: Schema.String },
 	GotTimePickerMessage: { message: TimeRangePicker.Message },
 	GotStatusSelectMessage: { message: Select.Message },
@@ -81,6 +98,8 @@ export const Message = defineMessageUnion({
 	GotFingerprintCopyMessage: { message: CopyButton.Message },
 	GotIssueIdCopyMessage: { message: CopyButton.Message },
 	GotPromptCopyMessage: { message: CopyButton.Message },
+	GotSetupPromptCopyMessage: { message: CopyButton.Message },
+	GotSetupCardMessage: { message: HoverCard.Message },
 	GotChartMessage: { message: Chart.Message },
 	ClickedClaim: {},
 	ClickedUnmerge: {},

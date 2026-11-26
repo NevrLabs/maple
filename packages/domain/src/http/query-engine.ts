@@ -1,5 +1,6 @@
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api"
-import { Schema, String as Str } from "effect"
+import { ServiceIdentity } from "../service-identity"
+import { Effect, Schema, String as Str } from "effect"
 import { AWS_INFRA_KIND_IDS } from "../aws-infra"
 import { CostCurrency, CostDimension, CostFilters, CostMetric, CostProvider } from "../cost"
 import { GCP_INFRA_SERVICE_IDS, GCP_INFRA_SOURCE_IDS } from "../gcp-infra"
@@ -26,6 +27,7 @@ import {
 } from "@maple/primitives"
 import {
 	AttributeFilter,
+	MetricsFilters,
 	QueryEngineExecuteBatchRequest,
 	QueryEngineExecuteBatchResponse,
 	QueryEngineExecuteRequest,
@@ -46,7 +48,7 @@ import {
 	PathsInclude,
 } from "@maple/query-model"
 import { WireRow } from "../wire"
-import { AnalystAccess } from "./analyst-access"
+import { EndpointAccess, requires, ScopedTelemetry } from "./endpoint-access"
 
 /**
  * A timeseries bucket width.
@@ -1840,6 +1842,8 @@ const ServicePlatformRow = Schema.Struct({
 	faasName: Schema.String,
 	mapleSdkType: Schema.String,
 	processRuntimeName: Schema.String,
+	/** Absent from an API older than service identities. */
+	identity: Schema.optionalKey(ServiceIdentity),
 })
 
 export class ServicePlatformsResponse extends Schema.Class<ServicePlatformsResponse>(
@@ -2343,6 +2347,73 @@ export class MetricsSummaryResponse extends Schema.Class<MetricsSummaryResponse>
 	),
 }) {}
 
+/**
+ * A histogram metric's merged bucket counts per time bucket: the distribution heatmap.
+ * `filters` are the chart's own (its where clause and scope), so a cell counts what the
+ * percentile drawn over it counts.
+ */
+export class MetricDistributionRequest extends Schema.Class<MetricDistributionRequest>(
+	"MetricDistributionRequest",
+)({
+	startTime: TinybirdDateTime,
+	endTime: TinybirdDateTime,
+	bucketSeconds: BucketSeconds,
+	filters: MetricsFilters,
+}) {}
+
+export const MetricDistributionRow = Schema.Struct({
+	bucket: Schema.String,
+	/** Null for the lowest explicit bucket, which starts at the lowest observation. */
+	lowerBound: Schema.NullOr(Schema.Number),
+	/** Null for the unbounded last bucket. */
+	upperBound: Schema.NullOr(Schema.Number),
+	count: Schema.Number,
+})
+export type MetricDistributionRow = typeof MetricDistributionRow.Type
+
+export class MetricDistributionResponse extends Schema.Class<MetricDistributionResponse>(
+	"MetricDistributionResponse",
+)({
+	data: Schema.Array(MetricDistributionRow),
+}) {}
+
+/** The exemplars on a metric's datapoints: the traces behind its values, highest per time bucket. */
+export class MetricExemplarsRequest extends Schema.Class<MetricExemplarsRequest>("MetricExemplarsRequest")({
+	startTime: TinybirdDateTime,
+	endTime: TinybirdDateTime,
+	bucketSeconds: BucketSeconds,
+	filters: MetricsFilters,
+	/** One heatmap cell: its time bucket and value range, (lower, upper]; a null edge is open. */
+	cell: Schema.optional(
+		Schema.Struct({
+			bucket: TinybirdDateTime,
+			lowerBound: Schema.NullOr(Schema.Finite),
+			upperBound: Schema.NullOr(Schema.Finite),
+		}),
+	),
+	/** Exemplars kept per time bucket, highest value first. */
+	perBucket: Schema.optional(
+		Schema.Number.check(Schema.isInt(), Schema.isBetween({ minimum: 1, maximum: 20 })),
+	),
+	limit: Schema.optional(RowLimit),
+}) {}
+
+export const MetricExemplarRow = Schema.Struct({
+	bucket: Schema.String,
+	timestamp: Schema.String,
+	value: Schema.Number,
+	traceId: Schema.String,
+	spanId: Schema.String,
+	serviceName: Schema.String,
+})
+export type MetricExemplarRow = typeof MetricExemplarRow.Type
+
+export class MetricExemplarsResponse extends Schema.Class<MetricExemplarsResponse>("MetricExemplarsResponse")(
+	{
+		data: Schema.Array(MetricExemplarRow),
+	},
+) {}
+
 export class ListHostsRequest extends Schema.Class<ListHostsRequest>("ListHostsRequest")({
 	startTime: TinybirdDateTime,
 	endTime: TinybirdDateTime,
@@ -2775,6 +2846,9 @@ export class WebAnalyticsSummaryResponse extends Schema.Class<WebAnalyticsSummar
 		// block. `identifiedSessions / sessions` is what the page reports so a
 		// visitor count that covers a fraction of traffic never reads as the whole.
 		identifiedSessions: Schema.Number,
+		// Cookieless sessions, whose new-vs-returning is unknown. Defaults to 0 so a web
+		// build that deploys before the API still decodes the older response.
+		unknownHistorySessions: Schema.Number.pipe(Schema.withDecodingDefaultTypeKey(Effect.succeed(0))),
 		avgDurationMs: Schema.Number,
 		// Sessions from crawlers, headless browsers and other non-human agents,
 		// counted within the same filters as every field above — so it is only a
@@ -2829,6 +2903,7 @@ export class WebAnalyticsTimeseriesResponse extends Schema.Class<WebAnalyticsTim
 			// over `identifiedSessions`, not `sessions` — see the query.
 			bouncedSessions: Schema.Number,
 			identifiedSessions: Schema.Number,
+			unknownHistorySessions: Schema.Number.pipe(Schema.withDecodingDefaultTypeKey(Effect.succeed(0))),
 			avgDurationMs: Schema.Number,
 		}),
 	),
@@ -4255,28 +4330,28 @@ export class QueryEngineApiGroup extends HttpApiGroup.make("queryEngine")
 			payload: QueryEngineExecuteBatchRequest,
 			success: QueryEngineExecuteBatchResponse,
 			error: validatedQueryEndpointErrors,
-		}),
+		}).annotate(ScopedTelemetry, true),
 	)
 	.add(
 		HttpApiEndpoint.post("spanHierarchy", "/span-hierarchy", {
 			payload: SpanHierarchyRequest,
 			success: SpanHierarchyResponse,
 			error: queryEngineEndpointErrors,
-		}),
+		}).annotate(ScopedTelemetry, true),
 	)
 	.add(
 		HttpApiEndpoint.post("spanDetail", "/span-detail", {
 			payload: SpanDetailRequest,
 			success: SpanDetailResponse,
 			error: queryEngineEndpointErrors,
-		}),
+		}).annotate(ScopedTelemetry, true),
 	)
 	.add(
 		HttpApiEndpoint.post("traceSpanEvents", "/trace-span-events", {
 			payload: TraceSpanEventsRequest,
 			success: TraceSpanEventsResponse,
 			error: queryEngineEndpointErrors,
-		}),
+		}).annotate(ScopedTelemetry, true),
 	)
 	.add(
 		HttpApiEndpoint.post("errorsByType", "/errors-by-type", {
@@ -4311,14 +4386,14 @@ export class QueryEngineApiGroup extends HttpApiGroup.make("queryEngine")
 			payload: ErrorRateByServiceRequest,
 			success: ErrorRateByServiceResponse,
 			error: queryEngineEndpointErrors,
-		}),
+		}).annotate(ScopedTelemetry, true),
 	)
 	.add(
 		HttpApiEndpoint.post("serviceOverview", "/service-overview", {
 			payload: ServiceOverviewRequest,
 			success: ServiceOverviewResponse,
 			error: queryEngineEndpointErrors,
-		}),
+		}).annotate(ScopedTelemetry, true),
 	)
 	.add(
 		HttpApiEndpoint.post("serviceHealthSnapshot", "/service-health-snapshot", {
@@ -4332,14 +4407,14 @@ export class QueryEngineApiGroup extends HttpApiGroup.make("queryEngine")
 			payload: ServiceHealthBaselineRequest,
 			success: ServiceHealthBaselineResponse,
 			error: queryEngineEndpointErrors,
-		}),
+		}).annotate(ScopedTelemetry, true),
 	)
 	.add(
 		HttpApiEndpoint.post("serviceApdex", "/service-apdex", {
 			payload: ServiceApdexRequest,
 			success: ServiceApdexResponse,
 			error: queryEngineEndpointErrors,
-		}),
+		}).annotate(ScopedTelemetry, true),
 	)
 	.add(
 		HttpApiEndpoint.post("serviceCloudflareStats", "/service-cloudflare-stats", {
@@ -4648,21 +4723,21 @@ export class QueryEngineApiGroup extends HttpApiGroup.make("queryEngine")
 			success: ServiceDetailOverviewResponse,
 			// Embeds an `execute` sub-query, so it can also surface QueryEngineValidationError.
 			error: validatedQueryEndpointErrors,
-		}),
+		}).annotate(ScopedTelemetry, true),
 	)
 	.add(
 		HttpApiEndpoint.post("serviceDeploys", "/service-deploys", {
 			payload: ServiceDeploysRequest,
 			success: ServiceDeploysResponse,
 			error: queryEngineEndpointErrors,
-		}),
+		}).annotate(ScopedTelemetry, true),
 	)
 	.add(
 		HttpApiEndpoint.post("releasesList", "/releases", {
 			payload: ReleasesListRequest,
 			success: ReleasesListResponse,
 			error: queryEngineEndpointErrors,
-		}),
+		}).annotate(ScopedTelemetry, true),
 	)
 	.add(
 		HttpApiEndpoint.post("uptimePhaseTimings", "/uptime-phase-timings", {
@@ -4711,7 +4786,7 @@ export class QueryEngineApiGroup extends HttpApiGroup.make("queryEngine")
 			payload: ServiceRuntimesRequest,
 			success: ServiceRuntimesResponse,
 			error: queryEngineEndpointErrors,
-		}),
+		}).annotate(ScopedTelemetry, true),
 	)
 	.add(
 		HttpApiEndpoint.post("profileSampleTypes", "/profile-sample-types", {
@@ -4781,14 +4856,14 @@ export class QueryEngineApiGroup extends HttpApiGroup.make("queryEngine")
 			payload: ListLogsRequest,
 			success: ListLogsResponse,
 			error: queryEngineEndpointErrors,
-		}),
+		}).annotate(ScopedTelemetry, true),
 	)
 	.add(
 		HttpApiEndpoint.post("getLog", "/get-log", {
 			payload: GetLogRequest,
 			success: GetLogResponse,
 			error: queryEngineEndpointErrors,
-		}),
+		}).annotate(ScopedTelemetry, true),
 	)
 	.add(
 		HttpApiEndpoint.post("listMetrics", "/list-metrics", {
@@ -4803,6 +4878,20 @@ export class QueryEngineApiGroup extends HttpApiGroup.make("queryEngine")
 			success: MetricsSummaryResponse,
 			error: queryEngineEndpointErrors,
 		}),
+	)
+	.add(
+		HttpApiEndpoint.post("metricDistribution", "/metric-distribution", {
+			payload: MetricDistributionRequest,
+			success: MetricDistributionResponse,
+			error: queryEngineEndpointErrors,
+		}).annotate(ScopedTelemetry, true),
+	)
+	.add(
+		HttpApiEndpoint.post("metricExemplars", "/metric-exemplars", {
+			payload: MetricExemplarsRequest,
+			success: MetricExemplarsResponse,
+			error: queryEngineEndpointErrors,
+		}).annotate(ScopedTelemetry, true),
 	)
 	.add(
 		HttpApiEndpoint.post("infraPresence", "/infra-presence", {
@@ -5186,11 +5275,12 @@ export class QueryEngineApiGroup extends HttpApiGroup.make("queryEngine")
 				QueryEngineTimeoutError,
 				...warehouseHttpErrors,
 			] as const,
-		}),
+		}).annotate(EndpointAccess, requires("query:sql")),
 	)
 	.prefix("/internal/query-engine")
 	.middleware(SessionAuthorization)
-	// Every endpoint here only reads, so an analyst may call it.
-	.annotate(AnalystAccess, "read")
+	// Every endpoint here only reads, so an analyst may call it. The ones marked `ScopedTelemetry`
+	// answer only from datasources that carry a namespace, so a role limited to namespaces may too.
+	.annotate(EndpointAccess, requires("telemetry:read"))
 	// Every endpoint here reads telemetry for the dashboard.
 	.annotate(AuditedRead, "telemetry.read") {}

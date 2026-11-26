@@ -3,6 +3,7 @@
  * the request the service receives, the default status filter, and silences on the timeline.
  */
 import { describe, expect, it } from "vitest"
+import * as Policy from "@maple/domain/policy"
 import { Context, Effect, Layer, Schema, Array as Arr } from "effect"
 import {
 	AlertIncidentsListResponse,
@@ -65,6 +66,8 @@ const layer = (seen: Seen) =>
 			orgId: Schema.decodeSync(OrgId)("org_tools"),
 			userId: Schema.decodeSync(UserId)("user_tools"),
 			roles: [],
+			// The services are mocked; what a role may change is the registry's, tested on its own.
+			permissions: Policy.allPermissions,
 			authMode: "self_hosted",
 		} as never),
 		Layer.succeed(AlertSilencesService, {
@@ -143,6 +146,7 @@ const layer = (seen: Seen) =>
 								acknowledgedByUserId: null,
 								acknowledgedByName: null,
 								acknowledgedVia: null,
+								firstAcknowledgedAt: null,
 							},
 						],
 					}),
@@ -196,7 +200,7 @@ describe("alert silence tools", () => {
 		expect(endsInMs).toBeGreaterThan(89 * 60_000)
 		expect(endsInMs).toBeLessThanOrEqual(90 * 60_000)
 		expect(text(result)).toContain("Reason: Checkout deploy")
-		expect(text(result)).toContain(`\`end_alert_silence silence_id="${ACTIVE_ID}"\``)
+		expect(text(result)).toContain(`\`manage_alert_silence action="end" silence_id="${ACTIVE_ID}"\``)
 	})
 
 	it("create_alert_silence ends a duration after an explicit start", async () => {

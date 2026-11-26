@@ -40,6 +40,7 @@ import {
 	RemoveGithubCostSource,
 	RemoveAnthropicCostKey,
 	RemoveCloudflareCostToken,
+	RemoveMorphCostKey,
 	RemoveOpenAiCostKey,
 	RemoveOpenRouterCostKey,
 	RemovePlanetScaleCostSource,
@@ -47,6 +48,7 @@ import {
 	ResolveWindow,
 	SaveAnthropicCostKey,
 	SaveCloudflareCostToken,
+	SaveMorphCostKey,
 	SaveOpenAiCostKey,
 	SaveOpenRouterCostKey,
 	TimeseriesInput,
@@ -114,6 +116,8 @@ export const LabState = Schema.Literals([
 	"add-anthropic",
 	"add-openai",
 	"openai-no-spend",
+	"add-morph",
+	"morph-refused",
 	"add-github",
 	"github-refused",
 	"github-none",
@@ -200,6 +204,8 @@ const startsEmpty = (state: LabState): boolean =>
 	state === "add-anthropic" ||
 	state === "add-openai" ||
 	state === "openai-no-spend" ||
+	state === "add-morph" ||
+	state === "morph-refused" ||
 	state === "github-none" ||
 	state === "github-reading" ||
 	state === "github-unread" ||
@@ -264,6 +270,10 @@ const openingOf = (state: LabState): ReadonlyArray<CostMessage> => {
 			return [CostMessage.ClickedAddSource(), CostMessage.PickedProvider({ provider: "openai" })]
 		case "openai-no-spend":
 			return submissionOf("openai", "sk-admin-0123456789abcdefghij0123456789")
+		case "add-morph":
+			return [CostMessage.ClickedAddSource(), CostMessage.PickedProvider({ provider: "morph" })]
+		case "morph-refused":
+			return submissionOf("morph", "sk-0123456789abcdefghij0123456789")
 		case "add-github":
 		case "github-none":
 		case "github-reading":
@@ -388,6 +398,11 @@ const noSpendKey = {
 	...toLoadFailure("refused"),
 	message:
 		"This OpenAI organization has no API spend in the last 180 days, so there is nothing to read yet.",
+}
+
+const morphRefusedKey = {
+	...toLoadFailure("refused"),
+	message: "Morph rejected this key. Create one at morphllm.com/dashboard/api-keys.",
 }
 
 /** The days a preset spans, for the fixture's window; a custom range reads as the default. */
@@ -613,6 +628,14 @@ const answerOf = (world: World, search: Search, command: CostCommand): Option.Op
 					result: state === "openai-no-spend" ? Result.fail(noSpendKey) : Result.succeed(undefined),
 				}),
 			)
+		case SaveMorphCostKey.name:
+			return Option.some(
+				CostMessage.CompletedSaveCredential({
+					provider: "morph",
+					result:
+						state === "morph-refused" ? Result.fail(morphRefusedKey) : Result.succeed(undefined),
+				}),
+			)
 		case FeatureRequest.SendFeatureRequest.name:
 			return Option.some(
 				CostMessage.GotRequestMessage({
@@ -623,6 +646,8 @@ const answerOf = (world: World, search: Search, command: CostCommand): Option.Op
 			return Option.some(removedAnswer("anthropic"))
 		case RemoveOpenAiCostKey.name:
 			return Option.some(removedAnswer("openai"))
+		case RemoveMorphCostKey.name:
+			return Option.some(removedAnswer("morph"))
 		case RemoveOpenRouterCostKey.name:
 			return Option.some(removedAnswer("openrouter"))
 		case RemoveCloudflareCostToken.name:

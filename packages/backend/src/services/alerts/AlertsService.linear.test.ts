@@ -7,9 +7,10 @@ import { cleanupTestDbs, createTestDb, queryFirstRow, type TestDb } from "@maple
 import { LinearOAuthService } from "@maple/backend/services/auth/LinearOAuthService"
 import * as VendorFake from "@maple/backend/testing/vendor-fake"
 import { LinearIssueTracker } from "./LinearIssueTracker"
+import { isAnticipatedAlertingFailure } from "./expected-failures"
 import {
 	DEFAULT_CLOCK_EPOCH_MS,
-	adminRoles,
+	adminGrants,
 	asOrgId,
 	asUserId,
 	createErrorRateRule,
@@ -200,7 +201,7 @@ describe("AlertsService with a Linear destination", () => {
 			const destination = yield* alerts.createDestination(
 				orgId,
 				asUserId("user_linear"),
-				adminRoles,
+				adminGrants,
 				new LinearAlertDestinationConfig({
 					type: "linear",
 					name: "Engineering triage",
@@ -214,7 +215,7 @@ describe("AlertsService with a Linear destination", () => {
 			const tested = yield* alerts.testDestination(
 				orgId,
 				asUserId("user_linear"),
-				adminRoles,
+				adminGrants,
 				destination.id,
 			)
 			assert.strictEqual(tested.message, "Linear team Engineering (ENG) is reachable")
@@ -227,7 +228,7 @@ describe("AlertsService with a Linear destination", () => {
 				.createDestination(
 					orgId,
 					asUserId("user_linear"),
-					adminRoles,
+					adminGrants,
 					new LinearAlertDestinationConfig({
 						type: "linear",
 						name: "Elsewhere",
@@ -256,7 +257,7 @@ describe("AlertsService with a Linear destination", () => {
 			const destination = yield* alerts.createDestination(
 				orgId,
 				userId,
-				adminRoles,
+				adminGrants,
 				new LinearAlertDestinationConfig({
 					type: "linear",
 					name: "Engineering triage",
@@ -324,7 +325,7 @@ describe("AlertsService with a Linear destination", () => {
 			const destination = yield* alerts.createDestination(
 				orgId,
 				userId,
-				adminRoles,
+				adminGrants,
 				new LinearAlertDestinationConfig({
 					type: "linear",
 					name: "Engineering triage",
@@ -410,6 +411,43 @@ describe("AlertsService with a Linear destination", () => {
 				missingIsNull: true,
 			})
 			assert.isNull(read)
+		}).pipe(Effect.provide(linearLayers(testDb, fetch)))
+	})
+
+	it.effect("reports a workspace at its Linear plan's issue limit as a refusal not worth retrying", () => {
+		const testDb = createTestDb(trackedDbs)
+		const orgId = asOrgId("org_linear_limit")
+		const { fetch } = VendorFake.make({
+			routes: [
+				tokenRoute("r"),
+				{
+					respond: (request) =>
+						VendorFake.json(
+							decodeGraphqlRequest(request.body).operationName === "MapleIssueCreate"
+								? {
+										data: null,
+										errors: [
+											{
+												message:
+													"You've exceeded the free issue limit for this workspace. Please upgrade.",
+												extensions: { code: "INPUT_ERROR" },
+											},
+										],
+									}
+								: { data: { organization: { id: "lin_org", name: "Acme" } } },
+						),
+				},
+			],
+		})
+		return Effect.gen(function* () {
+			yield* connectLinear(testDb, fetch, orgId)
+			const tracker = yield* LinearIssueTracker
+			const refused = yield* tracker
+				.request(orgId, { name: "MapleIssueCreate", document: "", variables: {} }, Schema.Unknown)
+				.pipe(Effect.flip)
+			assert.strictEqual(refused._tag, "@maple/http/errors/AlertDeliveryRejectedError")
+			assert.isFalse(refused.error.retryable)
+			assert.isTrue(isAnticipatedAlertingFailure(refused))
 		}).pipe(Effect.provide(linearLayers(testDb, fetch)))
 	})
 })

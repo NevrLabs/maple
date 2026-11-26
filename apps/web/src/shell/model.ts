@@ -3,7 +3,7 @@ import { V2Source } from "@maple/domain/http/v2"
 import type { BillingCustomer } from "@maple/domain/http"
 import type { ClerkOrganization, ClerkUser } from "../platform/clerk"
 import * as Policy from "@maple/domain/policy"
-import { Option, Schema } from "effect"
+import { Array as Arr, Option, Schema } from "effect"
 import { AsyncData } from "foldkit"
 import { PopupPosition } from "@maple/views/ui/anchor"
 import * as Dialog from "@maple/views/ui/dialog"
@@ -136,15 +136,25 @@ export type ShellClerk = Readonly<{
 	maybeOrganization: Option.Option<ClerkOrganization>
 	memberships: ReadonlyArray<ClerkOrganization>
 	customer: BillingCustomer | undefined
-	/** The viewer's role in the active org (`org:admin`), once Clerk has read their membership. */
-	maybeRole: Option.Option<string>
+	/** When the customer was read: the clock the trial banners and chip count days by. */
+	customerReadAtMs: number
+	/** What the viewer may do in the active org, once Clerk has read their membership. */
+	maybeGrants: Option.Option<Policy.Grants>
 }>
 
-/** Who the shell is drawn for; self-hosted has no Clerk role, so it is never an analyst. */
-export const shellAudience = (clerk: ShellClerk | null): NavAudience =>
-	clerk !== null && Option.exists(clerk.maybeRole, (role) => Policy.isAnalyst([role]))
-		? "analyst"
-		: "operator"
+/** Holds read access and nothing else: follows the product without operating it. */
+const isReadOnly = (grants: Policy.Grants): boolean =>
+	Arr.every(grants, (permission) => Policy.permissions[permission].group === "read")
+
+/**
+ * Who the shell is drawn for; self-hosted has no Clerk membership, so it is always an operator. A
+ * role limited to namespaces is asked first: it holds only read permissions too, but not an analyst's.
+ */
+export const shellAudience = (clerk: ShellClerk | null): NavAudience => {
+	if (clerk === null) return "operator"
+	if (Option.exists(clerk.maybeGrants, Policy.isScoped)) return "scoped"
+	return Option.exists(clerk.maybeGrants, isReadOnly) ? "analyst" : "operator"
+}
 
 /** A rail item's tooltip: right of the item, centred. */
 export const initRailTooltip = (): Tooltip.Model =>

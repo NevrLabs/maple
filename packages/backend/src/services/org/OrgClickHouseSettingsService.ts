@@ -19,20 +19,10 @@ import {
 	OrgClickHouseSettingsValidationError,
 	type OrgClickHouseSettingsUpsertRequest,
 	OrgId,
-	RoleName,
 	UserId,
 } from "@maple/domain/http"
-import {
-	clickHouseSchemaVersion,
-	computeSchemaDiff,
-	migrations as clickHouseMigrations,
-	parseEmittedStatement,
-	performanceOnlySearchColumns,
-	type ActualTable,
-	type DesiredTable,
-	type TableDiffEntry,
-} from "@maple/domain/clickhouse"
-import { EdgeCacheService } from "@maple/cache"
+import type { ActualTable, DesiredTable, TableDiffEntry } from "@maple/domain/clickhouse"
+import { EdgeCacheService, sharedAcrossPartitions } from "@maple/cache"
 import * as PG from "@maple-dev/effect-orm/postgres"
 import {
 	OrgClickHouseSchemaApplyRuns,
@@ -290,7 +280,7 @@ export const decodeSkippedEntries = (
 export interface OrgClickHouseSettingsServiceApi {
 	readonly get: (
 		orgId: OrgId,
-		roles: ReadonlyArray<RoleName>,
+		permissions: Policy.Grants,
 	) => Effect.Effect<
 		OrgClickHouseSettingsResponse,
 		OrgClickHouseSettingsForbiddenError | OrgClickHouseSettingsPersistenceError
@@ -298,7 +288,7 @@ export interface OrgClickHouseSettingsServiceApi {
 	readonly upsert: (
 		orgId: OrgId,
 		userId: UserId,
-		roles: ReadonlyArray<RoleName>,
+		permissions: Policy.Grants,
 		payload: OrgClickHouseSettingsUpsertRequest,
 	) => Effect.Effect<
 		OrgClickHouseSettingsResponse,
@@ -311,14 +301,14 @@ export interface OrgClickHouseSettingsServiceApi {
 	>
 	readonly delete: (
 		orgId: OrgId,
-		roles: ReadonlyArray<RoleName>,
+		permissions: Policy.Grants,
 	) => Effect.Effect<
 		OrgClickHouseSettingsDeleteResponse,
 		OrgClickHouseSettingsForbiddenError | OrgClickHouseSettingsPersistenceError
 	>
 	readonly schemaDiff: (
 		orgId: OrgId,
-		roles: ReadonlyArray<RoleName>,
+		permissions: Policy.Grants,
 	) => Effect.Effect<
 		OrgClickHouseSchemaDiffResponse,
 		| OrgClickHouseSettingsForbiddenError
@@ -331,7 +321,7 @@ export interface OrgClickHouseSettingsServiceApi {
 	readonly applySchema: (
 		orgId: OrgId,
 		userId: UserId,
-		roles: ReadonlyArray<RoleName>,
+		permissions: Policy.Grants,
 	) => Effect.Effect<
 		OrgClickHouseApplySchemaStarted,
 		| OrgClickHouseSettingsForbiddenError
@@ -340,7 +330,7 @@ export interface OrgClickHouseSettingsServiceApi {
 	>
 	readonly applySchemaStatus: (
 		orgId: OrgId,
-		roles: ReadonlyArray<RoleName>,
+		permissions: Policy.Grants,
 	) => Effect.Effect<
 		OrgClickHouseApplySchemaStatus,
 		OrgClickHouseSettingsForbiddenError | OrgClickHouseSettingsPersistenceError
@@ -396,7 +386,7 @@ export interface OrgClickHouseSettingsServiceApi {
 	) => Effect.Effect<boolean, OrgClickHouseSettingsPersistenceError>
 	readonly collectorConfig: (
 		orgId: OrgId,
-		roles: ReadonlyArray<RoleName>,
+		permissions: Policy.Grants,
 	) => Effect.Effect<
 		OrgClickHouseCollectorConfigResponse,
 		| OrgClickHouseSettingsForbiddenError
@@ -635,7 +625,20 @@ const decodeStatus = (raw: string | null | undefined): "connected" | "error" | n
 	return null
 }
 
-const parseDesiredTables = (): ReadonlyArray<DesiredTable> => {
+/**
+ * The bundled ClickHouse migrations, DDL parser and schema version: about 1 MB of source that only
+ * an org with its own ClickHouse, or the schema admin endpoints, ever reads. Imported on first use
+ * so a managed org's cold request never compiles it.
+ */
+export const loadClickHouseSchema = Effect.promise(() => import("@maple/domain/clickhouse"))
+
+type ClickHouseSchemaModule = Effect.Success<typeof loadClickHouseSchema>
+
+const parseDesiredTables = ({
+	migrations: clickHouseMigrations,
+	parseEmittedStatement,
+	performanceOnlySearchColumns,
+}: ClickHouseSchemaModule): ReadonlyArray<DesiredTable> => {
 	const out: DesiredTable[] = []
 	for (const stmt of clickHouseMigrations[0]?.statements ?? []) {
 		// The snapshot (migration 0001) is pure DDL strings; backfill specs (only
@@ -922,7 +925,8 @@ export class OrgClickHouseSettingsService extends Context.Service<
 		// The background schema-apply Workflow, bound only by the api Worker that hosts it.
 		// Read optionally so other hosts and tests still construct the service.
 		const schemaApplyWorkflow = yield* Effect.serviceOption(SchemaApplyWorkflow)
-		const edgeCache = yield* EdgeCacheService
+		// Shared by every caller of the org, so never filed under a caller's cache partition.
+		const edgeCache = yield* Effect.map(EdgeCacheService, sharedAcrossPartitions)
 
 		// Memoize the parsed desired-schema snapshot per service instance. The
 		// snapshot is static, so we parse it at most once and reuse it.
@@ -930,16 +934,17 @@ export class OrgClickHouseSettingsService extends Context.Service<
 		const getDesiredTables = Effect.gen(function* () {
 			const cached = yield* Ref.get(desiredTablesCache)
 			if (cached) return cached
-			const parsed = parseDesiredTables()
+			const schema = yield* loadClickHouseSchema
+			const parsed = parseDesiredTables(schema)
 			yield* Ref.set(desiredTablesCache, parsed)
 			return parsed
 		})
 
 		const requireAdmin = Effect.fn("OrgClickHouseSettingsService.requireAdmin")(function* (
-			roles: ReadonlyArray<RoleName>,
+			permissions: Policy.Grants,
 		) {
 			return yield* Policy.check(
-				roles,
+				permissions,
 				"warehouse:manage",
 				(denial) => new OrgClickHouseSettingsForbiddenError({ message: denial.message }),
 			)
@@ -1059,10 +1064,10 @@ export class OrgClickHouseSettingsService extends Context.Service<
 
 		const get = Effect.fn("OrgClickHouseSettingsService.get")(function* (
 			orgId: OrgId,
-			roles: ReadonlyArray<RoleName>,
+			permissions: Policy.Grants,
 		) {
 			yield* Effect.annotateCurrentSpan("orgId", orgId)
-			yield* requireAdmin(roles)
+			yield* requireAdmin(permissions)
 			const row = yield* selectActiveRow(orgId)
 			return toResponse(Option.getOrUndefined(row))
 		})
@@ -1070,12 +1075,12 @@ export class OrgClickHouseSettingsService extends Context.Service<
 		const upsert = Effect.fn("OrgClickHouseSettingsService.upsert")(function* (
 			orgId: OrgId,
 			userId: UserId,
-			roles: ReadonlyArray<RoleName>,
+			permissions: Policy.Grants,
 			payload: OrgClickHouseSettingsUpsertRequest,
 		) {
 			yield* Effect.annotateCurrentSpan("orgId", orgId)
 			yield* Effect.annotateCurrentSpan("tenant.userId", userId)
-			yield* requireAdmin(roles)
+			yield* requireAdmin(permissions)
 
 			const url = yield* normalizeHttpUrl(payload.url)
 			const user = Str.trim(payload.user)
@@ -1178,10 +1183,10 @@ export class OrgClickHouseSettingsService extends Context.Service<
 
 		const deleteSettings = Effect.fn("OrgClickHouseSettingsService.delete")(function* (
 			orgId: OrgId,
-			roles: ReadonlyArray<RoleName>,
+			permissions: Policy.Grants,
 		) {
 			yield* Effect.annotateCurrentSpan("orgId", orgId)
-			yield* requireAdmin(roles)
+			yield* requireAdmin(permissions)
 			yield* dbExecute((db) =>
 				db.run(PG.deleteFrom(OrgClickHouseSettings).where(($) => [$.orgId.eq(orgId)])),
 			)
@@ -1203,13 +1208,14 @@ export class OrgClickHouseSettingsService extends Context.Service<
 
 		const schemaDiff = Effect.fn("OrgClickHouseSettingsService.schemaDiff")(function* (
 			orgId: OrgId,
-			roles: ReadonlyArray<RoleName>,
+			permissions: Policy.Grants,
 		) {
 			yield* Effect.annotateCurrentSpan("orgId", orgId)
-			yield* requireAdmin(roles)
+			yield* requireAdmin(permissions)
 			const row = yield* requireActiveRow(orgId)
 			const config = yield* loadConfigForRow(row)
 			const actual = yield* fetchActualSchema(httpClient, config)
+			const { computeSchemaDiff, clickHouseSchemaVersion } = yield* loadClickHouseSchema
 			const entries = computeSchemaDiff({ tables: yield* getDesiredTables }, actual)
 
 			// Self-heal the recorded schema version. The ingest gateway only routes an
@@ -1262,11 +1268,11 @@ export class OrgClickHouseSettingsService extends Context.Service<
 		const applySchema = Effect.fn("OrgClickHouseSettingsService.applySchema")(function* (
 			orgId: OrgId,
 			userId: UserId,
-			roles: ReadonlyArray<RoleName>,
+			permissions: Policy.Grants,
 		) {
 			yield* Effect.annotateCurrentSpan("orgId", orgId)
 			yield* Effect.annotateCurrentSpan("tenant.userId", userId)
-			yield* requireAdmin(roles)
+			yield* requireAdmin(permissions)
 			yield* requireActiveRow(orgId)
 
 			// Resolve the binding BEFORE claiming: a missing binding must not leave
@@ -1373,10 +1379,10 @@ export class OrgClickHouseSettingsService extends Context.Service<
 
 		const applySchemaStatus = Effect.fn("OrgClickHouseSettingsService.applySchemaStatus")(function* (
 			orgId: OrgId,
-			roles: ReadonlyArray<RoleName>,
+			permissions: Policy.Grants,
 		) {
 			yield* Effect.annotateCurrentSpan("orgId", orgId)
-			yield* requireAdmin(roles)
+			yield* requireAdmin(permissions)
 			const rows = yield* dbExecute((db) =>
 				db.run(
 					PG.from(OrgClickHouseSchemaApplyRuns)
@@ -1532,10 +1538,8 @@ export class OrgClickHouseSettingsService extends Context.Service<
 			// remove. Refreshing the memo from a shared entry that writes evict is
 			// the intended convergence path, not a staleness leak.
 			const work = readSharedOrPostgres(orgId).pipe(
-				Effect.flatMap((value) =>
-					Clock.currentTimeMillis.pipe(
-						Effect.map((writeNowMs) => storeCachedSettings(orgId, value, writeNowMs)),
-					),
+				Effect.zipWith(Clock.currentTimeMillis, (value, writeNowMs) =>
+					storeCachedSettings(orgId, value, writeNowMs),
 				),
 				Effect.tapError((error) =>
 					Effect.logWarning("Org ClickHouse config refresh failed; serving stale").pipe(
@@ -1753,6 +1757,7 @@ export class OrgClickHouseSettingsService extends Context.Service<
 				// in Tinybird while we read CH. Surface that split as a span attribute for
 				// alerting; the schemaDiff path self-heals the value when the live schema is
 				// in sync.
+				const { clickHouseSchemaVersion } = yield* loadClickHouseSchema
 				yield* Effect.annotateCurrentSpan(
 					"maple.clickhouse.schema_drift",
 					cached.schemaVersion !== clickHouseSchemaVersion,
@@ -1804,20 +1809,18 @@ export class OrgClickHouseSettingsService extends Context.Service<
 			function* (orgId: OrgId) {
 				if (ignoreOrgClickHouse) return false
 				const row = yield* selectCachedRow(orgId)
-				return (
-					Option.isSome(row) &&
-					row.value.syncStatus === "connected" &&
-					row.value.schemaVersion === clickHouseSchemaVersion
-				)
+				if (Option.isNone(row) || row.value.syncStatus !== "connected") return false
+				const { clickHouseSchemaVersion } = yield* loadClickHouseSchema
+				return row.value.schemaVersion === clickHouseSchemaVersion
 			},
 		)
 
 		const collectorConfig = Effect.fn("OrgClickHouseSettingsService.collectorConfig")(function* (
 			orgId: OrgId,
-			roles: ReadonlyArray<RoleName>,
+			permissions: Policy.Grants,
 		) {
 			yield* Effect.annotateCurrentSpan("orgId", orgId)
-			yield* requireAdmin(roles)
+			yield* requireAdmin(permissions)
 			const row = yield* requireActiveRow(orgId)
 			const password = yield* decryptStoredPassword(row.orgId, row)
 			yield* validateClickHouseCredentialTransport(row.chUrl, password)

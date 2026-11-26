@@ -10,6 +10,7 @@ import { AuthorizationV2 } from "./auth"
 import { wireExample, Timestamp } from "./envelopes"
 import { V2InsufficientPermissions } from "./errors"
 import { publicError, publicErrors } from "./public-error"
+import { EndpointAccess } from "../endpoint-access"
 
 export const V2OnboardingChecklistStepId = Schema.Literals(ONBOARDING_CHECKLIST_STEP_IDS)
 export type V2OnboardingChecklistStepId = Schema.Schema.Type<typeof V2OnboardingChecklistStepId>
@@ -93,9 +94,17 @@ export const V2OnboardingChecklist = Schema.Struct({
 			reward_amount_usd: 30,
 			deadline_at: "2026-07-28T12:00:00.000Z",
 			claimed_at: null,
-			completed_count: 2,
-			total_count: 4,
+			completed_count: 3,
+			total_count: 5,
 			steps: [
+				{
+					object: "onboarding_checklist_step",
+					id: "add_card",
+					title: "Add a card",
+					completed: true,
+					href: "/settings/billing",
+					optional: false,
+				},
 				{
 					object: "onboarding_checklist_step",
 					id: "send_telemetry",
@@ -149,15 +158,17 @@ export class V2OnboardingChecklistApiGroup extends HttpApiGroup.make("onboarding
 		HttpApiEndpoint.get("retrieve", "/", {
 			success: V2OnboardingChecklist,
 			error: checklistUnavailable,
-		}).annotateMerge(
-			OpenApi.annotations({
-				identifier: "getOnboardingChecklist",
-				summary: "Retrieve the onboarding checklist",
-				description:
-					"Reports the org's progress through the onboarding reward checklist. Each step is verified from the org's state on every call; nothing here is self-reported. " +
-					"An org past its reward window answers `expired` without evaluating the steps. Requires the `onboarding:read` scope.",
-			}),
-		),
+		})
+			.annotate(EndpointAccess, "personal")
+			.annotateMerge(
+				OpenApi.annotations({
+					identifier: "getOnboardingChecklist",
+					summary: "Retrieve the onboarding checklist",
+					description:
+						"Reports the org's progress through the onboarding reward checklist. Each step is verified from the org's state on every call; nothing here is self-reported. " +
+						"An org past its reward window answers `expired` without evaluating the steps. Requires the `onboarding:read` scope.",
+				}),
+			),
 	)
 	.add(
 		HttpApiEndpoint.post("claim", "/claim", {
@@ -189,4 +200,5 @@ export class V2OnboardingChecklistApiGroup extends HttpApiGroup.make("onboarding
 			description:
 				"Activation steps a new org completes to earn a credit, and the claim that applies it.",
 		}),
-	) {}
+	)
+	.annotate(EndpointAccess, "handler") {}

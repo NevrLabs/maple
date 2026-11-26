@@ -24,9 +24,13 @@ import {
 	UnauthorizedError,
 	UserId,
 } from "@maple/domain/http"
+import * as Policy from "@maple/domain/policy"
 import {
+	Cache,
 	Clock,
+	Duration,
 	Effect,
+	Exit,
 	Option,
 	Redacted,
 	Schema,
@@ -139,6 +143,7 @@ type SelfHostedSessionClaims = Schema.Schema.Type<typeof SelfHostedSessionClaims
 const decodeOrgIdSync = Schema.decodeUnknownSync(OrgId)
 const decodeUserIdSync = Schema.decodeUnknownSync(UserId)
 const decodeRoleNameSync = Schema.decodeUnknownSync(RoleName)
+const decodeRoleNameOption = Schema.decodeUnknownOption(RoleName)
 
 const unauthorized = (message: string) =>
 	new UnauthorizedError({
@@ -334,7 +339,7 @@ const signHs256Jwt = (payload: SelfHostedTokenClaims, key: Buffer): string => {
  * last renewal before the deadline from handing out a token that outlives it.
  */
 const mintSelfHostedSessionToken = (
-	tenant: TenantContext,
+	tenant: Pick<TenantContext, "orgId" | "userId" | "roles">,
 	nowSeconds: number,
 	sessionExpiresAt: number,
 	key: Buffer,
@@ -374,6 +379,7 @@ const makeSelfHostedTenant = (defaultOrgId: string): TenantContext => ({
 	orgId: decodeOrgIdSync(defaultOrgId),
 	userId: decodeUserIdSync("root"),
 	roles: [decodeRoleNameSync("root")],
+	permissions: Policy.allPermissions,
 	authMode: "self_hosted",
 })
 
@@ -437,31 +443,7 @@ export interface AuthEnv {
 	readonly CLERK_JWT_KEY: Option.Option<Redacted.Redacted>
 }
 
-/** Shortest root password a self-hosted deployment accepts. */
-export const MIN_ROOT_PASSWORD_LENGTH = 16
-const PLACEHOLDER_ROOT_PASSWORDS: ReadonlySet<string> = new Set([
-	"change-me",
-	"changeme",
-	"change-me-please",
-	"password",
-	"placeholder",
-	"maple",
-	"admin",
-	"root",
-])
-
-/** Why a root password is too weak to start with, or undefined when it is acceptable. */
-export const rootPasswordProblem = (password: string): string | undefined => {
-	const trimmed = Str.trim(password)
-	if (trimmed.length === 0) return "MAPLE_ROOT_PASSWORD cannot be empty"
-	if (PLACEHOLDER_ROOT_PASSWORDS.has(Str.toLowerCase(trimmed))) {
-		return "MAPLE_ROOT_PASSWORD is a placeholder value; generate one with `openssl rand -base64 24`"
-	}
-	if (password.length < MIN_ROOT_PASSWORD_LENGTH) {
-		return `MAPLE_ROOT_PASSWORD must be at least ${MIN_ROOT_PASSWORD_LENGTH} characters; generate one with \`openssl rand -base64 24\``
-	}
-	return undefined
-}
+export { MIN_ROOT_PASSWORD_LENGTH, rootPasswordProblem } from "./root-password"
 
 const getOptionalString = <A>(option: Option.Option<A>): A | undefined => Option.getOrUndefined(option)
 
@@ -602,7 +584,6 @@ export const makeRefreshSelfHostedSession = (
 				orgId: claims.org_id,
 				userId: claims.sub,
 				roles: claims.roles,
-				authMode: claims.authMode,
 			},
 			now,
 			sessionExpiresAt,
@@ -636,7 +617,52 @@ export const ORG_SELECTION_HEADER = "x-maple-org-id"
 export interface VerifiedOrgMembership {
 	readonly orgId: OrgId
 	readonly role: RoleName
+	/** What an `org:custom` membership grants (from its public metadata); empty for a built-in role. */
+	readonly customPermissions: ReadonlyArray<Policy.Permission>
+	/** The namespaces an `org:custom` membership is limited to; absent or empty when its role names none. */
+	readonly customNamespaces?: ReadonlyArray<string> | undefined
 }
+
+/** The permissions a verified membership grants. */
+export const membershipGrants = (membership: VerifiedOrgMembership): Policy.Grants =>
+	Policy.grantsOf([membership.role], membership.customPermissions)
+
+/** What a tenant acts with: its permissions, and its namespaces when they limit what it reads. */
+type TenantAuthority = Pick<TenantContext, "permissions" | "namespaces">
+
+/** Namespaces ride along only with a namespace-limited role's grants; any other tenant carries none. */
+const authorityOf = (
+	permissions: Policy.Grants,
+	namespaces: ReadonlyArray<string> | undefined,
+): TenantAuthority =>
+	Policy.isScoped(permissions) ? { permissions, namespaces: namespaces ?? [] } : { permissions }
+
+/** The permissions a verified membership grants, with the namespaces that limit them. */
+const membershipAuthority = (membership: VerifiedOrgMembership): TenantAuthority =>
+	authorityOf(membershipGrants(membership), membership.customNamespaces)
+
+/**
+ * What a session's own roles grant in `orgId`. An `org:custom` role's permissions and namespaces
+ * live on the membership, so they come from the verifier (cached, evicted by the Clerk webhook);
+ * with no verifier, or no membership found, it holds nothing.
+ */
+const sessionAuthority = Effect.fnUntraced(function* (
+	roles: ReadonlyArray<RoleName>,
+	userId: UserId,
+	orgId: OrgId,
+	verify: VerifyOrgMembership | undefined,
+): Effect.fn.Return<TenantAuthority, AuthorizationUnavailableError> {
+	if (!Arr.some(roles, (role) => role === Policy.CUSTOM_ROLE_CLERK_KEY)) {
+		return { permissions: Policy.grantsOf(roles) }
+	}
+	if (!verify) return { permissions: Policy.grantsOf(roles, []) }
+	const membership = yield* verify(userId, orgId)
+	return Option.match(membership, {
+		onNone: (): TenantAuthority => ({ permissions: Policy.grantsOf(roles, []) }),
+		onSome: (found) =>
+			authorityOf(Policy.grantsOf(roles, found.customPermissions), found.customNamespaces),
+	})
+})
 
 /**
  * Answers "is this user a member of this organization, and with what role".
@@ -650,6 +676,60 @@ export type VerifyOrgMembership = (
 	userId: UserId,
 	orgId: OrgId,
 ) => Effect.Effect<Option.Option<VerifiedOrgMembership>, AuthorizationUnavailableError>
+
+/**
+ * A {@link VerifyOrgMembership} that asks Clerk directly, for workers with no membership cache of
+ * their own (electric-sync). Each lookup reads the one (user, organization) membership, so a user in
+ * many organizations is found in any of them. Answers are kept per pair for a minute in this isolate:
+ * that minute is how long a role change takes to reach them, the same as a session token's lifetime.
+ * A failed lookup is not kept, and concurrent misses for one pair share one lookup.
+ */
+export const makeClerkMembershipDirectory = Effect.fnUntraced(function* (
+	env: Pick<AuthEnv, "CLERK_SECRET_KEY" | "MAPLE_AUTH_MODE">,
+) {
+	const clerk = clerkModeApi(env)
+	if (clerk === undefined) return undefined
+	const memberships = yield* Cache.makeWith(
+		Effect.fn("AuthService.clerkMembershipDirectory.load")(function* (key: {
+			readonly userId: UserId
+			readonly orgId: OrgId
+		}) {
+			const page = yield* clerk
+				.run(
+					Clerk.listOrganizationMemberships({
+						organization_id: key.orgId,
+						user_id: [key.userId],
+						limit: 1,
+					}),
+				)
+				.pipe(
+					Effect.mapError(
+						(error) =>
+							new AuthorizationUnavailableError({
+								message: `Could not verify organization membership: ${error.message}`,
+							}),
+					),
+				)
+			return Option.flatMap(Arr.head(page.data), (row) =>
+				Option.map(decodeRoleNameOption(row.role), (role): VerifiedOrgMembership => ({
+					orgId: key.orgId,
+					role,
+					customPermissions:
+						role === Policy.CUSTOM_ROLE_CLERK_KEY
+							? Policy.customPermissionsFromMembershipMetadata(row.public_metadata)
+							: [],
+					customNamespaces:
+						role === Policy.CUSTOM_ROLE_CLERK_KEY
+							? Policy.namespacesFromMembershipMetadata(row.public_metadata)
+							: [],
+				})),
+			)
+		}),
+		{ capacity: 1000, timeToLive: (exit) => (Exit.isSuccess(exit) ? "1 minute" : Duration.zero) },
+	)
+	const verify: VerifyOrgMembership = (userId, orgId) => Cache.get(memberships, { userId, orgId })
+	return verify
+})
 
 const ORGANIZATION_ACCESS_DENIED_MESSAGE = "You are not a member of the requested organization."
 
@@ -734,7 +814,14 @@ const applyRequestedOrg = Effect.fnUntraced(function* (
 
 	// The role travels with the organization. Carrying the token's `orgRole`
 	// across would grant an admin of org A admin of org B.
-	return { ...tenant, orgId: membership.value.orgId, roles: [membership.value.role] }
+	// So do the namespaces: the ones the session held in its own organization must not follow it.
+	const { namespaces: _sessionNamespaces, ...rest } = tenant
+	return {
+		...rest,
+		orgId: membership.value.orgId,
+		roles: [membership.value.role],
+		...membershipAuthority(membership.value),
+	}
 })
 
 /** The verified Clerk token behind a request, with its user present. */
@@ -808,10 +895,11 @@ export const makeResolveClerkUser = (
 		return yield* decodeUserId(auth.userId, "Invalid user in Clerk session token")
 	})
 
-export const makeResolveTenant = (
-	env: AuthEnv,
-	authenticateClerkRequest = makeClerkAuthenticateRequest(env),
-	acceptsToken: ClerkAcceptsToken = "session_token",
+export interface ResolveTenantOptions {
+	/** Defaults to a Clerk client built from `env`. */
+	readonly authenticateClerkRequest?: ClerkAuthenticateRequest | undefined
+	/** Defaults to `"session_token"`. */
+	readonly acceptsToken?: ClerkAcceptsToken | undefined
 	/**
 	 * Omit to disable {@link ORG_SELECTION_HEADER} entirely: the header is then
 	 * rejected rather than ignored. Callers that have no membership directory to
@@ -819,7 +907,22 @@ export const makeResolveTenant = (
 	 * (`makeResolveMcpTenant`, whose credentials include org-bound API keys)
 	 * deliberately pass nothing.
 	 */
-	verifyOrgMembership?: VerifyOrgMembership,
+	readonly verifyOrgMembership?: VerifyOrgMembership | undefined
+	/**
+	 * Where an `org:custom` session's permissions are looked up, without enabling the header.
+	 * Defaults to `verifyOrgMembership`; with neither, `org:custom` holds nothing.
+	 */
+	readonly customRoleDirectory?: VerifyOrgMembership | undefined
+}
+
+export const makeResolveTenant = (
+	env: AuthEnv,
+	{
+		authenticateClerkRequest = makeClerkAuthenticateRequest(env),
+		acceptsToken = "session_token",
+		verifyOrgMembership,
+		customRoleDirectory = verifyOrgMembership,
+	}: ResolveTenantOptions = {},
 ) =>
 	Effect.fn("AuthService.resolveTenant")(function* (
 		headers: HeaderRecord,
@@ -870,9 +973,18 @@ export const makeResolveTenant = (
 				// The pin wins over a selection header (every web session names its own
 				// org). The role is the verified membership's; a non-member is only let
 				// in with their session's role on an explicitly opted-in development pin.
-				if (auth.orgId === pinnedOrgId) {
-					return stamp({ orgId: pinnedOrgId, userId, roles: sessionRoles, authMode: "clerk" })
-				}
+				const pinnedSessionTenant = Effect.map(
+					sessionAuthority(sessionRoles, userId, pinnedOrgId, customRoleDirectory),
+					(authority): TenantContext =>
+						stamp({
+							orgId: pinnedOrgId,
+							userId,
+							roles: sessionRoles,
+							...authority,
+							authMode: "clerk",
+						}),
+				)
+				if (auth.orgId === pinnedOrgId) return yield* pinnedSessionTenant
 				const membership = verifyOrgMembership
 					? yield* verifyOrgMembership(userId, pinnedOrgId)
 					: Option.none<VerifiedOrgMembership>()
@@ -881,6 +993,7 @@ export const makeResolveTenant = (
 						orgId: pinnedOrgId,
 						userId,
 						roles: [membership.value.role],
+						...membershipAuthority(membership.value),
 						authMode: "clerk",
 					})
 				}
@@ -888,7 +1001,7 @@ export const makeResolveTenant = (
 					env.MAPLE_ENVIRONMENT === "development" &&
 					env.MAPLE_ORG_ID_OVERRIDE_ADMITS_NONMEMBERS === true
 				) {
-					return stamp({ orgId: pinnedOrgId, userId, roles: sessionRoles, authMode: "clerk" })
+					return yield* pinnedSessionTenant
 				}
 				// Otherwise membership the resolver cannot prove (no verifier) is a refusal.
 				return yield* organizationAccessDenied(pinnedOrgId)
@@ -907,14 +1020,17 @@ export const makeResolveTenant = (
 					orgId: selected.value.orgId,
 					userId,
 					roles: [selected.value.role],
+					...membershipAuthority(selected.value),
 					authMode: "clerk",
 				})
 			}
 
+			const sessionOrgId = yield* decodeOrgId(auth.orgId, "Invalid organization in Clerk session token")
 			const clerkTenant: TenantContext = {
-				orgId: yield* decodeOrgId(auth.orgId, "Invalid organization in Clerk session token"),
+				orgId: sessionOrgId,
 				userId,
 				roles: sessionRoles,
+				...(yield* sessionAuthority(sessionRoles, userId, sessionOrgId, customRoleDirectory)),
 				authMode: "clerk",
 			}
 
@@ -932,10 +1048,12 @@ export const makeResolveTenant = (
 		// list and a literal `authMode`. Nothing below re-checks it.
 		const claims = yield* verifySelfHostedSessionToken(token, sessionKey)
 
+		// The signing key is the root password, so a self-hosted session holds everything.
 		const tenant: TenantContext = {
 			orgId: claims.org_id,
 			userId: claims.sub,
 			roles: claims.roles,
+			permissions: Policy.allPermissions,
 			authMode: claims.authMode,
 		}
 
@@ -955,7 +1073,9 @@ export const makeResolveTenant = (
 
 export const makeResolveMcpTenant = (
 	env: AuthEnv,
-	authenticateClerkRequest = makeClerkAuthenticateRequest(env),
+	/** `customRoleDirectory` is where an `org:custom` session's permissions are looked up; the header stays refused. */
+	options: Pick<ResolveTenantOptions, "authenticateClerkRequest" | "customRoleDirectory"> = {},
+) =>
 	// Accept both api_key (programmatic agents) and session_token: this is the
 	// "Clerk / self-hosted session auth" fallback in resolveMcpTenantContext, used
 	// by a logged-in browser applying an approved chat proposal via
@@ -964,7 +1084,7 @@ export const makeResolveMcpTenant = (
 	// before this fallback, so this only widens the
 	// already-last-resort branch; self-hosted HS256 mode already ignored
 	// acceptsToken, so this just brings Clerk mode to parity.
-) => makeResolveTenant(env, authenticateClerkRequest, ["api_key", "session_token"])
+	makeResolveTenant(env, { ...options, acceptsToken: ["api_key", "session_token"] })
 
 type ClerkUser = Clerk.User
 

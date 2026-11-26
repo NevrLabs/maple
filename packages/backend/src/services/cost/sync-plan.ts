@@ -109,6 +109,7 @@ const COST_SYNC_PROFILES = {
 	openai: { floor: (today) => monthStart(today, -MODEL_API_HISTORY_MONTHS), lagDays: 0, head: "days" },
 	// The export holds every day since it was enabled, today's so far included.
 	gcp: { floor: (today) => monthStart(today, -HISTORY_MONTHS), lagDays: 0, head: "days" },
+	morph: { floor: (today) => monthStart(today, -MODEL_API_HISTORY_MONTHS), lagDays: 0, head: "days" },
 } as const satisfies Record<CostProvider, CostSyncProfile>
 
 /** The oldest day the sync pulls from `provider`. */

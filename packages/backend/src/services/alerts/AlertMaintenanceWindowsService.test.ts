@@ -18,13 +18,13 @@ import { AlertMaintenanceWindowsService } from "./AlertMaintenanceWindowsService
 import { AlertSilencesService } from "./AlertSilencesService"
 import {
 	DEFAULT_CLOCK_EPOCH_MS,
-	adminRoles,
+	adminGrants,
 	asOrgId,
 	asUserId,
 	getError,
 	makeLayer,
 	makeWarehouseStub,
-	memberRoles,
+	memberGrants,
 } from "./alerts-service-test-support"
 
 const trackedDbs: TestDb[] = []
@@ -63,7 +63,7 @@ const createWindow = (
 		windows.create(
 			options.org ?? orgId,
 			userId,
-			adminRoles,
+			adminGrants,
 			new AlertMaintenanceWindowCreateRequest({
 				name: "Nightly DB",
 				reason: "vacuum",
@@ -171,7 +171,7 @@ describe("AlertMaintenanceWindowsService", () => {
 			yield* service.update(
 				orgId,
 				userId,
-				adminRoles,
+				adminGrants,
 				window.id,
 				new AlertMaintenanceWindowUpdateRequest({ schedule: { ...nightly, startTime: "23:45" } }),
 			)
@@ -179,6 +179,66 @@ describe("AlertMaintenanceWindowsService", () => {
 				[at(TUE_2330 + 15 * MINUTE), at(TUE_2330 + 75 * MINUTE)],
 				[at(WED_2330 + 15 * MINUTE), at(WED_2330 + 75 * MINUTE)],
 			])
+		}).pipe(Effect.provide(layer())),
+	)
+
+	it.effect("builds a revision again on the window another edit saved first", () =>
+		Effect.gen(function* () {
+			yield* TestClock.setTime(DEFAULT_CLOCK_EPOCH_MS)
+			const service = yield* AlertMaintenanceWindowsService
+			const window = yield* createWindow()
+			const seen: Array<ReadonlyArray<string>> = []
+
+			// A duration change, merged into the schedule it was shown; the day moves under its first read.
+			const revised = yield* service.revise(orgId, userId, adminGrants, window.id, (current) =>
+				Effect.gen(function* () {
+					if (current.schedule._tag !== "weekly") return new AlertMaintenanceWindowUpdateRequest({})
+					seen.push(current.schedule.days)
+					if (seen.length === 1) {
+						yield* service.update(
+							orgId,
+							userId,
+							adminGrants,
+							window.id,
+							new AlertMaintenanceWindowUpdateRequest({
+								schedule: { ...nightly, days: ["fri"] },
+							}),
+						)
+					}
+					return new AlertMaintenanceWindowUpdateRequest({
+						schedule: { ...current.schedule, durationMinutes: 120 },
+					})
+				}),
+			)
+
+			assert.deepStrictEqual(seen, [["tue", "wed", "thu"], ["fri"]])
+			assert.deepStrictEqual(revised.schedule, { ...nightly, days: ["fri"], durationMinutes: 120 })
+			assert.deepStrictEqual((yield* service.get(orgId, window.id)).schedule, revised.schedule)
+		}).pipe(Effect.provide(layer())),
+	)
+
+	it.effect("gives up a revision that every attempt loses to another edit", () =>
+		Effect.gen(function* () {
+			yield* TestClock.setTime(DEFAULT_CLOCK_EPOCH_MS)
+			const service = yield* AlertMaintenanceWindowsService
+			const window = yield* createWindow()
+
+			const exit = yield* Effect.exit(
+				service.revise(orgId, userId, adminGrants, window.id, () =>
+					service
+						.update(
+							orgId,
+							userId,
+							adminGrants,
+							window.id,
+							new AlertMaintenanceWindowUpdateRequest({ reason: "moved again" }),
+						)
+						.pipe(Effect.as(new AlertMaintenanceWindowUpdateRequest({ name: "Renamed" }))),
+				),
+			)
+
+			assert.isTrue(Exit.isFailure(exit))
+			assert.strictEqual((yield* service.get(orgId, window.id)).name, "Nightly DB")
 		}).pipe(Effect.provide(layer())),
 	)
 
@@ -192,7 +252,7 @@ describe("AlertMaintenanceWindowsService", () => {
 			yield* service.update(
 				orgId,
 				userId,
-				adminRoles,
+				adminGrants,
 				window.id,
 				new AlertMaintenanceWindowUpdateRequest({
 					matchers: { services: ["checkout", "cart"] },
@@ -216,7 +276,7 @@ describe("AlertMaintenanceWindowsService", () => {
 			const deletedAt = TUE_2330 + 10 * MINUTE
 			yield* TestClock.setTime(deletedAt)
 
-			yield* service.delete(orgId, userId, adminRoles, window.id)
+			yield* service.delete(orgId, userId, adminGrants, window.id)
 
 			assert.deepStrictEqual(yield* windows(window.id), [[at(TUE_2330), at(deletedAt)]])
 			const missing = yield* Effect.exit(service.get(orgId, window.id))
@@ -238,7 +298,7 @@ describe("AlertMaintenanceWindowsService", () => {
 			const updated = yield* service.update(
 				orgId,
 				userId,
-				adminRoles,
+				adminGrants,
 				window.id,
 				new AlertMaintenanceWindowUpdateRequest({ enabled: false }),
 			)
@@ -255,13 +315,13 @@ describe("AlertMaintenanceWindowsService", () => {
 				new AlertMaintenanceWindowCreateRequest({ name: "x", matchers, schedule })
 
 			const denied = yield* Effect.exit(
-				service.create(orgId, userId, memberRoles, request(nightly, { services: ["checkout"] })),
+				service.create(orgId, userId, memberGrants, request(nightly, { services: ["checkout"] })),
 			)
 			const ended = yield* Effect.exit(
 				service.create(
 					orgId,
 					userId,
-					adminRoles,
+					adminGrants,
 					request(
 						{
 							_tag: "once",
@@ -276,7 +336,7 @@ describe("AlertMaintenanceWindowsService", () => {
 				service.create(
 					orgId,
 					userId,
-					adminRoles,
+					adminGrants,
 					request(nightly, {
 						ruleIds: [Schema.decodeSync(AlertRuleId)("0b8f7c1e-2f61-4f1e-9d2a-3c4b5d6e7f80")],
 					}),

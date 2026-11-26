@@ -187,8 +187,8 @@ export const Model = Schema.Struct({
 	// Live
 	/** The status Worker's origin; empty hides the public links (no status domain yet). */
 	publicBaseUrl: Schema.String,
-	/** `statusPageOrgKey` of the org: the address is `/s/<org key>/<slug>`. */
-	orgKey: Schema.String,
+	/** `statusPageOrgKey` of the org, none until computed: the address is `/s/<org key>/<slug>`. */
+	orgKey: Schema.Option(Schema.String),
 	urlCopy: CopyButton.Model,
 	// Settings
 	/** Edits over the saved page; `null` while the form shows the page as saved. */
@@ -246,16 +246,16 @@ export type Model = typeof Model.Type
 
 /** The viewer may change what this page edits (`status_pages:edit`). */
 export const canManage = (model: Pick<Model, "grants">): boolean =>
-	Policy.has(model.grants, "status_pages:edit")
+	Policy.can(model.grants, "status_pages:edit")
 
 /** The viewer may post, update, edit and delete incidents and maintenance (`status_page_incidents:post`). */
 export const canPostIncidents = (model: Pick<Model, "grants">): boolean =>
-	Policy.has(model.grants, "status_page_incidents:post")
+	Policy.can(model.grants, "status_page_incidents:post")
 
 /** The viewer may change who can read the page, its password included (`status_pages:access`). */
 export const canChangeAccess = (model: Pick<Model, "grants">): boolean =>
-	Policy.has(model.grants, "status_pages:access")
+	Policy.can(model.grants, "status_pages:access")
 
 /** The viewer may rotate or revoke the break-glass token (`status_pages:break_glass`). */
 export const canBreakGlass = (model: Pick<Model, "grants">): boolean =>
-	Policy.has(model.grants, "status_pages:break_glass")
+	Policy.can(model.grants, "status_pages:break_glass")

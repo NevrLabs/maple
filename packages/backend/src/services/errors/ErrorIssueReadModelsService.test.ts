@@ -15,7 +15,12 @@ import {
 import { ErrorActorsService } from "./ErrorActorsService"
 import { ErrorIssueReadModelsService } from "./ErrorIssueReadModelsService"
 import { ErrorIssueWorkflowService } from "./ErrorIssueWorkflowService"
+import {
+	type SymbolicateRequest,
+	StackSymbolicator,
+} from "@maple/backend/services/sourcemaps/StackSymbolicator"
 import { compiledQueryOf } from "@maple/query-engine/execution"
+import { WarehouseSchemaDriftError } from "@maple/domain/http"
 
 // Compile-time guard: cache, Env, notifications, WorkerEnvironment, and the
 // broad ErrorsService cannot enter this layer without making this fail.
@@ -35,6 +40,9 @@ const createdDbs: TestDb[] = []
 
 afterEach(() => cleanupTestDbs(createdDbs))
 
+const BUNDLE_URL = "https://shop.example.com/assets/index-Bx81.js"
+const DEBUG_ID = "6c5e2b1a-1f2e-4d3c-8b7a-0123456789ab"
+
 /** What the warehouse holds for the issue detail reads, by query context. */
 const WAREHOUSE_ROWS = new Map<string, ReadonlyArray<Record<string, unknown>>>([
 	["errorIssueEnvFingerprints", [{ fingerprintHash: "fp-checkout" }]],
@@ -49,26 +57,84 @@ const WAREHOUSE_ROWS = new Map<string, ReadonlyArray<Record<string, unknown>>>([
 				timestamp: "2026-11-05 10:01:02",
 				exceptionMessage: "upstream timed out",
 				durationMicros: 1500,
+				deploymentEnv: "production",
+				serviceVersion: "",
+				userId: "",
 			},
 		],
 	],
 	["errorIssueEnvironments", [{ name: "production", count: 4 }]],
+	[
+		"errorIssueLatestStacktrace",
+		[
+			{
+				timestamp: "2026-11-05 10:01:02",
+				stacktrace: `TypeError: boom\n    at a (${BUNDLE_URL}:1:1)`,
+				serviceName: "checkout-web",
+				serviceVersion: "2.4.0",
+				traceId: "0af7651916cd43dd8448eb211c80319c",
+				spanId: "b7ad6b7169203331",
+			},
+		],
+	],
+	[
+		"errorIssueLatestStackSpan",
+		[
+			{
+				traceId: "0af7651916cd43dd8448eb211c80319c",
+				spanId: "b7ad6b7169203331",
+				spanName: "click",
+				spanKind: "Internal",
+				spanFingerprint: "",
+				eventsName: JSON.stringify(["log", "exception"]),
+				eventsAttributes: JSON.stringify([
+					{ "maple.exception.debug_ids": "{}" },
+					{ "maple.exception.debug_ids": JSON.stringify({ [BUNDLE_URL]: DEBUG_ID }) },
+				]),
+			},
+		],
+	],
 ])
 
-const makeWarehouseStub = (contexts: Array<string>, sqls: Array<string>): WarehouseQueryServiceApi => ({
+/** A cluster that has not applied migration 0057 rejects any read naming `UserId`. */
+const missingUserId = (sql: string) =>
+	new WarehouseSchemaDriftError({
+		message: `Unknown expression identifier \`UserId\` in scope ${sql}`,
+		pipeName: "errorIssueSampleTraces",
+		clickhouseType: "UNKNOWN_IDENTIFIER",
+	})
+
+const makeWarehouseStub = (
+	contexts: Array<string>,
+	sqls: Array<string>,
+	stubOptions: {
+		withoutUserId?: boolean
+		rows?: ReadonlyMap<string, ReadonlyArray<Record<string, unknown>>>
+	} = {},
+): WarehouseQueryServiceApi => ({
 	query: () => Effect.die(new Error("unexpected pipe query")),
 	rawSqlQuery: () => Effect.die(new Error("unexpected raw SQL query")),
 	crossOrgQuery: () => Effect.die(new Error("unexpected cross-org query")),
 	compiledQuery: (_tenant, compile, options) => {
 		const compiled =
 			typeof compile === "function" ? Effect.runSync(compile(baselineWarehouseCapabilities())) : compile
+		const sql = compiledQueryOf(compiled).sql
 		return Effect.sync(() => {
 			contexts.push(options?.context ?? "")
-			sqls.push(compiledQueryOf(compiled).sql)
+			sqls.push(sql)
 		}).pipe(
 			Effect.andThen(
+				stubOptions.withoutUserId === true && /\bUserId\b/.test(sql)
+					? Effect.fail(missingUserId(sql))
+					: Effect.void,
+			),
+			Effect.andThen(
 				compiledQueryOf(compiled)
-					.decodeRows(WAREHOUSE_ROWS.get(options?.context ?? "") ?? [])
+					.decodeRows(
+						stubOptions.rows?.get(options?.context ?? "") ??
+							WAREHOUSE_ROWS.get(options?.context ?? "") ??
+							[],
+					)
 					.pipe(Effect.orDie),
 			),
 		)
@@ -83,7 +149,15 @@ const makeWarehouseStub = (contexts: Array<string>, sqls: Array<string>): Wareho
 	},
 })
 
-const makeLayer = (contexts: Array<string>, sqls: Array<string> = []) => {
+const makeLayer = (
+	contexts: Array<string>,
+	sqls: Array<string> = [],
+	stubOptions: {
+		withoutUserId?: boolean
+		symbolicator?: Layer.Layer<StackSymbolicator>
+		rows?: ReadonlyMap<string, ReadonlyArray<Record<string, unknown>>>
+	} = {},
+) => {
 	const database = createTestDb(createdDbs).layer
 	const actors = ErrorActorsService.layer.pipe(Layer.provide(database))
 	const workflow = Layer.effect(ErrorIssueWorkflowService, ErrorIssueWorkflowService.make).pipe(
@@ -91,8 +165,9 @@ const makeLayer = (contexts: Array<string>, sqls: Array<string> = []) => {
 		Layer.provide(database),
 		Layer.provide(actors),
 	)
-	const warehouse = Layer.succeed(WarehouseQueryService, makeWarehouseStub(contexts, sqls))
+	const warehouse = Layer.succeed(WarehouseQueryService, makeWarehouseStub(contexts, sqls, stubOptions))
 	const readModels = readRequirements.pipe(
+		Layer.provide(stubOptions.symbolicator ?? Layer.empty),
 		Layer.provide(database),
 		Layer.provide(warehouse),
 		Layer.provide(workflow),
@@ -295,6 +370,21 @@ describe("ErrorIssueReadModelsService", () => {
 		}).pipe(Effect.provide(makeLayer(contexts)))
 	})
 
+	it.effect("still serves samples, with no user, on a cluster without UserId", () =>
+		Effect.gen(function* () {
+			const readModels = yield* ErrorIssueReadModelsService
+			const now = yield* Clock.currentTimeMillis
+			const issueId = asIssueId(randomUUID())
+			yield* seedIssue(ORG, issueId, now, { fingerprintHash: "fp-checkout" })
+
+			const detail = yield* readModels.getIssue(ORG, issueId, {})
+			assert.deepStrictEqual(
+				Arr.map(detail.sampleTraces, (trace) => [trace.traceId, trace.deploymentEnv, trace.userId]),
+				[["0af7651916cd43dd8448eb211c80319c", "production", ""]],
+			)
+		}).pipe(Effect.provide(makeLayer([], [], { withoutUserId: true }))),
+	)
+
 	it.effect("searches type, message and service case-insensitively", () => {
 		const contexts: Array<string> = []
 		return Effect.gen(function* () {
@@ -360,9 +450,9 @@ describe("ErrorIssueReadModelsService", () => {
 				"11111111111111111111",
 				"3333333333333333333",
 			])
-			// Timeseries, samples and environments each ask for both hashes.
+			// Timeseries, samples, environments and the latest stack trace each ask for both hashes.
 			const issueReads = Arr.filter(sqls, (sql) => Str.includes("11111111111111111111")(sql))
-			assert.lengthOf(issueReads, 3)
+			assert.lengthOf(issueReads, 4)
 			for (const sql of issueReads) expect(sql).toContain("3333333333333333333")
 
 			// The volume-ranked list asks by hash; a merged-in one finds its owner.
@@ -413,5 +503,122 @@ describe("ErrorIssueReadModelsService", () => {
 			assert.isFalse(none.attributed)
 			assert.lengthOf(contexts, 2)
 		}).pipe(Effect.provide(makeLayer(contexts, sqls)))
+	})
+
+	it.effect("symbolicates the latest stack with the debug ids on its exception event", () => {
+		const contexts: Array<string> = []
+		const requests: Array<SymbolicateRequest> = []
+		const symbolicator = Layer.succeed(StackSymbolicator, {
+			symbolicate: (request) =>
+				Effect.sync(() => {
+					requests.push(request)
+					return { status: "missing_map" as const, frames: [], missing: [BUNDLE_URL] }
+				}),
+			symbolicateWithOutcome: () => Effect.die("symbolicateWithOutcome"),
+			hasSourceMaps: () => Effect.succeed(true),
+			sourceMapsKnown: () => Effect.succeedSome(true),
+		})
+		return Effect.gen(function* () {
+			const readModels = yield* ErrorIssueReadModelsService
+			const now = yield* Clock.currentTimeMillis
+			const issueId = asIssueId(randomUUID())
+			yield* seedIssue(ORG, issueId, now, { fingerprintHash: "fp-checkout" })
+
+			const detail = yield* readModels.getIssue(ORG, issueId, {})
+			assert.deepStrictEqual(detail.latestStack, {
+				status: "missing_map",
+				frames: [],
+				missing: [BUNDLE_URL],
+			})
+			assert.strictEqual(detail.latestStacktrace, `TypeError: boom\n    at a (${BUNDLE_URL}:1:1)`)
+			assert.lengthOf(requests, 1)
+			const request = requests[0]
+			assert.strictEqual(request?.serviceName, "checkout-web")
+			assert.strictEqual(request?.serviceVersion, "2.4.0")
+			assert.deepStrictEqual(Array.from(request?.debugIds ?? []), [[BUNDLE_URL, DEBUG_ID]])
+			assert.include(contexts, "errorIssueLatestStackSpan")
+		}).pipe(Effect.provide(makeLayer(contexts, [], { symbolicator })))
+	})
+
+	it.effect("reads no span for a latest occurrence recorded without a trace or span", () => {
+		const contexts: Array<string> = []
+		const requests: Array<SymbolicateRequest> = []
+		const symbolicator = Layer.succeed(StackSymbolicator, {
+			symbolicate: (request) =>
+				Effect.sync(() => {
+					requests.push(request)
+					return { status: "missing_map" as const, frames: [], missing: [BUNDLE_URL] }
+				}),
+			symbolicateWithOutcome: () => Effect.die("symbolicateWithOutcome"),
+			hasSourceMaps: () => Effect.succeed(true),
+			sourceMapsKnown: () => Effect.succeedSome(true),
+		})
+		const rows = new Map([
+			[
+				"errorIssueLatestStacktrace",
+				[
+					{
+						timestamp: "2026-11-05 10:01:02",
+						stacktrace: `TypeError: boom\n    at a (${BUNDLE_URL}:1:1)`,
+						serviceName: "checkout-web",
+						serviceVersion: "2.4.0",
+						traceId: "",
+						spanId: "",
+					},
+				],
+			],
+		])
+		return Effect.gen(function* () {
+			const readModels = yield* ErrorIssueReadModelsService
+			const now = yield* Clock.currentTimeMillis
+			const issueId = asIssueId(randomUUID())
+			yield* seedIssue(ORG, issueId, now, { fingerprintHash: "fp-checkout" })
+
+			const detail = yield* readModels.getIssue(ORG, issueId, {})
+			assert.strictEqual(detail.latestStack?.status, "missing_map")
+			assert.notInclude(contexts, "errorIssueLatestStackSpan")
+			assert.deepStrictEqual(Array.from(requests[0]?.debugIds ?? []), [])
+		}).pipe(Effect.provide(makeLayer(contexts, [], { symbolicator, rows })))
+	})
+
+	it.effect("skips the span read for an org with no source maps, still returning the stack", () => {
+		const contexts: Array<string> = []
+		const requests: Array<SymbolicateRequest> = []
+		const symbolicator = Layer.succeed(StackSymbolicator, {
+			symbolicate: (request) =>
+				Effect.sync(() => {
+					requests.push(request)
+					return { status: "missing_map" as const, frames: [], missing: [BUNDLE_URL] }
+				}),
+			symbolicateWithOutcome: () => Effect.die("symbolicateWithOutcome"),
+			hasSourceMaps: () => Effect.succeed(false),
+			sourceMapsKnown: () => Effect.succeedSome(false),
+		})
+		return Effect.gen(function* () {
+			const readModels = yield* ErrorIssueReadModelsService
+			const now = yield* Clock.currentTimeMillis
+			const issueId = asIssueId(randomUUID())
+			yield* seedIssue(ORG, issueId, now, { fingerprintHash: "fp-checkout" })
+
+			const detail = yield* readModels.getIssue(ORG, issueId, {})
+			assert.strictEqual(detail.latestStack?.status, "missing_map")
+			assert.notInclude(contexts, "errorIssueLatestStackSpan")
+			assert.deepStrictEqual(Array.from(requests[0]?.debugIds ?? []), [])
+		}).pipe(Effect.provide(makeLayer(contexts, [], { symbolicator })))
+	})
+
+	it.effect("leaves the latest stack null where no symbolicator is bound", () => {
+		const contexts: Array<string> = []
+		return Effect.gen(function* () {
+			const readModels = yield* ErrorIssueReadModelsService
+			const now = yield* Clock.currentTimeMillis
+			const issueId = asIssueId(randomUUID())
+			yield* seedIssue(ORG, issueId, now, { fingerprintHash: "fp-checkout" })
+
+			const detail = yield* readModels.getIssue(ORG, issueId, {})
+			assert.isNotNull(detail.latestStacktrace)
+			assert.isNull(detail.latestStack)
+			assert.notInclude(contexts, "errorIssueLatestStackSpan")
+		}).pipe(Effect.provide(makeLayer(contexts)))
 	})
 })

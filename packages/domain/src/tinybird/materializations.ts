@@ -4,13 +4,18 @@ import {
 	chPattern,
 	chRedactChain,
 	CUSTOM_FINGERPRINT_ATTRIBUTE,
+	CUSTOM_FINGERPRINT_DEFAULT_PATTERN,
+	CUSTOM_FINGERPRINT_EXTENSION_REDACTIONS,
 	CUSTOM_FINGERPRINT_MAX_CHARS,
 	CUSTOM_FINGERPRINT_REDACTIONS,
 	EFFECT_SPAN_FRAME_MARKER,
 	ERROR_MSG_REDACTIONS,
 	FINGERPRINT_HASH_SALT,
 	LIBRARY_FRAME_PATTERN,
+	PREVIOUS_ERROR_MSG_REDACTIONS,
 	PREVIOUS_FINGERPRINT_HASH_SALT,
+	PREVIOUS_FRAME_LINE_PATTERN,
+	PREVIOUS_FRAME_REDACTIONS,
 	FRAME_LINE_PATTERN,
 	FRAME_REDACTIONS,
 	JSON_LABEL_KEYS,
@@ -25,7 +30,12 @@ import {
 	NAMESPACED_TYPE_MAX_FRAMES,
 	PYTHON_FRAME_PATTERN,
 	SCHEMA_PATH_LINE_PATTERN,
+	SPAN_LABEL_CHARS,
+	SPAN_LABEL_NO_TYPE,
 	SPAN_NAME_FRAME_PATTERN,
+	SPAN_SIGNATURE_PREFIX,
+	STATUS_ONLY_TYPE_PATTERN,
+	type Redactions,
 } from "./fingerprint"
 import {
 	serviceUsage,
@@ -47,11 +57,13 @@ import {
 	errorEventsByTime,
 	errorFingerprintsMinutely,
 	errorFingerprintLineage,
+	aiEvaluations,
 	aiTraceIndex,
 	aiCrawlerRequests,
 	scannerRequests,
 	serviceRuntimesHourly,
 	userActivityHourly,
+	userActivityDaily,
 	CI_SERVICE_NAME,
 	ciJobs,
 	ciRuns,
@@ -71,6 +83,7 @@ import {
 	serviceEndpointDetailsHourly,
 	productEvents,
 	identityLinks,
+	personProperties,
 } from "./datasources"
 import {
 	DB_NAMESPACE_ATTR_SQL,
@@ -80,8 +93,19 @@ import {
 	DB_SYSTEM_ATTR_SQL,
 } from "./db-query-shape-sql"
 import { MAPLE_AI_SESSION_ID_ATTR, MAPLE_AI_VENDOR_ID_ATTR, MAPLE_AI_VENDOR_VERSION_ATTR } from "../gen-ai"
-import { PRODUCT_EVENTS_TRACE_FILTER, PRODUCT_EVENTS_TRACE_PROJECTION_SQL } from "./product-event-attributes"
+import {
+	PERSON_PROPERTY_NEVER_SQL,
+	personPropertyAttributeKeySql,
+	personPropertySpanKeySql,
+	PRODUCT_EVENT_ATTRIBUTE_NAMESPACE,
+	PRODUCT_EVENT_GROUP_ID_KEY,
+	PRODUCT_EVENT_USER_ID_KEY,
+	PRODUCT_EVENTS_TRACE_FILTER,
+	PRODUCT_EVENTS_TRACE_PROJECTION_SQL,
+} from "./product-event-attributes"
 import { DEPLOYMENT_ENV_SQL, MESSAGING_DESTINATION_SQL } from "./semconv-renames"
+import { evaluationColumnsSql } from "./gen-ai-evaluation-sql"
+import { GEN_AI_EVALUATION_EVENT } from "../gen-ai-evaluation"
 import {
 	HTTP_SERVER_SPAN_SQL,
 	HTTP_STATUS_CODE_SQL,
@@ -149,7 +173,7 @@ import {
 	SPAN_USER_NAME_STATE_SQL,
 	WEB_REQUEST_SQL,
 } from "./user-activity-sql"
-import { Array as Arr } from "effect"
+import { Array as Arr, String as Str } from "effect"
 import { SLO_LATENCY_THRESHOLDS_MS } from "@maple/primitives"
 
 export const serviceUsageLogsMv = defineMaterializedView("service_usage_logs_mv", {
@@ -930,8 +954,11 @@ export const serviceExternalEdgesHourlyMv = defineMaterializedView("service_exte
  */
 export const servicePlatformsHourlyMv = defineMaterializedView("service_platforms_hourly_mv", {
 	description:
-		"Pre-aggregates per-service hosting-platform resource attributes (k8s.*, cloud.*, faas.*) into hourly buckets for the service map's runtime-icon resolver.",
+		"Pre-aggregates per-service hosting-platform resource attributes (k8s.*, cloud.*, faas.*), instrumentation scopes, SDK self-report and span-kind counts into hourly buckets for the service map's platform and service-identity resolvers.",
 	datasource: servicePlatformsHourly,
+	// Migration 0074 adds the service-identity columns. A rebuild would replay `traces` (30 days)
+	// into this 365-day target and drop the rest; `alter` adds them in place.
+	deploymentMethod: "alter",
 	nodes: [
 		node({
 			name: "service_platforms_hourly_mv_node",
@@ -952,7 +979,16 @@ export const servicePlatformsHourlyMv = defineMaterializedView("service_platform
           max(ResourceAttributes['faas.name']) AS FaasName,
           max(ResourceAttributes['maple.sdk.type']) AS MapleSdkType,
           max(ResourceAttributes['process.runtime.name']) AS ProcessRuntimeName,
-          count() AS SpanCount
+          count() AS SpanCount,
+          -- Scope names are code-defined, not data; 32 per insert bounds a pathological one (the read caps again).
+          groupUniqArray(32)(ScopeName) AS ScopeNames,
+          max(ResourceAttributes['telemetry.sdk.name']) AS TelemetrySdkName,
+          max(ResourceAttributes['telemetry.sdk.language']) AS TelemetrySdkLanguage,
+          max(ResourceAttributes['os.name']) AS OsName,
+          count() AS ClassifiedSpanCount,
+          countIf(SpanKind = 'Server') AS ServerSpanCount,
+          countIf(SpanKind = 'Consumer') AS ConsumerSpanCount,
+          countIf(ParentSpanId = '') AS RootSpanCount
         FROM traces
         WHERE ServiceName != ''
         GROUP BY OrgId, Hour, ServiceName, DeploymentEnv
@@ -964,8 +1000,9 @@ export const servicePlatformsHourlyMv = defineMaterializedView("service_platform
 /**
  * Materialized view populating error_events from traces where StatusCode='Error'.
  * Unwraps the first OTel `exception` event. When both the event and StatusMessage
- * are absent, reads `exception.*` then `error.*` span attributes. Computes a
- * cityHash64 FingerprintHash used to group occurrences into Issues.
+ * are absent, reads `exception.*` then `error.*` span attributes, and when those are
+ * absent too, keys the error on its span. Computes a cityHash64 FingerprintHash used
+ * to group occurrences into Issues.
  *
  * Fingerprint inputs: (OrgId, ServiceName, ExceptionType, top-3 normalized frames
  * (1 for a namespaced type), message signature, FINGERPRINT_HASH_SALT), or
@@ -1011,11 +1048,61 @@ export { errorEventsSelectSql as ERROR_EVENTS_MV_SQL }
 const jsonStringIsSet = (key: string) =>
 	`JSONType(_msgText, '${key}') = 'String' AND JSONExtractString(_msgText, '${key}') != ''`
 
+/**
+ * The frames one FINGERPRINT_VERSION hashes, as WITH entries. Lines are matched by SHAPE
+ * (the old "contains :NUMBER" rule let Drizzle's `params:` line and `Type: message`
+ * headers in: 23,035 fingerprints for six real call sites), then stripped of volatile
+ * tokens, read from the raise site, collapsed where they repeat, and cut to the
+ * application's own. `alias` names each entry, so two versions can sit in one query.
+ */
+const hashedFramesSql = (
+	alias: (name: string) => string,
+	rules: { readonly linePattern: string; readonly redactions: Redactions; readonly msgSig: string },
+) => {
+	const [lines, norm, distinct, app, max, top] = Arr.map(
+		["frameLines", "normFrames", "distinctFrames", "appFrames", "maxFrames", "topFrames"],
+		alias,
+	)
+	return `
+          arrayFilter(
+            line -> match(line, ${chPattern(rules.linePattern)})
+              AND position(line, ${chPattern(EFFECT_SPAN_FRAME_MARKER)}) = 0
+              AND NOT match(line, ${chPattern(SCHEMA_PATH_LINE_PATTERN)})
+              AND NOT match(line, ${chPattern(SPAN_NAME_FRAME_PATTERN)})
+              AND NOT match(line, ${chPattern(INTERNAL_FRAME_PATTERN)}),
+            splitByChar('\\n', _exStack)
+          ) AS ${lines},
+          arrayMap(
+            line -> ${chRedactChain("line", rules.redactions)},
+            arraySlice(
+              -- Python prints the outermost frame first: read it from the raise site.
+              if(match(${lines}[1], ${chPattern(PYTHON_FRAME_PATTERN)}), arrayReverse(${lines}), ${lines}),
+              1, ${MAX_NORMALIZED_FRAMES}
+            )
+          ) AS ${norm},
+          -- A repeat (two anonymous closures in one bundle, or recursion) collapses
+          -- so it does not use up the frames the hash keeps.
+          arrayFilter((frame, i) -> i = 1 OR frame != ${norm}[i - 1], ${norm}, arrayEnumerate(${norm})) AS ${distinct},
+          -- The application's own frames: a dependency's or a runtime's frames vary with
+          -- its internals and version. A stack with none keeps every frame.
+          arrayFilter(frame -> NOT match(frame, ${chPattern(LIBRARY_FRAME_PATTERN)}), ${distinct}) AS ${app},
+          -- A namespaced type plus its message names one failure: keep only the
+          -- throw site. With no message the frames are all that is left; keep 3.
+          if(position(_exType, '/') > 0 AND ${rules.msgSig} != '', ${NAMESPACED_TYPE_MAX_FRAMES}, ${MAX_FINGERPRINT_FRAMES}) AS ${max},
+          arraySlice(if(length(${app}) > 0, ${app}, ${distinct}), 1, ${max}) AS ${top}`
+}
+
+/** The redacted prefix of a plain-text message, under one version's redactions. */
+const textSignatureSql = (text: string, redactions: Redactions) => `substringUTF8(
+              ${chRedactChain(`substringUTF8(${text}, 1, ${MSG_SCAN_CHARS})`, redactions)},
+              1, ${MSG_SIGNATURE_CHARS}
+            )`
+
 const errorEventsWithSql = `
         WITH
           arrayFirstIndex(n -> n = 'exception', EventsName) AS _ei,
-          -- Only fill the old Unknown Error bucket. Event values (including
-          -- empty fields) and spans with StatusMessage keep every hash input.
+          -- Span attributes are read only when the span has neither an exception
+          -- event nor a status message.
           _ei = 0 AND StatusMessage = '' AS _useAttrs,
           if(
             _ei > 0, EventsAttributes[_ei]['exception.type'],
@@ -1029,7 +1116,14 @@ const errorEventsWithSql = `
             _ei > 0, EventsAttributes[_ei]['exception.stacktrace'],
             if(_useAttrs, SpanAttributes['exception.stacktrace'], '')
           ) AS _exStack,
-          if(_useAttrs, _exMsg, StatusMessage) AS _msgText,
+          -- The status message, else the exception's own: an event's message went
+          -- unread, so one throw site with four different failures was one issue.
+          if(StatusMessage = '', _exMsg, StatusMessage) AS _msgText,
+          -- Nothing names this failure but its span (a status code in the type is a
+          -- class, not a name). Without it every such error in a service hashed alike.
+          (_exType = '' OR match(_exType, ${chPattern(STATUS_ONLY_TYPE_PATTERN)}))
+            AND _msgText = '' AND _exStack = '' AND SpanName != '' AS _spanKeyed,
+          if(_spanKeyed, SpanName, _msgText) AS _sigText,
           -- A user key replaces type, frames, message and salt in the hash: the
           -- exception event's value unless blank after trimming, then the span's.
           -- Trimmed and capped.
@@ -1040,6 +1134,9 @@ const errorEventsWithSql = `
 			)},
             1, ${CUSTOM_FINGERPRINT_MAX_CHARS}
           ) AS _customFp,
+          -- A user key holding the default placeholder keeps the default grouping and adds the rest.
+          match(_customFp, ${chPattern(CUSTOM_FINGERPRINT_DEFAULT_PATTERN)}) AS _customExtends,
+          ${chRedactChain("_customFp", CUSTOM_FINGERPRINT_EXTENSION_REDACTIONS)} AS _customExtension,
           -- JSON detection for the message signature below.
           isValidJSON(_msgText) AS _isJson,
           _isJson AND JSONType(_msgText) = 'Object' AS _isJsonObj,
@@ -1065,76 +1162,48 @@ const errorEventsWithSql = `
           -- frames. Bundled runtimes minify every module into one file, so the top
           -- three frames of a Worker error are \`toDatabaseError (worker.js)\` for
           -- every failing query alike: on frames alone, 25 distinct DatabaseError
-          -- bugs (316k occurrences) collapse into a single issue. The signature
-          -- restores that discrimination, and it cannot reinflate cardinality the
-          -- way a raw prefix would because everything variable is redacted first:
-          -- emails, URL origins, home directories, query strings, quoted values,
-          -- then ids and every digit run. See ERROR_MSG_REDACTIONS for the order,
-          -- what is deliberately kept, and the one residual it cannot reach.
+          -- bugs (316k occurrences) collapse into a single issue. Everything
+          -- variable is redacted first, so it cannot reinflate cardinality. See
+          -- ERROR_MSG_REDACTIONS for the order and what is deliberately kept.
           multiIf(
             _isJsonObj, _jsonSig,
-            substringUTF8(
-              ${chRedactChain(`substringUTF8(_msgText, 1, ${MSG_SCAN_CHARS})`, ERROR_MSG_REDACTIONS)},
-              1, ${MSG_SIGNATURE_CHARS}
+            concat(
+              if(_spanKeyed, concat(${chPattern(SPAN_SIGNATURE_PREFIX)}, SpanKind, ' '), ''),
+              ${textSignatureSql("_sigText", ERROR_MSG_REDACTIONS)}
             )
           ) AS _msgSig,
-          -- Frame lines are matched by SHAPE, not by "contains :NUMBER". The old
-          -- rule accepted any line with a colon-digit, which let non-frame lines
-          -- in: Drizzle's \`params: <row values>\` line, and the \`Type: message\`
-          -- header (\`Code: 62\`, \`position 1628\`, embedded timestamps). Row values
-          -- and message text then entered the hash and split one bug into
-          -- thousands of issues — 23,035 fingerprints for six real
-          -- AnomalyPersistenceError call sites, 15,051 for thirteen DatabaseError
-          -- ones.
-          --
-          -- The pattern is rendered from FRAME_LINE_PATTERN in fingerprint.ts,
-          -- as is every redaction below. They used to be hand-copied here, which
-          -- let the reference implementation the tests exercise drift away from
-          -- the SQL that actually runs, silently.
-          arrayFilter(
-            line -> match(line, ${chPattern(FRAME_LINE_PATTERN)})
-              AND position(line, ${chPattern(EFFECT_SPAN_FRAME_MARKER)}) = 0
-              AND NOT match(line, ${chPattern(SCHEMA_PATH_LINE_PATTERN)})
-              AND NOT match(line, ${chPattern(SPAN_NAME_FRAME_PATTERN)})
-              AND NOT match(line, ${chPattern(INTERNAL_FRAME_PATTERN)}),
-            splitByChar('\\n', _exStack)
-          ) AS _frameLines,
-          -- Redact every volatile token a frame line can carry: the URL origin
-          -- (so preview hosts share one fingerprint), Vite's 8-char bundle
-          -- content hash (so a deploy does not re-split every triaged browser and
-          -- Worker issue), then line numbers, hex pointers and long id runs. See
-          -- FRAME_REDACTIONS for the order and the reasoning.
-          arrayMap(
-            line -> ${chRedactChain("line", FRAME_REDACTIONS)},
-            arraySlice(
-              -- Python prints the outermost frame first: read it from the raise site.
-              if(match(_frameLines[1], ${chPattern(PYTHON_FRAME_PATTERN)}), arrayReverse(_frameLines), _frameLines),
-              1, ${MAX_NORMALIZED_FRAMES}
-            )
-          ) AS _normFrames,
-          -- A repeat (two anonymous closures in one bundle, or recursion) collapses
-          -- so it does not use up the frames the hash keeps.
-          arrayFilter((frame, i) -> i = 1 OR frame != _normFrames[i - 1], _normFrames, arrayEnumerate(_normFrames)) AS _distinctFrames,
-          -- The application's own frames: a dependency's or a runtime's frames vary with
-          -- its internals and version. A stack with none keeps every frame.
-          arrayFilter(frame -> NOT match(frame, ${chPattern(LIBRARY_FRAME_PATTERN)}), _distinctFrames) AS _appFrames,
-          -- A namespaced type plus its message names one failure: keep only the
-          -- throw site. With no message the frames are all that is left; keep 3.
-          if(position(_exType, '/') > 0 AND _msgSig != '', ${NAMESPACED_TYPE_MAX_FRAMES}, ${MAX_FINGERPRINT_FRAMES}) AS _maxFrames,
-          arraySlice(if(length(_appFrames) > 0, _appFrames, _distinctFrames), 1, _maxFrames) AS _topFrames,
+          -- The previous version's signature, for the re-key: it read no message
+          -- from an exception event, and nothing from the span.
+          multiIf(
+            _ei > 0 AND StatusMessage = '', '',
+            _isJsonObj, _jsonSig,
+            ${textSignatureSql("_msgText", PREVIOUS_ERROR_MSG_REDACTIONS)}
+          ) AS _prevMsgSig,${hashedFramesSql((name) => `_${name}`, {
+				linePattern: FRAME_LINE_PATTERN,
+				redactions: FRAME_REDACTIONS,
+				msgSig: "_msgSig",
+			})},${hashedFramesSql((name) => `_prev${Str.capitalize(name)}`, {
+				linePattern: PREVIOUS_FRAME_LINE_PATTERN,
+				redactions: PREVIOUS_FRAME_REDACTIONS,
+				msgSig: "_prevMsgSig",
+			})},
           if(length(_topFrames) > 0, _topFrames[1], '') AS _topFrame,
           arrayStringConcat(_topFrames, '\\n') AS _fpFrames,
-          -- The previous version's frames, for the issue evaluator's re-key while a bump settles.
-          arrayStringConcat(arraySlice(_distinctFrames, 1, _maxFrames), '\\n') AS _prevFpFrames,
-          if(
-            _customFp != '',
+          arrayStringConcat(_prevTopFrames, '\\n') AS _prevFpFrames,
+          multiIf(
+            _customExtends AND _customExtension != '',
+            cityHash64(OrgId, ServiceName, _exType, _fpFrames, _msgSig, ${chPattern(FINGERPRINT_HASH_SALT)}, ${chPattern(CUSTOM_FINGERPRINT_ATTRIBUTE)}, _customExtension),
+            _customFp != '' AND NOT _customExtends,
             cityHash64(OrgId, ServiceName, ${chPattern(CUSTOM_FINGERPRINT_ATTRIBUTE)}, _customFp),
             cityHash64(OrgId, ServiceName, _exType, _fpFrames, _msgSig, ${chPattern(FINGERPRINT_HASH_SALT)})
           ) AS _hash,
-          if(
-            _customFp != '',
+          -- A span-keyed error leaves a bucket that held every span: no previous hash.
+          multiIf(
+            (_customFp != '' AND NOT _customExtends) OR _spanKeyed,
             _hash,
-            cityHash64(OrgId, ServiceName, _exType, _prevFpFrames, _msgSig, ${chPattern(PREVIOUS_FINGERPRINT_HASH_SALT)})
+            _customExtends AND _customExtension != '',
+            cityHash64(OrgId, ServiceName, _exType, _prevFpFrames, _prevMsgSig, ${chPattern(PREVIOUS_FINGERPRINT_HASH_SALT)}, ${chPattern(CUSTOM_FINGERPRINT_ATTRIBUTE)}, _customExtension),
+            cityHash64(OrgId, ServiceName, _exType, _prevFpFrames, _prevMsgSig, ${chPattern(PREVIOUS_FINGERPRINT_HASH_SALT)})
           ) AS _prevHash,
           -- Display-only, best-effort human label (decoupled from the fingerprint:
           -- many labels may map to one hash). The broad key list here is a DISPLAY
@@ -1153,6 +1222,10 @@ const errorEventsWithSql = `
             'JSON error'
           ) AS _jsonLabel,
           multiIf(
+            _spanKeyed, concat(
+              leftUTF8(SpanName, ${SPAN_LABEL_CHARS}),
+              ' (', if(_exType = '', ${chPattern(SPAN_LABEL_NO_TYPE)}, _exType), ')'
+            ),
             _msgText = '', 'Unknown Error',
             position(_msgText, '{ readonly') = 1 OR position(_msgText, '└─') > 0,
               if(
@@ -1170,7 +1243,7 @@ const errorEventsWithSql = `
               150
             ))
           ) AS _statusLabel,
-          if(_exType != '', _exType, _statusLabel) AS _errorLabel,
+          if(_exType != '' AND NOT _spanKeyed, _exType, _statusLabel) AS _errorLabel,
           -- Both semconv spellings; the current key wins when both are present.
           toUInt16OrZero(
             if(
@@ -1431,6 +1504,70 @@ export const aiTraceIndexMv = defineMaterializedView("ai_trace_index_mv", {
 })
 
 /**
+ * Populates `ai_evaluations` from OTLP log records named `gen_ai.evaluation.result`, the OTel
+ * spec's encoding of an evaluation. The ingest gateway copies the record's `event_name` into
+ * `LogAttributes['event.name']`; an emitter that sets the attribute itself lands here too. The
+ * record's span context is the evaluated span (the spec parents the event to it).
+ *
+ * Read by `ch/queries/ai-evaluations.ts` in the query engine: the evaluator summary, series, breakdown
+ * and score lists behind `/internal/ai-evaluations`, the Evals pages and the evaluation MCP tools.
+ * Raw logs cannot serve them: every read would scan 30 days of logs for one event name.
+ */
+export const aiEvaluationsMv = defineMaterializedView("ai_evaluations_mv", {
+	description:
+		"Populates ai_evaluations with OTLP log records named gen_ai.evaluation.result, one row per score, keyed to the span the record's context names.",
+	datasource: aiEvaluations,
+	nodes: [
+		node({
+			name: "ai_evaluations_mv_node",
+			sql: `
+        SELECT
+          OrgId,
+          Timestamp,${evaluationColumnsSql({ attrs: "LogAttributes", traceId: "TraceId", spanId: "SpanId", source: "otel" })},
+          ServiceName,
+          ${DEPLOYMENT_ENV_SQL} AS DeploymentEnv
+        FROM logs
+        WHERE LogAttributes['event.name'] = '${GEN_AI_EVALUATION_EVENT}'
+      `,
+		}),
+	],
+})
+
+/**
+ * Populates `ai_evaluations` from span events named `gen_ai.evaluation.result`: the encoding SDKs
+ * used before events moved to the Logs API (OTEP 4430), and what OpenLIT still emits. The span
+ * carrying the event is the evaluated span unless the event names a target. The row takes the carrying
+ * span's time and service, not the event's, so a scoped delete removes the scores with the span that
+ * sent them; a score is the evaluator's telemetry, like a log that names a trace.
+ *
+ * Read by the same evaluation queries as `ai_evaluations_mv`, so scores from either encoding meet in
+ * one table.
+ */
+export const aiEvaluationsSpanEventsMv = defineMaterializedView("ai_evaluations_span_events_mv", {
+	description:
+		"Populates ai_evaluations with span events named gen_ai.evaluation.result, one row per score, keyed to the span carrying the event.",
+	datasource: aiEvaluations,
+	nodes: [
+		node({
+			name: "ai_evaluations_span_events_mv_node",
+			sql: `
+        SELECT
+          OrgId,
+          Timestamp,${evaluationColumnsSql({ attrs: "EventAttributes", traceId: "TraceId", spanId: "SpanId", source: "otel" })},
+          ServiceName,
+          ${DEPLOYMENT_ENV_SQL} AS DeploymentEnv
+        FROM traces
+        ARRAY JOIN
+          EventsName AS EventName,
+          EventsAttributes AS EventAttributes
+        WHERE has(EventsName, '${GEN_AI_EVALUATION_EVENT}')
+          AND EventName = '${GEN_AI_EVALUATION_EVENT}'
+      `,
+		}),
+	],
+})
+
+/**
  * Populates `ai_crawler_requests` with Server spans whose user agent names an AI
  * crawler from `AI_CRAWLERS`. Spans without a request path are skipped: they
  * cannot be attributed to a page (the ingest gateway's own spans are the bulk).
@@ -1610,6 +1747,37 @@ export const userActivityHourlyLogsMv = defineMaterializedView("user_activity_ho
         FROM logs
         WHERE ${LOG_USER_ID_SQL} != ''
         GROUP BY OrgId, ServiceNamespace, UserId, Hour, ServiceName
+      `,
+		}),
+	],
+})
+
+// Cascades from `user_activity_hourly`, so spans and logs are rolled up once and the daily table
+// adds nothing to their ingest. Read by `userActivityDaysQuery` (the user page's calendar).
+export const userActivityDailyMv = defineMaterializedView("user_activity_daily_mv", {
+	description:
+		"Rolls user_activity_hourly up to UTC days per user, service and service.namespace: request, failed request, error span and log counts and distinct sessions.",
+	datasource: userActivityDaily,
+	// Tinybird refuses `alter` on a view's first deploy. Once it exists, set `deploymentMethod: "alter"`
+	// before changing it: it is a 365-day rollup over the 90-day hourly table, so a rebuild drops days 91-365.
+	nodes: [
+		node({
+			name: "user_activity_daily_mv_node",
+			sql: `
+        SELECT
+          OrgId,
+          ServiceNamespace,
+          UserId,
+          toStartOfDay(Hour) AS Day,
+          ServiceName,
+          sum(RequestCount) AS RequestCount,
+          sum(FailedRequestCount) AS FailedRequestCount,
+          sum(ErrorSpanCount) AS ErrorSpanCount,
+          sum(LogCount) AS LogCount,
+          sum(ErrorLogCount) AS ErrorLogCount,
+          uniqIfMergeState(SessionIds) AS SessionIds
+        FROM user_activity_hourly
+        GROUP BY OrgId, ServiceNamespace, UserId, Day, ServiceName
       `,
 		}),
 	],
@@ -2477,6 +2645,163 @@ export const productEventsTracesMv = defineMaterializedView("product_events_trac
  * target is a ReplacingMergeTree keyed on the pair, so seeing the v1 and v2 rows
  * of one session just re-inserts the same link.
  */
+/**
+ * Populates `identity_links` from server, mobile and trace product events that
+ * carry both ids, so a backend or app that sends an anonymous id before sign-in
+ * and a user id after stitches the same way a browser session does. Browser rows
+ * are left to `identity_links_mv`, which sees them once per session rather than
+ * once per event.
+ */
+export const identityLinksEventsMv = defineMaterializedView("identity_links_events_mv", {
+	description:
+		"Populates identity_links with every (VisitorId, UserId) pair on a server, mobile or trace product event.",
+	datasource: identityLinks,
+	nodes: [
+		node({
+			name: "identity_links_events_mv_node",
+			sql: `
+        SELECT
+          OrgId,
+          VisitorId,
+          UserId,
+          min(Timestamp) AS FirstSeen
+        FROM product_events
+        WHERE Source != 'browser' AND VisitorId != '' AND UserId != ''
+        GROUP BY OrgId, VisitorId, UserId
+      `,
+		}),
+	],
+})
+
+/**
+ * The `person_properties` projection of property operations, one output row per
+ * (Kind, Id, Key) in the insert block. `arrayJoin` names each operation's
+ * `$<op>.<property>` key `OpKey`; `value` reads its value.
+ * Expressions are repeated rather than aliased: `Kind` and `Key` would shadow
+ * source columns in the GROUP BY.
+ */
+const personPropertyOpsSql = (args: {
+	readonly source: string
+	readonly arrayJoin: string
+	readonly value: string
+	readonly userId: string
+	readonly groupId: string
+	readonly where?: string
+}): string => {
+	const isGroup = `startsWith(OpKey, '$group_')`
+	const kind = `if(${isGroup}, 'group', 'user')`
+	const id = `if(${isGroup}, ${args.groupId}, ${args.userId})`
+	const key = `substring(OpKey, position(OpKey, '.') + 1)`
+	const op = (name: string) =>
+		`replaceOne(substring(OpKey, 2, position(OpKey, '.') - 2), 'group_', '') = '${name}'`
+	return `
+        SELECT
+          OrgId,
+          ${kind} AS Kind,
+          ${id} AS Id,
+          ${key} AS Key,
+          maxIf(Timestamp, ${op("set")}) AS SetAt,
+          argMaxIfState(${args.value}, Timestamp, ${op("set")}) AS SetValue,
+          if(countIf(${op("set_once")}) = 0, ${PERSON_PROPERTY_NEVER_SQL}, minIf(Timestamp, ${op("set_once")})) AS OnceAt,
+          argMinIfState(${args.value}, Timestamp, ${op("set_once")}) AS OnceValue,
+          maxIf(Timestamp, ${op("unset")}) AS UnsetAt,
+          max(Timestamp) AS LastSeen
+        FROM ${args.source}
+        ARRAY JOIN ${args.arrayJoin}
+        WHERE ${args.where === undefined ? "" : `${args.where} AND `}${id} != '' AND ${key} != ''
+        GROUP BY OrgId, ${kind}, ${id}, ${key}
+      `
+}
+
+/** Applies the `$<op>.<property>` keys on product events to `person_properties`. */
+export const personPropertiesEventsMv = defineMaterializedView("person_properties_events_mv", {
+	description:
+		"Populates person_properties from the $set, $set_once and $unset (and $group_*) keys in product event attributes.",
+	datasource: personProperties,
+	nodes: [
+		node({
+			name: "person_properties_events_mv_node",
+			sql: personPropertyOpsSql({
+				source: "product_events",
+				arrayJoin: `arrayFilter(k -> ${personPropertyAttributeKeySql("k")}, mapKeys(Attributes)) AS OpKey`,
+				value: "Attributes[OpKey]",
+				userId: "UserId",
+				groupId: "GroupId",
+				// Page views come in on a sessions-only key, and trace rows carry their span's
+				// operations, which `person_properties_traces_mv` applies. Qualified: `Kind` is
+				// also this view's own output alias.
+				where: "product_events.Kind != 'navigation' AND Source != 'trace'",
+			}),
+		}),
+	],
+})
+
+/**
+ * Applies a product-event span's `maple.product_event.<op>.<property>` attributes
+ * to `person_properties`, under the same predicate `product_events_traces_mv`
+ * uses, so a span that is not an event sets nothing.
+ */
+export const personPropertiesTracesMv = defineMaterializedView("person_properties_traces_mv", {
+	description:
+		"Populates person_properties from the maple.product_event.set.*, set_once.*, unset.* (and group_*) attributes of product-event spans.",
+	datasource: personProperties,
+	nodes: [
+		node({
+			name: "person_properties_traces_mv_node",
+			sql: personPropertyOpsSql({
+				source: "traces",
+				arrayJoin: `arrayMap(
+          k -> concat('$', substring(k, ${PRODUCT_EVENT_ATTRIBUTE_NAMESPACE.length + 1})),
+          arrayFilter(k -> ${personPropertySpanKeySql("k")}, mapKeys(SpanAttributes))
+        ) AS OpKey`,
+				value: `SpanAttributes[concat('${PRODUCT_EVENT_ATTRIBUTE_NAMESPACE}', substring(OpKey, 2))]`,
+				userId: `SpanAttributes['${PRODUCT_EVENT_USER_ID_KEY}']`,
+				groupId: `SpanAttributes['${PRODUCT_EVENT_GROUP_ID_KEY}']`,
+				where: PRODUCT_EVENTS_TRACE_FILTER,
+			}),
+		}),
+	],
+})
+
+/**
+ * Applies browser `identify()` traits and the group's name to `person_properties`
+ * as `set`s stamped with the session's start: every row of a session repeats the
+ * identity it started with, so a later stamp would let a closing session overwrite
+ * a backend `set` made during it. A trait set to `''` is stored as `''`.
+ * `UserEmail` and `UserName` stay out: users' PII is kept 90 days
+ * (`user_activity_hourly`), and this table keeps a year.
+ */
+export const personPropertiesTraitsMv = defineMaterializedView("person_properties_traits_mv", {
+	description:
+		"Populates person_properties from session_replays identity: UserTraits on the user, GroupName on the group.",
+	datasource: personProperties,
+	nodes: [
+		node({
+			name: "person_properties_traits_mv_node",
+			sql: `
+        SELECT
+          OrgId,
+          Trait.1 AS Kind,
+          if(Trait.1 = 'group', GroupId, UserId) AS Id,
+          Trait.2 AS Key,
+          max(StartTime) AS SetAt,
+          argMaxIfState(Trait.3, StartTime, toUInt8(1)) AS SetValue,
+          ${PERSON_PROPERTY_NEVER_SQL} AS OnceAt,
+          argMinIfState('', StartTime, toUInt8(0)) AS OnceValue,
+          toDateTime64(0, 9, 'UTC') AS UnsetAt,
+          max(ifNull(EndTime, StartTime)) AS LastSeen
+        FROM session_replays
+        ARRAY JOIN arrayConcat(
+          arrayMap((k, v) -> ('user', k, v), mapKeys(UserTraits), mapValues(UserTraits)),
+          [('group', 'name', GroupName)]
+        ) AS Trait
+        WHERE if(Trait.1 = 'group', GroupId, UserId) != '' AND Trait.2 != '' AND (Trait.1 = 'user' OR Trait.3 != '')
+        GROUP BY OrgId, Trait.1, if(Trait.1 = 'group', GroupId, UserId), Trait.2
+      `,
+		}),
+	],
+})
+
 export const identityLinksMv = defineMaterializedView("identity_links_mv", {
 	description:
 		"Populates identity_links with every (VisitorId, UserId) pair observed on a session_replays row.",

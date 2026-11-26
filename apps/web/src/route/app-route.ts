@@ -42,6 +42,8 @@ export const AppRoute = defineRouteUnion({
 	IngestRuleNew: { search: Search.IngestRuleNewSearch },
 	IngestRule: { ruleId: Schema.String },
 	BillingAiCredits: {},
+	/** `roleId`: a custom role's id, or a built-in role's name (`engineer`), which opens read-only. */
+	RoleEditor: { roleId: Schema.String },
 	AlertsStatusPage: { pageId: Schema.String, search: Search.AlertsStatusPageSearch },
 	StatusPages: {},
 	StatusPageNew: { search: Search.StatusPageNewSearch },
@@ -128,6 +130,8 @@ export const AppRoute = defineRouteUnion({
 	InfraVercelProject: { projectId: Schema.String, search: Search.InfraVercelProjectSearch },
 	InfraSupabaseProject: { projectRef: Schema.String, search: Search.InfraSupabaseProjectSearch },
 	AgentSessionTools: { search: Search.AgentSessionToolsSearch },
+	AgentSessionEvals: { search: Search.AgentSessionEvalsSearch },
+	AgentSessionEvaluator: { name: Schema.String, search: Search.AgentSessionEvaluatorSearch },
 	McpServers: { search: Search.McpServersSearch },
 	ErrorIssues: { search: Search.ErrorIssuesSearch },
 	InfraCloudflare: { search: Search.InfraCloudflareSearch },

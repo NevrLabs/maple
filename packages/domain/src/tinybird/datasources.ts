@@ -1,6 +1,7 @@
 import { column, defineDatasource, engine, type InferRow, t } from "@maple-dev/effect-orm/tinybird"
 import * as CH from "@maple-dev/effect-orm/clickhouse"
 import { OrgId, type SloLatencyThresholdMs, SpanId, TraceId } from "@maple/primitives"
+import { DEFAULT_RETENTION_DAYS, type RetentionSignal } from "../retention"
 
 /**
  * A `DateTime` column queried as a `DateTime.Utc`. ClickHouse sends the
@@ -21,6 +22,8 @@ export const utcDateTime64 = (precision: 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9) 
  * byte-identical in all of them.
  */
 export const TRACE_BUCKET_FN = "toStartOfFiveMinutes"
+/** The width of that bucket. A reader bounding `trace_index.Bucket` by time allows for it. */
+export const TRACE_BUCKET_MINUTES = 5
 export const TRACE_BUCKET_EXPR = `${TRACE_BUCKET_FN}(Timestamp)`
 
 /** How long `traces` and `trace_index` keep a row; trace-id lookups scan no further back. */
@@ -28,6 +31,13 @@ export const TRACES_TTL_DAYS = 30
 
 /** How long `ci_runs` and `ci_jobs` keep a run. */
 export const CI_TTL_DAYS = 365
+
+/**
+ * Days a raw row is stored for, stamped by the ingest gateway. Nothing reads it yet. A writer
+ * that leaves it out gets the period the table keeps today.
+ */
+const retentionDaysColumn = (signal: RetentionSignal) =>
+	column(t.uint16().default(DEFAULT_RETENTION_DAYS[signal]), { jsonPath: "$.retention_days" })
 
 /**
  * OpenTelemetry logs datasource
@@ -68,6 +78,7 @@ export const logs = defineDatasource("logs", {
 		LogAttributes: column(t.map(t.string().lowCardinality(), t.string()), {
 			jsonPath: "$.log_attributes",
 		}),
+		RetentionDays: retentionDaysColumn("logs"),
 		// The `*AttributeItems` search arrays are ClickHouse-only: see
 		// `clickhouse/clickhouse-only-columns.ts`.
 	},
@@ -232,6 +243,7 @@ export const traces = defineDatasource("traces", {
 		 * Server/Consumer kinds, or any root span (ParentSpanId = '').
 		 */
 		IsEntryPoint: t.uint8().defaultExpr(IS_ENTRY_POINT_EXPR),
+		RetentionDays: retentionDaysColumn("traces"),
 		// The `*AttributeItems` search arrays are ClickHouse-only: see
 		// `clickhouse/clickhouse-only-columns.ts`.
 	},
@@ -803,6 +815,16 @@ export const servicePlatformsHourly = defineDatasource("service_platforms_hourly
 		MapleSdkType: t.simpleAggregateFunction("max", t.string()),
 		ProcessRuntimeName: t.simpleAggregateFunction("max", t.string()),
 		SpanCount: t.simpleAggregateFunction("sum", t.uint64()),
+		// Service identity (migration 0074): instrumentation scopes, SDK self-report and the span-kind
+		// mix. `ClassifiedSpanCount` is 0 on rows written before it, so their kind counts mean unknown.
+		ScopeNames: t.simpleAggregateFunction("groupUniqArrayArray", t.array(t.string())),
+		TelemetrySdkName: t.simpleAggregateFunction("max", t.string()),
+		TelemetrySdkLanguage: t.simpleAggregateFunction("max", t.string()),
+		OsName: t.simpleAggregateFunction("max", t.string()),
+		ClassifiedSpanCount: t.simpleAggregateFunction("sum", t.uint64()),
+		ServerSpanCount: t.simpleAggregateFunction("sum", t.uint64()),
+		ConsumerSpanCount: t.simpleAggregateFunction("sum", t.uint64()),
+		RootSpanCount: t.simpleAggregateFunction("sum", t.uint64()),
 	},
 	engine: engine.aggregatingMergeTree({
 		partitionKey: "toDate(Hour)",
@@ -1382,6 +1404,68 @@ export const aiTraceIndex = defineDatasource("ai_trace_index", {
 export type AiTraceIndexRow = InferRow<typeof aiTraceIndex>
 
 /**
+ * One row per LLM evaluation score: the OTel GenAI `gen_ai.evaluation.result` event, from an OTLP
+ * log record (`ai_evaluations_mv`) or a span event (`ai_evaluations_span_events_mv`). See
+ * `gen-ai-evaluation.ts` for the attributes.
+ *
+ * `TraceId`/`SpanId` are the TARGET: the span the score grades, which is the record's own span
+ * context unless `maple_ai.evaluation.target.*` names another. A session-scope score carries its
+ * session in `SessionId`; every other row resolves its session per trace at read time, like Agent
+ * Sessions. `ScoreValue` is 0 where `HasScore` is 0 (a label-only score). `Verdict` is `pass` /
+ * `fail` read from the label, `''` when it says neither.
+ *
+ * TTL 90 days, longer than `traces`: scores are small and their trends outlive the traces, so a
+ * score whose trace has aged out still counts and just cannot be opened.
+ */
+export const aiEvaluations = defineDatasource("ai_evaluations", {
+	tenantColumn: "OrgId",
+	description:
+		"LLM evaluation scores (OTel gen_ai.evaluation.result events from log records and span events), one row per score, keyed to the span it grades. Populated by materialized views.",
+	jsonPaths: false,
+	schema: {
+		OrgId: t.string().lowCardinality().brand(OrgId),
+		Timestamp: utcDateTime64(9),
+		TraceId: t.string(),
+		SpanId: t.string(),
+		Scope: t.string().lowCardinality(),
+		SessionId: t.string(),
+		ResponseId: t.string(),
+		Name: t.string().lowCardinality(),
+		ScoreValue: t.float64(),
+		HasScore: t.uint8(),
+		ScoreLabel: t.string().lowCardinality(),
+		Verdict: t.string().lowCardinality(),
+		Explanation: t.string(),
+		ErrorType: t.string().lowCardinality(),
+		AnnotatorKind: t.string().lowCardinality(),
+		Source: t.string().lowCardinality(),
+		EvaluatorId: t.string().lowCardinality(),
+		EvaluatorVersion: t.string().lowCardinality(),
+		ExperimentId: t.string(),
+		Identifier: t.string(),
+		JudgeModel: t.string().lowCardinality(),
+		ServiceName: t.string().lowCardinality(),
+		DeploymentEnv: t.string().lowCardinality(),
+	},
+	// A session page reads its scores by trace: `TraceId` is not in the sorting key.
+	indexes: [
+		{
+			name: "idx_trace_id",
+			expr: "TraceId",
+			type: "bloom_filter(0.01)",
+			granularity: 1,
+		},
+	],
+	engine: engine.mergeTree({
+		partitionKey: "toDate(Timestamp)",
+		sortingKey: ["OrgId", "Name", "Timestamp"],
+		ttl: "toDate(Timestamp) + INTERVAL 90 DAY",
+	}),
+})
+
+export type AiEvaluationRow = InferRow<typeof aiEvaluations>
+
+/**
  * AI crawler requests: Server spans whose user agent names a published AI
  * fetcher (GPTBot, ClaudeBot, PerplexityBot, ...), for the Web Analytics AI tab.
  * One row per span, so read requests as `uniq(TraceId)`: a proxied request has several.
@@ -1539,6 +1623,35 @@ export const userActivityHourly = defineDatasource("user_activity_hourly", {
 
 export type UserActivityHourlyRow = InferRow<typeof userActivityHourly>
 
+/**
+ * A year of `user_activity_hourly` at day grain (UTC days), for the user page's activity calendar.
+ * Counts and sessions only: no names, emails, routes or latency, which stay in the 90-day hourly table.
+ */
+export const userActivityDaily = defineDatasource("user_activity_daily", {
+	tenantColumn: "OrgId",
+	description:
+		"Daily (UTC) per end user (user.id, else enduser.id), service and service.namespace: request, failed request, error span and log counts and distinct sessions. Populated by a materialized view from user_activity_hourly; keeps 365 days.",
+	jsonPaths: false,
+	schema: {
+		OrgId: t.string().lowCardinality().brand(OrgId),
+		ServiceNamespace: t.string().lowCardinality(),
+		UserId: t.string(),
+		Day: utcDateTime(),
+		ServiceName: t.string().lowCardinality(),
+		RequestCount: t.simpleAggregateFunction("sum", t.uint64()),
+		FailedRequestCount: t.simpleAggregateFunction("sum", t.uint64()),
+		ErrorSpanCount: t.simpleAggregateFunction("sum", t.uint64()),
+		LogCount: t.simpleAggregateFunction("sum", t.uint64()),
+		ErrorLogCount: t.simpleAggregateFunction("sum", t.uint64()),
+		SessionIds: t.aggregateFunction("uniqIf", t.string(), t.uint8()),
+	},
+	engine: engine.aggregatingMergeTree({
+		partitionKey: "toYYYYMM(Day)",
+		sortingKey: ["OrgId", "ServiceNamespace", "UserId", "Day", "ServiceName"],
+		ttl: "toDate(Day) + INTERVAL 365 DAY",
+	}),
+})
+
 /** `service.name` of the CI traces the GitHub App's workflow webhooks become. */
 export const CI_SERVICE_NAME = "github-actions"
 
@@ -1678,6 +1791,7 @@ export const metricsSum = defineDatasource("metrics_sum", {
 			jsonPath: "$.aggregation_temporality",
 		}),
 		IsMonotonic: column(t.bool(), { jsonPath: "$.is_monotonic" }),
+		RetentionDays: retentionDaysColumn("metrics"),
 	},
 	engine: engine.mergeTree({
 		partitionKey: "toDate(TimeUnix)",
@@ -1741,6 +1855,7 @@ export const metricsGauge = defineDatasource("metrics_gauge", {
 		ExemplarsFilteredAttributes: column(t.array(t.map(t.string().lowCardinality(), t.string())), {
 			jsonPath: "$.exemplars_filtered_attributes[:]",
 		}),
+		RetentionDays: retentionDaysColumn("metrics"),
 	},
 	engine: engine.mergeTree({
 		partitionKey: "toDate(TimeUnix)",
@@ -1816,6 +1931,7 @@ export const metricsHistogram = defineDatasource("metrics_histogram", {
 		AggregationTemporality: column(t.int32(), {
 			jsonPath: "$.aggregation_temporality",
 		}),
+		RetentionDays: retentionDaysColumn("metrics"),
 	},
 	engine: engine.mergeTree({
 		partitionKey: "toDate(TimeUnix)",
@@ -1895,6 +2011,7 @@ export const metricsExponentialHistogram = defineDatasource("metrics_exponential
 		AggregationTemporality: column(t.int32(), {
 			jsonPath: "$.aggregation_temporality",
 		}),
+		RetentionDays: retentionDaysColumn("metrics"),
 	},
 	engine: engine.mergeTree({
 		partitionKey: "toDate(TimeUnix)",
@@ -2744,6 +2861,7 @@ export const sessionReplays = defineDatasource("session_replays", {
 		LastActivityAt: column(utcDateTime64(9).nullable(), {
 			jsonPath: "$.last_activity_at",
 		}),
+		RetentionDays: retentionDaysColumn("sessions"),
 	},
 	engine: engine.replacingMergeTree({
 		partitionKey: "toDate(StartTime)",
@@ -2793,6 +2911,7 @@ export const sessionReplayEvents = defineDatasource("session_replay_events", {
 		// The rrweb event array, serialized as a JSON string.
 		Events: column(t.string(), { jsonPath: "$.events" }),
 		IsCheckpoint: column(t.uint8().default(0), { jsonPath: "$.is_checkpoint" }),
+		RetentionDays: retentionDaysColumn("sessions"),
 	},
 	engine: engine.mergeTree({
 		partitionKey: "toDate(Timestamp)",
@@ -2860,30 +2979,13 @@ export const sessionEvents = defineDatasource("session_events", {
 		VisitorId: column(t.string().default(""), { jsonPath: "$.visitor_id" }),
 		UserId: column(t.string().default(""), { jsonPath: "$.user_id" }),
 		GroupId: column(t.string().default(""), { jsonPath: "$.group_id" }),
+		RetentionDays: retentionDaysColumn("sessions"),
 	},
 	engine: engine.mergeTree({
 		partitionKey: "toDate(Timestamp)",
 		sortingKey: ["OrgId", "SessionId", "Timestamp", "Seq"],
 		ttl: "toDate(Timestamp) + INTERVAL 30 DAY",
 	}),
-	// Widening the `Attributes` keys off LowCardinality is an incompatible
-	// change to Tinybird, which refuses the deployment without an explicit
-	// forward query. This is the managed-warehouse counterpart of ClickHouse
-	// migration 0012: the migration issues `MODIFY COLUMN` against a BYO
-	// cluster, whereas Tinybird rebuilds the table and replays live rows
-	// through this SELECT. Every other column is carried forward untouched;
-	// only the map is re-typed, and the cast preserves values because
-	// `LowCardinality(String)` keys are already strings. The identity columns
-	// (migration 0021) are new, so existing rows carry them forward as their
-	// default `''` — Tinybird requires every schema column to appear here.
-	forwardQuery: `SELECT
-		OrgId, SessionId, Timestamp, Seq, Type, Url, TraceId, Level, Message,
-		TargetSelector, TargetText, NetMethod, NetUrl, NetStatus, NetDurationMs,
-		ErrorStack,
-		CAST(Attributes, 'Map(String, String)') AS Attributes,
-		defaultValueOfTypeName('String') AS VisitorId,
-		defaultValueOfTypeName('String') AS UserId,
-		defaultValueOfTypeName('String') AS GroupId`,
 	indexes: [
 		{
 			// `Type` is not in the sorting key, so the "top custom events" query
@@ -3003,6 +3105,8 @@ export const productEvents = defineDatasource("product_events", {
 		TraceId: t.string().default(""),
 		/** The annotated span within {@link TraceId}. `''` on non-trace rows. */
 		SpanId: t.string().default(""),
+		// No `RetentionDays` yet: the two views that fill this table would have to select it, and
+		// a forward query makes any column change a copy. It arrives with the table's rebuild.
 	},
 	// REQUIRED: without it Tinybird REBUILDS this table from its 30-day sources,
 	// dropping history past 30 days and every `/v1/events` row at any age (they
@@ -3048,8 +3152,9 @@ export type ProductEventsRow = InferRow<typeof productEvents>
 
 /**
  * Identity links — one row per (visitor, user) pair ever observed together on a
- * session, materialized out of `session_replays` (later also from mobile
- * `identify` calls). This is how a funnel collapses a person's anonymous
+ * session, materialized out of `session_replays`, and on a server, mobile or
+ * trace product event (`identity_links_events_mv`). The `description` below still
+ * names sessions only, so the datafile changes no more than it has to. This is how a funnel collapses a person's anonymous
  * marketing visit (VisitorId only) and their later server-side events (UserId
  * only) into one row: a `product_events` row resolves its person as
  * `if(UserId != '', UserId, coalesce(link.UserId, VisitorId))`.
@@ -3080,6 +3185,11 @@ export const identityLinks = defineDatasource("identity_links", {
 		UserId: t.string(),
 		FirstSeen: t.simpleAggregateFunction("min", utcDateTime64(9)),
 	},
+	// REQUIRED: adding a feeding view makes Tinybird rebuild this table from its views, and
+	// `session_replays` keeps 30 days against these links' 365: without it every older link is
+	// dropped (seen in the #2960 preview plan). The copy and the views' backfill overlap, which
+	// the `min(FirstSeen)` merge collapses.
+	forwardQuery: "SELECT *",
 	engine: engine.aggregatingMergeTree({
 		partitionKey: "tuple()",
 		sortingKey: ["OrgId", "VisitorId", "UserId"],
@@ -3091,6 +3201,50 @@ export const identityLinks = defineDatasource("identity_links", {
 })
 
 export type IdentityLinksRow = InferRow<typeof identityLinks>
+
+/**
+ * Person and group properties: one row per (Kind, Id, Key) after merging, where
+ * Kind is `user` (Id = UserId) or `group` (Id = GroupId). Written only by views:
+ * `person_properties_events_mv` from the `$<op>.<property>` keys a product event
+ * carries (`PERSON_PROPERTY_OPS` in `product-event-attributes.ts`) and
+ * `person_properties_traits_mv` from browser `identify()` traits.
+ *
+ * Each column merges to one answer whatever the merge timing, so a read never
+ * depends on which parts have merged: `set` keeps its newest value
+ * (`argMaxIf` by event time), `set_once` its earliest (`argMinIf`), `unset` its
+ * newest time. `PERSON_PROPERTY_VALUE_SQL` resolves them. Sorted by Key before Id
+ * so "everyone's plan" is one contiguous range.
+ *
+ * Kept a year past the property's last write. Browser traits rewrite their keys
+ * every session, so an active user never ages out.
+ */
+export const personProperties = defineDatasource("person_properties", {
+	tenantColumn: "OrgId",
+	description:
+		"Person (Kind = 'user', Id = UserId) and group (Kind = 'group', Id = GroupId) properties, one row per (Kind, Id, Key) after merging. Populated by views from product events' $set/$set_once/$unset attributes and browser identify() traits. Read the value with argMaxIfMerge(SetValue) when max(SetAt) > max(UnsetAt), else argMinIfMerge(OnceValue) when min(OnceAt) is after max(UnsetAt) and before 2199.",
+	jsonPaths: false,
+	schema: {
+		OrgId: t.string().lowCardinality().brand(OrgId),
+		/** `user` | `group`. */
+		Kind: t.string().lowCardinality(),
+		Id: t.string(),
+		Key: t.string(),
+		SetAt: t.simpleAggregateFunction("max", utcDateTime64(9)),
+		SetValue: t.aggregateFunction("argMaxIf", t.string(), utcDateTime64(9), t.uint8()),
+		/** `PERSON_PROPERTY_NEVER_SQL` when no `set_once` touched the key. */
+		OnceAt: t.simpleAggregateFunction("min", utcDateTime64(9)),
+		OnceValue: t.aggregateFunction("argMinIf", t.string(), utcDateTime64(9), t.uint8()),
+		UnsetAt: t.simpleAggregateFunction("max", utcDateTime64(9)),
+		LastSeen: t.simpleAggregateFunction("max", utcDateTime64(9)),
+	},
+	engine: engine.aggregatingMergeTree({
+		partitionKey: "tuple()",
+		sortingKey: ["OrgId", "Kind", "Key", "Id"],
+		ttl: "toDate(LastSeen) + INTERVAL 365 DAY",
+	}),
+})
+
+export type PersonPropertiesRow = InferRow<typeof personProperties>
 
 /**
  * Google Search Console per (site, grain, Pacific day as midnight UTC, page, query, country, device), from `SearchConsoleImportService`.
@@ -3245,6 +3399,7 @@ export const profiles = defineDatasource("profiles", {
 		 * `jsonPath`: the insert never names it. Wrap it in `toString()` in every SELECT.
 		 */
 		StackHash: t.uint64().defaultExpr("cityHash64(Frames, FrameFiles, FrameLines)"),
+		RetentionDays: retentionDaysColumn("profiles"),
 	},
 	indexes: [
 		// The span panel looks samples up by span alone; near-unique values and `''` on most rows.

@@ -1,18 +1,68 @@
 import {
 	GithubInstallationSelection,
 	GithubSelectInstallationRequest,
+	GithubSetAuditCategoriesRequest,
 	GithubSetAuditLogRequest,
 	GithubSetCiTracesRequest,
 	GithubSetTrackedBranchRequest,
 	VcsRepositoryId,
 } from "@maple/domain/http"
+import { GithubAuditCategoryId } from "@maple/domain/github-audit"
 import { Duration, Effect, Schema } from "effect"
 import { Command } from "foldkit"
+import { defineMessageUnion } from "foldkit/message"
 import { LoadFailure, toLoadFailure } from "@maple/views/data/load-failure"
 import { MapleInternalApiClient } from "../../platform/api-clients"
 import * as Dialog from "@maple/views/ui/dialog"
 import * as Popover from "@maple/views/ui/popover"
-import { Message } from "./message"
+
+/** The GitHub module's own messages; the hub carries them in `GotGithubMessage`. */
+export const GithubMessage = defineMessageUnion({
+	ClickedSelectGithubInstallation: { installationId: Schema.String },
+	CompletedSelectGithubInstallation: {
+		state: Schema.String,
+		installationId: Schema.String,
+		failure: Schema.NullOr(LoadFailure),
+	},
+	ClickedGithubRefresh: {},
+	CompletedGithubRefreshSpin: { version: Schema.Number },
+	ToggledCiTraces: {},
+	CompletedCiTraces: { enabled: Schema.Boolean, failure: Schema.NullOr(LoadFailure) },
+	ToggledAuditLog: {},
+	CompletedAuditLog: { enabled: Schema.Boolean, failure: Schema.NullOr(LoadFailure) },
+	ToggledAuditCategory: { id: GithubAuditCategoryId },
+	CompletedAuditCategory: {
+		id: GithubAuditCategoryId,
+		enabled: Schema.Boolean,
+		failure: Schema.NullOr(LoadFailure),
+	},
+	/** The 3 s status poll while the popup is out, a branch change settles or a repo syncs. */
+	TickedGithubPoll: {},
+	EndedGithubForcePoll: { version: Schema.Number },
+	ClickedRepoDelete: { repoId: VcsRepositoryId },
+	GotRepoDeleteDialogMessage: { message: Dialog.Message },
+	ConfirmedRepoDelete: {},
+	CompletedRepoDelete: { repoId: VcsRepositoryId, failure: Schema.NullOr(LoadFailure) },
+	GotBranchPopoverMessage: { repoId: VcsRepositoryId, message: Popover.Message },
+	ChangedBranchQuery: { value: Schema.String },
+	ClickedBranch: { repoId: VcsRepositoryId, branch: Schema.String },
+	GotBranchDialogMessage: { message: Dialog.Message },
+	ConfirmedBranch: {},
+	CompletedTrackedBranch: {
+		repoId: VcsRepositoryId,
+		branch: Schema.String,
+		backfillQueued: Schema.Boolean,
+		failure: Schema.NullOr(LoadFailure),
+	},
+})
+export type GithubMessage = typeof GithubMessage.Type
+
+/** The hub's status read for GitHub. */
+export const GITHUB_STATUS_READ = {
+	name: "LoadIntegrationsGithubStatus",
+	read: (_refresh: boolean) =>
+		Effect.flatMap(MapleInternalApiClient, (client) => client.integrations.githubStatus()),
+}
 
 export const GithubCardModel = Schema.Struct({
 	selection: Schema.NullOr(GithubInstallationSelection),
@@ -29,6 +79,13 @@ export const GithubCardModel = Schema.Struct({
 	auditLog: Schema.NullOr(Schema.Boolean),
 	auditLogServer: Schema.NullOr(Schema.Boolean),
 	isSavingAuditLog: Schema.Boolean,
+	/**
+	 * The audit categories switched here, until a status read with no save in flight replaces them:
+	 * each one's optimistic value and whether its write is in flight.
+	 */
+	auditCategories: Schema.Array(
+		Schema.Struct({ id: GithubAuditCategoryId, enabled: Schema.Boolean, isSaving: Schema.Boolean }),
+	),
 	/** Re-read every 3 s for 10 s after a branch change queues a backfill. */
 	isForcePolling: Schema.Boolean,
 	forcePollVersion: Schema.Number,
@@ -60,6 +117,7 @@ export const initGithubCard = (): GithubCardModel => ({
 	auditLog: null,
 	auditLogServer: null,
 	isSavingAuditLog: false,
+	auditCategories: [],
 	isForcePolling: false,
 	forcePollVersion: 0,
 	repoToDelete: null,
@@ -77,7 +135,7 @@ const failureOf = (error: unknown): LoadFailure => toLoadFailure(error)
 
 export const SelectGithubInstallation = Command.define("SelectGithubInstallation", {
 	args: { state: Schema.String, installationId: Schema.String },
-	messages: [Message.CompletedSelectGithubInstallation],
+	messages: [GithubMessage.CompletedSelectGithubInstallation],
 	execute: ({ state, installationId }) =>
 		Effect.gen(function* () {
 			const client = yield* MapleInternalApiClient
@@ -87,27 +145,27 @@ export const SelectGithubInstallation = Command.define("SelectGithubInstallation
 		}).pipe(
 			Effect.match({
 				onFailure: (error) =>
-					Message.CompletedSelectGithubInstallation({
+					GithubMessage.CompletedSelectGithubInstallation({
 						state,
 						installationId,
 						failure: failureOf(error),
 					}),
 				onSuccess: () =>
-					Message.CompletedSelectGithubInstallation({ state, installationId, failure: null }),
+					GithubMessage.CompletedSelectGithubInstallation({ state, installationId, failure: null }),
 			}),
 		),
 })
 
 export const SpinGithubRefresh = Command.define("SpinGithubRefresh", {
 	args: { version: Schema.Number },
-	messages: [Message.CompletedGithubRefreshSpin],
+	messages: [GithubMessage.CompletedGithubRefreshSpin],
 	execute: ({ version }) =>
-		Effect.as(Effect.sleep(Duration.millis(700)), Message.CompletedGithubRefreshSpin({ version })),
+		Effect.as(Effect.sleep(Duration.millis(700)), GithubMessage.CompletedGithubRefreshSpin({ version })),
 })
 
 export const SetCiTraces = Command.define("SetGithubCiTraces", {
 	args: { enabled: Schema.Boolean },
-	messages: [Message.CompletedCiTraces],
+	messages: [GithubMessage.CompletedCiTraces],
 	execute: ({ enabled }) =>
 		Effect.gen(function* () {
 			const client = yield* MapleInternalApiClient
@@ -116,15 +174,15 @@ export const SetCiTraces = Command.define("SetGithubCiTraces", {
 			})
 		}).pipe(
 			Effect.match({
-				onFailure: (error) => Message.CompletedCiTraces({ enabled, failure: failureOf(error) }),
-				onSuccess: () => Message.CompletedCiTraces({ enabled, failure: null }),
+				onFailure: (error) => GithubMessage.CompletedCiTraces({ enabled, failure: failureOf(error) }),
+				onSuccess: () => GithubMessage.CompletedCiTraces({ enabled, failure: null }),
 			}),
 		),
 })
 
 export const SetAuditLog = Command.define("SetGithubAuditLog", {
 	args: { enabled: Schema.Boolean },
-	messages: [Message.CompletedAuditLog],
+	messages: [GithubMessage.CompletedAuditLog],
 	execute: ({ enabled }) =>
 		Effect.gen(function* () {
 			const client = yield* MapleInternalApiClient
@@ -133,15 +191,33 @@ export const SetAuditLog = Command.define("SetGithubAuditLog", {
 			})
 		}).pipe(
 			Effect.match({
-				onFailure: (error) => Message.CompletedAuditLog({ enabled, failure: failureOf(error) }),
-				onSuccess: () => Message.CompletedAuditLog({ enabled, failure: null }),
+				onFailure: (error) => GithubMessage.CompletedAuditLog({ enabled, failure: failureOf(error) }),
+				onSuccess: () => GithubMessage.CompletedAuditLog({ enabled, failure: null }),
+			}),
+		),
+})
+
+export const SetAuditCategory = Command.define("SetGithubAuditCategory", {
+	args: { id: GithubAuditCategoryId, enabled: Schema.Boolean },
+	messages: [GithubMessage.CompletedAuditCategory],
+	execute: ({ id, enabled }) =>
+		Effect.gen(function* () {
+			const client = yield* MapleInternalApiClient
+			yield* client.integrations.githubSetAuditCategories({
+				payload: new GithubSetAuditCategoriesRequest({ categories: { [id]: enabled } }),
+			})
+		}).pipe(
+			Effect.match({
+				onFailure: (error) =>
+					GithubMessage.CompletedAuditCategory({ id, enabled, failure: failureOf(error) }),
+				onSuccess: () => GithubMessage.CompletedAuditCategory({ id, enabled, failure: null }),
 			}),
 		),
 })
 
 export const SetTrackedBranch = Command.define("SetGithubTrackedBranch", {
 	args: { repoId: VcsRepositoryId, branch: Schema.String },
-	messages: [Message.CompletedTrackedBranch],
+	messages: [GithubMessage.CompletedTrackedBranch],
 	execute: ({ repoId, branch }) =>
 		Effect.gen(function* () {
 			const client = yield* MapleInternalApiClient
@@ -152,14 +228,14 @@ export const SetTrackedBranch = Command.define("SetGithubTrackedBranch", {
 		}).pipe(
 			Effect.match({
 				onFailure: (error) =>
-					Message.CompletedTrackedBranch({
+					GithubMessage.CompletedTrackedBranch({
 						repoId,
 						branch,
 						backfillQueued: false,
 						failure: failureOf(error),
 					}),
 				onSuccess: (response) =>
-					Message.CompletedTrackedBranch({
+					GithubMessage.CompletedTrackedBranch({
 						repoId,
 						branch,
 						backfillQueued: response.backfillQueued,
@@ -171,15 +247,16 @@ export const SetTrackedBranch = Command.define("SetGithubTrackedBranch", {
 
 export const DeleteGithubRepo = Command.define("DeleteGithubRepository", {
 	args: { repoId: VcsRepositoryId },
-	messages: [Message.CompletedRepoDelete],
+	messages: [GithubMessage.CompletedRepoDelete],
 	execute: ({ repoId }) =>
 		Effect.gen(function* () {
 			const client = yield* MapleInternalApiClient
 			yield* client.integrations.githubDeleteRepository({ params: { repositoryId: repoId } })
 		}).pipe(
 			Effect.match({
-				onFailure: (error) => Message.CompletedRepoDelete({ repoId, failure: failureOf(error) }),
-				onSuccess: () => Message.CompletedRepoDelete({ repoId, failure: null }),
+				onFailure: (error) =>
+					GithubMessage.CompletedRepoDelete({ repoId, failure: failureOf(error) }),
+				onSuccess: () => GithubMessage.CompletedRepoDelete({ repoId, failure: null }),
 			}),
 		),
 })

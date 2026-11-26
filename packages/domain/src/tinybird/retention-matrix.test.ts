@@ -15,6 +15,8 @@ const RETENTION_DAYS = {
 	ai_trace_index: 30,
 	// Same raw-tier rule, and it matches the session_replays window the AI tab reads beside it.
 	ai_crawler_requests: 30,
+	// Past its 30-day sources on purpose: score trends outlive the traces they grade.
+	ai_evaluations: 90,
 	// Six years — HIPAA's documentation retention floor. Never rebuildable.
 	audit_log: 2190,
 	// Thirteen months: a year of audit history plus a month to compare against.
@@ -78,10 +80,15 @@ const RETENTION_DAYS = {
 	traces_aggregates_hourly: 365,
 	// Users' PII: last seen up to a quarter back, not a year; raw drill-down needs only 30.
 	user_activity_hourly: 90,
+	// Counts per user.id and day only (no name, email or route), as long as product_events keeps
+	// the same user.id: the activity calendar's year.
+	user_activity_daily: 365,
 	// Browser rows past 30 days can never be rebuilt from `session_events`, but
 	// direct-ingested (server/mobile) rows have no source: this table IS the copy.
 	product_events: 365,
 	identity_links: 365,
+	// A year past a property's last write. Browser traits refresh it every session; no email or name.
+	person_properties: 365,
 } as const
 
 const ZERO_RETENTION_DATASOURCES = ["service_map_edges_hourly_ingest"] as const

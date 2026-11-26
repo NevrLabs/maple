@@ -60,15 +60,15 @@ export const uptimeRatio = (recent: ReadonlyArray<UptimeRecentCheck>): number | 
 	recent.length === 0 ? null : Arr.filter(recent, (check) => check.ok).length / recent.length
 
 /**
- * Whether the caller may change monitors, as the REST route judges it: the role, a credential
+ * Whether the caller may change monitors, as the REST route judges it: the permission, a credential
  * that is not read-only, and for a scoped key the `uptime_monitors` write scope.
  */
 export const canWriteUptimeMonitors = (tenant: {
-	readonly roles: ReadonlyArray<string>
+	readonly permissions: Policy.Grants
 	readonly readOnly?: true
 	readonly scopes?: ReadonlyArray<string> | undefined
 }): boolean =>
-	Policy.can(tenant.roles, "uptime_monitors:manage") &&
+	Policy.can(tenant.permissions, "uptime_monitors:manage") &&
 	tenant.readOnly !== true &&
 	scopeAllows(tenant.scopes, { family: "uptime_monitors", access: "write" })
 
@@ -112,7 +112,7 @@ export const pingCommand = (heartbeatUrl: string | null): string | null =>
 export const limitReachedMessage = (limit: number): string =>
 	limit === 0
 		? "This organization's plan doesn't include uptime monitors. An admin can upgrade the plan in Settings → Billing."
-		: `This organization has used its ${limit} included uptime monitors. Delete one with delete_uptime_monitor, or upgrade the plan in Settings → Billing to add more.`
+		: `This organization has used its ${limit} included uptime monitors. Delete one with manage_uptime_monitor action=delete, or upgrade the plan in Settings → Billing to add more.`
 
 type UptimeServiceError =
 	| { readonly _tag: "@maple/http/errors/UptimeMonitorValidationError"; readonly message: string }

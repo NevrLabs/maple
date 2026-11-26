@@ -3,6 +3,7 @@
  * scope, as the matching `/v2/<family>` routes do.
  */
 import { describe, expect, it } from "vitest"
+import * as Policy from "@maple/domain/policy"
 import { OrgId, RoleName, UserId } from "@maple/domain/http"
 import { INVESTIGATION_READ_FAMILIES } from "@maple/domain/http/v2"
 import { Context, Effect, Layer, Schema, Array as Arr } from "effect"
@@ -14,6 +15,7 @@ const tenantWith = (scopes: ReadonlyArray<string>) =>
 		orgId: Schema.decodeSync(OrgId)("org_scope_families"),
 		userId: Schema.decodeSync(UserId)("user_scope_families"),
 		roles: [Schema.decodeSync(RoleName)("org:admin")],
+		permissions: Policy.grantsOf([Schema.decodeSync(RoleName)("org:admin")]),
 		authMode: "self_hosted",
 		scopes,
 	})
@@ -50,8 +52,6 @@ const REQUIRED = [
 	["update_ingest_rule", "ingest_rules:write"],
 	["delete_ingest_rule", "ingest_rules:write"],
 	["list_data_sources", "data_sources:read"],
-	["search_data_sources", "data_sources:read"],
-	["describe_data_source", "data_sources:read"],
 	["query_data_source", "data_sources:read"],
 	["get_status_page", "status_pages:read"],
 	["apply_status_page_config", "status_pages:write"],
@@ -62,6 +62,8 @@ const REQUIRED = [
 	["create_scrape_target", "scrape_targets:write"],
 	["update_scrape_target", "scrape_targets:write"],
 	["delete_scrape_target", "scrape_targets:write"],
+	["onboarding_status_update", "onboarding:write"],
+	["get_ingest_setup", "ingest_keys:write"],
 ] as const
 
 describe("MCP tools outside the baseline scope families", () => {

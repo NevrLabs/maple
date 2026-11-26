@@ -96,12 +96,17 @@ describe("runtime database roles", () => {
 })
 
 // The statement shapes PostgresKeyStore (apps/ingest/src/main.rs) runs, one per query it issues.
+// The gateway's VISIT_WINDOW_MS: the SDK's 30 idle minutes plus its 2-minute touch throttle.
+const claimVisit = (visitor: string, token: string) =>
+	`INSERT INTO cookieless_visits AS v (org_id, visitor_id, visit_token, last_seen_at) VALUES ('o', '${visitor}', '${token}', now()) ON CONFLICT (org_id, visitor_id) DO UPDATE SET visit_token = CASE WHEN v.last_seen_at < now() - 1920000::bigint * interval '1 millisecond' THEN EXCLUDED.visit_token ELSE v.visit_token END, last_seen_at = now() RETURNING visit_token = '${token}' AS new_visit`
+
 const gatewayStatements = [
-	"SELECT k.org_id, s.sync_status, ds.id FROM org_ingest_keys k LEFT JOIN org_clickhouse_settings s ON s.org_id = k.org_id LEFT JOIN sources ds ON ds.org_id = k.org_id AND ds.kind = 'default' WHERE k.private_key_hash = 'x' LIMIT 1",
-	"SELECT k.id, k.allowed_signals, s.sync_status FROM sources k LEFT JOIN org_clickhouse_settings s ON s.org_id = k.org_id WHERE k.key_hash = 'x' LIMIT 1",
-	"SELECT c.org_id, src.id FROM cloudflare_logpush_connectors c LEFT JOIN org_clickhouse_settings s ON s.org_id = c.org_id LEFT JOIN sources src ON src.id = c.source_id AND src.org_id = c.org_id WHERE c.id = 'x' LIMIT 1",
-	"SELECT c.org_id, c.project_id FROM gcp_connectors c LEFT JOIN org_clickhouse_settings s ON s.org_id = c.org_id WHERE c.id = 'x' LIMIT 1",
-	"SELECT c.org_id FROM aws_connections c LEFT JOIN org_clickhouse_settings s ON s.org_id = c.org_id WHERE c.id = 'x' LIMIT 1",
+	"SELECT k.org_id, s.sync_status, ds.id, ds.retention_days::text, rp.retention_days::text FROM org_ingest_keys k LEFT JOIN org_clickhouse_settings s ON s.org_id = k.org_id LEFT JOIN sources ds ON ds.org_id = k.org_id AND ds.kind = 'default' LEFT JOIN org_retention_policies rp ON rp.org_id = k.org_id WHERE k.private_key_hash = 'x' LIMIT 1",
+	"SELECT k.id, k.allowed_signals, s.sync_status, k.retention_days::text, rp.retention_days::text FROM sources k LEFT JOIN org_clickhouse_settings s ON s.org_id = k.org_id LEFT JOIN org_retention_policies rp ON rp.org_id = k.org_id WHERE k.key_hash = 'x' LIMIT 1",
+	"SELECT id, retention_days::text FROM sources WHERE org_id = 'o' AND id = ANY(ARRAY['x']) AND kind = 'integration'",
+	"SELECT c.org_id, src.id, src.retention_days::text, rp.retention_days::text FROM cloudflare_logpush_connectors c LEFT JOIN org_clickhouse_settings s ON s.org_id = c.org_id LEFT JOIN sources src ON src.id = c.source_id AND src.org_id = c.org_id LEFT JOIN org_retention_policies rp ON rp.org_id = c.org_id WHERE c.id = 'x' LIMIT 1",
+	"SELECT c.org_id, c.project_id, src.retention_days::text, rp.retention_days::text FROM gcp_connectors c LEFT JOIN org_clickhouse_settings s ON s.org_id = c.org_id LEFT JOIN sources src ON src.id = c.source_id AND src.org_id = c.org_id LEFT JOIN org_retention_policies rp ON rp.org_id = c.org_id WHERE c.id = 'x' LIMIT 1",
+	"SELECT c.org_id, src.retention_days::text, rp.retention_days::text FROM aws_connections c LEFT JOIN org_clickhouse_settings s ON s.org_id = c.org_id LEFT JOIN sources src ON src.id = c.source_id AND src.org_id = c.org_id LEFT JOIN org_retention_policies rp ON rp.org_id = c.org_id WHERE c.id = 'x' LIMIT 1",
 	"SELECT trace_sample_ratio FROM org_ingest_sampling_policies WHERE org_id = 'x' LIMIT 1",
 	"SELECT source_key, target_key FROM org_ingest_attribute_mappings WHERE org_id = 'x' AND enabled = true",
 	"SELECT project_id, name FROM vercel_projects WHERE org_id = 'x'",
@@ -114,12 +119,18 @@ const gatewayStatements = [
 	"UPDATE gcp_connectors SET last_error = 'x', updated_at = now() WHERE id = 'x'",
 	"UPDATE aws_connections SET stream_last_error = 'x' WHERE id = 'x'",
 	"INSERT INTO org_ingest_rule_stats (org_id, rule_id, bucket, signal, matched, dropped, dropped_bytes, redacted_values) VALUES ('o', 'r', now(), 'traces', 1, 0, 0, 0) ON CONFLICT (org_id, rule_id, bucket, signal) DO UPDATE SET matched = org_ingest_rule_stats.matched + EXCLUDED.matched",
+	"WITH inserted AS (INSERT INTO cookieless_salts (day, salt) VALUES ('2026-11-22', 'c2FsdA==') ON CONFLICT (day) DO NOTHING RETURNING salt) SELECT salt FROM inserted UNION ALL SELECT salt FROM cookieless_salts WHERE day = '2026-11-22' LIMIT 1",
+	"DELETE FROM cookieless_salts WHERE day < '2026-11-21'",
+	"DELETE FROM cookieless_visits WHERE last_seen_at < now() - interval '1 day'",
+	claimVisit("v", "t"),
+	"UPDATE cookieless_visits SET last_seen_at = now() WHERE org_id = 'o' AND visitor_id = 'v' AND last_seen_at >= now() - 1920000::bigint * interval '1 millisecond'",
 ]
 
 const outsideTheGateway = [
 	"SELECT count(*) FROM api_keys",
 	"UPDATE org_ingest_keys SET private_key_hash = 'x' WHERE org_id = 'x'",
 	"DELETE FROM sources WHERE id = 'x'",
+	"UPDATE org_retention_policies SET retention_days = '{}' WHERE org_id = 'x'",
 	"INSERT INTO sources SELECT * FROM sources WHERE false",
 	"TRUNCATE org_ingest_rule_stats",
 	"CREATE TABLE public.injected (id int)",
@@ -174,5 +185,44 @@ describe("ingest gateway role", () => {
 		await expect(pg.exec(ingestRoleMembershipSql(loginFor.readWrite))).rejects.toThrow(
 			"still inherits pg_read_all_data or pg_write_all_data",
 		)
+	})
+})
+
+describe("cookieless visit claim", () => {
+	let claims = 0
+	const claimAsGateway = async (visitor: string) => {
+		claims += 1
+		await pg.exec("SET ROLE login_ingest")
+		const result = await pg.query<{ new_visit: boolean }>(claimVisit(visitor, `token_${claims}`))
+		await pg.exec("RESET ROLE")
+		return result.rows[0]?.new_visit
+	}
+
+	it("opens a visit on the first start and keeps it open until the gateway's 32-minute window passes", async () => {
+		expect(await claimAsGateway("visitor_a")).toBe(true)
+		expect(await claimAsGateway("visitor_a")).toBe(false)
+		expect(await claimAsGateway("visitor_b")).toBe(true)
+
+		await pg.exec(
+			"UPDATE cookieless_visits SET last_seen_at = now() - interval '31 minutes' WHERE visitor_id = 'visitor_a'",
+		)
+		expect(await claimAsGateway("visitor_a")).toBe(false)
+		await pg.exec(
+			"UPDATE cookieless_visits SET last_seen_at = now() - interval '33 minutes' WHERE visitor_id = 'visitor_a'",
+		)
+		expect(await claimAsGateway("visitor_a")).toBe(true)
+	})
+
+	it("keeps the salt the first task stored for a day", async () => {
+		const store = async (candidate: string) => {
+			await pg.exec("SET ROLE login_ingest")
+			const result = await pg.query<{ salt: string }>(
+				`WITH inserted AS (INSERT INTO cookieless_salts (day, salt) VALUES ('2026-01-01', '${candidate}') ON CONFLICT (day) DO NOTHING RETURNING salt) SELECT salt FROM inserted UNION ALL SELECT salt FROM cookieless_salts WHERE day = '2026-01-01' LIMIT 1`,
+			)
+			await pg.exec("RESET ROLE")
+			return result.rows[0]?.salt
+		}
+		expect(await store("first")).toBe("first")
+		expect(await store("second")).toBe("first")
 	})
 })

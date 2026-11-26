@@ -7,7 +7,9 @@ import {
 	issueItem,
 	mcpServersInScope,
 	mergeActivity,
+	mergeCalendarDays,
 	mergeServices,
+	mergeTraits,
 	resolveUsersScope,
 	severityOf,
 	signalsOf,
@@ -135,6 +137,15 @@ describe("mergeActivity", () => {
 			tone: "neutral",
 		})
 		expect(sessionItem).toMatchObject({ sessionId: "s1", title: "Session on /pricing", tone: "crit" })
+	})
+
+	it("names an MCP session with no tool calls as a connection", () => {
+		const [item] = mergeActivity({
+			sessions: [],
+			events: [],
+			mcpSessions: [{ ...mcpSession, calls: 0, tools: 0, errors: 0 }],
+		})
+		expect(item).toMatchObject({ title: "Claude Code connected", detail: "maple-ai · no tool calls" })
 	})
 
 	it("keeps the latest rows when capped", () => {
@@ -275,5 +286,82 @@ describe("issueItem", () => {
 		expect(issueItem({ ...issue, type: "TypeError", message: "x is undefined" }).title).toBe("TypeError")
 		expect(issueItem({ ...issue, message: "upstream timed out" }).title).toBe("upstream timed out")
 		expect(issueItem(issue).title).toBe("Unknown Error")
+	})
+})
+
+describe("mergeCalendarDays", () => {
+	const activity = (day: string, requestCount: number) => ({
+		day,
+		requestCount,
+		failedRequestCount: 1,
+		errorLogCount: 2,
+		sessionCount: 3,
+	})
+
+	it("puts a day's events beside its requests, keeps event-only days, and sorts oldest first", () => {
+		const days = mergeCalendarDays(
+			[activity("2026-11-03", 40), activity("2026-11-01", 10)],
+			[
+				{ day: "2026-11-03", events: 7 },
+				{ day: "2026-11-02", events: 4 },
+			],
+		)
+		expect(days).toEqual([
+			{ day: "2026-11-01", requests: 10, failedRequests: 1, errorLogs: 2, sessions: 3, events: 0 },
+			{ day: "2026-11-02", requests: 0, failedRequests: 0, errorLogs: 0, sessions: 0, events: 4 },
+			{ day: "2026-11-03", requests: 40, failedRequests: 1, errorLogs: 2, sessions: 3, events: 7 },
+		])
+	})
+})
+
+describe("mergeTraits", () => {
+	const SESSION_AT = 1_000
+	const state = (key: string, value: string, writtenAtMs: number, cleared = false) => ({
+		key,
+		value,
+		cleared,
+		writtenAtMs,
+	})
+
+	it("reads a key written after the session's start from the properties, at its value", () => {
+		expect(
+			mergeTraits({ traits: [{ key: "plan", value: "free" }], atMs: SESSION_AT }, [
+				state("plan", "pro", 2_000),
+			]),
+		).toEqual([{ key: "plan", value: "pro" }])
+	})
+
+	it("keeps the session's version-resolved value for a key stamped at its start", () => {
+		// identify() changed plan mid-session: both versions are stamped at the start and tie there.
+		expect(
+			mergeTraits({ traits: [{ key: "plan", value: "pro" }], atMs: SESSION_AT }, [
+				state("plan", "free", SESSION_AT),
+			]),
+		).toEqual([{ key: "plan", value: "pro" }])
+	})
+
+	it("drops a key cleared after the session, and keeps one the session set again after the unset", () => {
+		expect(
+			mergeTraits({ traits: [{ key: "trial_ends", value: "2026-12-01" }], atMs: SESSION_AT }, [
+				state("trial_ends", "", 2_000, true),
+			]),
+		).toEqual([])
+		expect(
+			mergeTraits({ traits: [{ key: "trial_ends", value: "2026-12-01" }], atMs: SESSION_AT }, [
+				state("trial_ends", "", 500, true),
+			]),
+		).toEqual([{ key: "trial_ends", value: "2026-12-01" }])
+	})
+
+	it("adds the properties the session lacks, then the keys only the session carries", () => {
+		expect(
+			mergeTraits({ traits: [{ key: "locale", value: "de" }], atMs: SESSION_AT }, [
+				state("seats", "12", 500),
+				state("gone", "", 500, true),
+			]),
+		).toEqual([
+			{ key: "seats", value: "12" },
+			{ key: "locale", value: "de" },
+		])
 	})
 })

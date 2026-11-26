@@ -1,4 +1,5 @@
 import { afterEach, assert, describe, it } from "@effect/vitest"
+import * as Policy from "@maple/domain/policy"
 import { ConfigProvider, Effect, Layer, Schema, Array as Arr } from "effect"
 import { OrgId, RoleName, UserId } from "@maple/domain/http"
 import { Env } from "@maple/backend/platform/Env"
@@ -7,6 +8,7 @@ import { cleanupTestDbs, createTestDb, type TestDb } from "@maple/backend/testin
 import { IngestRuleService } from "@maple/backend/services/org/IngestRuleService"
 import { CurrentMcpTenant } from "../tenant"
 import { parameterOfProblem, previewNotes, previewOver, registerIngestRuleTools } from "./ingest-rules"
+import { executeRegisteredMcpToolUnscoped } from "./registry"
 import type { McpToolError, McpToolRegistrar } from "./types"
 import type { McpToolRequirements } from "./runtime-services"
 import { unimplementedMcpToolServices } from "../../../test/mcp/unimplemented-tool-services"
@@ -42,6 +44,21 @@ const tools = () => {
 				Schema.decodeEffect(spec.parameters)(params).pipe(Effect.orDie, Effect.flatMap(spec.handler)),
 			)
 		},
+		// A family's action is called here as `<family> <action>`.
+		family: (spec) => {
+			const builder: ReturnType<McpToolRegistrar["family"]> = {
+				action: (name, action) => {
+					handlers.set(`${spec.name} ${name}`, (params) =>
+						Schema.decodeEffect(action.parameters)(params).pipe(
+							Effect.orDie,
+							Effect.flatMap(action.handler),
+						),
+					)
+					return builder
+				},
+			}
+			return builder
+		},
 	}
 	registerIngestRuleTools(registrar)
 	return (name: string, params: ToolParams) => {
@@ -59,6 +76,7 @@ const layerFor = (testDb: TestDb, roles: ReadonlyArray<string>) =>
 			orgId: Schema.decodeSync(OrgId)("org_mcp_rules"),
 			userId: Schema.decodeSync(UserId)("user_mcp_rules"),
 			roles: Arr.map(roles, (role) => Schema.decodeSync(RoleName)(role)),
+			permissions: Policy.grantsOf(Arr.map(roles, (role) => Schema.decodeSync(RoleName)(role))),
 			authMode: "self_hosted",
 		}),
 	).pipe(
@@ -71,14 +89,14 @@ const dropDebug = {
 	name: "Drop debug logs",
 	signals: ["logs"],
 	conditions: [{ field: "severity", op: "lt", value: "info" }],
-	action: { type: "drop", keep_percent: 0 },
+	rule_action: { type: "drop", keep_percent: 0 },
 }
 
 describe("ingest rule MCP tools", () => {
 	it.effect("an admin creates, finds by name, updates and deletes a rule", () => {
 		const call = tools()
 		return Effect.gen(function* () {
-			const created = yield* call("create_ingest_rule", dropDebug)
+			const created = yield* call("manage_ingest_rule create", dropDebug)
 			assert.deepInclude(created, { action: "created" })
 			const listed = yield* call("list_ingest_rules", {})
 			assert.deepEqual(
@@ -90,9 +108,12 @@ describe("ingest rule MCP tools", () => {
 				),
 				["Drop logs where severity is below info"],
 			)
-			const updated = yield* call("update_ingest_rule", { rule: "Drop debug logs", enabled: false })
+			const updated = yield* call("manage_ingest_rule update", {
+				rule: "Drop debug logs",
+				enabled: false,
+			})
 			assert.deepNestedInclude(updated, { "rule.enabled": false })
-			yield* call("delete_ingest_rule", { rule: "Drop debug logs", confirm: true })
+			yield* call("manage_ingest_rule delete", { rule: "Drop debug logs", confirm: true })
 			assert.deepEqual(yield* call("list_ingest_rules", {}), { rules: [] })
 		}).pipe(Effect.provide(layerFor(createTestDb(trackedDbs), ["org:admin"])))
 	})
@@ -101,13 +122,20 @@ describe("ingest rule MCP tools", () => {
 		const call = tools()
 		const testDb = createTestDb(trackedDbs)
 		return Effect.gen(function* () {
-			const refused = yield* call("create_ingest_rule", dropDebug).pipe(Effect.flip)
-			assert.strictEqual(refused._tag, "@maple/mcp/errors/McpUnavailableError")
+			const refused = yield* executeRegisteredMcpToolUnscoped(
+				"manage_ingest_rule",
+				{ action: "create", ...dropDebug },
+				"mcp",
+			).pipe(Effect.flip)
+			assert.deepInclude(refused, {
+				_tag: "@maple/mcp/errors/McpAuthInvalidError",
+				message: Policy.denialFor("ingest_rules:manage").message,
+			})
 		}).pipe(
 			Effect.provide(layerFor(testDb, ["org:member"])),
 			Effect.andThen(
 				Effect.gen(function* () {
-					const invalid = yield* call("create_ingest_rule", {
+					const invalid = yield* call("manage_ingest_rule create", {
 						...dropDebug,
 						conditions: [],
 					}).pipe(Effect.flip)
@@ -124,7 +152,7 @@ describe("ingest rule MCP tools", () => {
 			const preview = yield* call("preview_ingest_rule", {
 				signals: ["metrics"],
 				conditions: [{ field: "name", op: "prefix", value: "process." }],
-				action: { type: "drop", keep_percent: 0 },
+				rule_action: { type: "drop", keep_percent: 0 },
 			})
 			assert.deepInclude(preview, { sampled: 0, problems: ["metrics rules cannot be previewed"] })
 		}).pipe(Effect.provide(layerFor(createTestDb(trackedDbs), [])))
@@ -136,7 +164,7 @@ describe("ingest rule MCP tools", () => {
 			const preview = yield* call("preview_ingest_rule", {
 				signals: ["logs"],
 				conditions: [{ field: "severity", op: "lt", value: "info" }],
-				action: { type: "drop", keep_percent: 0 },
+				rule_action: { type: "drop", keep_percent: 0 },
 				signal: "traces",
 			})
 			assert.deepInclude(preview, {
@@ -152,7 +180,7 @@ describe("ingest rule MCP tools", () => {
 			const preview = yield* call("preview_ingest_rule", {
 				signals: ["metrics"],
 				conditions: [{ field: "name", op: "prefix", value: "process." }],
-				action: { type: "drop", keep_percent: 0 },
+				rule_action: { type: "drop", keep_percent: 0 },
 				signal: "logs",
 			})
 			assert.deepInclude(preview, {
@@ -167,7 +195,7 @@ describe("ingest rule MCP tools", () => {
 			const preview = yield* call("preview_ingest_rule", {
 				signals: ["traces"],
 				conditions: [{ field: "span_kind", op: "in", values: ["internal"] }],
-				action: { type: "drop", keep_percent: 0 },
+				rule_action: { type: "drop", keep_percent: 0 },
 			})
 			assert.deepInclude(preview, {
 				sampled: 0,
@@ -270,6 +298,72 @@ describe("ingest rule MCP tools", () => {
 		assert.deepEqual(structuredBody.examples[0]?.changes, ['body: {"user":{"email":"[REDACTED:email]"}}'])
 	})
 
+	it("counts what a parse draft would extract and where it fails, failures first", () => {
+		const log = (body: string) => ({
+			signal: "logs" as const,
+			resource: { "service.name": "api" },
+			attributes: {},
+			body,
+		})
+		const preview = previewOver(
+			{
+				signals: ["logs"],
+				conditions: [],
+				action: {
+					_tag: "parse",
+					steps: [{ _tag: "grok", source: "body", pattern: "%{WORD:method} %{INT:status:int}" }],
+				},
+			},
+			[log("GET 200"), log("no numbers here")],
+		)
+		assert.deepInclude(preview, { sampled: 2, parsed: 2, parseFailed: 1, dropped: 0 })
+		assert.deepEqual(
+			Arr.map(preview.examples, (example) => [example.outcome, example.changes]),
+			[
+				["parse_failed", ["maple.parse.error = grok: no match"]],
+				["parsed", ["method = GET", "status = 200"]],
+			],
+		)
+	})
+
+	it("lists parsed fields named like Object methods", () => {
+		const preview = previewOver(
+			{
+				signals: ["logs"],
+				conditions: [],
+				action: { _tag: "parse", steps: [{ _tag: "json", source: "body", prefix: "" }] },
+			},
+			[
+				{
+					signal: "logs" as const,
+					resource: {},
+					attributes: {},
+					body: '{"constructor":"x","toString":"y"}',
+				},
+			],
+		)
+		assert.deepEqual(preview.examples[0]?.changes, ["constructor = x", "toString = y"])
+	})
+
+	it("reports a removed attribute named like an Object method", () => {
+		const preview = previewOver(
+			{
+				signals: ["logs"],
+				conditions: [],
+				action: {
+					_tag: "redact",
+					keys: ["toString"],
+					detectors: [],
+					patterns: [],
+					scopes: ["attributes"],
+					method: "remove",
+				},
+			},
+			[{ signal: "logs" as const, resource: {}, attributes: { toString: "secret" }, body: "hi" }],
+		)
+		assert.deepEqual(preview.examples[0]?.changes, ["toString: removed"])
+	})
+
 	it("names the argument a validation problem is about", () => {
 		assert.deepEqual(
 			Arr.map(
@@ -283,7 +377,7 @@ describe("ingest rule MCP tools", () => {
 				],
 				parameterOfProblem,
 			),
-			["conditions", "conditions", "signals", "name", "position", "action"],
+			["conditions", "conditions", "signals", "name", "position", "rule_action"],
 		)
 	})
 

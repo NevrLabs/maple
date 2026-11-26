@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "@effect/vitest"
+import * as Policy from "@maple/domain/policy"
 import { AuthorizationUnavailableError, OrgId, UserId } from "@maple/domain/http"
 import { INVESTIGATION_READ_FAMILIES } from "@maple/domain/http/v2"
 import {
@@ -15,6 +16,7 @@ import {
 } from "effect"
 import { HttpRouter } from "effect/http"
 import { Env } from "@maple/backend/platform/Env"
+import { EdgeCacheServiceLive } from "@maple/backend/platform/CacheBackendLive"
 import { cleanupTestDbs, createTestDb, type TestDb } from "@maple/backend/testing/test-pglite"
 import { ErrorActorsService } from "@maple/backend/services/errors/ErrorActorsService"
 import { ApiKeysService } from "@maple/backend/services/org/ApiKeysService"
@@ -23,7 +25,12 @@ import type { RateLimiterApi } from "@maple/backend/services/auth/ApiV2RateLimit
 import { McpToolRateLimiter } from "@maple/backend/services/auth/McpToolRateLimiter"
 import type { McpToolExecutorApi } from "./dispatcher"
 import { McpToolExecutorLoader } from "./executor-loader"
-import { McpLive } from "./app"
+import { McpLive, mcpLiveWithFeatureFlags } from "./app"
+import { OrganizationFeatureFlagsService } from "@maple/backend/services/org/OrganizationFeatureFlagsService"
+import {
+	DISABLED_ORGANIZATION_FEATURE_FLAGS,
+	ENABLED_ORGANIZATION_FEATURE_FLAGS,
+} from "@maple/domain/organization-feature-flags"
 import { McpToolCallDeadline } from "./transport/stateless-http"
 
 const createdDbs: TestDb[] = []
@@ -57,6 +64,8 @@ const McpResponseBody = Schema.Struct({
 			protocolVersion: Schema.optionalKey(Schema.String),
 			serverInfo: Schema.optionalKey(Schema.Struct({ name: Schema.String })),
 			capabilities: Schema.optionalKey(Schema.Unknown),
+			instructions: Schema.optionalKey(Schema.String),
+			structuredContent: Schema.optionalKey(Schema.Unknown),
 			tools: Schema.optionalKey(Schema.Array(Schema.Struct({ name: Schema.String }))),
 		}),
 	),
@@ -89,7 +98,11 @@ const testConfig = () =>
 describe("MCP HTTP authorization", () => {
 	it("challenges unauthenticated clients before MCP initialization", async () => {
 		const db = createTestDb(createdDbs)
-		const base = Layer.mergeAll(db.layer, Env.layer.pipe(Layer.provide(testConfig())))
+		const base = Layer.mergeAll(
+			db.layer,
+			Env.layer.pipe(Layer.provide(testConfig())),
+			EdgeCacheServiceLive,
+		)
 		const services = Layer.mergeAll(
 			ApiKeysService.layer,
 			ErrorActorsService.layer,
@@ -140,7 +153,11 @@ describe("MCP HTTP authorization", () => {
 			headers: Record<string, string>,
 		) => {
 			const db = createTestDb(createdDbs)
-			const base = Layer.mergeAll(db.layer, Env.layer.pipe(Layer.provide(testConfig())))
+			const base = Layer.mergeAll(
+				db.layer,
+				Env.layer.pipe(Layer.provide(testConfig())),
+				EdgeCacheServiceLive,
+			)
 			const services = Layer.mergeAll(
 				ApiKeysService.layer,
 				ErrorActorsService.layer,
@@ -204,7 +221,11 @@ describe("MCP HTTP authorization", () => {
 
 	it("accepts an audience-bound OAuth key behind a forwarded HTTPS proxy", async () => {
 		const db = createTestDb(createdDbs)
-		const base = Layer.mergeAll(db.layer, Env.layer.pipe(Layer.provide(testConfig())))
+		const base = Layer.mergeAll(
+			db.layer,
+			Env.layer.pipe(Layer.provide(testConfig())),
+			EdgeCacheServiceLive,
+		)
 		let executedOrgId: string | undefined
 		const services = Layer.mergeAll(
 			ApiKeysService.layer,
@@ -324,7 +345,11 @@ describe("MCP HTTP authorization", () => {
 		// before parsing the body, and a client that reads 400 as "wrong transport"
 		// retries over SSE and gets 405 from a POST-only route, so it never connects.
 		const db = createTestDb(createdDbs)
-		const base = Layer.mergeAll(db.layer, Env.layer.pipe(Layer.provide(testConfig())))
+		const base = Layer.mergeAll(
+			db.layer,
+			Env.layer.pipe(Layer.provide(testConfig())),
+			EdgeCacheServiceLive,
+		)
 		const services = Layer.mergeAll(
 			ApiKeysService.layer,
 			ErrorActorsService.layer,
@@ -406,7 +431,11 @@ describe("MCP HTTP authorization", () => {
 		// half of them. Maple's transport is stateless: it issues no session id, and
 		// serves a request that carries a stale one anyway.
 		const db = createTestDb(createdDbs)
-		const base = Layer.mergeAll(db.layer, Env.layer.pipe(Layer.provide(testConfig())))
+		const base = Layer.mergeAll(
+			db.layer,
+			Env.layer.pipe(Layer.provide(testConfig())),
+			EdgeCacheServiceLive,
+		)
 		const services = Layer.mergeAll(
 			ApiKeysService.layer,
 			ErrorActorsService.layer,
@@ -527,7 +556,11 @@ describe("MCP HTTP authorization", () => {
 
 	it("refuses an over-budget credential with 429 and Retry-After", async () => {
 		const db = createTestDb(createdDbs)
-		const base = Layer.mergeAll(db.layer, Env.layer.pipe(Layer.provide(testConfig())))
+		const base = Layer.mergeAll(
+			db.layer,
+			Env.layer.pipe(Layer.provide(testConfig())),
+			EdgeCacheServiceLive,
+		)
 		const limitedKeys: string[] = []
 		let executed = false
 		const services = Layer.mergeAll(
@@ -600,7 +633,11 @@ describe("MCP HTTP authorization", () => {
 		// on behalf of a different request") — ~10 MCP calls a day, each opaque to
 		// the client. An unreadable body is a request we can still answer.
 		const db = createTestDb(createdDbs)
-		const base = Layer.mergeAll(db.layer, Env.layer.pipe(Layer.provide(testConfig())))
+		const base = Layer.mergeAll(
+			db.layer,
+			Env.layer.pipe(Layer.provide(testConfig())),
+			EdgeCacheServiceLive,
+		)
 		const services = Layer.mergeAll(
 			ApiKeysService.layer,
 			ErrorActorsService.layer,
@@ -655,7 +692,11 @@ describe("MCP HTTP authorization", () => {
 		// catalog was ~40% of a cold `initialize`. The server only reports `tools` once one is
 		// registered, so the transport has to state it, or clients would never list them.
 		const db = createTestDb(createdDbs)
-		const base = Layer.mergeAll(db.layer, Env.layer.pipe(Layer.provide(testConfig())))
+		const base = Layer.mergeAll(
+			db.layer,
+			Env.layer.pipe(Layer.provide(testConfig())),
+			EdgeCacheServiceLive,
+		)
 		const services = Layer.mergeAll(
 			ApiKeysService.layer,
 			ErrorActorsService.layer,
@@ -736,9 +777,13 @@ describe("MCP HTTP authorization", () => {
 })
 
 describe("MCP tools/list per credential", () => {
-	it("hides write tools from a read-only key and all but the dashboard tools from an analyst, in the isolate that shows them to a full key", async () => {
+	it("hides from each credential the tools its key or permissions refuse, in the isolate that shows them to a full key", async () => {
 		const db = createTestDb(createdDbs)
-		const base = Layer.mergeAll(db.layer, Env.layer.pipe(Layer.provide(testConfig())))
+		const base = Layer.mergeAll(
+			db.layer,
+			Env.layer.pipe(Layer.provide(testConfig())),
+			EdgeCacheServiceLive,
+		)
 		const services = Layer.mergeAll(
 			ApiKeysService.layer,
 			ErrorActorsService.layer,
@@ -748,7 +793,7 @@ describe("MCP tools/list per credential", () => {
 		).pipe(Layer.provideMerge(base))
 		const orgId = Schema.decodeSync(OrgId)("org_test")
 		const userId = Schema.decodeSync(UserId)("user_test")
-		const [full, readOnly, analyst] = await Effect.runPromise(
+		const [full, readOnly, analyst, member, telemetryOnly] = await Effect.runPromise(
 			Effect.gen(function* () {
 				const apiKeys = yield* ApiKeysService
 				return [
@@ -761,6 +806,20 @@ describe("MCP tools/list per credential", () => {
 					yield* apiKeys.create(orgId, userId, {
 						name: "Analyst's key",
 						metadataJson: { source: "maple_cli", roles: ["org:analyst"], deviceName: "laptop" },
+					}),
+					yield* apiKeys.create(orgId, userId, {
+						name: "Member's key",
+						metadataJson: { source: "maple_cli", roles: ["org:member"], deviceName: "laptop" },
+					}),
+					// A custom role's permissions are pinned on the key as codes.
+					yield* apiKeys.create(orgId, userId, {
+						name: "Custom role's key",
+						metadataJson: {
+							source: "maple_cli",
+							roles: ["org:custom"],
+							permissions: [...Policy.encodePermissions(["telemetry:read"])],
+							deviceName: "laptop",
+						},
 					}),
 				] as const
 			}).pipe(Effect.provide(services)),
@@ -791,6 +850,8 @@ describe("MCP tools/list per credential", () => {
 				dashboard: names.includes("create_dashboard"),
 				read: names.includes("inspect_trace"),
 				feedback: names.includes("send_maple_feedback"),
+				acknowledge: names.includes("acknowledge_alert_incident"),
+				sql: names.includes("run_sql"),
 			}
 		}
 		try {
@@ -800,6 +861,8 @@ describe("MCP tools/list per credential", () => {
 				dashboard: true,
 				read: true,
 				feedback: true,
+				acknowledge: true,
+				sql: true,
 			})
 			expect(await listFor(readOnly.secret)).toEqual({
 				status: 200,
@@ -807,6 +870,8 @@ describe("MCP tools/list per credential", () => {
 				dashboard: false,
 				read: true,
 				feedback: true,
+				acknowledge: false,
+				sql: true,
 			})
 			// An analyst builds dashboards and operates nothing else.
 			expect(await listFor(analyst.secret)).toEqual({
@@ -815,10 +880,203 @@ describe("MCP tools/list per credential", () => {
 				dashboard: true,
 				read: true,
 				feedback: true,
+				acknowledge: false,
+				sql: true,
+			})
+			// A member responds to incidents, and sets up no alerting.
+			expect(await listFor(member.secret)).toEqual({
+				status: 200,
+				write: false,
+				dashboard: true,
+				read: true,
+				feedback: true,
+				acknowledge: true,
+				sql: true,
+			})
+			// A custom role that only reads telemetry sees the read tools and changes nothing.
+			expect(await listFor(telemetryOnly.secret)).toEqual({
+				status: 200,
+				write: false,
+				dashboard: false,
+				read: true,
+				feedback: true,
+				acknowledge: false,
+				sql: false,
 			})
 		} finally {
 			await dispose()
 		}
+	})
+})
+
+describe("MCP retired tool names", () => {
+	it("run as the tool that replaced them, with what the old name stood for", async () => {
+		const calls: Array<{ readonly name: string; readonly input: unknown }> = []
+		const db = createTestDb(createdDbs)
+		const base = Layer.mergeAll(
+			db.layer,
+			Env.layer.pipe(Layer.provide(testConfig())),
+			EdgeCacheServiceLive,
+		)
+		const services = Layer.mergeAll(
+			ApiKeysService.layer,
+			ErrorActorsService.layer,
+			AuthService.layer,
+			makeMcpToolExecutorStubLayer((_tenant, name, input) =>
+				Effect.sync(() => {
+					calls.push({ name, input })
+					return {
+						content: [{ type: "text" as const, text: "ok" }],
+						structuredContent: { action: "delete", result: { deleted: true } },
+					}
+				}),
+			),
+			makeRateLimiterStubLayer(),
+		).pipe(Layer.provideMerge(base))
+		const key = await Effect.runPromise(
+			Effect.gen(function* () {
+				const apiKeys = yield* ApiKeysService
+				return yield* apiKeys.create(
+					Schema.decodeSync(OrgId)("org_test"),
+					Schema.decodeSync(UserId)("user_test"),
+					{ name: "Retired names test", kind: "mcp" },
+				)
+			}).pipe(Effect.provide(services)),
+		)
+		const { handler, dispose } = HttpRouter.toWebHandler(McpLive.pipe(Layer.provideMerge(services)), {
+			disableLogger: true,
+		})
+		const call = (id: number, name: string, args: Record<string, unknown>) =>
+			handler(
+				new Request("https://api.example.com/mcp", {
+					method: "POST",
+					headers: {
+						authorization: `Bearer ${key.secret}`,
+						accept: "application/json, text/event-stream",
+						"content-type": "application/json",
+						host: "api.example.com",
+						"x-forwarded-proto": "https",
+						"mcp-protocol-version": "2025-06-18",
+					},
+					body: JSON.stringify({
+						jsonrpc: "2.0",
+						id,
+						method: "tools/call",
+						params: { name, arguments: args },
+					}),
+				}),
+				Context.empty(),
+			)
+		try {
+			// A family's retired name is its action; a renamed tool keeps its arguments as sent.
+			const retired = await call(1, "delete_slo", { slo: "Checkout", confirm: true })
+			await call(2, "search_data_sources", { query: "payments" })
+			const family = await call(3, "manage_slo", { action: "update", slo: "Checkout" })
+			// A client holding the old tool list holds its output schema too: it gets that shape.
+			expect((await readBody(retired)).result?.structuredContent).toEqual({ deleted: true })
+			expect((await readBody(family)).result?.structuredContent).toEqual({
+				action: "delete",
+				result: { deleted: true },
+			})
+			expect(calls).toEqual([
+				{ name: "manage_slo", input: { slo: "Checkout", confirm: true, action: "delete" } },
+				{ name: "list_data_sources", input: { query: "payments" } },
+				{ name: "manage_slo", input: { action: "update", slo: "Checkout" } },
+			])
+		} finally {
+			await dispose()
+		}
+	})
+})
+
+describe("MCP data sources per org", () => {
+	it("lists the data source tools and names them in the instructions only for an org with data sources", async () => {
+		const db = createTestDb(createdDbs)
+		const base = Layer.mergeAll(
+			db.layer,
+			Env.layer.pipe(Layer.provide(testConfig())),
+			EdgeCacheServiceLive,
+		)
+		const services = Layer.mergeAll(
+			ApiKeysService.layer,
+			ErrorActorsService.layer,
+			AuthService.layer,
+			makeMcpToolExecutorStubLayer(),
+			makeRateLimiterStubLayer(),
+		).pipe(Layer.provideMerge(base))
+		const key = await Effect.runPromise(
+			Effect.gen(function* () {
+				const apiKeys = yield* ApiKeysService
+				return yield* apiKeys.create(
+					Schema.decodeSync(OrgId)("org_test"),
+					Schema.decodeSync(UserId)("user_test"),
+					{ name: "Data sources test", kind: "mcp" },
+				)
+			}).pipe(Effect.provide(services)),
+		)
+		const seenBy = async (flags: Layer.Layer<OrganizationFeatureFlagsService>) => {
+			const { handler, dispose } = HttpRouter.toWebHandler(
+				mcpLiveWithFeatureFlags(flags).pipe(Layer.provideMerge(services)),
+				{ disableLogger: true },
+			)
+			const post = (body: unknown) =>
+				handler(
+					new Request("https://api.example.com/mcp", {
+						method: "POST",
+						headers: {
+							authorization: `Bearer ${key.secret}`,
+							accept: "application/json, text/event-stream",
+							"content-type": "application/json",
+							host: "api.example.com",
+							"x-forwarded-proto": "https",
+							"mcp-protocol-version": "2025-06-18",
+						},
+						body: JSON.stringify(body),
+					}),
+					Context.empty(),
+				)
+			try {
+				const initialized = await readBody(
+					await post({
+						jsonrpc: "2.0",
+						id: 1,
+						method: "initialize",
+						params: {
+							protocolVersion: "2025-06-18",
+							capabilities: {},
+							clientInfo: { name: "test", version: "1.0.0" },
+						},
+					}),
+				)
+				const listed = await readBody(await post({ jsonrpc: "2.0", id: 2, method: "tools/list" }))
+				const names = Arr.map(listed.result?.tools ?? [], (tool) => tool.name)
+				return {
+					instructed: Str.includes("list_data_sources")(initialized.result?.instructions ?? ""),
+					listed: Arr.filter(names, (name) => Str.includes("data_source")(name)),
+					otherTools: names.includes("inspect_trace"),
+				}
+			} finally {
+				await dispose()
+			}
+		}
+		const fixed = OrganizationFeatureFlagsService.fixed
+		expect(await seenBy(fixed(ENABLED_ORGANIZATION_FEATURE_FLAGS))).toEqual({
+			instructed: true,
+			listed: ["list_data_sources", "query_data_source"],
+			otherTools: true,
+		})
+		expect(await seenBy(fixed(DISABLED_ORGANIZATION_FEATURE_FLAGS))).toEqual({
+			instructed: false,
+			listed: [],
+			otherTools: true,
+		})
+		// Flags that cannot be read hide nothing, since the session would never see the tools again;
+		// the instructions stay silent, and the tools themselves still refuse an org without them.
+		expect(await seenBy(OrganizationFeatureFlagsService.unreadable)).toEqual({
+			instructed: false,
+			listed: ["list_data_sources", "query_data_source"],
+			otherTools: true,
+		})
 	})
 })
 
@@ -835,7 +1093,11 @@ const ToolCallBody = Schema.Struct({
 describe("MCP tool call deadline", () => {
 	const setup = async (execute: McpToolExecutorApi["execute"]) => {
 		const db = createTestDb(createdDbs)
-		const base = Layer.mergeAll(db.layer, Env.layer.pipe(Layer.provide(testConfig())))
+		const base = Layer.mergeAll(
+			db.layer,
+			Env.layer.pipe(Layer.provide(testConfig())),
+			EdgeCacheServiceLive,
+		)
 		const services = Layer.mergeAll(
 			ApiKeysService.layer,
 			ErrorActorsService.layer,
@@ -973,7 +1235,11 @@ describe("MCP server spans", () => {
 			},
 		})
 		const db = createTestDb(createdDbs)
-		const base = Layer.mergeAll(db.layer, Env.layer.pipe(Layer.provide(testConfig())))
+		const base = Layer.mergeAll(
+			db.layer,
+			Env.layer.pipe(Layer.provide(testConfig())),
+			EdgeCacheServiceLive,
+		)
 		const services = Layer.mergeAll(
 			ApiKeysService.layer,
 			ErrorActorsService.layer,

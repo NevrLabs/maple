@@ -43,11 +43,11 @@ export function registerQueryDataSourceTool(server: McpToolRegistrar) {
 			"and a resource query's time filter and groups. " +
 			"The answer starts with the data source, its query language and the plan (the SQL as sent, or the API " +
 			"calls and rows it reads); `explain=true` returns only the plan without running anything. Call " +
-			"describe_data_source first for entry and field names. For Maple's own traces, logs and metrics use " +
+			"list_data_sources with `data_source` and `entries` first for entry and field names. For Maple's own traces, logs and metrics use " +
 			"run_sql or query_data instead.",
 		parameters: Schema.Struct({
 			data_source: P.text(
-				"Data source name (from list_data_sources or search_data_sources), e.g. shop-prod",
+				"Data source name (from list_data_sources), e.g. shop-prod",
 			),
 			sql: P.optionalText("One read-only SELECT, for database data sources"),
 			resource: P.optionalJson(
@@ -64,6 +64,7 @@ export function registerQueryDataSourceTool(server: McpToolRegistrar) {
 		}),
 		aliases: { source: "data_source", query: "sql" },
 		hints: { readOnly: true, openWorld: true },
+		permission: "data_sources:query",
 		scopeFamily: "data_sources",
 		phrases: ["Querying a data source", "Running a data source query"],
 		handler: Effect.fn("McpTool.queryDataSource")(function* (params) {

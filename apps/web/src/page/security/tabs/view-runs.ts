@@ -1,3 +1,5 @@
+import type { AiCardGate } from "@maple/domain/billing"
+import { aiCardAction } from "../../kit/billing/ai-card-gate"
 import type { SecurityAuditRun, SecurityAuditRunDetail, SecurityAuditTarget } from "@maple/domain/http"
 import { AsyncData } from "foldkit"
 import { countLabel } from "@maple/ui/lib/format"
@@ -42,7 +44,7 @@ import { BUCKET_LABEL, type BucketCounts, SCORED_BUCKETS } from "../kit/findings
 import { bucketDot } from "../kit/findings-view"
 import { meter } from "@maple/views/ui/meter"
 import { Message, type Model } from "./model"
-import { gatedControl } from "../../kit/session-grants"
+import { denialReason, gatedControl } from "../../kit/session-grants"
 import { listToolbar, toolbarCount } from "../../kit/list-toolbar"
 import { typography, typographyClass } from "@maple/views/ui/typography"
 import { hstack, vstack, vstackClass } from "@maple/views/ui/stack"
@@ -89,7 +91,7 @@ const findingsCell = (
 	counts: Readonly<{ buckets: BucketCounts; unverified: number }> | null,
 	run: SecurityAuditRun,
 ): Html => {
-	if (counts === null) return muted(h, "", "Findings are visible to org admins and engineers only")
+	if (counts === null) return muted(h, "", denialReason("security:manage"))
 	const { buckets, unverified } = counts
 	const shown = Arr.filter(SCORED_BUCKETS, (bucket) => buckets[bucket] > 0)
 	if (shown.length === 0) return muted(h, isLive(run) ? "" : "None")
@@ -268,26 +270,29 @@ const toolbar = (
 	})
 
 /** "Start run" for the target the list is narrowed to. */
-export const startRunAction = (h: H, model: Model): Html | undefined => {
+export const startRunAction = (h: H, model: Model, aiCardGate: AiCardGate | undefined): Html | undefined => {
 	const targetId = model.runsSearch.target
 	const found = Arr.findFirst(targetsOf(model), (candidate) => candidate.id === targetId)
 	if (Option.isNone(found)) return undefined
 	const target = found.value
 	const isRunning = Arr.some(runsForTarget(model, target.id), isLive)
+	// The permission denial wins: the card link only takes a start button the viewer could use.
 	return gatedControl(h, model, "security_audit:run", (isLocked) =>
-		button(
-			h,
-			{
-				size: "sm",
-				isLoading: model.startingTargetId === target.id,
-				isDisabled: isLocked || isRunning || model.startingTargetId !== null,
-				attributes: [
-					h.OnClick(Message.ClickedStartRun({ targetId: target.id })),
-					...(isRunning ? [h.Title("One audit runs per target at a time")] : []),
-				],
-			},
-			[icon(h, "MediaPlayIcon"), "Start run"],
-		),
+		aiCardGate !== undefined && !isLocked
+			? aiCardAction(h, aiCardGate)
+			: button(
+					h,
+					{
+						size: "sm",
+						isLoading: model.startingTargetId === target.id,
+						isDisabled: isLocked || isRunning || model.startingTargetId !== null,
+						attributes: [
+							h.OnClick(Message.ClickedStartRun({ targetId: target.id })),
+							...(isRunning ? [h.Title("One audit runs per target at a time")] : []),
+						],
+					},
+					[icon(h, "MediaPlayIcon"), "Start run"],
+				),
 	)
 }
 

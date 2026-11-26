@@ -1,6 +1,6 @@
 // Every MCP tool runtime service a test does not exercise: unimplemented mocks that die when
 // used, plus the real layers of the four services whose sync members a mock cannot stub.
-import { Layer } from "effect"
+import { Effect, Layer } from "effect"
 import { AuditLogService } from "@maple/backend/services/audit/AuditLogService"
 import { AgentFeedbackService } from "@maple/backend/services/feedback/AgentFeedbackService"
 import { AlertsService } from "@maple/backend/services/alerts/AlertsService"
@@ -16,6 +16,7 @@ import { AlertSilencesService } from "@maple/backend/services/alerts/AlertSilenc
 import { DashboardPersistenceService } from "@maple/backend/services/dashboards/DashboardPersistenceService"
 import { ErrorActorsService } from "@maple/backend/services/errors/ErrorActorsService"
 import { ErrorIssueReadModelsService } from "@maple/backend/services/errors/ErrorIssueReadModelsService"
+import { ErrorGroupingService } from "@maple/backend/services/errors/ErrorGroupingService"
 import { ErrorIssueMergeService } from "@maple/backend/services/errors/ErrorIssueMergeService"
 import { ErrorIssueWorkflowService } from "@maple/backend/services/errors/ErrorIssueWorkflowService"
 import { ErrorPolicyService } from "@maple/backend/services/errors/ErrorPolicyService"
@@ -33,10 +34,13 @@ import { SearchConsoleService } from "@maple/backend/services/integrations/Searc
 import { VcsCommitService } from "@maple/backend/services/integrations/vcs/VcsCommitService"
 import { VcsSourceService } from "@maple/backend/services/integrations/vcs/VcsSourceService"
 import { SetupAuditService } from "@maple/backend/services/org/SetupAuditService"
+import { IngestSetupService } from "@maple/backend/services/onboarding/IngestSetupService"
+import { OnboardingAgentRunService } from "@maple/backend/services/onboarding/OnboardingAgentRunService"
 import { UptimeMonitorsService } from "@maple/backend/services/uptime/UptimeMonitorsService"
 import { SlosService } from "@maple/backend/services/slos/SlosService"
 import { UsersReadService } from "@maple/backend/services/users/UsersReadService"
 import { AiSessionReadService } from "@maple/backend/services/ai-sessions/AiSessionReadService"
+import { AiEvaluationReadService } from "@maple/backend/services/ai-evaluations/AiEvaluationReadService"
 import { IngestRuleService } from "@maple/backend/services/org/IngestRuleService"
 import { OrganizationFeatureFlagsService } from "@maple/backend/services/org/OrganizationFeatureFlagsService"
 import { StatusPagesService } from "@maple/backend/services/status-pages/StatusPagesService"
@@ -50,6 +54,7 @@ import { SecurityAuditStore } from "@maple/backend/services/security-audit/Secur
 import { DependencyScanReader } from "@maple/backend/services/dependency-scan/DependencyScanService"
 import { RuntimeReleaseCatalog } from "@maple/backend/services/security/RuntimeReleaseCatalog"
 import { RuntimeAdvisoryCatalog } from "@maple/backend/services/security/RuntimeAdvisoryCatalog"
+import { DEFAULT_READ_HORIZON, RetentionService } from "@maple/backend/services/retention/RetentionService"
 import type { McpToolRuntimeRequirements } from "../../src/mcp/tools/runtime-services"
 
 export const unimplementedMcpToolServices = Layer.mergeAll(
@@ -70,6 +75,7 @@ export const unimplementedMcpToolServices = Layer.mergeAll(
 	Layer.mock(ErrorIssueReadModelsService)({}),
 	ErrorIssueWorkflowService.layer,
 	Layer.mock(ErrorIssueMergeService)({}),
+	Layer.mock(ErrorGroupingService)({}),
 	ErrorPolicyService.layer,
 	Layer.mock(ErrorsService)({}),
 	Layer.mock(InvestigationService)({}),
@@ -85,16 +91,21 @@ export const unimplementedMcpToolServices = Layer.mergeAll(
 	Layer.mock(VcsCommitService)({}),
 	Layer.mock(VcsSourceService)({}),
 	Layer.mock(SetupAuditService)({}),
+	Layer.mock(IngestSetupService)({}),
+	Layer.mock(OnboardingAgentRunService)({}),
 	Layer.mock(SlosService)({}),
 	Layer.mock(UptimeMonitorsService)({}),
 	Layer.mock(UsersReadService)({}),
 	Layer.mock(AiSessionReadService)({}),
+	Layer.mock(AiEvaluationReadService)({}),
 	Layer.mock(IngestRuleService)({}),
 	Layer.mock(StatusPagesService)({}),
 	Layer.mock(StatusPageSnapshotBuilder)({}),
 	Layer.mock(StatusPageCustomDomainsService)({}),
 	Layer.mock(OrganizationFeatureFlagsService)({}),
 	Layer.mock(RepoSandboxService)({}),
+	// Tools read the horizon to size a lookup: an org that set nothing, with no database behind it.
+	Layer.mock(RetentionService)({ readHorizon: () => Effect.succeed(DEFAULT_READ_HORIZON) }),
 	Layer.mock(QueryEngineService)({}),
 	Layer.mock(PromqlQueryService)({}),
 	SecurityAuditStore.layer,

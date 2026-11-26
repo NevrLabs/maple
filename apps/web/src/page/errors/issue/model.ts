@@ -3,8 +3,10 @@ import * as Policy from "@maple/domain/policy"
 import {
 	ErrorIssueAffectedUsersResponse,
 	ErrorIssueEventsResponse,
+	ErrorIssueGroupingResponse,
 	ErrorIssueId,
 	ErrorIssuePullRequestsResponse,
+	ErrorIssueSimilarResponse,
 	ErrorIssueVerificationsResponse,
 	GithubIntegrationStatus,
 	IssueEscalationAttemptsResponse,
@@ -19,6 +21,7 @@ import { LoadFailure } from "@maple/views/data/load-failure"
 import { TimeWindow } from "../../../data/time-range"
 import { ErrorIssueSearch } from "../../../route/search"
 import * as Combobox from "@maple/views/ui/combobox"
+import * as HoverCard from "@maple/views/ui/hover-card"
 import * as CopyButton from "@maple/views/ui/copy-button"
 import * as Dialog from "@maple/views/ui/dialog"
 import * as Menu from "@maple/views/ui/menu"
@@ -50,6 +53,22 @@ export const Model = Schema.Struct({
 	escalations: keyed(IssueEscalationAttemptsResponse),
 	anomalies: keyed(Schema.Array(V2AnomalyIncident)),
 	githubStatus: keyed(GithubIntegrationStatus),
+	/** The Grouping tab's fingerprints and why each is here, read once the tab opens on a loaded issue. */
+	grouping: keyed(ErrorIssueGroupingResponse),
+	/** Open issues that look like this one, under the fingerprints. */
+	similar: keyed(ErrorIssueSimilarResponse),
+	/** Fingerprints whose skipped frames are shown. */
+	openSkippedFrames: Schema.Array(Schema.String),
+	/** The stack trace's rows flipped from their default (the top app frame open, the rest closed). */
+	stackToggles: Schema.Array(Schema.String),
+	/** The symbolicated stack is swapped for the raw text as the SDK sent it. */
+	isShowingRawStack: Schema.Boolean,
+	/** The fingerprint being split out, while its detach is in flight. */
+	splittingHash: Schema.NullOr(Schema.String),
+	/** The similar issue being merged into this one, while the merge is in flight. */
+	mergingIssueId: Schema.NullOr(ErrorIssueId),
+	/** The last split or merge that failed: the fingerprint or issue it was for, and the server's message. */
+	groupingError: Schema.NullOr(Schema.Struct({ target: Schema.String, message: Schema.String })),
 	/** The issue rail mounted (inline, or in the sheet below `lg`): its attach dialog reads GitHub. */
 	isRightRailMounted: Schema.Boolean,
 	vcsPullRequests: keyed(VcsPullRequestsResponse),
@@ -61,6 +80,10 @@ export const Model = Schema.Struct({
 	issueIdCopy: CopyButton.Model,
 	/** The agent handoff panel's "Copy prompt". */
 	promptCopy: CopyButton.Model,
+	/** The occurrences table's "Copy setup prompt", for errors with no release or user. */
+	setupPromptCopy: CopyButton.Model,
+	/** The card that explains the release and user attributes, on the setup foot. */
+	setupCard: HoverCard.Model,
 	chart: Chart.Model,
 	...ChartEnvFields,
 	/** The rail writes in flight, one entry per write kind. */
@@ -89,3 +112,6 @@ export const Model = Schema.Struct({
 	isReloading: Schema.Boolean,
 })
 export type Model = typeof Model.Type
+
+/** The setup card's id on the occurrences table's foot. */
+export const SETUP_CARD_ID = "issue-setup-card"

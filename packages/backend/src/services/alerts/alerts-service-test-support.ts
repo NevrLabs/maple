@@ -1,9 +1,15 @@
+import * as Policy from "@maple/domain/policy"
 // Shared fixtures for the AlertsService suites, split across files so CI can shard them.
 // BOUNDARY-FILE: Test doubles preserve opaque values so the consuming boundary can be exercised.
 import { LiveActivitiesService } from "@maple/backend/services/push/LiveActivitiesService"
 import { MobileDevicesService } from "@maple/backend/services/push/MobileDevicesService"
 import { ApnsClient } from "@maple/backend/platform/Apns"
-import { MobilePushService, type IncidentPushEvent } from "@maple/backend/services/push/MobilePushService"
+import {
+	MobilePushService,
+	type IncidentPushEvent,
+	type MemberPagePush,
+} from "@maple/backend/services/push/MobilePushService"
+import { OrgMembershipService } from "@maple/backend/services/auth/OrgMembershipService"
 import { ChatAlertPoster } from "./ChatAlertPoster"
 import {
 	Cause,
@@ -205,6 +211,13 @@ export interface TestOverrides extends Partial<AlertRuntimeApi> {
 	readonly chatSessions?: ChatSessionsApi
 	/** Records every incident push instead of sending it through the real push service. */
 	readonly pushes?: Array<IncidentPushEvent>
+	/** Records every page pushed to a member's phones; `memberPagesFail`: Apple calls their token dead. */
+	readonly memberPages?: Array<MemberPagePush>
+	readonly memberPagesFail?: boolean
+	/** The deployment has no push credentials: a page reports that nothing was tried. */
+	readonly memberPagesUnconfigured?: boolean
+	/** Read on every page: while `down`, Apple cannot be reached and the send fails. */
+	readonly memberPagesApple?: { down: boolean }
 }
 
 export const DEFAULT_CLOCK_EPOCH_MS = 1_700_000_000_000
@@ -260,23 +273,44 @@ export const makeLayer = (
 	chatAlertPoster: Layer.Layer<ChatAlertPoster, never, Database | Env> = ChatAlertPoster.layer,
 	members: ReadonlyArray<OrgMember> = TEST_ORG_MEMBERS,
 ) => {
-	const { fetch: fetchImpl = globalThis.fetch, chatSessions, pushes, ...runtimeOverrides } = overrides
+	const {
+		fetch: fetchImpl = globalThis.fetch,
+		chatSessions,
+		pushes,
+		memberPages,
+		memberPagesFail,
+		memberPagesUnconfigured,
+		memberPagesApple,
+		...runtimeOverrides
+	} = overrides
 	const noPushes = { sent: 0, failed: 0, unregistered: 0, skipped: 0 }
 	const mobilePushLive =
-		pushes === undefined
+		pushes === undefined && memberPages === undefined
 			? Layer.effect(MobilePushService, MobilePushService.make).pipe(
 					Layer.provide(
 						Layer.mergeAll(
 							ApnsClient.layer,
 							MobileDevicesService.layer,
 							LiveActivitiesService.layer,
+							Layer.mock(OrgMembershipService)({ directory: "none" }),
 						),
 					),
 				)
 			: Layer.succeed(MobilePushService, {
 					notifyIncident: (event) =>
-						Effect.sync(() => pushes.push(event)).pipe(Effect.as(noPushes)),
+						Effect.sync(() => pushes?.push(event)).pipe(Effect.as(noPushes)),
 					notifyIncidentDigest: () => Effect.succeed(noPushes),
+					pageMember: (page) =>
+						Effect.sync(() => memberPages?.push(page)).pipe(
+							Effect.as({
+								...noPushes,
+								...(memberPagesApple?.down === true ? { failed: 1 } : undefined),
+								sent: memberPagesFail === true || memberPagesApple?.down === true ? 0 : 1,
+								unregistered:
+									memberPagesFail === true && memberPagesUnconfigured !== true ? 1 : 0,
+								configured: memberPagesUnconfigured !== true,
+							}),
+						),
 					refreshWidgets: () => Effect.succeed(noPushes),
 				})
 	const configLive = makeConfig()
@@ -334,6 +368,7 @@ export const makeLayer = (
 
 	const memberNotifierLive = Layer.effect(AlertMemberNotifier, AlertMemberNotifier.make).pipe(
 		Layer.provide(chatAlertPoster),
+		Layer.provide(mobilePushLive),
 		Layer.provide(Layer.mergeAll(envLive, databaseLive, runtimeLive, emailLive, orgMembersLive)),
 	)
 	const alertsLive = Layer.effect(AlertsService, AlertsService.make).pipe(
@@ -411,8 +446,8 @@ export const asOrgId = Schema.decodeUnknownSync(OrgId)
 export const asUserId = Schema.decodeUnknownSync(UserId)
 export const asRoleName = Schema.decodeUnknownSync(RoleName)
 
-export const adminRoles = [asRoleName("root")]
-export const memberRoles = [asRoleName("org:member")]
+export const adminGrants = Policy.grantsOf([asRoleName("root")])
+export const memberGrants = Policy.grantsOf([asRoleName("org:member")])
 
 export const createWebhookDestination = (
 	alerts: AlertServices,
@@ -422,7 +457,7 @@ export const createWebhookDestination = (
 	alerts.createDestination(
 		orgId,
 		userId,
-		adminRoles,
+		adminGrants,
 		new WebhookAlertDestinationConfig({
 			type: "webhook",
 			name: "Primary webhook",
@@ -444,7 +479,7 @@ export const createErrorRateRule = (
 	alerts.createRule(
 		orgId,
 		userId,
-		adminRoles,
+		adminGrants,
 		new AlertRuleUpsertRequest({
 			name,
 			severity: "critical",

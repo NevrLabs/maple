@@ -5,6 +5,7 @@ import {
 	type TenantContext,
 } from "@maple/domain/http"
 import { ownBillingCustomer } from "@maple/backend/services/billing/billing-customer"
+import { isActivePlanSubscription, TRIAL_PLAN_ID } from "@maple/domain/billing"
 import type { OrgId } from "@maple/primitives"
 import {
 	emptyOnboardingChecklistInputs,
@@ -16,7 +17,7 @@ import {
 	onboardingRewardWindowOpen,
 	OnboardingRewardNotClaimableError,
 } from "@maple/domain/onboarding-checklist"
-import { EdgeCacheService } from "@maple/cache"
+import { EdgeCacheService, sharedAcrossPartitions } from "@maple/cache"
 import { Clock, Context, Effect, Layer, Option, Array as Arr } from "effect"
 import { AlertDestinationsService } from "@maple/backend/services/alerts/AlertDestinationsService"
 import { AlertRulesService } from "@maple/backend/services/alerts/AlertRulesService"
@@ -84,7 +85,8 @@ export interface OnboardingChecklistServiceApi {
 }
 
 const make = Effect.gen(function* () {
-	const edgeCache = yield* EdgeCacheService
+	// Shared by every caller of the org, so never filed under a caller's cache partition.
+	const edgeCache = yield* Effect.map(EdgeCacheService, sharedAcrossPartitions)
 	const organizations = yield* OrganizationService
 	const onboarding = yield* OnboardingService
 	const signals = yield* SignalPresenceService
@@ -161,6 +163,21 @@ const make = Effect.gen(function* () {
 		const orgId = tenant.orgId
 		const { channel, ...inputs } = yield* Effect.all(
 			{
+				cardAdded: degrade(
+					orgId,
+					"add_card",
+					false,
+					autumn.getOrCreateCustomer(ownBillingCustomer(orgId), { expand: [] }).pipe(
+						Effect.flatMap(classifyAutumn),
+						Effect.flatMap((body) => decodeUpstream(BillingCustomer, body)),
+						Effect.map((customer) =>
+							Arr.some(
+								customer.subscriptions,
+								(sub) => isActivePlanSubscription(sub) && sub.planId !== TRIAL_PLAN_ID,
+							),
+						),
+					),
+				),
 				channel: degrade(
 					orgId,
 					"join_slack_channel",
@@ -177,7 +194,7 @@ const make = Effect.gen(function* () {
 					"send_telemetry",
 					false,
 					signals
-						.read(tenant)
+						.read(tenant, { excludeTestTrace: true })
 						.pipe(
 							Effect.map((report) =>
 								Arr.some(
@@ -336,6 +353,14 @@ const make = Effect.gen(function* () {
 			yield* release
 			return yield* new OnboardingRewardNotClaimableError({
 				message: "Start a plan before claiming the reward.",
+				reason: "no_subscription",
+			})
+		}
+		// The no-card trial has no Stripe subscription to discount: the card comes first.
+		if (planId.value === TRIAL_PLAN_ID) {
+			yield* release
+			return yield* new OnboardingRewardNotClaimableError({
+				message: "Add a card to claim the reward. It comes off your first invoice.",
 				reason: "no_subscription",
 			})
 		}

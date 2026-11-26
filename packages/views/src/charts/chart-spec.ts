@@ -116,18 +116,6 @@ export const ChartSpec = defineTaggedUnion({
 		useLogY: Schema.Boolean,
 		showTooltip: Schema.Boolean,
 	},
-	/** The services table's trend line. */
-	Sparkline: {
-		values: Schema.Array(Schema.Number),
-		color: Schema.String,
-		gradientId: Schema.String,
-		fillStart: Schema.Number,
-		fillEnd: Schema.Number,
-		/** Bumped when the data arrives again: every new result rebuilds the definition. */
-		revision: Schema.Number,
-		/** Absent is linear. */
-		curve: Schema.optionalKey(Schema.Literals(["linear", "monotone"])),
-	},
 	/**
 	 * The query-builder area chart (unstacked, linear): the query's rows as returned, the resolved colour
 	 * per series key (`s1..sN`), and the clock that decides the in-flight tail.
@@ -139,6 +127,8 @@ export const ChartSpec = defineTaggedUnion({
 		colors: Schema.Record(Schema.String, Schema.String),
 		/** Series keys the legend hid: not painted, and not on the y axis. */
 		hidden: Schema.Array(Schema.String),
+		/** Tooltip names by series key, when the key is an identity ("A") rather than text to show. */
+		seriesLabels: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
 		fallbackColor: Schema.String,
 		chrome: Schema.Struct({ border: Schema.String, background: Schema.String }),
 		unit: Nullable(Schema.String),
@@ -180,11 +170,13 @@ export const ChartSpec = defineTaggedUnion({
 		/** `per_second`: rate values are already per second (PromQL); absent divides by the bucket. */
 		rateBasis: Schema.optionalKey(Schema.Literals(["per_bucket", "per_second"])),
 	},
-	/** An issue's occurrences: bucketed counts as bars. */
+	/** An issue's occurrences: bucketed counts as bars, under its history (regressions, fixes). */
 	Occurrences: {
 		points: Schema.Array(Schema.Struct({ bucket: Schema.String, count: Schema.Number })),
 		color: Schema.String,
 		timeZone: Schema.String,
+		markers: Schema.optionalKey(Schema.Array(ChartEventMarker)),
+		markerColors: Schema.optionalKey(MarkerColors),
 	},
 	/** The /logs severity histogram, stacked per bucket, with its drag selection. */
 	LogsVolume: {
@@ -445,6 +437,10 @@ export const ChartSpec = defineTaggedUnion({
 		yDomain: Schema.Array(Schema.String),
 		/** The y tick text per category, already shortened and truncated into the gutter. */
 		yLabels: Schema.Record(Schema.String, Schema.String),
+		/** The x tick text per category (time columns read as clock times); absent is the raw value. */
+		xLabels: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
+		/** The x labels are already spaced at an even step (blank between), so the axis does not thin them. */
+		xLabelsSpaced: Schema.optionalKey(Schema.Boolean),
 		margin: Nullable(
 			Schema.Struct({
 				top: Schema.Number,

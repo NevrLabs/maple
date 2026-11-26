@@ -10,6 +10,7 @@ import { V2AlertMaintenanceWindowsApiGroup } from "./alert-maintenance-windows"
 import { V2AlertRulesApiGroup } from "./alert-rules"
 import { V2ApiKeysApiGroup } from "./api-keys"
 import { V2AttributeMappingsApiGroup } from "./attribute-mappings"
+import { V2SourceMapsApiGroup } from "./source-maps"
 import { V2AuditLogApiGroup } from "./audit-log"
 import { V2DashboardsApiGroup } from "./dashboards"
 import { V2DataSourcesApiGroup } from "./data-sources"
@@ -27,6 +28,7 @@ import { V2AgentFeedbackApiGroup } from "./agent-feedback"
 import { V2MobileDevicesApiGroup } from "./mobile-devices"
 import { V2McpConnectionsApiGroup } from "./mcp-connections"
 import { V2OnboardingChecklistApiGroup } from "./onboarding-checklist"
+import { V2OnboardingAgentRunApiGroup } from "./onboarding-agent-run"
 import { V2OrganizationApiGroup } from "./organization"
 import { V2InstrumentationRecommendationsApiGroup } from "./recommendations"
 import { V2ScrapeTargetsApiGroup } from "./scrape-targets"
@@ -123,6 +125,7 @@ export class MapleApiV2 extends HttpApi.make("MapleApiV2")
 	.add(V2AwsIntegrationsApiGroup)
 	.add(V2ErrorIssuesApiGroup)
 	.add(V2AttributeMappingsApiGroup)
+	.add(V2SourceMapsApiGroup)
 	.add(V2DataSourcesApiGroup)
 	.add(V2IngestRulesApiGroup)
 	.add(V2AuditLogApiGroup)
@@ -138,6 +141,7 @@ export class MapleApiV2 extends HttpApi.make("MapleApiV2")
 	.add(V2AnomaliesApiGroup)
 	.add(V2OrganizationApiGroup)
 	.add(V2OnboardingChecklistApiGroup)
+	.add(V2OnboardingAgentRunApiGroup)
 	.add(V2SupportChannelApiGroup)
 	.add(V2MobileDevicesApiGroup)
 	.add(V2McpConnectionsApiGroup)
@@ -179,7 +183,10 @@ export class MapleApiV2 extends HttpApi.make("MapleApiV2")
 				],
 				"\n",
 			),
-			servers: [{ url: "https://api.maple.dev", description: "Production" }],
+			servers: [
+				{ url: "https://api.maple.dev", description: "Production" },
+				{ url: "https://api.eu.maple.dev", description: "Production, EU region" },
+			],
 			// `info.contact` and top-level `externalDocs` have no dedicated annotation
 			// key (they are not in `OpenAPISpecInfo`), so inject them via the api-level
 			// spec transform, which receives the whole generated document.

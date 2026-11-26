@@ -33,7 +33,10 @@ only shrink (`bun run ui:patterns:check` in CI). The workflow is in `apps/web/CL
 
 - A form, editor or step flow pins its actions in the kit `actionBar`: a floating card at the bottom
   of the scroll area, status or Back on the left, buttons on the right, primary last. The settings
-  `saveBar` is an `actionBar` that shows while edits are unsaved. A hand-built sticky bottom bar is
+  `saveBar` is the `pill` shape of `actionBar`: a compact, centred float that shows while edits
+  are unsaved, with Mod+S to save. Every unsaved-edits bar is `saveBar` (`changeCount`, `context`
+  and `saveLabel` cover the variations); an `actionBar` labelled "Unsaved changes" is flagged
+  (`maple/one-save-bar`). A hand-built sticky bottom bar is
   flagged (`maple/no-handrolled-kit-look`).
 - A side sheet's width is its `size`, picked by what it holds: `default` a filter list or a few
   fields, `detail` a peek at one item, `form` a create or edit form, `wide` a log, review or guide,
@@ -75,11 +78,13 @@ Depth comes from surfaces and the hairline. The only shadows are tokens, colour 
 | ------------------------------------------------- | --------------------------------------------------------------------- |
 | `shadow-raised`                                   | A control or card lifted off its surface                              |
 | `shadow-popup`                                    | Menus, popovers, selects, dialogs, sheets, toasts                     |
+| `shadow-float`                                    | A bar floating over its page (the `actionBar` pill), deep in dark     |
 | `shadow-control`                                  | A control's 1px highlight (a shade in light, a line of light in dark) |
 | `shadow-accent-start`                             | The current row's leading accent bar                                  |
 | `shadow-overflow-up`                              | A sticky footer over scrolled content                                 |
 | `shadow-rule-bottom`                              | A sticky table header's bottom rule                                   |
 | `shadow-backdrop-below`                           | The surface continued under a floating action bar                     |
+| `shadow-key`                                      | A keycap (`kbd`): ring, lit top edge, bottom lip, 1px drop            |
 | `inset-shadow-highlight` / `inset-shadow-pressed` | A filled button at rest / pressed                                     |
 
 Corners come from the radius scale (`maple/no-arbitrary-radius`). A fill inset 1px inside a
@@ -143,10 +148,9 @@ instead. Only a reveal (`opacity-0` → `opacity-100`) sets opacity (`maple/no-d
 
 ## Waiting
 
-A skeleton, bar or chart ghost, stays blank for `--loading-delay` (300ms), then fades in over 150ms,
-so a fast load never flashes one; every sweep runs on one clock (`syncSkeletonSweeps`). A navigation
-keeps the page left on screen while the next has nothing to show, for up to 300ms; the next page
-then skips the delay (`page/page-hold.ts`). Every tooltip waits the one open delay, `Tooltip.OPEN_DELAY`
+A skeleton, bar or chart ghost, shows at once, with no delay or fade-in; every sweep runs on one
+clock (`syncSkeletonSweeps`). A navigation draws the page entered at once, never holding the page
+left while it loads. Every tooltip waits the one open delay, `Tooltip.OPEN_DELAY`
 (`maple/single-tooltip-delay`).
 
 ## Copy
