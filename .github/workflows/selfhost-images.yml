@@ -16,7 +16,7 @@ on:
             source:
                 description: "Full commit SHA of the fork source to build"
                 required: true
-                default: "fd23f5f069e5ff3f4fa52f11c739075a5a649a54"
+                default: "8ee1fcc57cb04d5e12cfc75c099ac96548487380"
                 type: string
             flavor:
                 description: "Web build flavor (VITE_* flag set)"
@@ -29,7 +29,7 @@ permissions:
     contents: read
 
 concurrency:
-    group: selfhost-images-${{ inputs.source || 'fd23f5f069e5ff3f4fa52f11c739075a5a649a54' }}-${{ inputs.flavor || 'noovoleum' }}
+    group: selfhost-images-${{ inputs.source || '8ee1fcc57cb04d5e12cfc75c099ac96548487380' }}-${{ inputs.flavor || 'noovoleum' }}
     cancel-in-progress: false
 
 jobs:
@@ -49,7 +49,7 @@ jobs:
             - name: Resolve source + image name
               id: meta
               env:
-                  SOURCE: ${{ inputs.source || 'fd23f5f069e5ff3f4fa52f11c739075a5a649a54' }}
+                  SOURCE: ${{ inputs.source || '8ee1fcc57cb04d5e12cfc75c099ac96548487380' }}
                   IMAGE: ${{ matrix.image }}
               run: |
                   set -euo pipefail
@@ -66,7 +66,7 @@ jobs:
 
             - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
               with:
-                  ref: ${{ inputs.source || 'fd23f5f069e5ff3f4fa52f11c739075a5a649a54' }}
+                  ref: ${{ inputs.source || '8ee1fcc57cb04d5e12cfc75c099ac96548487380' }}
                   persist-credentials: false
 
             - name: Toolchain and dependencies (bun)
@@ -130,7 +130,7 @@ jobs:
                   if grep -lE '//192\.168\.|192\.168\.[0-9.]+:[0-9]+' apps/web/dist/assets/*.js; then echo "::error::homelab URL in bundle"; exit 1; fi
                   grep -lqF "$VITE_INGEST_URL" apps/web/dist/assets/*.js || { echo "::error::ingest URL missing"; exit 1; }
                   mkdir -p "$C"
-                  cp -r apps/web/dist "$C/dist"; cp apps/web/nginx.conf "$C/"
+                  cp -r apps/web/dist "$C/dist"; cp apps/selfhost/compose/web-nginx.conf "$C/nginx.conf"
                   cat > "$C/Dockerfile" <<'EOF'
                   FROM nginx:alpine
                   COPY dist /usr/share/nginx/html
@@ -151,6 +151,14 @@ jobs:
                     -v "$RUNNER_TEMP/go:/go" -v "$C:/out" -w /tmp golang:1.26-alpine sh -c '
                       set -e; mkdir -p /tmp/b/packages && cp /work/otel/builder-config.yaml /tmp/b/ && cp -r /work/packages/otel-collector-maple-exporter /tmp/b/packages/
                       cd /tmp/b
+                      # As build-images.sh: the exporter go.mod lifts otel past what collector v0.151 compiles against.
+                      printf "%s\n" \
+                        "    - go.opentelemetry.io/otel => go.opentelemetry.io/otel v1.45.0" \
+                        "    - go.opentelemetry.io/otel/metric => go.opentelemetry.io/otel/metric v1.45.0" \
+                        "    - go.opentelemetry.io/otel/trace => go.opentelemetry.io/otel/trace v1.45.0" \
+                        "    - go.opentelemetry.io/otel/sdk => go.opentelemetry.io/otel/sdk v1.45.0" \
+                        "    - go.opentelemetry.io/otel/sdk/metric => go.opentelemetry.io/otel/sdk/metric v1.45.0" \
+                        "    - go.opentelemetry.io/otel/log => go.opentelemetry.io/otel/log v0.19.0" >> builder-config.yaml
                       CGO_ENABLED=0 go install go.opentelemetry.io/collector/cmd/builder@v0.151.0
                       CGO_ENABLED=0 /go/bin/builder --config=builder-config.yaml >/tmp/ocb.log 2>&1 || { tail -40 /tmp/ocb.log; exit 1; }
                       cp bin/otel-collector-maple /out/'
@@ -206,7 +214,7 @@ jobs:
                   outputs: type=image,name=${{ steps.meta.outputs.name }},push-by-digest=true,name-canonical=true,push=true
                   labels: |
                       org.opencontainers.image.source=https://github.com/${{ github.repository }}
-                      org.opencontainers.image.revision=${{ inputs.source || 'fd23f5f069e5ff3f4fa52f11c739075a5a649a54' }}
+                      org.opencontainers.image.revision=${{ inputs.source || '8ee1fcc57cb04d5e12cfc75c099ac96548487380' }}
                   provenance: false
 
             - name: Export digest
@@ -239,7 +247,7 @@ jobs:
             - name: Resolve image name + tag
               id: meta
               env:
-                  SOURCE: ${{ inputs.source || 'fd23f5f069e5ff3f4fa52f11c739075a5a649a54' }}
+                  SOURCE: ${{ inputs.source || '8ee1fcc57cb04d5e12cfc75c099ac96548487380' }}
                   FLAVOR: ${{ inputs.flavor || 'noovoleum' }}
                   IMAGE: ${{ matrix.image }}
               run: |
@@ -302,7 +310,7 @@ jobs:
 
             - name: Run images
               env:
-                  SOURCE: ${{ inputs.source || 'fd23f5f069e5ff3f4fa52f11c739075a5a649a54' }}
+                  SOURCE: ${{ inputs.source || '8ee1fcc57cb04d5e12cfc75c099ac96548487380' }}
                   FLAVOR: ${{ inputs.flavor || 'noovoleum' }}
               run: |
                   set -euo pipefail
