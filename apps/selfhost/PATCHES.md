@@ -488,3 +488,23 @@ and AWS hourly rows survive. **Change (no upstream source touched):**
 Hour >= now() - INTERVAL 2 HOUR` > 0; rehearsal `.hermes/plans/maple-metrics-rollup-rehearsal.sh` (rollup equals
 raw across two inserts and a merge). If an upstream migration recreates a raw or rollup table, re-run
 `ch-retention` and the recalculation for that table.
+
+## #22 — AWS cost shows gross usage; credits are rows of their own (upstream source touched)
+
+**Why:** Cost Explorer nets credits into each service's `UnblendedCost`, so an account paid by promotional
+credits reads near zero (Noovoleum: ~$3.2k/month usage, ~$2.3k/month credits, Cloud Cost showed the ~$0.9k net).
+**Change:** `packages/backend/src/services/cost/providers/aws/`
+- `cost-explorer.ts` — the by-region and by-usage-type pulls filter `Not RECORD_TYPE=Credit`; one more request
+  per pull reads `RECORD_TYPE=Credit` by SERVICE x REGION.
+- `normalize.ts` — `creditRows`: negative `chargeCategory: "credit"` rows under cloud service and category
+  `Credits`, the credited service as usage type (under their own service they would net back in, as before).
+- `fake-cost-explorer.ts` — understands `Not`/`And`/`RECORD_TYPE`; tests prove usage stays gross and all rows
+  still sum to the billed net.
+
+Cost per pull: 1 request more (about +1 Cost Explorer request a day, $0.01). Rows synced before this stay net
+until their days are re-pulled (head 4 days, weekly settle of the open months; reset the source's
+`backfill_date` to re-pull older history).
+
+**Verify after rebase:** the `src/services/cost/providers/aws` tests in `packages/backend`; on a credited
+account, Cloud Cost grouped by service shows `Credits` negative and the rest matching Cost Explorer with
+`RECORD_TYPE != Credit`.

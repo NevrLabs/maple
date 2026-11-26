@@ -15,6 +15,7 @@ import { type CostPullRow, type CostPullWindow, CostProviderError } from "../../
 import {
 	type CostExplorerResult,
 	costExplorerPeriod,
+	creditRows,
 	detailedRegions,
 	parseGroups,
 	serviceRows,
@@ -30,6 +31,14 @@ const MIN_PAGE_CAP = 20
 const PAGES_PER_DAY = 2
 const pageCap = (days: number) => Math.max(MIN_PAGE_CAP, days * PAGES_PER_DAY)
 const METRICS = ["UnblendedCost", "AmortizedCost", "UsageQuantity"]
+
+// Cost Explorer nets credits into each service's cost: a fully credited account reads near zero.
+// Usage is read without them and the credits on their own (one more request a pull), so a service
+// shows what it cost and the credits that paid for it are rows of their own.
+const recordType = (values: Array<string>): CE.Expression => ({
+	Dimensions: { Key: "RECORD_TYPE", Values: values },
+})
+const withoutCredits = (): CE.Expression => ({ Not: recordType(["Credit"]) })
 
 // The SDK's default patience (8 retries, about 20s) outlasts the timeout, and a retry is a request.
 const RETRY: Retry.Options = {
@@ -109,7 +118,8 @@ export const pullCostExplorer = (
 					kind: "client",
 					attributes: {
 						"peer.service": "aws-cost-explorer",
-						"maple.cost.aws.filtered_region": input.Filter?.Dimensions?.Values?.[0] ?? "",
+						"maple.cost.aws.filtered_region":
+							input.Filter?.And?.[0]?.Dimensions?.Values?.[0] ?? "",
 						"maple.cost.aws.page": input.NextPageToken === undefined ? "first" : "next",
 					},
 				}),
@@ -155,6 +165,7 @@ export const pullCostExplorer = (
 				{ Type: "DIMENSION", Key: "SERVICE" },
 				{ Type: "DIMENSION", Key: "REGION" },
 			],
+			Filter: withoutCredits(),
 		})
 		const candidates = detailedRegions(byRegion, period.value.days)
 		const pulled = yield* Effect.forEach(candidates, (region) =>
@@ -165,19 +176,30 @@ export const pullCostExplorer = (
 						{ Type: "DIMENSION", Key: "SERVICE" },
 						{ Type: "DIMENSION", Key: "USAGE_TYPE" },
 					],
-					Filter: { Dimensions: { Key: "REGION", Values: [region] } },
+					Filter: { And: [{ Dimensions: { Key: "REGION", Values: [region] } }, withoutCredits()] },
 				}),
 				(groups) => ({ region, groups }),
 			),
 		)
+		const credits = yield* groupsOf({
+			...base,
+			GroupBy: [
+				{ Type: "DIMENSION", Key: "SERVICE" },
+				{ Type: "DIMENSION", Key: "REGION" },
+			],
+			Filter: recordType(["Credit"]),
+		})
 		// A region whose filtered pull holds other money than its service-level rows keeps those.
 		const detailed = Arr.filter(pulled, ({ region, groups }) => usageReconciles(groups, byRegion, region))
 		const regions = Arr.map(detailed, ({ region }) => region)
 		const requests = yield* Ref.get(sent)
 		return {
 			rows: Arr.appendAll(
-				Arr.flatMap(detailed, ({ region, groups }) => usageRows(groups, accountId, region)),
-				serviceRows(byRegion, accountId, regions),
+				Arr.appendAll(
+					Arr.flatMap(detailed, ({ region, groups }) => usageRows(groups, accountId, region)),
+					serviceRows(byRegion, accountId, regions),
+				),
+				creditRows(credits, accountId),
 			),
 			requests,
 			detailedRegions: regions,

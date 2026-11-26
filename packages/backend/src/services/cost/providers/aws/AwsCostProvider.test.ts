@@ -104,8 +104,8 @@ describe("AwsCostProvider", () => {
 			const connection = yield* connect(world)
 			const pulled = yield* pull({ orgId, connectionRef: connection.id })
 
-			assert.strictEqual(pulled.requests, 4)
-			assert.lengthOf(world.costExplorer.requests, 4)
+			assert.strictEqual(pulled.requests, 5)
+			assert.lengthOf(world.costExplorer.requests, 5)
 			assert.closeTo(
 				Num.sumAll(Arr.map(pulled.rows, (row) => row.billedCost)),
 				Num.sumAll(Arr.map(FIXTURE_ITEMS, (item) => item.cost)),
@@ -208,7 +208,7 @@ describe("AwsCostProvider", () => {
 			assert.lengthOf(world.costExplorer.requests, 0)
 			// Granted again, the same connection is pulled.
 			yield* setGranted(world, revoked.id, ["cost"])
-			assert.strictEqual((yield* pull({ orgId, connectionRef: revoked.id })).requests, 4)
+			assert.strictEqual((yield* pull({ orgId, connectionRef: revoked.id })).requests, 5)
 		}).pipe(Effect.provide(world.layer))
 	})
 
