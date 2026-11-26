@@ -38,7 +38,7 @@ describe("the status card", () => {
 		expect(card.headline).toBe("We're fully operational")
 		expect(card.details).toEqual([])
 		expect(card.days).toHaveLength(90)
-		expect(card.uptime).toBe("100%")
+		expect(card.uptime).toBe("99.86%")
 	})
 
 	it("names active incidents, counting the ones that do not fit", () => {
@@ -71,7 +71,7 @@ describe("the status card", () => {
 		const card = statusOgCard(snapshot, live, null)
 		expect(card.days.at(-1)).toBe("down")
 		expect(card.days.at(0)).toBe("ok")
-		expect(card.uptime).toBe("99.98%")
+		expect(card.uptime).toBe("99.82%")
 	})
 
 	it("marks the days a component's incidents touched, as the page's bars do", () => {
@@ -103,7 +103,7 @@ describe("the status card", () => {
 	it("counts uptime over the 90 days it shows, not the year the snapshot carries", () => {
 		const year = makeDays(FIXTURE_NOW, { 0: "down", 1: "down" }, 365)
 		const snapshot = makeSnapshot({ components: [makeComponent(0, { days: year })] })
-		expect(statusOgCard(snapshot, live, null).uptime).toBe("100%")
+		expect(statusOgCard(snapshot, live, null).uptime).toBe("99.86%")
 	})
 
 	it("draws no uptime strip for components that record no days, as the page does", () => {

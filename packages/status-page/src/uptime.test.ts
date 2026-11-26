@@ -26,12 +26,11 @@ describe("renderUptimeJson", () => {
 				id: fixtureComponentId(0),
 				name: "API",
 				group: "Platform",
-				// Selfhost fork (PATCHES #11): every failed check counts against uptime, so 33 of
-				// 4320 checks (3 degraded-day failures + 30 down) — upstream counted only the 30 down.
-				uptime_percent: 99.2361,
+				// PATCHES #11: 104 failed checks out of 4320 (2 + 72 + 30).
+				uptime_percent: 97.5925,
 				days: [
-					{ date: "2026-10-26", uptime_percent: 100, status: "operational" },
-					{ date: "2026-10-27", uptime_percent: 99.7916, status: "degraded" },
+					{ date: "2026-10-26", uptime_percent: 99.8611, status: "operational" },
+					{ date: "2026-10-27", uptime_percent: 95, status: "degraded" },
 					{ date: "2026-10-28", uptime_percent: 97.9166, status: "down" },
 				],
 			},

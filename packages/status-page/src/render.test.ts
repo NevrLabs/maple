@@ -143,8 +143,8 @@ describe("renderPage", () => {
 			day: "2026-10-28",
 			title: "Oct 28, 2026: Down during 30 of 1440 checks",
 		})
-		// 89 checked days, 30 down checks of 128160.
-		expect(renderPage(snapshot, live, FIXTURE_NOW)).toContain("99.97% uptime")
+		// 276 failed checks out of 128160 (PATCHES #11).
+		expect(renderPage(snapshot, live, FIXTURE_NOW)).toContain("99.78% uptime")
 	})
 
 	it("draws no bars for a component that hides uptime, even with daily counts", () => {
@@ -506,7 +506,7 @@ describe("renderPage layout", () => {
 		})
 		const html = renderPage(snapshot, live, FIXTURE_NOW)
 		const row = rowOf(html, fixtureComponentId(0))
-		expect(row).toContain("100% uptime")
+		expect(row).toContain("99.86% uptime")
 		expect(row).toContain(`title="Degraded performance"`)
 		expect(row).toContain(`<span class="sr">: Degraded performance</span>`)
 		expect(html).toContain(`<span id="window-label" aria-live="polite">Jul 2026 - Oct 2026</span>`)
@@ -517,8 +517,8 @@ describe("renderPage layout", () => {
 			live,
 			FIXTURE_NOW,
 		)
-		// 30 down checks in 90 days of 1440.
-		expect(rowOf(outage, fixtureComponentId(0))).toContain("99.97% uptime")
+		// 208 failed checks in 90 days of 1440.
+		expect(rowOf(outage, fixtureComponentId(0))).toContain("99.83% uptime")
 	})
 
 	it("renders only the latest window without script, with the arrows hidden until the script shows them", () => {
@@ -571,8 +571,8 @@ describe("renderPage layout", () => {
 			),
 		)
 		expect(groups).toEqual([
-			["Platform: Partial outage", "API: Operational", "Dashboard: Partial outage"],
-			["Docs: Operational"],
+			["Platform: Partial outage", "API: Degraded performance", "Dashboard: Partial outage"],
+			["Docs: Degraded performance"],
 		])
 	})
 
@@ -1087,7 +1087,7 @@ describe("previewSnapshot with history", () => {
 			nowMs: FIXTURE_NOW,
 		})
 		expect(snapshot.components[0]?.days).toEqual(days)
-		expect(renderPage(snapshot, live, FIXTURE_NOW)).toContain("100% uptime")
+		expect(renderPage(snapshot, live, FIXTURE_NOW)).toContain("99.86% uptime")
 	})
 })
 
