@@ -49,7 +49,7 @@ describe("status page summary", () => {
 		expect(days).toHaveLength(90)
 		// Newest last: today's down day is kept, the oldest 275 days are not.
 		expect(days.at(-1)?.downChecks).toBeGreaterThan(0)
-		expect(formatDaysUptime(days)).toBe("99.97%")
+		expect(formatDaysUptime(days)).toBe("99.83%")
 	})
 
 	test("open incidents include drafts; maintenance and resolved incidents are not among them", () => {

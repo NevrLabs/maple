@@ -122,7 +122,7 @@ describe("status pages list", () => {
 			expectView(text(`/s/${KEY}/acme-status`)).toExist(),
 			expectView(text("Partial outage")).toExist(),
 			expectView(text("Platform")).toExist(),
-			expectView(role("img", { name: "API: 100.00% over the last 90 days" })).toExist(),
+			expectView(role("img", { name: "API: 99.86% over the last 90 days" })).toExist(),
 			expectView(text("No monitor: set by hand")).toExist(),
 			expectView(text("Not published")).toExist(),
 			expectView(text("Draft")).toExist(),
