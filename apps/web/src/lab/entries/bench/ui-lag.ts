@@ -34,12 +34,14 @@ const base = update(
 	Message.CompletedResolveWindow({ window, nowMs, mode: "Load" }),
 	context,
 ).model
+const buckets = Array.from({ length: 144 }, (_, i) => new Date(Date.UTC(2026, 10, 4, 0, i * 5)).toISOString().slice(0, 19).replace("T", " "))
 const series = Object.fromEntries(
 	rows.map((row) => [
 		row.serviceName,
 		{
-			throughput: Array.from({ length: 144 }, (_, i) => 0.03 + (i % 9) / 100),
-			errorRate: Array.from({ length: 144 }, (_, i) => (i % 17 === 0 ? 0.05 : 0)),
+			buckets,
+			throughput: buckets.map((_, i) => 0.03 + (i % 9) / 100),
+			errorRate: buckets.map((_, i) => (i % 17 === 0 ? 0.05 : 0)),
 		},
 	]),
 )
