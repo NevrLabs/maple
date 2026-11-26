@@ -535,3 +535,35 @@ second parent `75fed1715b246a5760ec5eaca715aaa6ed2af887`), gated head `02c3e3153
   607 passed / 1 skipped; warehouse 235 passed / 540 skipped; domain status 69; status-page 118; backend
   uptime/status 162; scraper 14; selfhost 73; packaged status 2; web 1288.
 - bun.lock: regenerated lock byte-identical (`acce801629d359c0eadcbd7db1cfbfc568391adffa61424642b44105be835a2b`); no lock commit.
+
+## Run 14 — 2026-11-26 — upstream 75fed1715b → 040f204a61
+
+Status: **COMPLETE — merged, gated (GitHub Actions), pushed.** Branch `selfhost-homelab-up-20261126-2`;
+merge `91c5e3ed51a7db7acd0b1f752b39559c5d00cf87` (first parent `e0f79ef9ffa2caa7eac3843d421eea78ad70fd1c`, the
+selfhost tip = run 13 close + PATCHES #21; second parent `040f204a61b1b1d85a3b6b849a3bdd2e1edc6a97`), gated head
+`d985c82375df1770ff63ce1336c887eeb039eb2b`. Not deployed.
+
+- Incoming range: 2 commits, 54 files; a billing fix for an ended no-card trial (#3062) and the iPhone app prompt
+  in the web shell and landing (#3061; `iosPromptUser` yields none without a Clerk user, so selfhost sessions
+  never see the card). package.json changes in apps/web, packages/domain, packages/views.
+- Mirror: fork `main` fast-forwarded `75fed1715b246a5760ec5eaca715aaa6ed2af887` →
+  `040f204a61b1b1d85a3b6b849a3bdd2e1edc6a97`; read back on origin.
+- Merge `91c5e3ed51`: auto-merged, 0 conflicts, no markers. Overlap with the fork delta = 6 files
+  (`apps/web/src/lab/registry.ts`, `main.ts`, `shell/model.ts`, `shell/view-sidebar.ts`, `update.ts`, `bun.lock`);
+  survival sweep over them: zero MISSING lines, no missing files. Upstream's lab entry, prompt flags and sidebar
+  call sit beside the fork's Proxmox/Atlas lab entries, integration flags, OIDC sign-in and selfhost identity lines.
+- Nothing in the range touches `packages/auth`, `packages/backend/src/platform/{Env,bindings}.ts`,
+  `apps/api/src/worker/bindings.ts`, `apps/electric-sync/src/config.ts`, `apps/status` or `apps/selfhost`: no port
+  to mirror, and the status adapter contract is unchanged.
+- Gate fix of ours: the first Actions run (https://github.com/NevrLabs/maple/actions/runs/45883150371, head
+  `91c5e3ed51`) failed in the image-parity step with exit 127. `apps/selfhost/dev/build-images.sh` defaulted `BUN` to
+  `~/.bun/bin/bun`, which the GitHub runner (mise, bun on PATH) does not have; runs 3–13 never met it because they
+  gated on the MacBook. The script now takes `bun` from PATH first and keeps `~/.bun` as the fallback
+  (`d985c82375`, one line). The merge commit is unchanged.
+- Gates: fork Actions accepted the dispatch (first GitHub-gated run since run 2). Green run
+  https://github.com/NevrLabs/maple/actions/runs/45883547886 at `d985c82375`, dispatch headSha equal to the branch
+  head. SDK, Docker-free bundles, eight typechecks and all suites green: QE integrations 512; backend org/Cloudflare
+  607 passed / 1 skipped; warehouse 235 passed / 540 skipped; domain status 69; status-page 118; backend
+  uptime/status 162; scraper 14; selfhost 73; packaged status 2; web 1291.
+- bun.lock: the run's regenerated lock (artifact `bun-lock`) is byte-identical to the committed merged lock
+  (`ee73665e3339dc81956eee7007d567f0cb22081685e9fde77cc0bc21fb84c429`); no lock commit.
