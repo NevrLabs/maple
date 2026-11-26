@@ -507,3 +507,31 @@ and `a0eed90f2f95f20f9cd57709113eda66c8b88714`), gated head `07818b0548d179ffec5
   1 skipped; warehouse 195 passed / 524 skipped; domain status 50; status-page 111; backend status 162;
   scraper 14; selfhost 73; packaged status 2; web 1116.
 - bun.lock: regenerated lock byte-identical (`360d3214d7827897dc743419d212f73b3c89db95e7f4814d00fb87c41ea6b30e`); no lock commit.
+
+## Run 13 — 2026-11-26 — upstream a0eed90f2 → 75fed1715b
+
+Status: **COMPLETE — merged, gated (MacBook), pushed.** Branch `selfhost-homelab-up-20261126`;
+merge `f81bf7cf212867cd82319748831d284d96e1202f` (first parent `b577464a329d3f44ed768d6ff2d562533e9d117b`,
+second parent `75fed1715b246a5760ec5eaca715aaa6ed2af887`), gated head `02c3e3153ea77146098943bd1faa1a2a5c2f923d`. Not deployed.
+
+- Incoming range: 142 commits, 2590 files; custom roles and namespace-scoped reads, retention policy and read
+  horizons, source maps, Services sparklines and commits, status-page incident bars, and docs/landing changes.
+  Fork `main` fast-forwarded `a0eed90f2f95f20f9cd57709113eda66c8b88714` → `75fed1715b246a5760ec5eaca715aaa6ed2af887`; verified on origin.
+- Resolved 17 conflicting files hunk by hunk. Swept all 46 overlap files, with no missing files and nine old
+  lines accounted for: regenerated the MCP descriptors against the merged schemas (fork platforms retained),
+  kept viewer gating with server permissions and dashboard action arguments, retained OIDC Members next to
+  Clerk Roles, and ported #11 row icons and failure-counted uptime alongside incident-marked bars. The row
+  icon regression now covers an isolated failure below upstream's new bar threshold. #14 liveness also applies
+  to the new keyboard row navigation. #1's opt-in JSONEachRow writes remain separate from upstream read scoping.
+- Regenerated the viewer route table (706 routes); all existing read allowlist IDs still resolve. The session
+  signing format is unchanged. The Bun API now supplies the mandatory source-map ports without pretending
+  to support durable uploads (#20). The status adapter contract is unchanged; its source and bundled regressions
+  passed against the new Takumi Wasm version.
+- Mechanical gate fixes: added timestamps to the offline Services sparkline fixture; updated eight package
+  and two web status assertions to reflect upstream's changed fixtures with the fork's failed-check semantics.
+- GitHub `selfhost gates` dispatch returned HTTP 422 (Actions disabled; no run URL). MacBook ledger
+  `~/ci/maple-gates/02c3e3153ea77146098943bd1faa1a2a5c2f923d/ledger` matched the pushed SHA in `head=` and `DONE`.
+  SDK, Docker-free bundles, eight typechecks and all suites green: QE integrations 512; backend org/Cloudflare
+  607 passed / 1 skipped; warehouse 235 passed / 540 skipped; domain status 69; status-page 118; backend
+  uptime/status 162; scraper 14; selfhost 73; packaged status 2; web 1288.
+- bun.lock: regenerated lock byte-identical (`acce801629d359c0eadcbd7db1cfbfc568391adffa61424642b44105be835a2b`); no lock commit.

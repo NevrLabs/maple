@@ -460,3 +460,10 @@ under Infrastructure gated by `atlas` integration presence (one `mongodb_up` sam
 Registered in `infra-surfaces.ts`, `shell/{model,nav,data}.ts`, `route/{search,app-route,routers}.ts`,
 `page/registry.ts`. **Verify after rebase:** `atlas.scene.test.ts` (includes `rawSqlIssue` on all four
 statements), shell/route/view.lazy tests; `/infra/atlas` shows 3 members with one Primary.
+
+## #20 — Source map storage is unavailable on Bun without a durable bucket
+
+Upstream's API graph requires `SourceMapBucket` and `SourceMapReadBucket` even for requests that
+never touch source maps. Selfhost supplies both ports: reads find no maps, and bucket writes, deletes,
+and listings fail explicitly rather than accepting uploads into volatile storage. No new backend or
+storage is configured. `apps/selfhost/src/ports.test.ts` checks the read and upload behavior.
