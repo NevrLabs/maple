@@ -231,7 +231,7 @@ describe("makeCostReads", () => {
 				{ id: FOREIGN_SOURCE, orgId: OTHER_ORG },
 			])
 			const { reads, statements } = yield* makeHarness(testDb, {
-				breakdown: [{ key: "eu-central-1", cost: 4, previousCost: 1, changeSize: 3 }],
+				breakdown: [{ key: "eu-central-1", cost: 4, previousCost: 1, costSize: 4, changeSize: 3 }],
 			})
 			yield* reads.totals(tenant, new CostTotalsRequest(WINDOW))
 			yield* reads.timeseries(tenant, new CostTimeseriesRequest(WINDOW))
@@ -308,7 +308,7 @@ describe("makeCostReads", () => {
 			yield* insertSources(testDb, [{ id: SOURCE_A }])
 			const { reads, statements } = yield* makeHarness(testDb, {
 				currencies: USD_THEN_EUR,
-				breakdown: [{ key: "eu-central-1", cost: 4, previousCost: 1, changeSize: 3 }],
+				breakdown: [{ key: "eu-central-1", cost: 4, previousCost: 1, costSize: 4, changeSize: 3 }],
 			})
 			const split = new CostTimeseriesRequest({ ...WINDOW, groupBy: "region" })
 			const shown = [
@@ -342,7 +342,7 @@ describe("makeCostReads", () => {
 			const { reads, statements } = yield* makeHarness(testDb, {
 				currencies: USD_THEN_EUR,
 				totals: [{ cost: 40, previousCost: 0, estimatedDays: 0, currency: "EUR", currencies: 1 }],
-				breakdown: [{ key: "AmazonEC2", cost: 40, previousCost: 0, changeSize: 40 }],
+				breakdown: [{ key: "AmazonEC2", cost: 40, previousCost: 0, costSize: 40, changeSize: 40 }],
 			})
 			const eur = { ...WINDOW, currency: "EUR" }
 			expect(yield* reads.totals(tenant, new CostTotalsRequest(eur))).toMatchObject({
@@ -410,8 +410,8 @@ describe("makeCostReads", () => {
 			const { reads, statements } = yield* makeHarness(testDb, {
 				currencies: USD_THEN_EUR,
 				breakdown: [
-					{ key: "AmazonS3", cost: 40, previousCost: 0, changeSize: 40 },
-					{ key: "AmazonEC2", cost: 15, previousCost: 30, changeSize: 15 },
+					{ key: "AmazonS3", cost: 40, previousCost: 0, costSize: 40, changeSize: 40 },
+					{ key: "AmazonEC2", cost: 15, previousCost: 30, costSize: 15, changeSize: 15 },
 				],
 				timeseries: [
 					timeseriesRow("2026-10-01", "AmazonEC2", 10),
@@ -437,11 +437,39 @@ describe("makeCostReads", () => {
 				estimatedFrom: "2026-10-02",
 			})
 			const [topKeys, series] = moneyReads(statements)
-			expect(topKeys).toContain("ORDER BY cost DESC, key ASC LIMIT 2")
+			expect(topKeys).toContain("ORDER BY costSize DESC, key ASC LIMIT 2")
 			expect(series).toContain("IN ('AmazonS3', 'AmazonEC2')")
 			// The series cover the window alone, not the period the top keys are compared against.
 			expect(series).toContain("cost_daily.Date >= '2026-10-01 00:00:00'")
 			expect(series).not.toContain("2026-09-28")
+		}).pipe(Effect.provide(testDb.layer))
+	})
+
+	it.effect("keeps a large credit as a series of its own, below zero", () => {
+		const testDb = createTestDb(trackedDbs)
+		return Effect.gen(function* () {
+			yield* insertSources(testDb, [{ id: SOURCE_A }])
+			// What the warehouse answers when the top keys rank by size: the credit before the small charge.
+			const { reads } = yield* makeHarness(testDb, {
+				breakdown: [
+					{ key: "AmazonEC2", cost: 40, previousCost: 0, costSize: 40, changeSize: 40 },
+					{ key: "Credits", cost: -30, previousCost: 0, costSize: 30, changeSize: 30 },
+				],
+				timeseries: [
+					timeseriesRow("2026-10-01", "AmazonEC2", 40),
+					timeseriesRow("2026-10-01", "Credits", -30),
+					foldedRow("2026-10-01", 5),
+				],
+			})
+			const result = yield* reads.timeseries(
+				tenant,
+				new CostTimeseriesRequest({ ...WINDOW, groupBy: "cloud_service", limit: 2 }),
+			)
+			expect(Arr.map(result.series, (series) => [series.key, series.total])).toEqual([
+				["AmazonEC2", 40],
+				["Credits", -30],
+				["__other__", 5],
+			])
 		}).pipe(Effect.provide(testDb.layer))
 	})
 
@@ -450,7 +478,7 @@ describe("makeCostReads", () => {
 		return Effect.gen(function* () {
 			yield* insertSources(testDb, [{ id: SOURCE_A }])
 			const { reads, statements } = yield* makeHarness(testDb, {
-				breakdown: [{ key: "eu-central-1", cost: 7, previousCost: 0, changeSize: 7 }],
+				breakdown: [{ key: "eu-central-1", cost: 7, previousCost: 0, costSize: 7, changeSize: 7 }],
 				timeseries: [timeseriesRow("2026-10-02", "eu-central-1", 7), foldedRow("2026-10-02", 0)],
 			})
 			const result = yield* reads.timeseries(
@@ -471,7 +499,7 @@ describe("makeCostReads", () => {
 			yield* insertSources(testDb, [{ id: SOURCE_A }])
 			const { reads } = yield* makeHarness(testDb, {
 				currencies: USD_THEN_EUR,
-				breakdown: [{ key: "__other__", cost: 9, previousCost: 0, changeSize: 9 }],
+				breakdown: [{ key: "__other__", cost: 9, previousCost: 0, costSize: 9, changeSize: 9 }],
 				timeseries: [
 					timeseriesRow("2026-10-01", "__other__", 7),
 					foldedRow("2026-10-01", 30),
@@ -539,8 +567,8 @@ describe("makeCostReads", () => {
 			const { reads, statements } = yield* makeHarness(testDb, {
 				currencies: USD_THEN_EUR,
 				breakdown: [
-					{ key: "AmazonRDS", cost: 0, previousCost: 90, changeSize: 90 },
-					{ key: "AmazonEC2", cost: 50, previousCost: 20, changeSize: 30 },
+					{ key: "AmazonRDS", cost: 0, previousCost: 90, costSize: 0, changeSize: 90 },
+					{ key: "AmazonEC2", cost: 50, previousCost: 20, costSize: 50, changeSize: 30 },
 				],
 			})
 			expect(
@@ -562,7 +590,7 @@ describe("makeCostReads", () => {
 			})
 			expect(moneyReads(statements)[0]).toContain("ORDER BY changeSize DESC, key ASC LIMIT 25")
 			yield* reads.breakdown(tenant, new CostBreakdownRequest({ ...WINDOW, groupBy: "cloud_service" }))
-			expect(moneyReads(statements)[1]).toContain("ORDER BY cost DESC, key ASC LIMIT 50")
+			expect(moneyReads(statements)[1]).toContain("ORDER BY costSize DESC, key ASC LIMIT 50")
 		}).pipe(Effect.provide(testDb.layer))
 	})
 

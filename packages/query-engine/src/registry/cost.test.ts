@@ -129,7 +129,7 @@ describe("cost registry queries", () => {
 	it.effect("orders and cuts the breakdown as asked", () =>
 		Effect.gen(function* () {
 			const byCost = yield* costBreakdown.compile({ ...window, groupBy: "region" }, orgId, capabilities)
-			expect(oneLine(byCost.sql)).toContain("ORDER BY cost DESC, key ASC LIMIT 50")
+			expect(oneLine(byCost.sql)).toContain("ORDER BY costSize DESC, key ASC LIMIT 50")
 			const byChange = yield* costBreakdown.compile(
 				{ ...window, groupBy: "region", sortBy: "change", limit: 7 },
 				orgId,

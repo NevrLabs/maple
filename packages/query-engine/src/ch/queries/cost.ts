@@ -283,7 +283,7 @@ export type CostBreakdownSortKey = (typeof COST_BREAKDOWN_SORT_KEYS)[number]
 
 export interface CostBreakdownOpts extends CostReadOpts {
 	readonly dimension: CostDimension
-	/** `cost`: largest in the window first. `change`: largest move against the period before, either way. */
+	/** `cost`: largest in the window first, either sign (a credit is a negative cost). `change`: largest move against the period before, either way. */
 	readonly sortBy?: CostBreakdownSortKey
 	readonly limit?: number
 }
@@ -292,6 +292,8 @@ export interface CostBreakdownOutput {
 	readonly key: string
 	readonly cost: number
 	readonly previousCost: number
+	/** |cost|, what `sortBy: "cost"` orders by: a large credit ranks with the large charges. */
+	readonly costSize: number
 	/** |cost - previousCost|, what `sortBy: "change"` orders by. */
 	readonly changeSize: number
 }
@@ -310,11 +312,12 @@ export function costBreakdownQuery(opts: CostBreakdownOpts) {
 				key: pickDimension($, opts.dimension),
 				cost,
 				previousCost,
+				costSize: CH.greatest_(cost, cost.mul(-1)),
 				changeSize: CH.greatest_(cost.sub(previousCost), previousCost.sub(cost)),
 			}
 		})
 		.groupBy("key")
-		.orderBy([opts.sortBy === "change" ? "changeSize" : "cost", "desc"], ["key", "asc"])
+		.orderBy([opts.sortBy === "change" ? "changeSize" : "costSize", "desc"], ["key", "asc"])
 		.limit(opts.limit ?? 50)
 		.format("JSON")
 		.route("ingest")
