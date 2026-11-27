@@ -80,4 +80,4 @@ jobs:
                   MAPLE_STATUS_BUNDLE="$RUNNER_TEMP/maple-build/ctx/selfhost/app/status.js" bun test apps/selfhost/src/status.test.ts
 
             - name: Suite — web merge surfaces
-              run: bun run --cwd apps/web test src/page/services/list src/page/alerts/hub src/page/sign-in src/page/settings src/page/status-pages src/page/sources/kit src/shell src/route src/platform src/view.lazy.test.ts
+              run: bun run --cwd apps/web test src/page/services/list src/page/alerts/hub src/page/sign-in src/page/settings src/page/status-pages src/page/sources/kit src/page/cost src/page/infra-integrations/atlas src/lab src/shell src/route src/platform src/view.lazy.test.ts
