@@ -645,3 +645,34 @@ from the run-15 docs tip `5ad30c5f2e04084213f8a082a4ffa4c8d6f4ff43`: `selfhost-m
 - bun.lock: the run's artifact is byte-identical to the committed lock (`ee73665e3339dc81956eee7007d567f0cb22081685e9fde77cc0bc21fb84c429`); no lock commit.
 - Deployment: owner gate, both targets. The alerting container needs egress to `cloud.mongodb.com` only once a
   source is saved; the API needs it when the credential is checked.
+
+## Deploy — 2026-11-27T11:32Z — feature line @ `75e783f7fc` on CT130 (owner go)
+
+CT130 api, alerting, scraper, electric-sync, migrate and web run `up-75e783f7` (selfhost `sha256:c0b4b5314f88…`,
+web `sha256:e2c6f55e1c69…`; built on the MacBook colima, linux/amd64, ledger `~/ci/maple-images/up-75e783f7/`;
+streamed MacBook → talos → CT130 `docker load`, loaded IDs equal to the builder's). Replaces `up-c8295a73` (api set,
+run 11) and `up-8ee1fcc5` (web). status stays `status-07818b05`; ingest/collector stay `up-593f6100`; postgres,
+electric, proxy and cloudflared untouched (container IDs and StartedAt unchanged). Writers stopped 11:31:16–11:32:08Z.
+- Preflight: Setup Health 36 pass / 10 fail with exactly the accepted IDs (2026-11-19 baseline); no count growth.
+- Backups: PBS `ct/130/2026-11-27T11:27:52Z` on pbs-deepvault (11.49 GB, rc 0); quiesced `pg_dump -Fc`
+  sha256 `3a5793378964721164a42c2711b980b57bef7f68e0f551366656246be22b67c1` in
+  `/opt/maple/backups/feature-75e783f7-20261127T111324Z/`.
+- Rehearsal on CT130 (hot dump → scratch `postgres:17-alpine` → the candidate `migrate.js`): 212 → 239 PG
+  migrations, 154 tables. Live `migrate`: the same 27, plus 7 ClickHouse migrations from runs 12–15
+  (`cli.js apply`: "7 migrations and 0 features applied"). The CH delta was not rehearsed: it was looked for in
+  `packages/clickhouse-cli` only and reported empty; the compose `migrate` applied them without error.
+- Post: `/_api/health` 200; `DELETE /_api/internal/cost/mongodb` 401 (route present, refused without a session);
+  0 restarts; Setup Health 36/10, same IDs (STAT-02 at 2 services, within the accepted count). Ingest logged six
+  `Collector forwarding failed` lines in the two seconds after its restart and none since. Two `traefik` error
+  incidents opened at 11:31:27Z (the stop window) and resolved; the open `hermes-gateway` incident predates this.
+- Rollback (images only; the PG migrations are not reversed — additive but `drop_morph_spend_readings`):
+  restore `compose.override.pre-feature.yaml` from the backup dir, then
+  `docker compose up -d --no-deps --pull never --force-recreate api alerting scraper electric-sync migrate web`.
+- Not applied on CT130: PATCHES #21 compose/retention files (`compose.yaml`, `ch-retention` SQL) and the
+  ingest/collector changes of runs 12–15.
+
+## Merge — 2026-11-27 — `selfhost-aws-cost-credits` (PATCHES #22) absorbed into the selfhost line
+
+`89c696f059` merges the branch that Noovoleum runs as `33170901` (AWS Cloud Cost gross usage, credits as rows of
+their own) so the next Noovoleum upgrade keeps it; the MongoDB Atlas cost provider is PATCHES #23 from here on.
+Gates green https://github.com/NevrLabs/maple/actions/runs/45989895573 at `89c696f059`. Not deployed.
