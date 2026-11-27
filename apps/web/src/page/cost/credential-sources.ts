@@ -1,6 +1,7 @@
 import {
 	ANTHROPIC_COST_KEY_MAX_LENGTH,
 	CLOUDFLARE_COST_TOKEN_MAX_LENGTH,
+	MONGODB_COST_CREDENTIAL_MAX_LENGTH,
 	MORPH_COST_KEY_MAX_LENGTH,
 	OPENAI_COST_KEY_MAX_LENGTH,
 	OPENROUTER_KEY_MAX_LENGTH,
@@ -11,11 +12,13 @@ import {
 	RemoveAnthropicCostKey,
 	RemoveCloudflareCostToken,
 	RemoveMorphCostKey,
+	RemoveMongodbCostCredential,
 	RemoveOpenAiCostKey,
 	RemoveOpenRouterCostKey,
 	SaveAnthropicCostKey,
 	SaveCloudflareCostToken,
 	SaveMorphCostKey,
+	SaveMongodbCostCredential,
 	SaveOpenAiCostKey,
 	SaveOpenRouterCostKey,
 } from "./command"
@@ -246,5 +249,43 @@ export const CREDENTIAL_SOURCES = {
 		},
 		save: (apiKey) => SaveMorphCostKey({ apiKey }),
 		delete: () => RemoveMorphCostKey(),
+	},
+	mongodb: {
+		pick: {
+			meta: "Daily charges by cluster and project",
+			addedMeta: "Replace its service account in the Sources panel",
+		},
+		field: {
+			label: "Service account",
+			placeholder: "client ID and secret, separated by a space",
+			maxLength: MONGODB_COST_CREDENTIAL_MAX_LENGTH,
+			tooLong: "That is too long to be a service account's client ID and secret.",
+			help: {
+				before: "Create one under ",
+				link: "Organization Service Accounts",
+				href: "https://cloud.mongodb.com/v2#/org/settings/serviceAccounts",
+				after: " in MongoDB Atlas with the Organization Billing Viewer role, and add Maple's address to its API access list. Copy its client ID and secret into this field, separated by a space. Maple checks the account with MongoDB Atlas, then stores it encrypted.",
+			},
+		},
+		add: {
+			title: "Add MongoDB Atlas",
+			description:
+				"Maple reads this month's invoice and the last, then the ten months before, and every day from here on.",
+			toast: "MongoDB Atlas added",
+		},
+		replace: {
+			title: "Replace the MongoDB Atlas service account",
+			description:
+				"The source and its history stay. Use a service account of the same MongoDB Atlas organization.",
+			label: "Replace service account",
+			toast: "MongoDB Atlas service account replaced",
+		},
+		remove: {
+			title: "Remove the MongoDB Atlas source?",
+			description:
+				"Maple deletes the service account and stops reading the organization's charges, and its cost leaves this page. Adding MongoDB Atlas again brings back the last twelve months only. Revoke the service account in MongoDB Atlas too if nothing else uses it.",
+		},
+		save: (credential) => SaveMongodbCostCredential({ credential }),
+		delete: () => RemoveMongodbCostCredential(),
 	},
 } satisfies Record<CredentialProvider, CredentialSource>

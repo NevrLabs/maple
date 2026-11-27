@@ -13,6 +13,7 @@ import { DeviceSecurityApiGroup } from "./device-security"
 import { AnthropicCostApiGroup } from "./anthropic-cost"
 import { FeatureRequestApiGroup } from "./feature-requests"
 import { CloudflareCostApiGroup } from "./cloudflare-cost"
+import { MongodbCostApiGroup } from "./mongodb-cost"
 import { OpenAiCostApiGroup } from "./openai-cost"
 import { MorphCostApiGroup } from "./morph-cost"
 import { DependencyScanApiGroup } from "./dependency-scan"
@@ -87,6 +88,7 @@ export class MapleInternalApi extends HttpApi.make("MapleInternalApi")
 	.add(CloudflareCostApiGroup)
 	.add(AnthropicCostApiGroup)
 	.add(FeatureRequestApiGroup)
+	.add(MongodbCostApiGroup)
 	.add(OpenAiCostApiGroup)
 	.add(MorphCostApiGroup)
 	.add(GithubCostApiGroup)

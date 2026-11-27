@@ -276,7 +276,7 @@ describe("cost page", () => {
 			expectView(text(/AWS bills USD.0\.01 for each request Maple makes/)).toExist(),
 			expectView(
 				text(
-					/OpenRouter, GitHub, Vercel, Cloudflare, PlanetScale, Anthropic, OpenAI and Morph requests are free/,
+					/OpenRouter, GitHub, Vercel, Cloudflare, PlanetScale, Anthropic, OpenAI, Morph and MongoDB Atlas requests are free/,
 				),
 			).toExist(),
 			expectView(role("button", { name: /^Vercel/ })).toExist(),
@@ -677,6 +677,45 @@ describe("cost page", () => {
 		},
 	)
 
+	test("a MongoDB Atlas source is added by pasting a service account, and the dialog says how to make one", () => {
+		const opened = pageUpdate(entered({}, []).model, Message.ClickedAddSource()).model
+		scene(
+			{ update: pageUpdate, view },
+			given(opened),
+			resolveTheme,
+			dialogMounted,
+			expectView(role("button", { name: /^MongoDB Atlas/ })).toExist(),
+			expectView(text("Daily charges by cluster and project")).toExist(),
+		)
+		const form = pageUpdate(opened, Message.PickedProvider({ provider: "mongodb" })).model
+		scene(
+			{ update: pageUpdate, view },
+			given(form),
+			resolveTheme,
+			dialogMounted,
+			expectView(text("Add MongoDB Atlas")).toExist(),
+			expectView(text("Service account")).toExist(),
+			expectView(role("link", { name: "Organization Service Accounts" })).toHaveAttr(
+				"href",
+				"https://cloud.mongodb.com/v2#/org/settings/serviceAccounts",
+			),
+			// The role to give is named, so the account can be limited to billing reads before it is pasted.
+			expectView(text(/Organization Billing Viewer role/)).toExist(),
+		)
+		const typed = pageUpdate(
+			form,
+			Message.GotCredentialDraftMessage({
+				message: Field.Message.ChangedValue({ value: " mdb_sa_0123456789abcdef Secr3t-V4lue " }),
+			}),
+		).model
+		const submitted = pageUpdate(typed, Message.SubmittedCredential()).commands
+		expect(names(submitted)).toEqual(["SaveMongodbCostCredential"])
+		expect(submitted?.[0]).toMatchObject({
+			name: "SaveMongodbCostCredential",
+			args: { credential: expect.stringContaining("mdb_sa_0123456789abcdef Secr3t-V4lue") },
+		})
+	})
+
 	test("a Cloudflare source has its token replaced or is removed, and the OpenRouter source beside it stays", () => {
 		const openRouter = source({
 			id: "0190f2b3-0000-7000-8000-00000000c060",
@@ -793,7 +832,7 @@ describe("cost page", () => {
 			expectView(role("button", { name: /^GitHub/ })).toExist(),
 			expectView(
 				text(
-					/OpenRouter, GitHub, Vercel, Cloudflare, PlanetScale, Anthropic, OpenAI and Morph requests are free/,
+					/OpenRouter, GitHub, Vercel, Cloudflare, PlanetScale, Anthropic, OpenAI, Morph and MongoDB Atlas requests are free/,
 				),
 			).toExist(),
 		)

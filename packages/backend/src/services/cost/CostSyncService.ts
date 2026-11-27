@@ -44,6 +44,7 @@ import { OpenRouterCostProvider } from "./providers/openrouter/OpenRouterCostPro
 import { PlanetScaleCostProvider } from "./providers/planetscale/PlanetScaleCostProvider"
 import { VercelCostProvider } from "./providers/vercel/VercelCostProvider"
 import { GcpCostProvider } from "./providers/gcp/GcpCostProvider"
+import { MongodbCostProvider } from "./providers/mongodb/MongodbCostProvider"
 import { reconcileGcpCostSources } from "./gcp-cost-sources"
 import {
 	advanceCostSync,
@@ -180,6 +181,7 @@ export class CostSyncService extends Context.Service<CostSyncService, CostSyncSe
 				openai: yield* OpenAiCostProvider,
 				gcp: yield* GcpCostProvider,
 				morph: yield* MorphCostProvider,
+				mongodb: yield* MongodbCostProvider,
 			} satisfies Record<CostProvider, CostProviderAdapter>
 			const dbExecute = makeDbExecute(
 				database,
@@ -726,6 +728,7 @@ export class CostSyncService extends Context.Service<CostSyncService, CostSyncSe
 				OpenAiCostProvider.layer,
 				GcpCostProvider.layer,
 				MorphCostProvider.layer,
+				MongodbCostProvider.layer,
 				WarehouseQueryService.layer,
 			),
 		),

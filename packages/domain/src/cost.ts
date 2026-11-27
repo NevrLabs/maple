@@ -35,6 +35,7 @@ export const CostProvider = Schema.Literals([
 	"openai",
 	"gcp",
 	"morph",
+	"mongodb",
 ])
 export type CostProvider = typeof CostProvider.Type
 
