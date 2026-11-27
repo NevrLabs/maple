@@ -542,6 +542,18 @@ const morphSource = source({
 	requestsThisMonth: 0,
 })
 
+/** The MongoDB Atlas source: invoices back to the twelfth month before this one, and no billed requests. */
+const mongodbSource = source({
+	id: "0190f2b3-0000-7000-8000-00000000c069",
+	provider: "mongodb",
+	connectionRef: "0190f2b3-0000-7000-8000-00000000a069",
+	accountId: "68d4c8f1b1c2d3e4f5a6b7c8",
+	accountName: "NevrLabs",
+	backfillDate: "2026-10-01",
+	lastSyncedAt: LAB_NOW_MS - 15 * 60_000,
+	requestsThisMonth: 0,
+})
+
 /** The source each credential provider's add brings in. */
 const CREDENTIAL_SOURCE_OF = {
 	openrouter: openRouterSource,
@@ -549,6 +561,7 @@ const CREDENTIAL_SOURCE_OF = {
 	anthropic: anthropicSource,
 	openai: openAiSource,
 	morph: morphSource,
+	mongodb: mongodbSource,
 } as const satisfies Record<CredentialProvider, SourceWire>
 
 /** The PlanetScale source: invoices back to the twelfth month before this one, and no billed requests. */

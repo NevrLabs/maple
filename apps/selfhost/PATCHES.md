@@ -488,3 +488,34 @@ and AWS hourly rows survive. **Change (no upstream source touched):**
 Hour >= now() - INTERVAL 2 HOUR` > 0; rehearsal `.hermes/plans/maple-metrics-rollup-rehearsal.sh` (rollup equals
 raw across two inserts and a merge). If an upstream migration recreates a raw or rollup table, re-run
 `ch-retention` and the recalculation for that table.
+
+## #22 — MongoDB Atlas as a Cloud cost provider (credential paste, Atlas invoices)
+
+**Why:** the owner wants Atlas spend on the Cloud cost page next to AWS/GCP/PlanetScale. Upstream has no
+MongoDB provider. Built as the OpenAI/Morph shape (a pasted credential, the shared cost connection store,
+one `Record<CostProvider,…>` slot in every consumer), so nothing upstream is reworked: the provider union
+gains `"mongodb"` and every exhaustive map gains one entry.
+**Change (upstream files touched = the provider lists):**
+- `packages/domain/src/cost.ts` — `"mongodb"` in `CostProvider`.
+- `packages/domain/src/http/mongodb-cost.ts` (new) — `MongodbCostApiGroup` (`PUT/DELETE /internal/cost/mongodb`),
+  registered in `http/internal-api.ts`, exported from `http/index.ts`.
+- `packages/backend/src/services/cost/providers/mongodb/` (new) — `mongodb-costs-api.ts` (service-account
+  OAuth `POST /api/oauth/token` client_credentials, `GET /api/atlas/v2/orgs`, `invoices`, `invoices/:id/lineItems:search`;
+  redirects never followed; every failure a `MongodbCostsError` with a `kind`), `normalize.ts`
+  (`cost_daily` rows per usage day × `<project>/<cluster>` × SKU, cents → USD, newest 2 days `estimated`),
+  `MongodbCostProvider.ts` (one token per source cached 1 h, a retired token replaced once, pages capped),
+  `fake-mongodb.ts` + tests.
+- `MongodbCostConnectionService.ts` (new) — `set` validates the paste (`<clientId> <clientSecret>`), checks it
+  with Atlas (token → one organization → one page of invoices), seals it in `cost_connections`, makes the
+  `cost_sources` row; `remove` deletes both. Wired in `cost-connection-sources.ts`, `sync-plan.ts` profile
+  (12 months history, `lagDays: 1`), `CostSyncService.ts` adapters, `apps/api/src/routes/internal/mongodb-cost.http.ts`
+  + `runtime/http-graph.ts`. No DB migration (`cost_connections.provider` is unbounded text).
+- Web `apps/web/src/page/cost/*` — `providers.ts` (MongoDB Atlas, cloud group), `credential-sources.ts`
+  (field help: Organization Billing Viewer role + API access list), `command.ts` Save/Remove, the add/replace/remove
+  cases in `view-add-source.ts`/`view-sources.ts`/`update.ts`/`view.ts`, `lab/cost-fixture.ts` source.
+**Selfhost:** the two routes land in `route-table.generated.ts` (regenerated, 711 → 713) and are refused for
+viewers by the default non-GET rule; the sync lane reaches `cloud.mongodb.com` from the alerting worker (same
+egress as the other cloud providers).
+**Verify after rebase:** `bun run --cwd packages/backend test src/services/cost`, `bun run --cwd apps/web test src/page/cost`,
+`bun run --cwd apps/api typecheck`; after a sync: Cost page → Add a source → MongoDB Atlas → paste a service
+account → the source row shows the organization; next sync fills daily rows per cluster.

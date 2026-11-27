@@ -95,6 +95,7 @@ import { FeatureRequestService } from "@maple/backend/services/feature-requests/
 import { CloudflareCostConnectionService } from "@maple/backend/services/cost/CloudflareCostConnectionService"
 import { OpenAiCostConnectionService } from "@maple/backend/services/cost/OpenAiCostConnectionService"
 import { MorphCostConnectionService } from "@maple/backend/services/cost/MorphCostConnectionService"
+import { MongodbCostConnectionService } from "@maple/backend/services/cost/MongodbCostConnectionService"
 import { GithubCostSourceService } from "@maple/backend/services/cost/GithubCostSourceService"
 import { OpenRouterCostConnectionService } from "@maple/backend/services/cost/OpenRouterCostConnectionService"
 import { CostBudgetsService } from "@maple/backend/services/cost/CostBudgetsService"
@@ -274,6 +275,7 @@ export const HttpServicesLive = Layer.mergeAll(
 	FeatureRequestService.layer,
 	OpenAiCostConnectionService.layer,
 	MorphCostConnectionService.layer,
+	MongodbCostConnectionService.layer,
 	GithubCostSourceService.layer,
 	PlanetScaleCostSourceService.layer,
 	VercelCostSourceService.layer,

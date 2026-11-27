@@ -110,7 +110,8 @@ const actions = (
 		case "cloudflare":
 		case "anthropic":
 		case "openai":
-		case "morph": {
+		case "morph":
+		case "mongodb": {
 			const { label } = CREDENTIAL_SOURCES[source.provider].replace
 			return [
 				rowButton(

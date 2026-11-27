@@ -4,6 +4,7 @@ import {
 	CloudflareCostTokenRequest,
 	CostBreakdownSortBy,
 	GcpCostAddRequest,
+	MongodbCostCredentialRequest,
 	OpenAiCostKeyRequest,
 	MorphCostKeyRequest,
 	OpenRouterKeyUpdateRequest,
@@ -224,6 +225,27 @@ export const RemoveOpenAiCostKey = Command.define("RemoveOpenAiCostKey", {
 	execute: Effect.flatMap(MapleInternalApiClient, (client) => client.openaiCost.remove()).pipe(
 		Effect.asVoid,
 		settleTo((result) => Message.CompletedRemoveCredential({ provider: "openai", result })),
+	),
+})
+
+/** Saves the org's MongoDB Atlas service account, which makes (or keeps) its cost source. */
+export const SaveMongodbCostCredential = Command.define("SaveMongodbCostCredential", {
+	args: { credential: Schema.String },
+	messages: [Message.CompletedSaveCredential],
+	execute: ({ credential }) =>
+		Effect.flatMap(MapleInternalApiClient, (client) =>
+			client.mongodbCost.set({ payload: new MongodbCostCredentialRequest({ credential }) }),
+		).pipe(
+			Effect.asVoid,
+			settleTo((result) => Message.CompletedSaveCredential({ provider: "mongodb", result })),
+		),
+})
+
+export const RemoveMongodbCostCredential = Command.define("RemoveMongodbCostCredential", {
+	messages: [Message.CompletedRemoveCredential],
+	execute: Effect.flatMap(MapleInternalApiClient, (client) => client.mongodbCost.remove()).pipe(
+		Effect.asVoid,
+		settleTo((result) => Message.CompletedRemoveCredential({ provider: "mongodb", result })),
 	),
 })
 

@@ -88,6 +88,14 @@ export const COST_PROVIDERS = {
 		sourceNote:
 			"Read from the BigQuery billing export. Each sync runs one query, which BigQuery bills to the connection's project, usually a fraction of a cent.",
 	},
+	// Read from the organization's invoices: each day is that day's usage per cluster, posted the day after.
+	mongodb: {
+		name: "MongoDB Atlas",
+		icon: "MongodbIcon",
+		requestUsd: null,
+		sourceNote:
+			"Read from Atlas invoices: each day shows that day's charges per cluster and project. Charges post the day after their use, so the newest days fill in later.",
+	},
 } as const satisfies Record<CostProvider, CostProviderEntry>
 
 /**
@@ -100,6 +108,7 @@ export const CredentialProvider = Schema.Literals([
 	"anthropic",
 	"openai",
 	"morph",
+	"mongodb",
 ])
 export type CredentialProvider = typeof CredentialProvider.Type
 

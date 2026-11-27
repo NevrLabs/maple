@@ -51,6 +51,8 @@ const VERCEL_HISTORY_MONTHS = 11
 const MODEL_API_HISTORY_MONTHS = 3
 /** PlanetScale invoices are read back to the first day of the month this many months before the current one. */
 const PLANETSCALE_HISTORY_MONTHS = 12
+/** MongoDB Atlas serves its invoices as far back as the organization keeps them; history stops at the first day of the month this many months before the current one. */
+const MONGODB_HISTORY_MONTHS = 12
 // Through this day of the month the previous month's bill is still open; the first settle after
 // it takes the previous month once more, so its last pull is never from before it closed.
 export const PREVIOUS_MONTH_OPEN_DAYS = 10
@@ -110,6 +112,8 @@ const COST_SYNC_PROFILES = {
 	// The export holds every day since it was enabled, today's so far included.
 	gcp: { floor: (today) => monthStart(today, -HISTORY_MONTHS), lagDays: 0, head: "days" },
 	morph: { floor: (today) => monthStart(today, -MODEL_API_HISTORY_MONTHS), lagDays: 0, head: "days" },
+	// Each day is that day's usage, posted the day after, from the invoice that bills it.
+	mongodb: { floor: (today) => monthStart(today, -MONGODB_HISTORY_MONTHS), lagDays: 1, head: "days" },
 } as const satisfies Record<CostProvider, CostSyncProfile>
 
 /** The oldest day the sync pulls from `provider`. */

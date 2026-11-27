@@ -44,6 +44,7 @@ import {
 	VercelCostReadError,
 } from "./providers/vercel/VercelCostProvider"
 import { GcpCostProvider } from "./providers/gcp/GcpCostProvider"
+import { MongodbCostProvider } from "./providers/mongodb/MongodbCostProvider"
 import { BACKFILL_REQUEST_BUDGET, daysOfWindow, MONTHLY_REQUEST_BUDGET } from "./sync-plan"
 
 const trackedDbs: TestDb[] = []
@@ -276,6 +277,7 @@ const harness = (options: FakeProviderOptions = {}) => {
 				Layer.succeed(PlanetScaleCostProvider, planetScaleAdapter),
 				Layer.succeed(GcpCostProvider, adapterOf("gcp")),
 				Layer.succeed(MorphCostProvider, adapterOf("morph")),
+				Layer.succeed(MongodbCostProvider, adapterOf("mongodb")),
 				warehouse,
 			),
 		),
