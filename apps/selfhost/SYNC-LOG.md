@@ -692,4 +692,9 @@ the scrape runs in the shared ClickStack collector and forwards under the defaul
 `last_used_at` never moved. #24 dates an infrastructure push source's health by its series instead (one
 `max(TimeUnix)` read per platform per list). #25 is Twilio on the Cloud cost page (#23's shape, usage records).
 #26 is the selfhost `twilio` exporter: Twilio's message and call logs as OTLP logs under the `twilio` service,
-failures as errors, behind compose profile `twilio`. Not deployed; gates pending.
+failures as errors, behind compose profile `twilio`.
+
+Gated green on `c54b9cd12f` (`selfhost gates` run 46066753197; images run 46066757280: `maple-selfhost:c54b9cd1`
+`sha256:43456b85…`, `maple-web:c54b9cd1-noovoleum` `sha256:be5b8ef3…`, ingest `sha256:30609e7b…`, collector
+`sha256:deb0b050…`). Not deployed: Noovoleum pin bump + the `twilio-exporter` service are staged in
+infra-deploy-docker #157 (awaiting the owner's go and the three Twilio secrets); CT130 awaits the owner's go.
