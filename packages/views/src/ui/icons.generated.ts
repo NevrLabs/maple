@@ -13402,6 +13402,71 @@ export const ICON_TREES = {
 			],
 		],
 	],
+	TwilioIcon: [
+		"svg",
+		[
+			["xmlns", "http://www.w3.org/2000/svg"],
+			["viewBox", "0 0 24 24"],
+			["width", "7777"],
+			["height", "7777"],
+			["class", "__icon_class__"],
+			["aria-hidden", "true"],
+		],
+		[
+			[
+				"rect",
+				[
+					["x", "1"],
+					["y", "1"],
+					["width", "22"],
+					["height", "22"],
+					["rx", "4"],
+					["fill", "#F22F46"],
+				],
+				[],
+			],
+			[
+				"circle",
+				[
+					["cx", "8.6"],
+					["cy", "8.6"],
+					["r", "2.1"],
+					["fill", "#ffffff"],
+				],
+				[],
+			],
+			[
+				"circle",
+				[
+					["cx", "15.4"],
+					["cy", "8.6"],
+					["r", "2.1"],
+					["fill", "#ffffff"],
+				],
+				[],
+			],
+			[
+				"circle",
+				[
+					["cx", "8.6"],
+					["cy", "15.4"],
+					["r", "2.1"],
+					["fill", "#ffffff"],
+				],
+				[],
+			],
+			[
+				"circle",
+				[
+					["cx", "15.4"],
+					["cy", "15.4"],
+					["r", "2.1"],
+					["fill", "#ffffff"],
+				],
+				[],
+			],
+		],
+	],
 	MongodbIcon: [
 		"svg",
 		[

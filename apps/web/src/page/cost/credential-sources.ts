@@ -2,6 +2,7 @@ import {
 	ANTHROPIC_COST_KEY_MAX_LENGTH,
 	CLOUDFLARE_COST_TOKEN_MAX_LENGTH,
 	MONGODB_COST_CREDENTIAL_MAX_LENGTH,
+	TWILIO_COST_CREDENTIAL_MAX_LENGTH,
 	MORPH_COST_KEY_MAX_LENGTH,
 	OPENAI_COST_KEY_MAX_LENGTH,
 	OPENROUTER_KEY_MAX_LENGTH,
@@ -13,12 +14,14 @@ import {
 	RemoveCloudflareCostToken,
 	RemoveMorphCostKey,
 	RemoveMongodbCostCredential,
+	RemoveTwilioCostCredential,
 	RemoveOpenAiCostKey,
 	RemoveOpenRouterCostKey,
 	SaveAnthropicCostKey,
 	SaveCloudflareCostToken,
 	SaveMorphCostKey,
 	SaveMongodbCostCredential,
+	SaveTwilioCostCredential,
 	SaveOpenAiCostKey,
 	SaveOpenRouterCostKey,
 } from "./command"
@@ -287,5 +290,43 @@ export const CREDENTIAL_SOURCES = {
 		},
 		save: (credential) => SaveMongodbCostCredential({ credential }),
 		delete: () => RemoveMongodbCostCredential(),
+	},
+	twilio: {
+		pick: {
+			meta: "Daily charges by product category",
+			addedMeta: "Replace its credentials in the Sources panel",
+		},
+		field: {
+			label: "Account SID and auth token",
+			placeholder: "Account SID and auth token, separated by a space",
+			maxLength: TWILIO_COST_CREDENTIAL_MAX_LENGTH,
+			tooLong: "That is too long to be an Account SID and auth token.",
+			help: {
+				before: "Copy both from the Account Info box of the ",
+				link: "Twilio Console",
+				href: "https://console.twilio.com/",
+				after: " into this field, Account SID first, separated by a space. Maple checks the account and reads one day of its usage records, then stores the credential encrypted.",
+			},
+		},
+		add: {
+			title: "Add Twilio",
+			description:
+				"Maple reads this month's usage records and the last, then the ten months before, and every day from here on.",
+			toast: "Twilio added",
+		},
+		replace: {
+			title: "Replace the Twilio credential",
+			description:
+				"The source and its history stay. Use the Account SID and auth token of the same Twilio account.",
+			label: "Replace credential",
+			toast: "Twilio credential replaced",
+		},
+		remove: {
+			title: "Remove the Twilio source?",
+			description:
+				"Maple deletes the credential and stops reading the account's usage records, and its cost leaves this page. Adding Twilio again brings back the last twelve months only.",
+		},
+		save: (credential) => SaveTwilioCostCredential({ credential }),
+		delete: () => RemoveTwilioCostCredential(),
 	},
 } satisfies Record<CredentialProvider, CredentialSource>

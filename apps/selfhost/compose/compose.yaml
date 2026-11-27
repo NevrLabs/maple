@@ -285,6 +285,28 @@ services:
       - electric
     mem_limit: 256m
 
+  # PATCHES #26: polls Twilio's message and call logs and pushes them to ingest as logs, under the
+  # `twilio` service. A compose profile: on only where TWILIO_ACCOUNT_SID is set (compose --profile twilio).
+  twilio-exporter:
+    image: maple-selfhost:${MAPLE_SELFHOST_TAG}
+    restart: unless-stopped
+    logging: *logging
+    command: ["bun", "/app/twilio.js"]
+    profiles: ["twilio"]
+    environment:
+      PORT: "3479"
+      TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID:-}
+      TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:-}
+      MAPLE_INGEST_URL: http://ingest:3474
+      MAPLE_TWILIO_TOKEN: ${MAPLE_TWILIO_TOKEN:-${MAPLE_INGEST_KEY:-}}
+      TWILIO_STATE_PATH: /var/lib/maple-twilio/state.json
+      COMMIT_SHA: ${MAPLE_SELFHOST_TAG}
+    volumes:
+      - /srv/maple/twilio:/var/lib/maple-twilio
+    depends_on:
+      - ingest
+    mem_limit: 128m
+
   web:
     image: maple-web:${MAPLE_WEB_TAG}
     restart: unless-stopped

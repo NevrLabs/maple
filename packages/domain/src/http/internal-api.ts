@@ -14,6 +14,7 @@ import { AnthropicCostApiGroup } from "./anthropic-cost"
 import { FeatureRequestApiGroup } from "./feature-requests"
 import { CloudflareCostApiGroup } from "./cloudflare-cost"
 import { MongodbCostApiGroup } from "./mongodb-cost"
+import { TwilioCostApiGroup } from "./twilio-cost"
 import { OpenAiCostApiGroup } from "./openai-cost"
 import { MorphCostApiGroup } from "./morph-cost"
 import { DependencyScanApiGroup } from "./dependency-scan"
@@ -89,6 +90,7 @@ export class MapleInternalApi extends HttpApi.make("MapleInternalApi")
 	.add(AnthropicCostApiGroup)
 	.add(FeatureRequestApiGroup)
 	.add(MongodbCostApiGroup)
+	.add(TwilioCostApiGroup)
 	.add(OpenAiCostApiGroup)
 	.add(MorphCostApiGroup)
 	.add(GithubCostApiGroup)

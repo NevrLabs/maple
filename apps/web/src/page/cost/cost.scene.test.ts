@@ -276,7 +276,7 @@ describe("cost page", () => {
 			expectView(text(/AWS bills USD.0\.01 for each request Maple makes/)).toExist(),
 			expectView(
 				text(
-					/OpenRouter, GitHub, Vercel, Cloudflare, PlanetScale, Anthropic, OpenAI, Morph and MongoDB Atlas requests are free/,
+					/OpenRouter, GitHub, Vercel, Cloudflare, PlanetScale, Anthropic, OpenAI, Morph, MongoDB Atlas and Twilio requests are free/,
 				),
 			).toExist(),
 			expectView(role("button", { name: /^Vercel/ })).toExist(),
@@ -716,6 +716,45 @@ describe("cost page", () => {
 		})
 	})
 
+	test("a Twilio source is added by pasting an Account SID and auth token, and the dialog says where to find them", () => {
+		const opened = pageUpdate(entered({}, []).model, Message.ClickedAddSource()).model
+		scene(
+			{ update: pageUpdate, view },
+			given(opened),
+			resolveTheme,
+			dialogMounted,
+			expectView(role("button", { name: /^Twilio/ })).toExist(),
+			expectView(text("Daily charges by product category")).toExist(),
+		)
+		const form = pageUpdate(opened, Message.PickedProvider({ provider: "twilio" })).model
+		scene(
+			{ update: pageUpdate, view },
+			given(form),
+			resolveTheme,
+			dialogMounted,
+			expectView(text("Add Twilio")).toExist(),
+			expectView(text("Account SID and auth token")).toExist(),
+			expectView(role("link", { name: "Twilio Console" })).toHaveAttr(
+				"href",
+				"https://console.twilio.com/",
+			),
+		)
+		const typed = pageUpdate(
+			form,
+			Message.GotCredentialDraftMessage({
+				message: Field.Message.ChangedValue({
+					value: ` ${"AC" + "0123456789abcdef0123456789abcdef"} S3cr3t-T0ken `,
+				}),
+			}),
+		).model
+		const submitted = pageUpdate(typed, Message.SubmittedCredential()).commands
+		expect(names(submitted)).toEqual(["SaveTwilioCostCredential"])
+		expect(submitted?.[0]).toMatchObject({
+			name: "SaveTwilioCostCredential",
+			args: { credential: expect.stringContaining(`${"AC" + "0123456789abcdef0123456789abcdef"} S3cr3t-T0ken`) },
+		})
+	})
+
 	test("a Cloudflare source has its token replaced or is removed, and the OpenRouter source beside it stays", () => {
 		const openRouter = source({
 			id: "0190f2b3-0000-7000-8000-00000000c060",
@@ -832,7 +871,7 @@ describe("cost page", () => {
 			expectView(role("button", { name: /^GitHub/ })).toExist(),
 			expectView(
 				text(
-					/OpenRouter, GitHub, Vercel, Cloudflare, PlanetScale, Anthropic, OpenAI, Morph and MongoDB Atlas requests are free/,
+					/OpenRouter, GitHub, Vercel, Cloudflare, PlanetScale, Anthropic, OpenAI, Morph, MongoDB Atlas and Twilio requests are free/,
 				),
 			).toExist(),
 		)

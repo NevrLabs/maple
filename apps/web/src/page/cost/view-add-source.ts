@@ -64,6 +64,7 @@ const PICK_GROUP = {
 	vercel: "cloud",
 	planetscale: "cloud",
 	mongodb: "cloud",
+	twilio: "cloud",
 	github: "cloud",
 	openrouter: "ai",
 	anthropic: "ai",
@@ -116,6 +117,7 @@ const pickOf = (
 		case "planetscale":
 			return once("Monthly invoices, spread over each branch's days", Message.ClickedAddPlanetScale())
 		case "mongodb":
+		case "twilio":
 		case "openrouter":
 		case "cloudflare":
 		case "anthropic":
@@ -553,6 +555,7 @@ const removeCopy = (target: CostSourceSummary | null): Readonly<{ title: string;
 		case "openai":
 		case "morph":
 		case "mongodb":
+		case "twilio":
 			return CREDENTIAL_SOURCES[target.provider].remove
 		// An AWS source has no Remove: it leaves with its connection's Cost module. The confirm is closed then.
 		default:

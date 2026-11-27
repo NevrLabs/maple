@@ -26,7 +26,12 @@ describe("sourceSnippets", () => {
 		const [atlas] = sourceSnippets("mongodb_atlas", "maple_src_atlas", "Atlas")
 		expect(atlas?.code).toContain('Authorization: "Bearer maple_src_atlas"')
 		expect(atlas?.code).toContain("http_sd_configs")
-		expect(Arr.map(sourceSnippets("postgresql", "maple_src_pg", "PG"), (s) => s.id)).toEqual(["role", "collector"])
+		expect(Arr.map(sourceSnippets("postgresql", "maple_src_pg", "PG"), (s) => s.id)).toEqual([
+			"role",
+			"collector",
+		])
+		const [twilio] = sourceSnippets("twilio", "maple_src_twilio", "Twilio")
+		expect(twilio?.code).toContain('MAPLE_TWILIO_TOKEN: "maple_src_twilio"')
 	})
 
 	it("offers a Kubernetes source Helm, Alchemy and Terraform, keeping the key out of the files", () => {
@@ -72,7 +77,9 @@ describe("sourceSnippets", () => {
 		expect(code("terraform-apply")).toContain('context="$(kubectl config current-context)" &&')
 		// Read inside the program, which a destroy skips: a fresh shell can still destroy.
 		expect(code("alchemy")).toContain('yield* Config.NonEmptyString("KUBE_CONTEXT")')
-		expect(code("alchemy")).toContain('Config.schema(Schema.Redacted(Schema.NonEmptyString), "MAPLE_INGEST_KEY")')
+		expect(code("alchemy")).toContain(
+			'Config.schema(Schema.Redacted(Schema.NonEmptyString), "MAPLE_INGEST_KEY")',
+		)
 		// Tracking the namespace would make a destroy delete everything else in it.
 		expect(code("alchemy")).not.toContain("createNamespace")
 		expect(code("alchemy-deploy")).toContain("create namespace maple")

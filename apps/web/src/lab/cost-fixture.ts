@@ -554,6 +554,18 @@ const mongodbSource = source({
 	requestsThisMonth: 0,
 })
 
+/** The Twilio source: usage records back to the twelfth month before this one, and no billed requests. */
+const twilioSource = source({
+	id: "0190f2b3-0000-7000-8000-00000000d069",
+	provider: "twilio",
+	connectionRef: "0190f2b3-0000-7000-8000-00000000b069",
+	accountId: "twilio-nevrlabs",
+	accountName: "NevrLabs",
+	backfillDate: "2026-10-01",
+	lastSyncedAt: LAB_NOW_MS - 15 * 60_000,
+	requestsThisMonth: 0,
+})
+
 /** The source each credential provider's add brings in. */
 const CREDENTIAL_SOURCE_OF = {
 	openrouter: openRouterSource,
@@ -562,6 +574,7 @@ const CREDENTIAL_SOURCE_OF = {
 	openai: openAiSource,
 	morph: morphSource,
 	mongodb: mongodbSource,
+	twilio: twilioSource,
 } as const satisfies Record<CredentialProvider, SourceWire>
 
 /** The PlanetScale source: invoices back to the twelfth month before this one, and no billed requests. */
@@ -741,6 +754,7 @@ export const LAB_SOURCES = {
 			openAiSource,
 			morphSource,
 			mongodbSource,
+			twilioSource,
 		],
 	}),
 	none: decodeSources({ sources: [] }),

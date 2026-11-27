@@ -111,7 +111,11 @@ const claudeCodeSnippet = (token: string): SourceSnippet => ({
 const ingestHost = (): { server: string; port: string; protocol: string } => {
 	const url = new URL(ingestUrl)
 	const https = url.protocol === "https:"
-	return { server: url.hostname, port: url.port || (https ? "443" : "80"), protocol: https ? "https" : "http" }
+	return {
+		server: url.hostname,
+		port: url.port || (https ? "443" : "80"),
+		protocol: https ? "https" : "http",
+	}
 }
 
 /** PVE 9's OpenTelemetry metric server: headers are base64 JSON, and the payload is OTLP/HTTP JSON. */
@@ -165,6 +169,27 @@ exporters:
 service:
   pipelines:
     metrics: { receivers: [prometheus], exporters: [otlphttp/maple] }`,
+})
+
+/** The selfhost `twilio` exporter: the Maple-side service that polls Twilio's logs with this source's token. */
+const twilioSnippet = (token: string): SourceSnippet => ({
+	id: "exporter",
+	label: "Maple selfhost exporter",
+	language: "yaml",
+	code: `# maple-selfhost image (apps/selfhost compose), service twilio-exporter
+services:
+  twilio-exporter:
+    image: ghcr.io/nevrlabs/maple-selfhost:<tag>
+    command: ["bun", "/app/twilio.js"]
+    restart: unless-stopped
+    environment:
+      TWILIO_ACCOUNT_SID: ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx   # Twilio Console → Account Info
+      TWILIO_AUTH_TOKEN: <auth token>
+      MAPLE_INGEST_URL: http://ingest:3474
+      MAPLE_TWILIO_TOKEN: "${token}"
+      TWILIO_STATE_PATH: /var/lib/maple-twilio/state.json
+    volumes: ["twilio-state:/var/lib/maple-twilio"]
+# Every message and call lands as a log under the twilio service; undelivered and failed ones as errors.`,
 })
 
 /** One collector per instance: the postgresql receiver (role with pg_monitor), plus Patroni's /metrics when present. */
@@ -275,6 +300,8 @@ export const sourceSnippets = (
 			return [atlasSnippet(token)]
 		case "postgresql":
 			return postgresSnippets(token)
+		case "twilio":
+			return [twilioSnippet(token)]
 		case "opentelemetry":
 		case "cloudflare_ai_gateway":
 			return [envSnippet(token, serviceName), collectorSnippet(token)]

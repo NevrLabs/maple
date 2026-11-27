@@ -13,6 +13,8 @@ import {
 	type TestDb,
 } from "@maple/backend/testing/test-pglite"
 import { SourcesService } from "./SourcesService"
+import { WarehouseQueryService } from "@maple/backend/services/warehouse/WarehouseQueryService"
+import { makeWarehouseServiceStub } from "@maple/backend/testing/warehouse-test-support"
 
 const trackedDbs: TestDb[] = []
 afterEach(() => cleanupTestDbs(trackedDbs))
@@ -35,6 +37,15 @@ const config = ConfigProvider.layer(
 
 const makeLayer = (testDb: TestDb) =>
 	SourcesService.layer.pipe(Layer.provide(testDb.layer), Layer.provide(Env.layer), Layer.provide(config))
+
+/** The service built afresh over the warehouse stub: another layer object, so it shares nothing with the one above. */
+const makeLayerWithWarehouse = (testDb: TestDb, warehouse: Layer.Layer<WarehouseQueryService>) =>
+	Layer.effect(SourcesService, SourcesService.make).pipe(
+		Layer.provide(warehouse),
+		Layer.provide(testDb.layer),
+		Layer.provide(Env.layer),
+		Layer.provide(config),
+	)
 
 const orgA = Schema.decodeSync(OrgId)("org_a")
 const orgB = Schema.decodeSync(OrgId)("org_b")
@@ -805,6 +816,41 @@ describe("SourcesService", () => {
 				Option.getOrUndefined(Arr.findFirst(sources, (source) => source.name === "GitHub globex"))
 					?.health.problem,
 				"The GitHub installation is suspended",
+			)
+		}).pipe(Effect.provide(makeLayer(testDb)))
+	})
+
+	it.effect("an infrastructure push source whose series arrives under another key reads healthy", () => {
+		const testDb = createTestDb(trackedDbs)
+		// The collector sends Atlas under the org's default key, so the source row's own stamp stays empty.
+		const arriving = Layer.succeed(
+			WarehouseQueryService,
+			makeWarehouseServiceStub({
+				compiledQuery: () => Effect.succeed([{ lastSeen: DateTime.makeUnsafe(3_500_000) }]),
+			}),
+		)
+		const withWarehouse = makeLayerWithWarehouse(testDb, arriving)
+
+		return Effect.gen(function* () {
+			const keys = yield* SourcesService
+			const created = yield* keys.create(
+				orgA,
+				user,
+				new CreateSourceRequest({ platform: "mongodb_atlas", name: "Atlas via collector" }),
+			)
+			yield* TestClock.adjust("1 hour")
+
+			const [silent, receiving] = yield* Effect.all([
+				ownSources(keys, orgA),
+				Effect.gen(function* () {
+					const withArrival = yield* SourcesService
+					return yield* ownSources(withArrival, orgA)
+				}).pipe(Effect.provide(withWarehouse)),
+			])
+			assert.strictEqual(silent[0]?.health.status, "pending")
+			assert.deepStrictEqual(
+				[receiving[0]?.id, receiving[0]?.health.status, receiving[0]?.health.lastDataAt],
+				[created.source.id, "healthy", "1970-01-01T00:58:20.000Z"],
 			)
 		}).pipe(Effect.provide(makeLayer(testDb)))
 	})

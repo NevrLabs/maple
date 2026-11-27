@@ -569,3 +569,86 @@ egress as the other cloud providers).
 **Verify after rebase:** `bun run --cwd packages/backend test src/services/cost`, `bun run --cwd apps/web test src/page/cost`,
 `bun run --cwd apps/api typecheck`; after a sync: Cost page → Add a source → MongoDB Atlas → paste a service
 account → the source row shows the organization; next sync fills daily rows per cluster.
+
+## #24 — An infrastructure push source reads healthy when its series arrives, whichever key carried it
+
+**Why:** on the company Maple the Atlas scrape runs in the shared ClickStack collector, which forwards to
+ingest under the org's default key, so the `mongodb_atlas` source row's `last_used_at` never moved and Sources
+showed "Waiting for data" while `/infra/atlas` had three live members. The same holds for any `proxmox` or
+`postgresql` sender a collector hosts: upstream dates a push source's arrival only by its own token.
+**Change (upstream file touched = `SourcesService.ts`):**
+- `packages/query-engine/src/ch/queries/source-presence.ts` (new) — `gaugeMetricLastSeenQuery` /
+  `sumMetricLastSeenQuery`: `max(TimeUnix)` of one series over a window (org-filtered).
+- `SourcesService.ts` — `Effect.serviceOption(WarehouseQueryService)`; `arrivalsOf` reads the newest sample of
+  each infrastructure push platform's signature series (`proxmox_node_uptime` gauge, `mongodb_up` gauge,
+  `postgresql.backends` sum) over the push window (24 h) and hands it to the row's health as `deliveredAt`,
+  the override AWS streams already use. A missing series leaves the row on `last_used_at`; a failed read is a
+  missing date, not a failed list. `list` and `get` apply it. Tests build the service without the warehouse, so
+  nothing changes there; one test provides a stub and asserts healthy + `lastDataAt`.
+- `apps/api/src/runtime/service-graph.ts`, `apps/ai/src/mcp/tools/runtime-services.ts` — `SourcesService.layer`
+  is provided `WarehouseQueryService.layer` (the same layer object as its sibling entry, so one instance).
+**Selfhost:** the company Maple's Sources row for MongoDB Atlas turns "Receiving" on the next list; no migration,
+no route (the route table is unchanged).
+**Verify after rebase:** `bun run --cwd packages/backend test src/services/org/SourcesService`; on the company
+Maple, Sources → MongoDB Atlas shows Receiving with a fresh time while the collector keeps sending under the
+default key.
+
+## #25 — Twilio as a Cloud cost provider (credential paste, usage records)
+
+**Why:** the owner wants Twilio spend (SMS, voice, numbers) on the Cloud cost page. Built as the #23 shape:
+the provider union gains `"twilio"` and every exhaustive map gains one entry.
+**Change (upstream files touched = the provider lists):**
+- `packages/domain/src/cost.ts` — `"twilio"` in `CostProvider`; `http/twilio-cost.ts` (new) —
+  `TwilioCostApiGroup` (`PUT/DELETE /internal/cost/twilio`), registered in `http/internal-api.ts`, exported from
+  `http/index.ts`.
+- `packages/backend/src/services/cost/providers/twilio/` (new) — `twilio-costs-api.ts` (classic REST API with
+  Basic `AccountSid:AuthToken`: `GET /2010-04-01/Accounts/{Sid}.json`, `GET …/Usage/Records/Daily.json?StartDate&EndDate&PageSize=1000&Page=n`;
+  redirects never followed; every failure a `TwilioCostsError` with a `kind`), `normalize.ts` (one `cost_daily`
+  row per usage day × top-level product category; Twilio's negative price → positive cost; zero/positive
+  prices are not charges; an unreadable price fails the pull; a hyphenated subcategory is dropped when its
+  parent category is reported beside it, the `total`/`totalprice` summaries always — kept they would count the
+  same money twice; newest day `estimated`), `TwilioCostProvider.ts` (pages by `Page` until no `next_page_uri`, capped at 20 pages, no
+  billed requests), `fake-twilio.ts` + tests.
+- `TwilioCostConnectionService.ts` (new) — `set` validates the paste (`AC…` Account SID + token, printable,
+  separated by whitespace), checks it with Twilio (the account resource proves the credential, one day of
+  usage records proves the usage read), seals it in `cost_connections`, makes the `cost_sources` row; `remove`
+  deletes both. Wired in `cost-connection-sources.ts`, `sync-plan.ts` profile (12 months history,
+  `lagDays: 1`), `CostSyncService.ts` adapters, `apps/api/src/routes/internal/twilio-cost.http.ts` +
+  `runtime/http-graph.ts` + `runtime/service-graph.ts`. No DB migration.
+- Web `apps/web/src/page/cost/*` — `providers.ts` (Twilio, cloud group, `TwilioIcon`), `credential-sources.ts`
+  (field help: Twilio Console → Account Info), `command.ts` Save/Remove, the add/replace/remove cases in
+  `view-add-source.ts`/`view-sources.ts`/`update.ts`/`view.ts`, `lab/cost-fixture.ts` source, scene test.
+  `packages/views/src/ui/icons.generated.ts` gains `TwilioIcon` (brand mark, four dots).
+**Selfhost:** the two routes land in `route-table.generated.ts` (regenerated) and are refused for viewers by
+the default non-GET rule; the sync lane reaches `api.twilio.com` from the alerting worker.
+**Verify after rebase:** `bun run --cwd packages/backend test src/services/cost`, `bun run --cwd apps/web test src/page/cost`;
+after a sync: Cost page → Add a source → Twilio → paste the Account SID and auth token → the source row shows
+the account; compare the first month's total with the Twilio console's usage page (categories summed are the
+top-level ones only).
+
+## #26 — Twilio delivery as logs: the selfhost `twilio` exporter and push platform
+
+**Why:** the owner wants Twilio message and call delivery in Maple so that undelivered SMS and failed calls
+become alertable. Twilio exposes no metrics endpoint to scrape, so a Maple-side service polls its logs and
+pushes one OTLP log per record; the record's status decides the severity, and Maple's error issues and alerts
+do the rest.
+**Change:**
+- `apps/selfhost/src/twilio.ts` (new, plain Bun) — polls `Messages.json` / `Calls.json` (`DateSent>=` /
+  `StartTime>=` the cursor's day, newest first, ≤ 10 pages of 1000), takes records created since the cursor
+  minus a 5-minute overlap that it has not yet pushed in that `sid|status|date_updated`, and pushes them as
+  one OTLP/HTTP JSON batch to `MAPLE_INGEST_URL/v1/logs` with `MAPLE_TWILIO_TOKEN` (a `twilio` source's token;
+  falls back to the org ingest key). `failed`/`undelivered` are ERROR, a call's `busy`/`no-answer`/`canceled`
+  WARN, everything else INFO; the log is dated by the status change. Attributes carry sid, status, direction,
+  from, to, error code/message, price, segments, send latency (ms) or call duration — never a message body.
+  The state file (`TWILIO_STATE_PATH`) advances only after ingest takes the batch. `/health` on `PORT` (3479).
+- `packages/primitives/src/index.ts` — `"twilio"` in `PUSH_SOURCE_PLATFORMS`; `packages/domain/src/source-health.ts`
+  `twilio: PUSH`; `apps/ai/src/mcp/tool-descriptors.generated.ts` regenerated. Web Sources: `platforms.ts` tile,
+  `view-picker.ts` (cloud group), `view-push-rail.ts` (lands in Errors), `snippets.ts` (the compose service).
+- `apps/selfhost/dev/build-images.sh` bundles `twilio.js`; `apps/selfhost/compose/compose.yaml` service
+  `twilio-exporter` under compose profile `twilio` (bind mount `/srv/maple/twilio` for the state).
+- Tests: `apps/selfhost/src/twilio.ts` pure parts (`twilio.test.ts`), `snippets.test.ts`.
+**Selfhost:** on with `COMPOSE_PROFILES=twilio` and `TWILIO_ACCOUNT_SID`/`TWILIO_AUTH_TOKEN` (secrets) plus
+`MAPLE_TWILIO_TOKEN` from Sources → Connect a source → Twilio. The company Maple needs the same three secrets in
+its stack (owner) and its compose service added in `infra-deploy-docker`.
+**Verify after rebase:** `bun test apps/selfhost/src`; with the profile on, Logs → service `twilio` shows one
+entry per message; send to an invalid number → an ERROR log with `twilio.error_code` 21211 and an error issue.

@@ -17,6 +17,7 @@ export const COST_CONNECTION_PROVIDERS = [
 	"openai",
 	"morph",
 	"mongodb",
+	"twilio",
 ] as const satisfies ReadonlyArray<CostProvider>
 export type CostConnectionProvider = (typeof COST_CONNECTION_PROVIDERS)[number]
 

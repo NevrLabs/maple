@@ -28,6 +28,7 @@ const DOCS_PAGE = {
 	// NevrLabs selfhost: no maple.dev page; the snippets are the setup.
 	proxmox: null,
 	mongodb_atlas: null,
+	twilio: null,
 	postgresql: null,
 } satisfies Record<PushSourcePlatform, DocsPage | null>
 
@@ -43,9 +44,26 @@ const LANDS_IN = {
 	kubernetes: { icon: "ServerIcon", title: "Infrastructure", detail: "Nodes, pods and containers" },
 	docker: { icon: "ServerIcon", title: "Infrastructure", detail: "Containers on each host" },
 	host: { icon: "ServerIcon", title: "Infrastructure", detail: "CPU, memory, disk and network" },
-	proxmox: { icon: "StackPerspectiveIcon", title: "Infrastructure → Proxmox", detail: "Nodes, guests and storage" },
-	mongodb_atlas: { icon: "MongodbIcon", title: "Infrastructure → MongoDB Atlas", detail: "Projects, clusters and their members" },
-	postgresql: { icon: "PostgresIcon", title: "Infrastructure → PostgreSQL", detail: "One row per instance, Patroni roles" },
+	proxmox: {
+		icon: "StackPerspectiveIcon",
+		title: "Infrastructure → Proxmox",
+		detail: "Nodes, guests and storage",
+	},
+	mongodb_atlas: {
+		icon: "MongodbIcon",
+		title: "Infrastructure → MongoDB Atlas",
+		detail: "Projects, clusters and their members",
+	},
+	twilio: {
+		icon: "TwilioIcon",
+		title: "Errors → Twilio",
+		detail: "Every SMS and call; failures as errors",
+	},
+	postgresql: {
+		icon: "PostgresIcon",
+		title: "Infrastructure → PostgreSQL",
+		detail: "One row per instance, Patroni roles",
+	},
 } satisfies Partial<Record<PushSourcePlatform, RailItem>>
 
 const landsIn = (platform: PushSourcePlatform): RailItem =>

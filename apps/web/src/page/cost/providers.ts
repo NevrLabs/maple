@@ -96,6 +96,14 @@ export const COST_PROVIDERS = {
 		sourceNote:
 			"Read from Atlas invoices: each day shows that day's charges per cluster and project. Charges post the day after their use, so the newest days fill in later.",
 	},
+	// Read from the account's usage records: each day is that day's usage per product category, closed the day after.
+	twilio: {
+		name: "Twilio",
+		icon: "TwilioIcon",
+		requestUsd: null,
+		sourceNote:
+			"Read from Twilio's usage records: each day shows that day's charges per product category (SMS, voice, phone numbers). A day's records close the day after, so the newest days fill in later.",
+	},
 } as const satisfies Record<CostProvider, CostProviderEntry>
 
 /**
@@ -109,6 +117,7 @@ export const CredentialProvider = Schema.Literals([
 	"openai",
 	"morph",
 	"mongodb",
+	"twilio",
 ])
 export type CredentialProvider = typeof CredentialProvider.Type
 

@@ -146,6 +146,10 @@ const FIRST_SYNC = {
 		alone: "It brings in this month's invoice and the last, then the ten months before.",
 		named: "MongoDB Atlas brings in this month's invoice and the last, then the ten months before.",
 	},
+	twilio: {
+		alone: "It brings in this month's usage records and the last, then the ten months before.",
+		named: "Twilio brings in this month's usage records and the last, then the ten months before.",
+	},
 } as const satisfies Record<CostProvider, Readonly<{ alone: string; named: string }>>
 
 /** What the first syncs bring in, by the providers that have no cost yet (waiting or failing alike). */

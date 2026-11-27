@@ -6,6 +6,7 @@
 	"scripts": {
 		"api": "bun run src/api.ts",
 		"alerting": "bun run src/alerting.ts",
+		"twilio": "bun run src/twilio.ts",
 		"migrate": "bun run --cwd ../../packages/db db:migrate"
 	},
 	"dependencies": {

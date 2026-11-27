@@ -12,7 +12,7 @@ import {
 	SourceValidationError,
 	SourceWithSecret,
 	type UpdateSourceRequest,
-	type UserId,
+	UserId,
 } from "@maple/domain/http"
 import {
 	SourceId,
@@ -25,12 +25,28 @@ import { hashIngestKey } from "../../platform/credential-tokens"
 import * as Orm from "@maple-dev/effect-orm/database"
 import * as PG from "@maple-dev/effect-orm/postgres"
 import { Sources, type SourceRow } from "@maple/db/tables"
-import { Array as Arr, Clock, Context, Effect, Layer, Order, Schema, String as Str } from "effect"
+import { CH, formatWarehouseDateTime } from "@maple/query-engine"
+import {
+	Array as Arr,
+	Clock,
+	DateTime,
+	Context,
+	Effect,
+	Layer,
+	Option,
+	Order,
+	Record as Rec,
+	Result,
+	Schema,
+	String as Str,
+} from "effect"
 import type { SourceHealthResult } from "@maple/domain/source-health"
 import { Database, type DatabaseError } from "@maple/backend/platform/DatabaseLive"
 import { makeDbExecute } from "@maple/backend/platform/db-execute"
 import { Env } from "@maple/backend/platform/Env"
+import { systemTenant } from "@maple/backend/services/auth/system-tenant"
 import { readSourceOwners } from "@maple/backend/services/integrations/integration-sources"
+import { WarehouseQueryService } from "@maple/backend/services/warehouse/WarehouseQueryService"
 import {
 	defaultSourceRow,
 	newSourceId,
@@ -83,6 +99,28 @@ interface SourceOwner {
 	readonly overrides: SourceHealthOverrides | undefined
 }
 const NO_OWNER: SourceOwner = { integrationId: null, overrides: undefined }
+
+/**
+ * NevrLabs selfhost: the infrastructure push platforms and the series that proves each receives.
+ * A collector the org already runs sends them, often under another of its keys (the default
+ * source's), so `sources.last_used_at` cannot date their arrival; the warehouse can.
+ */
+const PUSH_INFRA_SIGNAL = {
+	proxmox: { table: "gauge", metric: "proxmox_node_uptime" },
+	mongodb_atlas: { table: "gauge", metric: "mongodb_up" },
+	postgresql: { table: "sum", metric: "postgresql.backends" },
+} as const
+type PushInfraPlatform = keyof typeof PUSH_INFRA_SIGNAL
+const PUSH_INFRA_PLATFORMS: ReadonlySet<string> = new Set(Rec.keys(PUSH_INFRA_SIGNAL))
+const isPushInfra = (platform: SourcePlatform): platform is PushInfraPlatform =>
+	PUSH_INFRA_PLATFORMS.has(platform)
+/** The push platforms' stale window in `@maple/domain/source-health`. */
+const ARRIVAL_WINDOW_MS = 24 * 60 * 60 * 1000
+/** The attribution id of the presence reads that date an infrastructure push source's arrival. */
+const SOURCES_SYSTEM_USER_ID = UserId.make("system-sources")
+
+const withArrival = (owner: SourceOwner, arrival: SourceHealthOverrides | undefined): SourceOwner =>
+	arrival === undefined ? owner : { ...owner, overrides: { ...owner.overrides, ...arrival } }
 
 const rowToSource = (row: SourceRow, now: number, owner: SourceOwner = NO_OWNER): Source => {
 	const status = statusOf(row, now)
@@ -214,6 +252,9 @@ export class SourcesService extends Context.Service<SourcesService>()(
 			const database = yield* Database
 			const dbExecute = makeDbExecute(database, "SourcesService", toPersistenceError)
 			const env = yield* Env
+			// Optional: only the API's and the MCP runtime's graphs carry the warehouse; elsewhere
+			// (tests, the removal paths) an infrastructure push source reads off its own row.
+			const warehouse = yield* Effect.serviceOption(WarehouseQueryService)
 			const lookupHmacKey = yield* ingestKeyLookupHmacKey(
 				env,
 				(message) => new IngestKeyEncryptionError({ message }),
@@ -221,6 +262,58 @@ export class SourcesService extends Context.Service<SourcesService>()(
 
 			const notFound = (sourceId: SourceId) =>
 				new SourceNotFoundError({ sourceId, message: "Source not found" })
+
+			// NevrLabs selfhost: each infrastructure push source's newest sample of its series, as the
+			// `deliveredAt` of its health. No series in a day leaves the source on its own `last_used_at`.
+			const arrivalsOf = Effect.fnUntraced(function* (
+				orgId: OrgId,
+				rows: ReadonlyArray<SourceRow>,
+				now: number,
+			) {
+				const pushRows = Arr.filterMap(rows, (row) =>
+					isPushInfra(row.platform)
+						? Result.succeed({ id: row.id, platform: row.platform })
+						: Result.failVoid,
+				)
+				const arrivals = new Map<SourceId, SourceHealthOverrides>()
+				if (Option.isNone(warehouse) || pushRows.length === 0) return arrivals
+				const tenant = systemTenant(orgId, SOURCES_SYSTEM_USER_ID)
+				const window = {
+					orgId,
+					startTime: formatWarehouseDateTime(now - ARRIVAL_WINDOW_MS),
+					endTime: formatWarehouseDateTime(now),
+				}
+				const options = { profile: "list", context: "sourceArrival" } as const
+				const platforms = Arr.dedupe(Arr.map(pushRows, (row) => row.platform))
+				const newest = yield* Effect.forEach(
+					platforms,
+					(platform) => {
+						const signal = PUSH_INFRA_SIGNAL[platform]
+						const read =
+							signal.table === "gauge"
+								? warehouse.value.compiledQuery(
+										tenant,
+										CH.compile(CH.gaugeMetricLastSeenQuery(signal.metric), window),
+										options,
+									)
+								: warehouse.value.compiledQuery(
+										tenant,
+										CH.compile(CH.sumMetricLastSeenQuery(signal.metric), window),
+										options,
+									)
+						// A failed presence read is a missing date, not a failed list.
+						return read.pipe(Effect.orElseSucceed(() => []))
+					},
+					{ concurrency: "unbounded" },
+				)
+				for (const row of pushRows) {
+					// No sample in the window reads as the epoch start.
+					const sample = newest[platforms.indexOf(row.platform)]?.[0]?.lastSeen
+					const at = sample === undefined ? 0 : DateTime.toEpochMillis(sample)
+					if (at >= now - ARRIVAL_WINDOW_MS) arrivals.set(row.id, { deliveredAt: at })
+				}
+				return arrivals
+			})
 
 			const requireRow = Effect.fnUntraced(function* (orgId: OrgId, sourceId: SourceId) {
 				const rows = yield* dbExecute((db) =>
@@ -285,18 +378,24 @@ export class SourcesService extends Context.Service<SourcesService>()(
 			const toSources = (
 				rows: ReadonlyArray<SourceRow>,
 				owners: Effect.Success<ReturnType<typeof readSourceOwners>>,
+				arrivals: ReadonlyMap<SourceId, SourceHealthOverrides>,
 				now: number,
 			) =>
 				Arr.map(
 					Arr.sortWith(rows, (row) => (row.kind === "default" ? 0 : 1), Order.Number),
-					(row) => rowToSource(row, now, ownerOf(owners, row.id)),
+					(row) =>
+						rowToSource(row, now, withArrival(ownerOf(owners, row.id), arrivals.get(row.id))),
 				)
 
 			// An integration source answers with its integration row and that row's switches.
 			const toSource = Effect.fnUntraced(function* (orgId: OrgId, row: SourceRow, now: number) {
-				if (row.kind !== "integration") return rowToSource(row, now)
-				const owners = yield* dbExecute((db) => readSourceOwners(db, orgId, now))
-				return rowToSource(row, now, ownerOf(owners, row.id))
+				const owners =
+					row.kind === "integration"
+						? yield* dbExecute((db) => readSourceOwners(db, orgId, now))
+						: undefined
+				const owner: SourceOwner = owners === undefined ? NO_OWNER : ownerOf(owners, row.id)
+				const arrivals = yield* arrivalsOf(orgId, [row], now)
+				return rowToSource(row, now, withArrival(owner, arrivals.get(row.id)))
 			})
 
 			const list = Effect.fn("SourcesService.list")(function* (orgId: OrgId) {
@@ -308,7 +407,9 @@ export class SourcesService extends Context.Service<SourcesService>()(
 				)
 				const missingDefault = !Arr.some(before, (row) => row.kind === "default")
 				if (missingDefault) yield* ensureDefault(orgId, now)
-				return toSources(missingDefault ? yield* selectAll(orgId) : before, owners, now)
+				const rows = missingDefault ? yield* selectAll(orgId) : before
+				const arrivals = yield* arrivalsOf(orgId, rows, now)
+				return toSources(rows, owners, arrivals, now)
 			})
 
 			const get = Effect.fn("SourcesService.get")(function* (orgId: OrgId, sourceId: SourceId) {

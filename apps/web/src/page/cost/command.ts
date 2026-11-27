@@ -5,6 +5,7 @@ import {
 	CostBreakdownSortBy,
 	GcpCostAddRequest,
 	MongodbCostCredentialRequest,
+	TwilioCostCredentialRequest,
 	OpenAiCostKeyRequest,
 	MorphCostKeyRequest,
 	OpenRouterKeyUpdateRequest,
@@ -246,6 +247,27 @@ export const RemoveMongodbCostCredential = Command.define("RemoveMongodbCostCred
 	execute: Effect.flatMap(MapleInternalApiClient, (client) => client.mongodbCost.remove()).pipe(
 		Effect.asVoid,
 		settleTo((result) => Message.CompletedRemoveCredential({ provider: "mongodb", result })),
+	),
+})
+
+/** Saves the org's Twilio Account SID and auth token, which makes (or keeps) its cost source. */
+export const SaveTwilioCostCredential = Command.define("SaveTwilioCostCredential", {
+	args: { credential: Schema.String },
+	messages: [Message.CompletedSaveCredential],
+	execute: ({ credential }) =>
+		Effect.flatMap(MapleInternalApiClient, (client) =>
+			client.twilioCost.set({ payload: new TwilioCostCredentialRequest({ credential }) }),
+		).pipe(
+			Effect.asVoid,
+			settleTo((result) => Message.CompletedSaveCredential({ provider: "twilio", result })),
+		),
+})
+
+export const RemoveTwilioCostCredential = Command.define("RemoveTwilioCostCredential", {
+	messages: [Message.CompletedRemoveCredential],
+	execute: Effect.flatMap(MapleInternalApiClient, (client) => client.twilioCost.remove()).pipe(
+		Effect.asVoid,
+		settleTo((result) => Message.CompletedRemoveCredential({ provider: "twilio", result })),
 	),
 })
 

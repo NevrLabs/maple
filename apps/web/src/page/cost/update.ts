@@ -403,6 +403,7 @@ const removeCommand = (source: CostSourceSummary): ReadonlyArray<Cmd> => {
 		case "openai":
 		case "morph":
 		case "mongodb":
+		case "twilio":
 			return [CREDENTIAL_SOURCES[source.provider].delete()]
 		case "github":
 			return Arr.map(Option.toArray(decodeInstallationId(source.connectionRef)), (installationId) =>

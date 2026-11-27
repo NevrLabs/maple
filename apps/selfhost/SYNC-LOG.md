@@ -684,3 +684,12 @@ running images == pins, restarts 0, ledgers 239 / 75, fresh rows flowing, `PUT/D
 `89c696f059` merges the branch that Noovoleum runs as `33170901` (AWS Cloud Cost gross usage, credits as rows of
 their own) so the next Noovoleum upgrade keeps it; the MongoDB Atlas cost provider is PATCHES #23 from here on.
 Gates green https://github.com/NevrLabs/maple/actions/runs/45989895573 at `89c696f059`. Not deployed.
+
+## Feature — 2026-11-28 — Atlas source health (#24), Twilio cost provider (#25), Twilio delivery logs (#26)
+
+On the company Maple, Sources showed MongoDB Atlas "Waiting for data" while `/infra/atlas` had three live members:
+the scrape runs in the shared ClickStack collector and forwards under the default key, so the source row's own
+`last_used_at` never moved. #24 dates an infrastructure push source's health by its series instead (one
+`max(TimeUnix)` read per platform per list). #25 is Twilio on the Cloud cost page (#23's shape, usage records).
+#26 is the selfhost `twilio` exporter: Twilio's message and call logs as OTLP logs under the `twilio` service,
+failures as errors, behind compose profile `twilio`. Not deployed; gates pending.

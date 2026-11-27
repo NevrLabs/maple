@@ -67,6 +67,7 @@ const GROUP_OF = {
 	planetscale: "cloud",
 	supabase: "cloud",
 	mongodb_atlas: "cloud",
+	twilio: "cloud",
 	github: "cloud",
 	claude_code: "ai",
 	cloudflare_ai_gateway: "ai",

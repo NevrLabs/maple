@@ -14,13 +14,15 @@ EXT=(-e "cloudflare:*" -e vite -e "@vitejs/*" -e vitest -e "@cloudflare/vite-plu
 
 # Bundles only (no docker): `build-images.sh bundles` is also the selfhost gate's image-parity step.
 bundle_selfhost() {
-  echo "== selfhost bundles (api, alerting, electric-sync, scraper, status, pg-migrate, ch-migrate)"
+  echo "== selfhost bundles (api, alerting, electric-sync, twilio exporter, scraper, status, pg-migrate, ch-migrate)"
   C=$OUT/ctx/selfhost; rm -rf $C; mkdir -p $C/app/db $C/app/ch
   cd $SRC
   ( cd packages/alchemy-maple && $BUN run build >/dev/null 2>&1 )
   $BUN build apps/selfhost/src/api.ts      --target=bun --outfile=$C/app/api.js      "${EXT[@]}" | tail -1
   $BUN build apps/selfhost/src/alerting.ts --target=bun --outfile=$C/app/alerting.js "${EXT[@]}" | tail -1
   $BUN build apps/selfhost/src/electric-sync.ts --target=bun --outfile=$C/app/electric-sync.js "${EXT[@]}" | tail -1
+  # PATCHES #26: the Twilio log exporter (compose profile twilio).
+  $BUN build apps/selfhost/src/twilio.ts        --target=bun --outfile=$C/app/twilio.js        "${EXT[@]}" | tail -1
   # PATCHES #8/#9: uptime prober (apps/scraper, unmodified entry) + status-page server.
   ( cd packages/effect-sdk && $BUN run build >/dev/null 2>&1 )
   $BUN build apps/scraper/src/main.ts      --target=bun --outfile=$C/app/scraper.js  "${EXT[@]}" | tail -1
@@ -42,7 +44,7 @@ WORKDIR /app
 COPY app /app
 USER bun
 ENV NODE_ENV=production
-EXPOSE 3472 3475 3476 3478 3480
+EXPOSE 3472 3475 3476 3478 3479 3480
 CMD ["bun", "/app/api.js"]
 EOF
   docker build -q -t maple-selfhost:$TAG $C

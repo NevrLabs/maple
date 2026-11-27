@@ -87,7 +87,8 @@ export const McpRuntimeServicesLive = Layer.mergeAll(
 	ErrorsService.layer,
 	IngestSetupService.layer,
 	IntegrationInventoryService.layer,
-	SourcesService.layer,
+	// Reads an infrastructure push source's arrival off the warehouse (NevrLabs selfhost).
+	SourcesService.layer.pipe(Layer.provide(WarehouseQueryService.layer)),
 	InvestigationService.layer,
 	IssueFixVerificationService.layer,
 	OnboardingAgentRunService.layer,

@@ -114,6 +114,8 @@ const COST_SYNC_PROFILES = {
 	morph: { floor: (today) => monthStart(today, -MODEL_API_HISTORY_MONTHS), lagDays: 0, head: "days" },
 	// Each day is that day's usage, posted the day after, from the invoice that bills it.
 	mongodb: { floor: (today) => monthStart(today, -MONGODB_HISTORY_MONTHS), lagDays: 1, head: "days" },
+	// Each day is that day's usage by product category, closed the day after, from the usage records.
+	twilio: { floor: (today) => monthStart(today, -MONGODB_HISTORY_MONTHS), lagDays: 1, head: "days" },
 } as const satisfies Record<CostProvider, CostSyncProfile>
 
 /** The oldest day the sync pulls from `provider`. */

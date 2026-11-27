@@ -45,6 +45,7 @@ import { PlanetScaleCostProvider } from "./providers/planetscale/PlanetScaleCost
 import { VercelCostProvider } from "./providers/vercel/VercelCostProvider"
 import { GcpCostProvider } from "./providers/gcp/GcpCostProvider"
 import { MongodbCostProvider } from "./providers/mongodb/MongodbCostProvider"
+import { TwilioCostProvider } from "./providers/twilio/TwilioCostProvider"
 import { reconcileGcpCostSources } from "./gcp-cost-sources"
 import {
 	advanceCostSync,
@@ -182,6 +183,7 @@ export class CostSyncService extends Context.Service<CostSyncService, CostSyncSe
 				gcp: yield* GcpCostProvider,
 				morph: yield* MorphCostProvider,
 				mongodb: yield* MongodbCostProvider,
+				twilio: yield* TwilioCostProvider,
 			} satisfies Record<CostProvider, CostProviderAdapter>
 			const dbExecute = makeDbExecute(
 				database,
@@ -729,6 +731,7 @@ export class CostSyncService extends Context.Service<CostSyncService, CostSyncSe
 				GcpCostProvider.layer,
 				MorphCostProvider.layer,
 				MongodbCostProvider.layer,
+				TwilioCostProvider.layer,
 				WarehouseQueryService.layer,
 			),
 		),

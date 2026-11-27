@@ -532,6 +532,8 @@ export const PUSH_SOURCE_PLATFORMS = [
 	"proxmox",
 	"mongodb_atlas",
 	"postgresql",
+	// ... and the selfhost exporter that polls Twilio's message and call logs.
+	"twilio",
 ] as const
 
 /** Platforms Maple pulls from; their config lives in the integration's own table. */
