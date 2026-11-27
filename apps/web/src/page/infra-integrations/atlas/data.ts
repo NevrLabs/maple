@@ -1,4 +1,4 @@
-import { Effect } from "effect"
+import { Array as Arr, Effect } from "effect"
 import { toLoadFailure } from "@maple/views/data/load-failure"
 import { runSql, windowEndingAt } from "../proxmox/data"
 import type { AtlasNode, AtlasSnapshot } from "./model"
@@ -8,10 +8,16 @@ import type { AtlasNode, AtlasSnapshot } from "./model"
 
 const NODE = "ResourceAttributes['service.instance.id']"
 
-/** Latest value per node over the last hour; `lastSeenMs` tells a silent node from a live one. */
+/** Latest value per node over the last hour; `lastSeenMs` tells a silent node from a live one.
+ * Atlas's own hierarchy rides on every sample as labels: organization, project (`group_*`) and cluster (`cl_name`). */
 export const NODES_SQL = `SELECT ${NODE} AS host,
+  argMaxIf(Attributes['org_id'], TimeUnix, MetricName = 'mongodb_up') AS orgId,
+  argMaxIf(Attributes['group_id'], TimeUnix, MetricName = 'mongodb_up') AS projectId,
+  argMaxIf(Attributes['group_name'], TimeUnix, MetricName = 'mongodb_up') AS project,
   argMaxIf(Attributes['cl_name'], TimeUnix, MetricName = 'mongodb_up') AS cluster,
   argMaxIf(Attributes['rs_nm'], TimeUnix, MetricName = 'mongodb_up') AS replicaSet,
+  argMaxIf(Attributes['provider'], TimeUnix, MetricName = 'mongodb_up') AS provider,
+  argMaxIf(Attributes['region'], TimeUnix, MetricName = 'mongodb_up') AS region,
   argMaxIf(Attributes['availability_zone'], TimeUnix, MetricName = 'mongodb_up') AS zone,
   argMaxIf(Attributes['rs_state'], TimeUnix, MetricName = 'mongodb_up') AS state,
   argMaxIf(Value, TimeUnix, MetricName = 'mongodb_up') AS up,
@@ -26,21 +32,36 @@ export const NODES_SQL = `SELECT ${NODE} AS host,
 FROM metrics_gauge m
 WHERE $__orgFilter(m) AND $__timeFilter(TimeUnix) AND startsWith(MetricName, 'mongodb_') AND ${NODE} != ''
 GROUP BY host HAVING countIf(MetricName = 'mongodb_up') > 0 ORDER BY host`
+// ponytail: one process per host is assumed. Atlas deploys one `mongos` for each node of each shard, so
+// if router or config-server series ever share a member's host, `process_port` joins the key and those
+// non-members are filtered out; none report in today's scrape.
 
 const OPS = ["query", "insert", "update", "delete", "getmore", "command"] as const
 const ASSERTS = ["regular", "warning", "msg", "user"] as const
 
-/** Aliases carry an `op_` prefix: the raw-SQL validator rejects `insert`/`update`/`delete` as statement keywords.
- * Counters are cumulative gauges: per-second rate = the 15-minute delta over its span (a restart floors at 0). */
+/** Aliases carry an `op_` prefix: the raw-SQL validator rejects `insert`/`update`/`delete` as statement keywords. */
+const OP_RATES = Arr.join(
+	Arr.map(OPS, (op) => `sumIf(rate, metric = 'mongodb_opcounters_${op}') AS op_${op}`),
+	",\n  ",
+)
+const RATE_METRICS = Arr.join(
+	Arr.map(
+		[...Arr.map(OPS, (op) => `opcounters_${op}`), ...Arr.map(ASSERTS, (kind) => `asserts_${kind}`)],
+		(metric) => `'mongodb_${metric}'`,
+	),
+	", ",
+)
+
+/** Counters are cumulative gauges: per-second rate = the 15-minute delta over its span (a restart floors at 0). */
 export const RATES_SQL = `SELECT host,
-  ${OPS.map((op) => `sumIf(rate, metric = 'mongodb_opcounters_${op}') AS op_${op}`).join(",\n  ")},
+  ${OP_RATES},
   sumIf(rate, startsWith(metric, 'mongodb_asserts_')) AS asserts
 FROM (
   SELECT ${NODE} AS host, MetricName AS metric,
     greatest(argMax(Value, TimeUnix) - argMin(Value, TimeUnix), 0) / greatest(dateDiff('second', min(TimeUnix), max(TimeUnix)), 1) AS rate
   FROM metrics_gauge g
   WHERE $__orgFilter(g) AND TimeUnix >= $__endTime - INTERVAL 15 MINUTE AND TimeUnix <= $__endTime
-    AND MetricName IN (${[...OPS.map((op) => `opcounters_${op}`), ...ASSERTS.map((a) => `asserts_${a}`)].map((m) => `'mongodb_${m}'`).join(", ")})
+    AND MetricName IN (${RATE_METRICS})
   GROUP BY host, metric
 ) GROUP BY host`
 
@@ -60,11 +81,14 @@ WHERE $__orgFilter(m) AND $__timeFilter(TimeUnix) AND MetricName = 'mongodb_up' 
 
 type Row = Readonly<Record<string, unknown>>
 
+/** A cell as the warehouse returns it: a number, or a string that parses as one; anything else reads 0. */
 const num = (value: unknown): number => {
 	const n = typeof value === "number" ? value : Number(value)
 	return Number.isFinite(n) ? n : 0
 }
-const str = (value: unknown): string => (value === null || value === undefined ? "" : String(value))
+/** A label cell: empty when the scrape did not send it. */
+const str = (value: unknown): string =>
+	typeof value === "string" ? value : typeof value === "number" ? String(value) : ""
 
 export type SnapshotRows = Readonly<{
 	nowMs: number
@@ -75,16 +99,21 @@ export type SnapshotRows = Readonly<{
 
 /** Pure: the three answers joined per node. */
 export const assembleSnapshot = (rows: SnapshotRows): AtlasSnapshot => {
-	const rates = new Map(rows.rates.map((row) => [str(row.host), row] as const))
-	const sparks = new Map(rows.sparks.map((row) => [str(row.host), row] as const))
+	const rates = new Map(Arr.map(rows.rates, (row) => [str(row.host), row] as const))
+	const sparks = new Map(Arr.map(rows.sparks, (row) => [str(row.host), row] as const))
 	const toNode = (row: Row): AtlasNode => {
 		const host = str(row.host)
 		const rate = rates.get(host) ?? {}
 		const spark = sparks.get(host)?.spark
 		return {
 			host,
+			orgId: str(row.orgId),
+			projectId: str(row.projectId),
+			project: str(row.project),
 			cluster: str(row.cluster),
 			replicaSet: str(row.replicaSet),
+			provider: str(row.provider),
+			region: str(row.region),
 			zone: str(row.zone),
 			state: num(row.state),
 			up: num(row.up),
@@ -105,22 +134,25 @@ export const assembleSnapshot = (rows: SnapshotRows): AtlasSnapshot => {
 				command: num(rate.op_command),
 			},
 			asserts: num(rate.asserts),
-			connectionsSpark: Array.isArray(spark) ? spark.map(num) : [],
+			connectionsSpark: Arr.isArray(spark) ? Arr.map(spark, num) : [],
 		}
 	}
-	return { capturedAtMs: rows.nowMs, nodes: rows.nodes.map(toNode) }
+	return { capturedAtMs: rows.nowMs, nodes: Arr.map(rows.nodes, toNode) }
 }
 
 /** The page's one read: three queries in parallel. Rates and sparklines are best-effort. */
 export const loadAtlasSnapshot = (nowMs: number) => {
 	const window = windowEndingAt(nowMs)
-	const optional = (sql: string) => runSql(sql, window).pipe(Effect.orElseSucceed((): ReadonlyArray<Row> => []))
+	const optional = (sql: string) =>
+		runSql(sql, window).pipe(Effect.orElseSucceed((): ReadonlyArray<Row> => []))
 	return Effect.all(
 		{ nodes: runSql(NODES_SQL, window), rates: optional(RATES_SQL), sparks: optional(SPARK_SQL) },
 		{ concurrency: "unbounded" },
 	).pipe(
-		Effect.map((rows) => assembleSnapshot({ ...rows, nowMs })),
-		Effect.mapError(toLoadFailure),
+		Effect.mapBoth({
+			onSuccess: (rows) => assembleSnapshot({ ...rows, nowMs }),
+			onFailure: toLoadFailure,
+		}),
 		Effect.result,
 	)
 }

@@ -44,7 +44,7 @@ const LANDS_IN = {
 	docker: { icon: "ServerIcon", title: "Infrastructure", detail: "Containers on each host" },
 	host: { icon: "ServerIcon", title: "Infrastructure", detail: "CPU, memory, disk and network" },
 	proxmox: { icon: "StackPerspectiveIcon", title: "Infrastructure → Proxmox", detail: "Nodes, guests and storage" },
-	mongodb_atlas: { icon: "MongodbIcon", title: "Infrastructure → MongoDB Atlas", detail: "One row per replica set member" },
+	mongodb_atlas: { icon: "MongodbIcon", title: "Infrastructure → MongoDB Atlas", detail: "Projects, clusters and their members" },
 	postgresql: { icon: "PostgresIcon", title: "Infrastructure → PostgreSQL", detail: "One row per instance, Patroni roles" },
 } satisfies Partial<Record<PushSourcePlatform, RailItem>>
 

@@ -1,14 +1,26 @@
 import { Schema } from "effect"
 
-// `/infra/atlas` (NevrLabs selfhost): one MongoDB Atlas replica set from Atlas's Prometheus integration
-// (`mongodb_*` gauges, one series per node keyed by `service.instance.id`). Counters arrive as cumulative
-// gauges, so rates are the window's delta over its span.
+// `/infra/atlas` (NevrLabs selfhost): MongoDB Atlas as its Prometheus integration reports it
+// (`mongodb_*` gauges, one series per node keyed by `service.instance.id`). Every sample carries the
+// Atlas hierarchy as labels — organization, project (Atlas's "group") and cluster — so one snapshot
+// holds any number of each. Counters arrive as cumulative gauges, so rates are the window's delta over
+// its span.
 
 export const AtlasNode = Schema.Struct({
 	/** `service.instance.id`: `<cluster>-shard-00-01-pri.<id>.mongodb.net:27018`. */
 	host: Schema.String,
+	/** `org_id`: the Atlas organization, shared by every project under it. */
+	orgId: Schema.String,
+	/** `group_id` / `group_name`: the Atlas project that owns the cluster. Empty when Atlas sent neither. */
+	projectId: Schema.String,
+	project: Schema.String,
+	/** `cl_name`. The page groups by it, falling back to `replicaSet` when it is empty. */
 	cluster: Schema.String,
+	/** `rs_nm`: the replica set the member belongs to (Atlas names every set `…-shard-N`, sharded or not). */
 	replicaSet: Schema.String,
+	/** `AWS` / `GCP` / `AZURE`, and the region the members run in. */
+	provider: Schema.String,
+	region: Schema.String,
 	zone: Schema.String,
 	/** `rs_state`: 1 primary, 2 secondary, anything else unhealthy. */
 	state: Schema.Number,

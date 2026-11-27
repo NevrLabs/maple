@@ -5,7 +5,7 @@ import { subscriptions } from "./subscription"
 import { contextChanged, init, routeChanged, update } from "./update"
 import { view } from "./view"
 
-/** `/infra/atlas`: a MongoDB Atlas replica set's members (NevrLabs selfhost). */
+/** `/infra/atlas`: MongoDB Atlas by project and cluster, then each cluster's members (NevrLabs selfhost). */
 export const page = definePage(
 	"InfraAtlas",
 	{ Model, Message },
