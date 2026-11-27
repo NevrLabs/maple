@@ -223,6 +223,7 @@ const rowOf = (
 	accountId: string,
 	place: { readonly region: string; readonly usageType: string },
 	usage: { readonly quantity: number; readonly unit: string },
+	chargeCategory: CostPullRow["chargeCategory"] = group.service === "Tax" ? "tax" : "unknown",
 ): CostPullRow => ({
 	day: group.day,
 	accountId,
@@ -233,9 +234,9 @@ const rowOf = (
 	resourceId: "",
 	resourceType: "",
 	serviceName: "",
-	// Cost Explorer nets credits, refunds and commitment fees into a service's rows and names no
-	// charge type on them: only tax, a service of its own, is known for what it is.
-	chargeCategory: group.service === "Tax" ? "tax" : "unknown",
+	// Credits are pulled apart (`creditRows`). Refunds and commitment fees stay netted into a
+	// service's rows under no charge type: only tax, a service of its own, is known for what it is.
+	chargeCategory,
 	basis: "billed",
 	currency: group.currency,
 	billedCost: group.billedCost,
@@ -277,3 +278,25 @@ export const usageRows = (
 			{ quantity: group.quantity, unit: group.unit },
 		),
 	)
+
+/** The service AWS credit rows are grouped under. */
+export const AWS_CREDITS_SERVICE = "Credits"
+
+/**
+ * Rows of a `SERVICE` x `REGION` answer filtered to `RECORD_TYPE` Credit: what credits paid, per
+ * service and region, as negative `credit` rows. Usage is read without them, so usage plus these
+ * is what the account was billed. They are one `Credits` service, the credited service its usage
+ * type: under their own service they would net back into it, and no view would show gross cost.
+ */
+export const creditRows = (groups: ReadonlyArray<CostGroup>, accountId: string): ReadonlyArray<CostPullRow> =>
+	Arr.map(Arr.filter(groups, costs), (group) => ({
+		...rowOf(
+			group,
+			accountId,
+			{ region: group.key, usageType: group.service },
+			{ quantity: 0, unit: "" },
+			"credit",
+		),
+		cloudService: AWS_CREDITS_SERVICE,
+		serviceCategory: AWS_CREDITS_SERVICE,
+	}))

@@ -19,18 +19,36 @@ export interface FakeCostItem {
 	readonly amortized?: number
 	readonly quantity: number
 	readonly unit: string
+	/** Cost Explorer's `RECORD_TYPE`. Defaults to `Usage`; a `Credit` carries a negative cost. */
+	readonly recordType?: string
 }
+
+interface FakeDimensions {
+	readonly Key: string
+	readonly Values: ReadonlyArray<string>
+}
+
+/** The part of Cost Explorer's filter `Expression` a pull sends: dimensions, `Not` and `And`. */
+export interface FakeCostFilter {
+	readonly Dimensions?: FakeDimensions
+	readonly Not?: FakeCostFilter
+	readonly And?: ReadonlyArray<FakeCostFilter>
+}
+
+const FakeCostFilter: Schema.Codec<FakeCostFilter> = Schema.Struct({
+	Dimensions: Schema.optionalKey(
+		Schema.Struct({ Key: Schema.String, Values: Schema.Array(Schema.String) }),
+	),
+	Not: Schema.optionalKey(Schema.suspend((): Schema.Codec<FakeCostFilter> => FakeCostFilter)),
+	And: Schema.optionalKey(Schema.Array(Schema.suspend((): Schema.Codec<FakeCostFilter> => FakeCostFilter))),
+})
 
 const FakeCostRequest = Schema.Struct({
 	TimePeriod: Schema.Struct({ Start: Schema.String, End: Schema.String }),
 	Granularity: Schema.String,
 	Metrics: Schema.Array(Schema.String),
 	GroupBy: Schema.Array(Schema.Struct({ Type: Schema.String, Key: Schema.String })),
-	Filter: Schema.optionalKey(
-		Schema.Struct({
-			Dimensions: Schema.Struct({ Key: Schema.String, Values: Schema.Array(Schema.String) }),
-		}),
-	),
+	Filter: Schema.optionalKey(FakeCostFilter),
 	NextPageToken: Schema.optionalKey(Schema.String),
 })
 export type FakeCostRequest = typeof FakeCostRequest.Type
@@ -56,7 +74,21 @@ const nextDay = (day: string) =>
 	Str.slice(0, 10)(new Date(timestampMs(`${day}T00:00:00Z`) + 86_400_000).toISOString())
 
 const dimensionOf = (item: FakeCostItem, key: string) =>
-	key === "SERVICE" ? item.service : key === "REGION" ? item.region : item.usageType
+	key === "SERVICE"
+		? item.service
+		: key === "REGION"
+			? item.region
+			: key === "RECORD_TYPE"
+				? (item.recordType ?? "Usage")
+				: item.usageType
+
+/** Whether `item` passes `filter`. A `REGION` dimension misses `missed` services, as AWS can. */
+const passes = (item: FakeCostItem, filter: FakeCostFilter, missed: ReadonlyArray<string>): boolean =>
+	(filter.Dimensions === undefined ||
+		(Arr.contains(filter.Dimensions.Values, dimensionOf(item, filter.Dimensions.Key)) &&
+			!(filter.Dimensions.Key === "REGION" && Arr.contains(missed, item.service)))) &&
+	(filter.Not === undefined || !passes(item, filter.Not, [])) &&
+	Arr.every(filter.And ?? [], (part) => passes(item, part, missed))
 
 /** What AWS answers `request` with for an account whose charges are `items`. A day without groups is left out. */
 export const answerCostExplorer = (
@@ -66,15 +98,13 @@ export const answerCostExplorer = (
 ): FakeCostAnswer => {
 	const pageSize = options.pageSize ?? 2500
 	const [first, second] = request.GroupBy
-	const filter = request.Filter?.Dimensions
+	const filter = request.Filter
 	const matching = Arr.filter(
 		items,
 		(item) =>
 			item.day >= request.TimePeriod.Start &&
 			item.day < request.TimePeriod.End &&
-			(filter === undefined ||
-				(Arr.contains(filter.Values, dimensionOf(item, filter.Key)) &&
-					!Arr.contains(options.missedByRegionFilter ?? [], item.service))),
+			(filter === undefined || passes(item, filter, options.missedByRegionFilter ?? [])),
 	)
 	const keysOf = (item: FakeCostItem) => [
 		dimensionOf(item, first?.Key ?? "SERVICE"),

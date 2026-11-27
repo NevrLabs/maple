@@ -34,51 +34,60 @@ const pull = (fake: FakeCostExplorer, window = FIXTURE_WINDOW) =>
 const total = (values: ReadonlyArray<number>) => Num.sumAll(values)
 
 describe("pullCostExplorer", () => {
-	it.effect("asks once by region, then once by usage type for each region that matters", () =>
-		Effect.gen(function* () {
-			const fake = makeFake()
-			const pulled = yield* pull(fake)
+	it.effect(
+		"asks once by region, then once by usage type for each region that matters, then for credits",
+		() =>
+			Effect.gen(function* () {
+				const fake = makeFake()
+				const pulled = yield* pull(fake)
 
-			assert.deepStrictEqual(pulled.detailedRegions, FIXTURE_DETAILED)
-			assert.strictEqual(pulled.requests, 4)
-			const [byRegion, ...byUsage] = fake.requests
-			// The window's last day is 2026-03-01: Cost Explorer's `End` is exclusive.
-			assert.deepStrictEqual(byRegion, {
-				TimePeriod: { Start: "2026-02-27", End: "2026-03-02" },
-				Granularity: "DAILY",
-				Metrics: ["UnblendedCost", "AmortizedCost", "UsageQuantity"],
-				GroupBy: [
-					{ Type: "DIMENSION", Key: "SERVICE" },
-					{ Type: "DIMENSION", Key: "REGION" },
-				],
-			})
-			assert.deepStrictEqual(
-				Arr.map(byUsage, (request) => [request.GroupBy, request.Filter, request.TimePeriod]),
-				Arr.map(FIXTURE_DETAILED, (region) => [
-					[
+				assert.deepStrictEqual(pulled.detailedRegions, FIXTURE_DETAILED)
+				assert.strictEqual(pulled.requests, 5)
+				const byRegion = fake.requests[0]
+				const byUsage = fake.requests.slice(1, -1)
+				const credits = fake.requests.at(-1)
+				const noCredits = { Not: { Dimensions: { Key: "RECORD_TYPE", Values: ["Credit"] } } }
+				// The window's last day is 2026-03-01: Cost Explorer's `End` is exclusive.
+				assert.deepStrictEqual(byRegion, {
+					TimePeriod: { Start: "2026-02-27", End: "2026-03-02" },
+					Granularity: "DAILY",
+					Metrics: ["UnblendedCost", "AmortizedCost", "UsageQuantity"],
+					GroupBy: [
 						{ Type: "DIMENSION", Key: "SERVICE" },
-						{ Type: "DIMENSION", Key: "USAGE_TYPE" },
+						{ Type: "DIMENSION", Key: "REGION" },
 					],
-					{ Dimensions: { Key: "REGION", Values: [region] } },
-					{ Start: "2026-02-27", End: "2026-03-02" },
-				]),
-			)
+					Filter: noCredits,
+				})
+				assert.deepStrictEqual(
+					Arr.map(byUsage, (request) => [request.GroupBy, request.Filter, request.TimePeriod]),
+					Arr.map(FIXTURE_DETAILED, (region) => [
+						[
+							{ Type: "DIMENSION", Key: "SERVICE" },
+							{ Type: "DIMENSION", Key: "USAGE_TYPE" },
+						],
+						{ And: [{ Dimensions: { Key: "REGION", Values: [region] } }, noCredits] },
+						{ Start: "2026-02-27", End: "2026-03-02" },
+					]),
+				)
+				assert.deepStrictEqual(credits?.Filter, {
+					Dimensions: { Key: "RECORD_TYPE", Values: ["Credit"] },
+				})
 
-			// Every charge is in exactly one row: the rows add up to the account's cost.
-			assert.closeTo(
-				total(Arr.map(pulled.rows, (row) => row.billedCost)),
-				total(Arr.map(FIXTURE_ITEMS, (item) => item.cost)),
-				1e-9,
-			)
-			const usageTyped = Arr.dedupe(
-				Arr.map(
-					Arr.filter(pulled.rows, (row) => row.usageType !== ""),
-					(row) => row.region,
-				),
-			)
-			assert.deepStrictEqual(Arr.sort(usageTyped, Order.String), FIXTURE_DETAILED)
-			assert.isTrue(Arr.every(pulled.rows, (row) => row.accountId === ACCOUNT))
-		}),
+				// Every charge is in exactly one row: the rows add up to the account's cost.
+				assert.closeTo(
+					total(Arr.map(pulled.rows, (row) => row.billedCost)),
+					total(Arr.map(FIXTURE_ITEMS, (item) => item.cost)),
+					1e-9,
+				)
+				const usageTyped = Arr.dedupe(
+					Arr.map(
+						Arr.filter(pulled.rows, (row) => row.usageType !== ""),
+						(row) => row.region,
+					),
+				)
+				assert.deepStrictEqual(Arr.sort(usageTyped, Order.String), FIXTURE_DETAILED)
+				assert.isTrue(Arr.every(pulled.rows, (row) => row.accountId === ACCOUNT))
+			}),
 	)
 
 	it.effect("keeps a region's service-level rows when its pull by usage type misses a charge", () =>
@@ -115,12 +124,15 @@ describe("pullCostExplorer", () => {
 			fake.options = { pageSize: 4 }
 			const paged = yield* pull(fake)
 
-			// 17 groups by region, then 12, 1 and 6 by usage type: 5 + 3 + 1 + 2 pages of four.
-			assert.strictEqual(paged.requests, 11)
-			assert.lengthOf(fake.requests, 11)
+			// 17 groups by region, then 12, 1 and 6 by usage type: 5 + 3 + 1 + 2 pages of four, then one
+			// for credits (the fixture has none).
+			assert.strictEqual(paged.requests, 12)
+			assert.lengthOf(fake.requests, 12)
 			assert.deepStrictEqual(
 				Arr.map(fake.requests, (request) => [
-					request.Filter?.Dimensions.Values[0] ?? "(all)",
+					request.Filter?.And?.[0]?.Dimensions?.Values[0] ??
+						request.Filter?.Dimensions?.Values[0] ??
+						"(all)",
 					request.NextPageToken ?? "(first)",
 				]),
 				[
@@ -135,9 +147,60 @@ describe("pullCostExplorer", () => {
 					["global", "(first)"],
 					["us-east-1", "(first)"],
 					["us-east-1", "page-4"],
+					["Credit", "(first)"],
 				],
 			)
 			assert.deepStrictEqual(paged.rows, whole.rows)
+		}),
+	)
+
+	it.effect("pulls credits apart: usage keeps its gross cost, credits are rows of their own", () =>
+		Effect.gen(function* () {
+			const fake = makeFake()
+			// A credit that pays for most of a day's compute, as promotional credits do.
+			const credit = {
+				day: "2026-02-28",
+				service: "Amazon Elastic Compute Cloud - Compute",
+				region: "eu-central-1",
+				usageType: "EUC1-BoxUsage:m7g.large",
+				cost: -5,
+				quantity: 0,
+				unit: "",
+				recordType: "Credit",
+			}
+			fake.items = [...FIXTURE_ITEMS, credit]
+			const pulled = yield* pull(fake)
+
+			const credits = Arr.filter(pulled.rows, (row) => row.chargeCategory === "credit")
+			assert.deepStrictEqual(
+				Arr.map(credits, (row) => [
+					row.day,
+					row.cloudService,
+					row.usageType,
+					row.region,
+					row.billedCost,
+				]),
+				[["2026-02-28", "Credits", credit.service, "eu-central-1", -5]],
+			)
+			// Usage is gross: the credit is not netted into it.
+			assert.closeTo(
+				total(
+					Arr.map(
+						Arr.filter(pulled.rows, (row) => row.chargeCategory !== "credit"),
+						(row) => row.billedCost,
+					),
+				),
+				total(Arr.map(FIXTURE_ITEMS, (item) => item.cost)),
+				1e-9,
+			)
+			// And all rows still sum to what the account was billed.
+			assert.closeTo(
+				total(Arr.map(pulled.rows, (row) => row.billedCost)),
+				total(Arr.map(fake.items, (item) => item.cost)),
+				1e-9,
+			)
+			// The credit did not break the region's reconciliation by usage type.
+			assert.deepStrictEqual(pulled.detailedRegions, FIXTURE_DETAILED)
 		}),
 	)
 
@@ -266,7 +329,7 @@ describe("pullCostExplorer", () => {
 					backoff: { baseMs: 0, factor: 1, capMs: 0, maxRetries: 2 },
 				}),
 			)
-			assert.strictEqual(pulled.requests, 5)
+			assert.strictEqual(pulled.requests, 6)
 			assert.deepStrictEqual(pulled.detailedRegions, FIXTURE_DETAILED)
 		}),
 	)

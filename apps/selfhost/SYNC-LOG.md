@@ -612,7 +612,7 @@ the selfhost tip = run 14 close; second parent `167ca4f0a23266e94b99b2da6787ad86
 - bun.lock: the run's regenerated lock (artifact `bun-lock`) is byte-identical to the committed merged lock
   (`ee73665e3339dc81956eee7007d567f0cb22081685e9fde77cc0bc21fb84c429`); no lock commit.
 
-## Feature — 2026-11-27 — MongoDB Atlas: clusters by project on `/infra/atlas` (PATCHES #18) and a Cloud cost provider (PATCHES #22)
+## Feature — 2026-11-27 — MongoDB Atlas: clusters by project on `/infra/atlas` (PATCHES #18) and a Cloud cost provider (PATCHES #23)
 
 Status: **COMPLETE — merged, gated (GitHub Actions), pushed. Not deployed.** Branch `selfhost-homelab-up-20261127-2`
 from the run-15 docs tip `5ad30c5f2e04084213f8a082a4ffa4c8d6f4ff43`: `selfhost-mongodb-cost` (`beb2e69cca`) merged
@@ -620,7 +620,7 @@ from the run-15 docs tip `5ad30c5f2e04084213f8a082a4ffa4c8d6f4ff43`: `selfhost-m
 `e0f79ef9ff`, rebased onto the same tip) as `9960786cdc`; gates extension `7e185df97a`; lab fixture fix `75e783f7fc`
 = gated head.
 
-- Cost provider (PATCHES #22): an org pastes an Atlas service account (`<clientId> <clientSecret>`); the API checks
+- Cost provider (PATCHES #23): an org pastes an Atlas service account (`<clientId> <clientSecret>`); the API checks
   it with Atlas, seals it in `cost_connections` and makes the `cost_sources` row (`PUT/DELETE /internal/cost/mongodb`,
   `mongodbCost.set/remove`; route table 711 → 713, both refused for viewers by the default non-GET rule). The sync
   reads the Admin API v2 (`orgs`, `invoices`, `invoices/:id/lineItems:search`; one token per source cached an hour,
