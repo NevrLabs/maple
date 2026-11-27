@@ -447,19 +447,47 @@ resume respect denial; settings refresh preserves it on unknown answers and reco
 allow. CFG-INTEG-02 lists unavailable datasets even on a pass, without masking real errors.
 **Verify after rebase:** CloudflareAnalyticsService, SetupAuditService and CFG-INTEG-02 suites.
 
-## 18. `/infra/atlas`: MongoDB Atlas replica set page (web)
+## 18. `/infra/atlas`: MongoDB Atlas page — projects, clusters, members (web)
 
 **Why:** Atlas's Prometheus integration already lands 30 `mongodb_*` gauges per member in `metrics_gauge`
-(one series per `service.instance.id`), but no page read them. **Change:** new route
-`apps/web/src/page/infra-integrations/atlas/` built on the Proxmox anatomy (#3): stat rail (members up,
-connections, ops/s, lock queue, resident memory) and one row per member (role, zone, connections plus a
-6 h sparkline, ops/s with the op mix, resident/cache, oplog, asserts/s); cards below `md`. Reads through
+(one series per `service.instance.id`), each carrying the Atlas hierarchy as labels (`org_id`,
+`group_id`/`group_name` = the project, `cl_name`, `rs_nm`, `provider`, `region`), but no page read them,
+so the page listed members without their cluster or project.
+**Change:** route `apps/web/src/page/infra-integrations/atlas/` rebuilt on the Proxmox anatomy (#3): stat
+rail (members up, connections, ops/s, lock queue, max resident memory), a **Clusters** table (one row per
+cluster, by project: name with its replica sets, project with its id, provider · region, members up,
+primaries, connections, ops/s, queue), then one **member table per cluster** under a heading that names
+the project (role, zone, connections plus a 6 h sparkline, ops/s with the op mix, resident/cache, oplog,
+asserts/s); member cards below `md`. `clustersOf` groups members by organization, project and cluster; a
+member without `cl_name` falls back to its replica set. A cluster is healthy when every member reports
+and sits in its set as a primary or a secondary, and every replica set has exactly one live primary. The subline counts replica sets and claims no
+cluster type: Atlas numbers every set `shard-N` (its discovery example names a three-member cluster
+`…-shard-00-0X`), and `cl_role` reads `shardsvr` on a cluster that has one replica set and no router
+or config-server series. The member table's lanes switch on the page column's width
+(`@min-[…]/page:`, as the stat rail does), each threshold at what its lanes need plus 48 px, so neither
+table scrolls sideways (measured with device emulation at every fourth pixel width from 360 to 1460).
+Reads through
 `executeRawSql` with `$__orgFilter` like Proxmox (`runSql` exported from `proxmox/data.ts`); counters are
-cumulative gauges, so rates are the 15-minute delta over its span, floored at 0 on a restart. Sidebar row
-under Infrastructure gated by `atlas` integration presence (one `mongodb_up` sample in the last hour).
-Registered in `infra-surfaces.ts`, `shell/{model,nav,data}.ts`, `route/{search,app-route,routers}.ts`,
-`page/registry.ts`. **Verify after rebase:** `atlas.scene.test.ts` (includes `rawSqlIssue` on all four
-statements), shell/route/view.lazy tests; `/infra/atlas` shows 3 members with one Primary.
+cumulative gauges, so rates are the 15-minute delta over its span, floored at 0 on a restart. Sidebar
+row under Infrastructure gated by `atlas` integration presence (one `mongodb_up` sample in the last
+hour). Registered in `infra-surfaces.ts`, `shell/{model,nav,data}.ts`, `route/{search,app-route,routers}.ts`,
+`page/registry.ts`. The route's older files are also converted to Effect idioms (`Arr`/`Str`/`Order`)
+and oxfmt layout, which is why the diff is larger than the feature: apps/web lint rejects native array
+and string methods.
+**Not exercised:** no sharded cluster reports in this warehouse, so that path rests on the rule and its
+tests only, and the read assumes one process per `service.instance.id` (a router or config server
+sharing a member's host is not filtered out yet).
+**Not shown:** tier, backup state and alerts are not in the Prometheus integration and need the Atlas
+Admin API. Atlas's integration does export `mongodb_info` (server version, process type) and
+`hardware_*` (disk, CPU, memory); this scrape lands neither, so showing them is a collector change.
+**Left for upstream:** the stat rail's loading tiles (`statRailItemSkeleton`, fixed-width bars) push the page
+column 1–21 px sideways at 768–872 px viewports while the page loads. Present before this change on every
+page that uses `statRailLoading`; not touched here.
+**Verify after rebase:** `atlas.scene.test.ts` (`rawSqlIssue` on all four statements, grouping across
+two projects, the primary rule for one and for several replica sets), shell/route/view.lazy
+tests; `/lab/atlas?state=live|multi|offline|empty|loading` at 1440, 1280, 1024, 900, 390 and 360 px
+(a phone shot needs device emulation: headless Chrome's narrowest window is 500 px);
+`/infra/atlas` shows the live project and cluster with 3 members and one Primary.
 
 ## #20 — Source map storage is unavailable on Bun without a durable bucket
 

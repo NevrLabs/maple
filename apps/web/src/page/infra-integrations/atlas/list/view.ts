@@ -11,7 +11,7 @@ import type { Model } from "./model"
 
 type H = HtmlBuilder<Message>
 
-const DESCRIPTION = "MongoDB Atlas replica sets reporting through Atlas's Prometheus integration."
+const DESCRIPTION = "MongoDB Atlas projects and clusters reporting through Atlas's Prometheus integration."
 
 type Shown = Readonly<{ state: "loading" | "empty" | "live" | "error"; body: ReadonlyArray<Html>; data?: AtlasSnapshot }>
 
