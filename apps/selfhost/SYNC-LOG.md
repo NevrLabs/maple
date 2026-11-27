@@ -567,3 +567,47 @@ selfhost tip = run 13 close + PATCHES #21; second parent `040f204a61b1b1d85a3b6b
   uptime/status 162; scraper 14; selfhost 73; packaged status 2; web 1291.
 - bun.lock: the run's regenerated lock (artifact `bun-lock`) is byte-identical to the committed merged lock
   (`ee73665e3339dc81956eee7007d567f0cb22081685e9fde77cc0bc21fb84c429`); no lock commit.
+## Run 15 — 2026-11-27 — upstream 040f204a61 → 167ca4f0a2
+
+Status: **COMPLETE — merged, gated (GitHub Actions), pushed.** Branch `selfhost-homelab-up-20261127`;
+merge `b338558657e309b271a46ae64c468c87abcae85f` (first parent `6f356297a6f437cd3b33a34a692c36612ae05300`,
+the selfhost tip = run 14 close; second parent `167ca4f0a23266e94b99b2da6787ad866649d405`), gated head
+`370e57214dc9ed0a1bdc20ecd6c0d7dcde291ab6` (merge + route table regeneration + gates extension). Not deployed.
+
+- Incoming range: 3 commits, 128 files (+41.9k/−0.6k; 70 of the files are the new `apps/ios` on-call app,
+  #3063): iOS on-call with pages, the schedule, widgets and a test page; the Kubernetes collector installed
+  with Alchemy or Terraform from the install modal and the Connect-a-source snippets (#3071, pinned to one
+  cluster by #3072); on-call paging over APNs (`Apns.ts`: single-flight provider-token cache, topic
+  allowlist, background widget push); the mobile client as an audit actor; new on-call overview and widget
+  on-call/pages endpoints. One new PG migration, `20261126154108_alert_member_notifications_user_idx`
+  (`CREATE INDEX IF NOT EXISTS` on `alert_member_notifications (org_id, user_id)`: additive). No
+  package.json or lock change.
+- Mirror: fork `main` fast-forwarded `040f204a61b1b1d85a3b6b849a3bdd2e1edc6a97` →
+  `167ca4f0a23266e94b99b2da6787ad866649d405`; read back on origin.
+- Merge `b338558657` (separate worktree; the main checkout's uncommitted postgres-integration work untouched):
+  1 conflict, resolved by hand. `apps/web/src/page/sources/kit/snippets.test.ts`: the fork's
+  infrastructure-sender test and upstream's two Alchemy/Terraform snippet tests were both appended at the same
+  EOF anchor; both kept. Auto-merged overlaps checked by token: `sources/kit/snippets.ts` keeps the
+  Proxmox/Atlas/PostgreSQL snippet cases beside upstream's Alchemy/Terraform Kubernetes tabs; `lab/registry.ts`
+  keeps `/lab/proxmox`, `/lab/atlas`, `/lab/postgres` and `/lab/bench/ui-lag` beside upstream's new
+  `/lab/install-modal`.
+- Survival sweep (`040f204a61` → `6f356297a6`): 3 overlap files, zero MISSING lines, no missing files.
+- Wire surfaces: nothing in the range touches `packages/auth`, `packages/backend/src/platform/{Env,bindings}.ts`,
+  `apps/api/src/worker/bindings.ts`, `apps/electric-sync/src/config.ts`, `apps/status` or `apps/selfhost`.
+  `MobilePushService.layer` (new in the API service graph) needs only `ApnsClient` (plain HTTP client plus the
+  already-ported `APNS_PRIVATE_KEY` secret; unconfigured = no-op), `LiveActivitiesService`,
+  `MobileDevicesService` and `OrgMembershipService`: no port to mirror. Session format and the status adapter
+  contract are unchanged.
+- Post-merge `370e57214d` (not a text conflict): the viewer route table regenerated on the MacBook from the
+  merged tree (706 → 711 routes: `oncallOverview.retrieve`, `widgetOnCall.retrieve`, `widgetPages.list`,
+  `widgetPages.acknowledge`, `mobileDevices.testPage`); the two new POST routes are not allowlisted, so viewers
+  stay refused. Gates extended: `apps/web/src/page/sources/kit` (this run's conflict surface, previously
+  ungated) joins the web merge-surfaces suite in `gates.yml` and `scripts/mac-gates.sh`.
+- Gates: fork Actions accepted the dispatch. Green run
+  https://github.com/NevrLabs/maple/actions/runs/45926789762 at `370e57214d`, dispatch headSha equal to the
+  branch head (checked at queue time and on the completed run). SDK, Docker-free bundles, eight typechecks and
+  all suites green: QE integrations 512; backend org/Cloudflare 607 passed / 1 skipped; warehouse 235 passed /
+  540 skipped; domain status 69; status-page 118; backend uptime/status 162; scraper 14; selfhost 73; packaged
+  status 2; web 1300.
+- bun.lock: the run's regenerated lock (artifact `bun-lock`) is byte-identical to the committed merged lock
+  (`ee73665e3339dc81956eee7007d567f0cb22081685e9fde77cc0bc21fb84c429`); no lock commit.
