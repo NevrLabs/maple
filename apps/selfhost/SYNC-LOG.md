@@ -671,6 +671,14 @@ electric, proxy and cloudflared untouched (container IDs and StartedAt unchanged
 - Not applied on CT130: PATCHES #21 compose/retention files (`compose.yaml`, `ch-retention` SQL) and the
   ingest/collector changes of runs 12–15.
 
+## Deploy — 2026-11-27T15:28Z — feature line @ `89c696f0` on Noovoleum (owner go, PR merged after green checks)
+
+infra-deploy-docker #156 (squash `67af085`): all four images on `89c696f0` (fork CI run 46021822048, digests pinned),
+rehearsed on the post-#154 backup (PG 238 → 239, CH 75 → 75, gate PASS, ciphertexts all v2/v3). Accepted at 15:31Z:
+running images == pins, restarts 0, ledgers 239 / 75, fresh rows flowing, `PUT/DELETE /internal/cost/mongodb` 401,
+0 secret-related errors. Details, rollback and the pre-existing `alert_checks` audit-drop note: Noovoleum ledger
+`~/noovoleum/.sessions/maple-noovoleum-20261104/STATUS.md` (2026-11-27T15:35Z).
+
 ## Merge — 2026-11-27 — `selfhost-aws-cost-credits` (PATCHES #22) absorbed into the selfhost line
 
 `89c696f059` merges the branch that Noovoleum runs as `33170901` (AWS Cloud Cost gross usage, credits as rows of
