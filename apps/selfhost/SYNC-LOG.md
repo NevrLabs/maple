@@ -611,3 +611,37 @@ the selfhost tip = run 14 close; second parent `167ca4f0a23266e94b99b2da6787ad86
   status 2; web 1300.
 - bun.lock: the run's regenerated lock (artifact `bun-lock`) is byte-identical to the committed merged lock
   (`ee73665e3339dc81956eee7007d567f0cb22081685e9fde77cc0bc21fb84c429`); no lock commit.
+
+## Feature — 2026-11-27 — MongoDB Atlas: clusters by project on `/infra/atlas` (PATCHES #18) and a Cloud cost provider (PATCHES #22)
+
+Status: **COMPLETE — merged, gated (GitHub Actions), pushed. Not deployed.** Branch `selfhost-homelab-up-20261127-2`
+from the run-15 docs tip `5ad30c5f2e04084213f8a082a4ffa4c8d6f4ff43`: `selfhost-mongodb-cost` (`beb2e69cca`) merged
+--no-ff as `17ae71d272`, `selfhost-atlas-hierarchy` (`c13320db10`, the Atlas page rewrite that had sat uncommitted on
+`e0f79ef9ff`, rebased onto the same tip) as `9960786cdc`; gates extension `7e185df97a`; lab fixture fix `75e783f7fc`
+= gated head.
+
+- Cost provider (PATCHES #22): an org pastes an Atlas service account (`<clientId> <clientSecret>`); the API checks
+  it with Atlas, seals it in `cost_connections` and makes the `cost_sources` row (`PUT/DELETE /internal/cost/mongodb`,
+  `mongodbCost.set/remove`; route table 711 → 713, both refused for viewers by the default non-GET rule). The sync
+  reads the Admin API v2 (`orgs`, `invoices`, `invoices/:id/lineItems:search`; one token per source cached an hour,
+  a retired token replaced once) into `cost_daily`: one row per usage day × `<project>/<cluster>` × SKU, cents as
+  USD, the newest two days `estimated`; 12-month history, `lagDays: 1`. No DB migration (`provider` is plain text).
+  Web: MongoDB Atlas in the Add-a-source cloud group, replace/remove like the other credential providers.
+- Atlas page (PATCHES #18 rewritten): cluster table by project (members up, primaries, connections, ops/s, queue)
+  and one member table per cluster; a cluster is healthy when every member reports in its set and every replica set
+  has exactly one live primary. Lab: `/lab/atlas?state=live|multi|offline|empty|loading`.
+- Gates: the web merge-surfaces suite now also runs `src/page/cost`, `src/page/infra-integrations/atlas` and `src/lab`
+  (`gates.yml` and the skill's `scripts/mac-gates.sh`). First dispatch 45983182968 failed on that new suite only:
+  `cost-fixture.test.ts` iterates every credential provider and the synced lab scenario lacked the new source;
+  fixed in `75e783f7fc`. Green run https://github.com/NevrLabs/maple/actions/runs/45984095344 at `75e783f7fc`,
+  headSha equal to the branch head (queue time and completed run). QE integrations 512; backend org/Cloudflare
+  607 passed / 1 skipped; warehouse 235 / 540 skipped; domain status 69; status-page 118; backend uptime/status
+  162; scraper 14; selfhost 73; packaged status 2; web 1582 (130 files).
+- Before dispatch (MacBook): backend cost suite 457/457 (new: provider 6, connection service 6, normalize 4),
+  web cost + atlas + lab 185/185, atlas/shell/route/view.lazy 538/538; typecheck domain, backend, web green
+  (`apps/api` reports only the pre-existing `@maple-dev/alchemy/telemetry` module error in `worker-telemetry.ts`);
+  oxlint clean on every touched file; oxfmt clean on the cost files (the three Atlas-side files oxfmt would rewrap
+  are pre-existing upstream lines, left alone).
+- bun.lock: the run's artifact is byte-identical to the committed lock (`ee73665e3339dc81956eee7007d567f0cb22081685e9fde77cc0bc21fb84c429`); no lock commit.
+- Deployment: owner gate, both targets. The alerting container needs egress to `cloud.mongodb.com` only once a
+  source is saved; the API needs it when the credential is checked.
