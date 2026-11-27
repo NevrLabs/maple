@@ -740,6 +740,7 @@ export const LAB_SOURCES = {
 			anthropicSource,
 			openAiSource,
 			morphSource,
+			mongodbSource,
 		],
 	}),
 	none: decodeSources({ sources: [] }),
