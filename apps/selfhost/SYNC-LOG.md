@@ -698,3 +698,66 @@ Gated green on `c54b9cd12f` (`selfhost gates` run 46066753197; images run 460667
 `sha256:43456b85…`, `maple-web:c54b9cd1-noovoleum` `sha256:be5b8ef3…`, ingest `sha256:30609e7b…`, collector
 `sha256:deb0b050…`). Not deployed: Noovoleum pin bump + the `twilio-exporter` service are staged in
 infra-deploy-docker #157 (awaiting the owner's go and the three Twilio secrets); CT130 awaits the owner's go.
+## Run 16 — 2026-11-28 — upstream 167ca4f0a2 → 01a97f25a7
+
+Status: **COMPLETE — merged, gated (GitHub Actions), pushed.** Branch `selfhost-homelab-up-20261128`;
+merge `394a773239d48ca10dfb94be99886521d6c749a4` (first parent `0a5d924b29319eb33c9a84bb386804db094d45a1`, the
+selfhost tip = run 15 close + the 2026-11-27/28 feature lines and the #22 merge; second parent
+`01a97f25a7f91eb86d45bde9958a692aabbc149c`), gated head `8df4fc93d6e2ee2243bf07510e432da79b758cfb` (merge +
+one typecheck fix). Not deployed.
+
+- Incoming range: 15 commits, 322 files (+65.4k/−2.2k): access decisions on the request span with audited
+  refusals and an access catalog (#3081: every API group's `EndpointAccess` `"handler"` marker became
+  `handlerChecks(<permission>)`; uptime monitor list/get moved from `requires("telemetry:read")` to
+  `handlerChecks("uptime_monitors:manage")`), Google Ads sign-up conversions (#3082; new optional secret
+  `GoogleAdsConversionsPassword`, raw router answering 503 until it is set), uptime billing past 10 monitors
+  (#3088), agent-session evaluation scores (#3085–#3087), AWS PrivateLink offer (#3084), AI credits (#3083),
+  escalation-step warning (#3080), histogram window partitioning (#3075), shared setup/recipe kit for collector
+  installs (#3073/#3074), PR-review TEL-02 (#3089), landing docs (#3091), dependency sweep (#3090: effect 4.1.7,
+  effect-orm 1.3.0, workers-types 5.20261127.1 patches, bun 1.4.4 → 1.4.5 in `packageManager` and `mise.toml`).
+  Two new PG migrations, both additive (`CREATE TABLE IF NOT EXISTS`): `ad_click_erasures`, `ad_conversions`
+  (+ index), `ai_evaluation_runs`.
+- Mirror: fork `main` fast-forwarded `167ca4f0a23266e94b99b2da6787ad866649d405` →
+  `01a97f25a7f91eb86d45bde9958a692aabbc149c`; read back on origin.
+- Merge `394a773239` (separate worktree; the main checkout's uncommitted postgres-integration work untouched):
+  2 conflicts, both in the web sources lab, resolved by hand:
+  - `apps/web/src/lab/entries/sources.ts`: the fork's `labPlatform()` reader (`?platform=` for the push page,
+    #26) collided with upstream's own `?platform=` lab flag (#3073), decoded once in `defineShellLab` and carried
+    on the model. Upstream's shape taken: the file equals upstream and the auto-merged duplicate
+    `PushSourcePlatform` import is gone. The four MISSING sweep lines are that helper (superseded).
+  - `apps/web/src/page/sources/kit/snippets.test.ts`: the fork's infrastructure-sender test (Proxmox, Atlas,
+    PostgreSQL, Twilio) kept beside upstream's recipe-based Kubernetes test (`sourceRecipes`; Kubernetes
+    `sourceSnippets` now `[]`). The one MISSING line is the fork's oxfmt-wrapped
+    `expect(code("alchemy")).toContain(`, replaced by upstream's `textOf`.
+  Auto-merged overlaps checked by token: `sources/kit/snippets.ts` keeps the four fork cases beside
+  `sourceRecipes`; `lab/registry.ts` keeps the fork lab entries; `route/search.ts` keeps `oidc_error`/`dead`;
+  `settings/view.ts` keeps `SelfhostMembers` beside upstream's `isHosted` ingestion input; MCP descriptors:
+  the fork (`list/manage_ingest_source`) and upstream (agent sessions/evaluations) hunks are disjoint, no
+  regeneration; #13 `tier` beside upstream's uptime billing fields; `http-graph.ts`/`service-graph.ts` keep the
+  fork's cost groups beside upstream's `GoogleAdsConversionsRouter` and `SessionCheckScoresService`.
+- Survival sweep (`167ca4f0a2` → `0a5d924b2`): 13 overlap files, the 5 MISSING lines above, no missing files.
+- Wire surfaces: `packages/auth` only bumps `@clerk/backend`; nothing touches
+  `packages/backend/src/platform/{Env,bindings}.ts`, `apps/api/src/worker/bindings.ts`,
+  `apps/electric-sync/src/config.ts`, `apps/status` or `apps/selfhost`. The new secret is optional and read
+  through the `process.env` spread in `ports.ts` (unset → 503 on that route); `AiSessionReadService` and
+  `SessionCheckScoresService` take `OrganizationFeatureFlagsService` inside upstream's `HttpServicesLive`.
+  Session format and the status adapter contract are unchanged.
+- Route table regenerated on the MacBook (`~/ci/maple-gates/regen-16/`, head asserted == the merge): 715
+  routes, the same (method, path, id) set as the committed table — the Google Ads router is a raw route, not
+  an HttpApi endpoint — so only oxfmt line wrapping differed; not committed.
+- Gate fix of ours: the first Actions run (https://github.com/NevrLabs/maple/actions/runs/46096770646, head
+  `394a773239`) failed the domain typecheck: #3081 removed the `"handler"` marker the fork's #23/#25 cost groups
+  used. Both now `handlerChecks("integrations:manage")`, which the shared cost-connection handlers already
+  check (`8df4fc93d6`). The merge commit is unchanged.
+- Gates: fork Actions accepted both dispatches. Green run
+  https://github.com/NevrLabs/maple/actions/runs/46097088568 at `8df4fc93d6`, dispatch headSha equal to the
+  branch head (queue time and completed run). SDK, Docker-free bundles, eight typechecks and all suites green:
+  QE integrations 512; backend org/Cloudflare 608 passed / 1 skipped; warehouse 235 passed / 540 skipped;
+  domain status 69; status-page 118; backend uptime/status 162; scraper 14; selfhost 77; packaged status 2;
+  web 1590 (131 files).
+- bun.lock: the run's regenerated lock (artifact `bun-lock`, bun 1.4.5) is byte-identical to the committed merged
+  lock (`c736e1c603798d4eca977cf78ed3ad029dea50299c276a311c678a038590e0dd`), as the MacBook's was under 1.4.4;
+  no lock commit.
+- Deploy notes (owner gate): two additive PG migrations; `packageManager`/`mise.toml` now bun 1.4.5 while
+  `apps/selfhost/dev/build-images.sh` still bundles on `oven/bun:1.4.4-slim` (upstream's own scraper and sandbox
+  Dockerfiles also still pin 1.4.4) — align with the next image build.
