@@ -882,3 +882,20 @@ ingest `01852ab4…`), replacing the c54b9cd1 pins.
   by its presence probe), not because of the akasha reboot; the earlier "0 `mongodb_up` rows" observation is closed.
   The page's data was verified against the Noovoleum warehouse only. An independent review of the round-3 commit
   `1d2477e893` (the one the Atlas worker's delegate could not run) was started on this thread; result to follow.
+
+## Review — 2026-11-28 — `/infra/atlas` round-3 fixes (`1d2477e893`): independent review SHIP, follow-up `747add1edd`
+
+The review the Atlas worker's delegate could not run was done by this thread's delegate (read-only, on the commit):
+**SHIP, no blockers** — all ten fixes do what their table says at every call site; the new tests fail if their fix is
+reverted; no sibling page shares the touched pieces. Findings were text and evidence corrections, fixed in
+`747add1edd` (gates https://github.com/NevrLabs/maple/actions/runs/46140328099 green at that SHA, headSha == branch
+head; lock byte-identical, no lock commit): the trend/oplog lane threshold is need + 52 (960 → 1012, kept so a 1280 px
+window with the sidebar open keeps the lane; name 148 px there, not 152); with several clusters the tile now reads
+"N clusters, every replica set with a primary" / "N clusters with a replica set missing its primary" (two scenes for a
+two-set cluster beside a second project); the router/config-server note now says a `mongos` has no `rs_state` (listed
+as `Other state`, cluster red) while a config server is itself a replica set and would count as one. PATCHES #18 also
+records that the tile's hover title is set on the page (the kit file is upstream's) and that the Proxmox/PostgreSQL
+loading rails stay as they are (same shape, overflow unmeasured). Left as is: the label-less-primary edge case (labels
+come from one sample, so it cannot happen with this scrape). The evidence bundle's two overclaims (render
+byte-identity, "5 new tests") were corrected in `/home/rpw/work/maple-atlas-shots/follow-up/README.md`.
+Not deployed: copy and comments only; it rides the next bump (PR 157 stays at `662edd9f`).
