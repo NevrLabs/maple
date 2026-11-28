@@ -857,3 +857,21 @@ Status: **COMPLETE — deployed and accepted 2026-11-28T07:16Z.**
   pre-rollout manifest (image, ID, StartedAt); the image's assets carry the round-3 strings ("Other state", "a member
   not primary or secondary") and the Zitadel label; health 200; Setup Health 36/10 then 37/9 on consecutive reads
   (TRC-01 flickering; no new ID, STAT-04 1); 0 incidents and 0 deliveries since the rollout.
+## Noovoleum — 2026-11-28 — upgrade re-staged at `662edd9f` (PR 157 updated, not merged)
+
+Status: **STAGED — awaiting the owner's go and the three Twilio secrets.** infra-deploy-docker #157 (branch
+`maple-c54b9cd1-twilio`, head `082ea679ab`) now pins all four images to the fork CI build of `662edd9f` (images run
+46120727997, multi-arch index digests: selfhost `261730da…`, web `-noovoleum` `8a6eb27e…`, collector `6320960d…`,
+ingest `01852ab4…`), replacing the c54b9cd1 pins.
+
+- Two defects in the earlier staged head, both fixed: the c54b9cd1 selfhost image had no `/app/twilio.js` (the images
+  workflow's inline recipe had not mirrored #26's bundle line; `noovoleum-images` `c60beaa5aa` mirrors it, EXPOSE 3479
+  and the bun 1.4.5 pin, and the 662edd9f image lists `twilio.js`), and nine image lines carried a doubled digest prefix
+  (`@sha256:sha256:<hex>`), which Docker rejects. Stray `tmp-pr-body.md` dropped.
+- Range since the deployed `89c696f0`: run 16 (PG 239 → 241, two additive migrations, three new tables; CH 75 → 76,
+  migration 0076 rebuilds the two `ai_evaluations` views), #24, #25, #26 and the #18 round-3 web fixes.
+- Rehearsal on the exact selfhost index digest (MacBook, `~/ci/maple-noov/rehearse-662edd9f.sh`, copy of the post-#154
+  dump `dump4`): PG restore 0, 238 → 241, every secret slot v2/v3; CH 132 tables, ledger seeded 75 → 76, `apply 76`,
+  `migrate-gate: PASS`, `retention-assert ok` (10 tables).
+- Local mirrors: `stacks.toml` parses, no plaintext `.env`, `check-registry` self-test PASS and `registry ok`. The
+  merge (deploy) is the owner's gate; the homelab already runs `662edd9f` for web.
