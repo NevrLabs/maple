@@ -761,6 +761,7 @@ one typecheck fix). Not deployed.
 - Deploy notes (owner gate): two additive PG migrations; `packageManager`/`mise.toml` now bun 1.4.5 while
   `apps/selfhost/dev/build-images.sh` still bundles on `oven/bun:1.4.4-slim` (upstream's own scraper and sandbox
   Dockerfiles also still pin 1.4.4) — align with the next image build.
+
 ## Merge — 2026-11-28 — `selfhost-atlas-review-fixes` (PATCHES #18, review round 3) absorbed into the selfhost line
 
 `662edd9f6f` merges the round-3 review fixes for `/infra/atlas` (`1d2477e893`, on `d60089d8d7`): the operation-mix
@@ -875,3 +876,9 @@ ingest `01852ab4…`), replacing the c54b9cd1 pins.
   `migrate-gate: PASS`, `retention-assert ok` (10 tables).
 - Local mirrors: `stacks.toml` parses, no plaintext `.env`, `check-registry` self-test PASS and `registry ok`. The
   merge (deploy) is the owner's gate; the homelab already runs `662edd9f` for web.
+- 07:50Z follow-up (Atlas worker handed its open items over): CT130's warehouse carries no Atlas telemetry —
+  `metrics_gauge` has 0 rows with a `mongodb*` metric name in the 90-day window (the TTL), and the homelab collector
+  config has no Atlas/Prometheus/mongodb job — so `/infra/atlas` on CT130 is empty by data absence (sidebar row hidden
+  by its presence probe), not because of the akasha reboot; the earlier "0 `mongodb_up` rows" observation is closed.
+  The page's data was verified against the Noovoleum warehouse only. An independent review of the round-3 commit
+  `1d2477e893` (the one the Atlas worker's delegate could not run) was started on this thread; result to follow.
