@@ -38,7 +38,7 @@ import { V2InsufficientPermissions, V2ParameterInvalid } from "./errors"
 import { publicErrors } from "./public-error"
 import { PublicId, PublicIdPrefixes } from "./public-id"
 import { AlertDestinationPublicId, AlertRulePublicId } from "./resource-ids"
-import { EndpointAccess, requires } from "../endpoint-access"
+import { EndpointAccess, handlerChecks } from "../endpoint-access"
 
 /** `upm_…` public ID ⇄ internal `UptimeMonitorId` (raw UUID). */
 export const UptimeMonitorPublicId = PublicId(PublicIdPrefixes.uptimeMonitor, UptimeMonitorId)
@@ -790,7 +790,7 @@ export class V2UptimeMonitorsApiGroup extends HttpApiGroup.make("uptimeMonitors"
 				}),
 			)
 			// Each monitor carries its latest check results.
-			.annotate(EndpointAccess, requires("telemetry:read")),
+			.annotate(EndpointAccess, handlerChecks("uptime_monitors:manage")),
 	)
 	.add(
 		HttpApiEndpoint.post("create", "/", {
@@ -840,7 +840,7 @@ export class V2UptimeMonitorsApiGroup extends HttpApiGroup.make("uptimeMonitors"
 				}),
 			)
 			// Each monitor carries its latest check results.
-			.annotate(EndpointAccess, requires("telemetry:read")),
+			.annotate(EndpointAccess, handlerChecks("uptime_monitors:manage")),
 	)
 	.add(
 		HttpApiEndpoint.patch("update", "/:id", {
@@ -880,4 +880,4 @@ export class V2UptimeMonitorsApiGroup extends HttpApiGroup.make("uptimeMonitors"
 				"Checks Maple runs from outside your infrastructure (HTTP, TCP, DNS) and heartbeats your jobs send. Each check is a span in your traces; a monitor goes down after enough failures in a row.",
 		}),
 	)
-	.annotate(EndpointAccess, "handler") {}
+	.annotate(EndpointAccess, handlerChecks("uptime_monitors:manage")) {}

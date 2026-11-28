@@ -6,6 +6,7 @@
 	"sideEffects": false,
 	"exports": {
 		".": "./src/index.ts",
+		"./ad-click": "./src/ad-click.ts",
 		"./ai-traffic": "./src/ai-traffic.ts",
 		"./anticipated-errors": "./src/anticipated-errors.ts",
 		"./audit-actions": "./src/audit-actions.ts",
@@ -59,6 +60,8 @@
 		"./vcs": "./src/vcs.ts",
 		"./http": "./src/http/index.ts",
 		"./http/v2": "./src/http/v2/index.ts",
+		"./http/access-catalog": "./src/http/access-catalog.ts",
+		"./http/maple-access-catalog": "./src/http/maple-access-catalog.ts",
 		"./http/vcs": "./src/http/vcs.ts",
 		"./http/v2-worker-unavailable": "./src/http/v2/worker-unavailable.ts",
 		"./integration-inventory": "./src/integration-inventory.ts",
@@ -129,7 +132,7 @@
 		"typecheck": "tsrs --noEmit"
 	},
 	"dependencies": {
-		"@maple-dev/effect-orm": "0.10.0",
+		"@maple-dev/effect-orm": "1.3.0",
 		"@maple/primitives": "workspace:*",
 		"@maple/query-model": "workspace:*",
 		"@maple/security-audit": "workspace:*",

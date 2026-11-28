@@ -85,6 +85,14 @@ export const LAB_ENTRIES: ReadonlyArray<LabEntry> = [
 		session: "none",
 	},
 	{
+		path: "/lab/uptime-allowance",
+		title: "Uptime monitor allowance",
+		description:
+			"The new-monitor form saying what one more monitor costs: a paid plan past its 10, the last included one, a trial at its cap, and under it (`?state=billed|last|trial|free`).",
+		kind: "lab",
+		session: "none",
+	},
+	{
 		path: "/lab/list-keys",
 		title: "List keys",
 		description:
@@ -200,7 +208,7 @@ export const LAB_ENTRIES: ReadonlyArray<LabEntry> = [
 		path: "/lab/escalation-editor",
 		title: "Escalation chain editor",
 		description:
-			"The escalation chain editor page new, populated, with a step inserted, invalid, asking to delete or to leave, read-only and with a long chain (`?state=`).",
+			"The escalation chain editor page new, populated, with a step inserted, invalid, asking to delete or to leave, read-only, with a long chain and paging someone whose role cannot respond (`?state=`).",
 		kind: "lab",
 		session: "none",
 	},
