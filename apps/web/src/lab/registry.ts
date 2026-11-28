@@ -49,7 +49,7 @@ export const LAB_ENTRIES: ReadonlyArray<LabEntry> = [
 		path: "/lab/atlas",
 		title: "MongoDB Atlas",
 		description:
-			"The /infra/atlas page over a live Atlas snapshot (1 project, 1 cluster, 3 members). ?state=live|multi|offline|empty|loading",
+			"The /infra/atlas page over a live Atlas snapshot (1 project, 1 cluster, 3 members). ?state=live|multi|offline|degraded|empty|loading",
 		kind: "lab",
 		session: "none",
 	},

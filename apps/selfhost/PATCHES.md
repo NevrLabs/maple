@@ -460,12 +460,13 @@ primaries, connections, ops/s, queue), then one **member table per cluster** und
 the project (role, zone, connections plus a 6 h sparkline, ops/s with the op mix, resident/cache, oplog,
 asserts/s); member cards below `md`. `clustersOf` groups members by organization, project and cluster; a
 member without `cl_name` falls back to its replica set. A cluster is healthy when every member reports
-and sits in its set as a primary or a secondary, and every replica set has exactly one live primary. The subline counts replica sets and claims no
+and is a primary or a secondary (the badge for any other state reads `Other state`, since a recovering or starting member is still in its set), and every replica set has exactly one live primary. The subline counts replica sets and claims no
 cluster type: Atlas numbers every set `shard-N` (its discovery example names a three-member cluster
 `…-shard-00-0X`), and `cl_role` reads `shardsvr` on a cluster that has one replica set and no router
 or config-server series. The member table's lanes switch on the page column's width
-(`@min-[…]/page:`, as the stat rail does), each threshold at what its lanes need plus 48 px, so neither
-table scrolls sideways (measured with device emulation at every fourth pixel width from 360 to 1460).
+(`@min-[…]/page:`, as the kit's `metricGrid` does), each threshold at what its lanes need plus 56 px, and
+the legend follows the op mix lane, so neither table scrolls sideways and no legend shows without its
+lane (measured with device emulation at every fourth pixel width from 360 to 1560).
 Reads through
 `executeRawSql` with `$__orgFilter` like Proxmox (`runSql` exported from `proxmox/data.ts`); counters are
 cumulative gauges, so rates are the 15-minute delta over its span, floored at 0 on a restart. Sidebar
@@ -475,17 +476,18 @@ hour). Registered in `infra-surfaces.ts`, `shell/{model,nav,data}.ts`, `route/{s
 and oxfmt layout, which is why the diff is larger than the feature: apps/web lint rejects native array
 and string methods.
 **Not exercised:** no sharded cluster reports in this warehouse, so that path rests on the rule and its
-tests only, and the read assumes one process per `service.instance.id` (a router or config server
-sharing a member's host is not filtered out yet).
+tests only. The read assumes one process per `service.instance.id` (host and port); a router or config
+server reporting there would be listed as a member with no `rs_state`, neither primary nor secondary,
+and would turn its cluster red. None report today.
 **Not shown:** tier, backup state and alerts are not in the Prometheus integration and need the Atlas
 Admin API. Atlas's integration does export `mongodb_info` (server version, process type) and
 `hardware_*` (disk, CPU, memory); this scrape lands neither, so showing them is a collector change.
-**Left for upstream:** the stat rail's loading tiles (`statRailItemSkeleton`, fixed-width bars) push the page
-column 1–21 px sideways at 768–872 px viewports while the page loads. Present before this change on every
-page that uses `statRailLoading`; not touched here.
+**Loading rail:** the kit's `statRailLoading` tiles carry fixed-width bars, which pushed the page column
+1–21 px sideways at 768–872 px viewports while the page loaded (before this change too). The page passes
+`overflow-hidden`, as two services-detail pages do; the kit file is upstream's and is not touched.
 **Verify after rebase:** `atlas.scene.test.ts` (`rawSqlIssue` on all four statements, grouping across
 two projects, the primary rule for one and for several replica sets), shell/route/view.lazy
-tests; `/lab/atlas?state=live|multi|offline|empty|loading` at 1440, 1280, 1024, 900, 390 and 360 px
+tests; `/lab/atlas?state=live|multi|offline|degraded|empty|loading` at 1440, 1280, 1024, 900, 390 and 360 px
 (a phone shot needs device emulation: headless Chrome's narrowest window is 500 px);
 `/infra/atlas` shows the live project and cluster with 3 members and one Primary.
 

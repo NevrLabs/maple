@@ -32,9 +32,10 @@ export const NODES_SQL = `SELECT ${NODE} AS host,
 FROM metrics_gauge m
 WHERE $__orgFilter(m) AND $__timeFilter(TimeUnix) AND startsWith(MetricName, 'mongodb_') AND ${NODE} != ''
 GROUP BY host HAVING countIf(MetricName = 'mongodb_up') > 0 ORDER BY host`
-// ponytail: one process per host is assumed. Atlas deploys one `mongos` for each node of each shard, so
-// if router or config-server series ever share a member's host, `process_port` joins the key and those
-// non-members are filtered out; none report in today's scrape.
+// ponytail: one process per `service.instance.id` (host and port) is assumed, so two processes cannot
+// collide. Atlas deploys one `mongos` for each node of each shard; if router or config-server series
+// ever arrive, each would be listed as a member with no `rs_state` (neither primary nor secondary)
+// and turn its cluster red, so filter them out when that scrape exists. None report today.
 
 const OPS = ["query", "insert", "update", "delete", "getmore", "command"] as const
 const ASSERTS = ["regular", "warning", "msg", "user"] as const
