@@ -16,7 +16,7 @@ on:
             source:
                 description: "Full commit SHA of the fork source to build"
                 required: true
-                default: "e0f79ef9ffa2caa7eac3843d421eea78ad70fd1c"
+                default: "662edd9f6fa4aafb41318943522cf1698de8bbcc"
                 type: string
             flavor:
                 description: "Web build flavor (VITE_* flag set)"
@@ -29,7 +29,7 @@ permissions:
     contents: read
 
 concurrency:
-    group: selfhost-images-${{ inputs.source || 'e0f79ef9ffa2caa7eac3843d421eea78ad70fd1c' }}-${{ inputs.flavor || 'noovoleum' }}
+    group: selfhost-images-${{ inputs.source || '662edd9f6fa4aafb41318943522cf1698de8bbcc' }}-${{ inputs.flavor || 'noovoleum' }}
     cancel-in-progress: false
 
 jobs:
@@ -49,7 +49,7 @@ jobs:
             - name: Resolve source + image name
               id: meta
               env:
-                  SOURCE: ${{ inputs.source || 'e0f79ef9ffa2caa7eac3843d421eea78ad70fd1c' }}
+                  SOURCE: ${{ inputs.source || '662edd9f6fa4aafb41318943522cf1698de8bbcc' }}
                   IMAGE: ${{ matrix.image }}
               run: |
                   set -euo pipefail
@@ -66,7 +66,7 @@ jobs:
 
             - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
               with:
-                  ref: ${{ inputs.source || 'e0f79ef9ffa2caa7eac3843d421eea78ad70fd1c' }}
+                  ref: ${{ inputs.source || '662edd9f6fa4aafb41318943522cf1698de8bbcc' }}
                   persist-credentials: false
 
             - name: Toolchain and dependencies (bun)
@@ -89,6 +89,8 @@ jobs:
                   bun build apps/selfhost/src/api.ts      --target=bun --outfile="$C/app/api.js"      "${EXT[@]}"
                   bun build apps/selfhost/src/alerting.ts --target=bun --outfile="$C/app/alerting.js" "${EXT[@]}"
                   bun build apps/selfhost/src/electric-sync.ts --target=bun --outfile="$C/app/electric-sync.js" "${EXT[@]}"
+                  # PATCHES #26: the Twilio log exporter (compose profile twilio).
+                  bun build apps/selfhost/src/twilio.ts        --target=bun --outfile="$C/app/twilio.js"        "${EXT[@]}"
                   bun build apps/scraper/src/main.ts      --target=bun --outfile="$C/app/scraper.js"  "${EXT[@]}"
                   # As build-images.sh: the preview renderer emits a Wasm asset beside status.js.
                   bun build apps/selfhost/src/status.ts   --target=bun --outdir="$C/app"            "${EXT[@]}" | tail -1
@@ -97,12 +99,12 @@ jobs:
                   cp -r packages/db/drizzle "$C/app/db/drizzle"
                   bun build packages/clickhouse-cli/src/cli.ts --target=bun --outfile="$C/app/ch/cli.js" "${EXT[@]}"
                   cat > "$C/Dockerfile" <<'EOF'
-                  FROM oven/bun:1.4.4-slim
+                  FROM oven/bun:1.4.5-slim
                   WORKDIR /app
                   COPY app /app
                   USER bun
                   ENV NODE_ENV=production
-                  EXPOSE 3472 3475 3476 3478 3480
+                  EXPOSE 3472 3475 3476 3478 3479 3480
                   CMD ["bun", "/app/api.js"]
                   EOF
 
@@ -216,7 +218,7 @@ jobs:
                   outputs: type=image,name=${{ steps.meta.outputs.name }},push-by-digest=true,name-canonical=true,push=true
                   labels: |
                       org.opencontainers.image.source=https://github.com/${{ github.repository }}
-                      org.opencontainers.image.revision=${{ inputs.source || 'e0f79ef9ffa2caa7eac3843d421eea78ad70fd1c' }}
+                      org.opencontainers.image.revision=${{ inputs.source || '662edd9f6fa4aafb41318943522cf1698de8bbcc' }}
                   provenance: false
 
             - name: Export digest
@@ -249,7 +251,7 @@ jobs:
             - name: Resolve image name + tag
               id: meta
               env:
-                  SOURCE: ${{ inputs.source || 'e0f79ef9ffa2caa7eac3843d421eea78ad70fd1c' }}
+                  SOURCE: ${{ inputs.source || '662edd9f6fa4aafb41318943522cf1698de8bbcc' }}
                   FLAVOR: ${{ inputs.flavor || 'noovoleum' }}
                   IMAGE: ${{ matrix.image }}
               run: |
@@ -312,7 +314,7 @@ jobs:
 
             - name: Run images
               env:
-                  SOURCE: ${{ inputs.source || 'e0f79ef9ffa2caa7eac3843d421eea78ad70fd1c' }}
+                  SOURCE: ${{ inputs.source || '662edd9f6fa4aafb41318943522cf1698de8bbcc' }}
                   FLAVOR: ${{ inputs.flavor || 'noovoleum' }}
               run: |
                   set -euo pipefail
