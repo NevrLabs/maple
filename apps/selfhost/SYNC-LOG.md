@@ -761,6 +761,18 @@ one typecheck fix). Not deployed.
 - Deploy notes (owner gate): two additive PG migrations; `packageManager`/`mise.toml` now bun 1.4.5 while
   `apps/selfhost/dev/build-images.sh` still bundles on `oven/bun:1.4.4-slim` (upstream's own scraper and sandbox
   Dockerfiles also still pin 1.4.4) — align with the next image build.
+## Merge — 2026-11-28 — `selfhost-atlas-review-fixes` (PATCHES #18, review round 3) absorbed into the selfhost line
+
+`662edd9f6f` merges the round-3 review fixes for `/infra/atlas` (`1d2477e893`, on `d60089d8d7`): the operation-mix
+legend shows only with its lane, the loading rail no longer pushes the page column sideways, the health tile keeps
+its sentence on hover, a member that is neither primary nor secondary is named so (badge `Other state`), lane
+thresholds carry 56 px of slack for a 17 px scrollbar, and the lab gains a `degraded` state. Web only: no migration,
+no API route, no compose change. Before the merge the commit was gated on its exact head on the MacBook (tree
+`010604941c` equal before and after the formatter; CI's web steps at 1592 and 6215 tests; a six-state lane sweep
+from 360 to 1560 px). Gates green https://github.com/NevrLabs/maple/actions/runs/46118166217 at `662edd9f6f`
+(web merge surfaces 131 files); CI's regenerated `bun.lock` is byte-identical, so no lock commit. Not deployed:
+only the `web` image changes, and the run-16 images staged on CT130 (`up-d60089d8`) predate this merge.
+
 ## Deploy — 2026-11-28 — run 16 on CT130 (owner go)
 
 DECISION OF RECORD 2026-11-28T02:40Z: Raisal, this thread (T3 Code, Maple sync thread): "if not, deploy it".
