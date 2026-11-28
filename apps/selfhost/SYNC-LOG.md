@@ -761,3 +761,24 @@ one typecheck fix). Not deployed.
 - Deploy notes (owner gate): two additive PG migrations; `packageManager`/`mise.toml` now bun 1.4.5 while
   `apps/selfhost/dev/build-images.sh` still bundles on `oven/bun:1.4.4-slim` (upstream's own scraper and sandbox
   Dockerfiles also still pin 1.4.4) — align with the next image build.
+## Deploy — 2026-11-28 — run 16 on CT130 (owner go)
+
+DECISION OF RECORD 2026-11-28T02:40Z: Raisal, this thread (T3 Code, Maple sync thread): "if not, deploy it".
+Scope: CT130 api, alerting, scraper, electric-sync, migrate and web from `selfhost-homelab-up-20261128` @ gated head
+`d60089d8d736360f135dd4ffee6366c145615ddb` (run 16 merge + the #3081 typecheck fix + the bundle-stage bun 1.4.5 pin;
+gates https://github.com/NevrLabs/maple/actions/runs/46099491904 green at that SHA; this docs commit sits above it and
+changes no image input). Covers: live PG migrations 239 → 241 (two additive migrations, three new tables) and CH
+75 → 76 (migration 0076 rebuilds `ai_evaluations_mv` and `ai_evaluations_span_events_mv`; `TO` target, no stored rows
+lost, new definition applies to new data), bounded recreate, backups and rehearsal. Stays separate: Noovoleum (own gate;
+infra-deploy-docker #157 still staged with the three Twilio secrets outstanding), the `twilio-exporter` compose service
+(compose profile `twilio` not enabled on CT130; #26 is in the image, off), destructive DB restore, ingest/collector
+images (stay `up-593f6100`), status (`status-07818b05`).
+
+Status: IN PROGRESS — preflight passed, image build next. Preflight 02:41Z: Setup Health 36 pass / 10 fail, exactly the
+accepted IDs (CFG-ATTR-01 8, ING-01 2, LOG-01 6, LOG-02 2, RES-02 45, RES-04 53, RES-05 53, STAT-02 2, STAT-04 1,
+TRC-01 1), no new ID, no count growth. Secret envelopes: every `*_ciphertext` column holds only `v2.`/`v3.` values
+(22 columns, 0 legacy) — no reseal. CH rehearsal 02:49Z on clickhouse-01: empty-DDL clone of `logs`, `traces`,
+`ai_evaluations` in scratch `maple_rehearsal_16`, the four 0076 statements applied (no live-qualified target), a
+synthetic boolean `true` score read back as verdict `pass`, scratch database dropped and absent, live ledger 75/75 and
+both live views unchanged. Prep manifest `/opt/maple/backups/run16-d60089d8-20261128T024522Z/` (PG ledger 239, 12
+containers).
