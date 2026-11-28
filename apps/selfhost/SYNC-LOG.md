@@ -786,7 +786,7 @@ infra-deploy-docker #157 still staged with the three Twilio secrets outstanding)
 (compose profile `twilio` not enabled on CT130; #26 is in the image, off), destructive DB restore, ingest/collector
 images (stay `up-593f6100`), status (`status-07818b05`).
 
-Status: IN PROGRESS — preflight passed, image build next. Preflight 02:41Z: Setup Health 36 pass / 10 fail, exactly the
+Status: **COMPLETE — deployed and accepted on CT130 2026-11-28T06:58Z** (details after the preflight notes). Preflight 02:41Z: Setup Health 36 pass / 10 fail, exactly the
 accepted IDs (CFG-ATTR-01 8, ING-01 2, LOG-01 6, LOG-02 2, RES-02 45, RES-04 53, RES-05 53, STAT-02 2, STAT-04 1,
 TRC-01 1), no new ID, no count growth. Secret envelopes: every `*_ciphertext` column holds only `v2.`/`v3.` values
 (22 columns, 0 legacy) — no reseal. CH rehearsal 02:49Z on clickhouse-01: empty-DDL clone of `logs`, `traces`,
@@ -794,3 +794,41 @@ TRC-01 1), no new ID, no count growth. Secret envelopes: every `*_ciphertext` co
 synthetic boolean `true` score read back as verdict `pass`, scratch database dropped and absent, live ledger 75/75 and
 both live views unchanged. Prep manifest `/opt/maple/backups/run16-d60089d8-20261128T024522Z/` (PG ledger 239, 12
 containers).
+- Preflight hold 06:11Z: a fresh read showed STAT-04 grown 1 → 2 (`kaneo-dev-api` + `hermes-gateway`, traces starting at
+  an Internal `agent.turn`); stopped before any stop/edit on CT130 and asked; owner "go" (this thread) accepting
+  STAT-04 at 2. Recorded in talos `~/deploy/maple/STATUS.md` (hold + decision lines).
+- Images: MacBook `mi-up.sh` from the gate checkout at `d60089d8d7` (bun 1.4.5, colima linux/amd64), ledger
+  `~/ci/maple-images/up-d60089d8/`: `maple-selfhost:up-d60089d8` sha256:b94412076d90…, `maple-web:up-d60089d8`
+  sha256:101e37a0ab4d…; webcheck (Zitadel label, LAN ingest URL, no Noovoleum SSO, MongoDB Atlas) green. Streamed
+  MacBook → talos → CT130 in under two minutes (not the 20 min of the last deploy); compressed archive sha256
+  `c1461912db8c6450f71a76a2d35c61e7593b96b37701c229c8c521667a3ac2f7` equal at sender and receiver; loaded IDs equal
+  the builder's.
+- Backups: PBS `ct/130/2026-11-28T02:54:21Z` (11.15 GB, rc 0; taken ~3.8 h before the cutover, before the host
+  reboot below) + quiesced `pg_dump -Fc` sha256 `6c739985c8ba08c7dfddd02fab14c04f3dd19f56099c7ddb331592900584c19c`
+  (8.7 MB) in `/opt/maple/backups/run16-d60089d8-20261128T024522Z/` (`compose.override.pre-run16.yaml`,
+  `override.diff` = the six image pins, `cutover.sh`/`rehearse.sh`/`verify.sh`, ledgers beside it).
+- PG rehearsal (CT130, scratch `postgres:17-alpine` from a hot dump sha256 `e04f8d94…`): 239 → 241, 157 tables, the
+  candidate's `migrate.js` applied exactly `20261127122815_ad_conversions` and `20261127164750_ai_evaluation_runs`.
+- Host incident before the cutover: akasha (the Proxmox host of CT130 and clickhouse-01) rebooted uncleanly between
+  06:11Z and 06:39Z (boot 06:43:57Z; its journal has no entries between 2026-11-04 and this boot, so the cause is not
+  recoverable from it). Every CT130 container restarted at 06:45Z (status restarts=2, alerting 1 during boot
+  recovery). Waited for telemetry to resume (metrics/logs at 06:52Z, health 200) and took two Setup Health reads
+  (06:53:15Z, 06:54:16Z): 36/10, exact baseline IDs, STAT-04 back to 1. Nothing of this deploy was running when it
+  happened. Three `grafana` error issues opened at 06:46:00Z with three Discord deliveries (success) — from the reboot,
+  before the cutover.
+- Cutover 06:54:32–06:55:28Z (writers stopped 06:54:32, recreated 06:55:07: 35 s). `migrate` applied PG 239 → 241 and
+  ClickHouse 75 → 76 (`apply 76`, "1 migrations and 0 features applied"); both `ai_evaluations*` views carry the new
+  definitions.
+- Acceptance 06:56–06:58Z: api, alerting, scraper, electric-sync and web run `up-d60089d8` with IDs equal to the
+  builder's; status `status-07818b05`, ingest/collector `up-593f6100`, postgres/electric/proxy/cloudflared keep their
+  images and the StartedAt the host reboot gave them (06:45Z; ingest restarted by the cutover at 06:55:07 as designed);
+  restarts 0 since; health 200; `DELETE /internal/cost/twilio` and `PUT /internal/cost/mongodb` 401 (routes present,
+  refused without a session); `GET /internal/google-ads/conversions.csv` 503 (new raw route, not configured) and an
+  unknown path under it 404; web bundle in the container: 2 Zitadel chunks, 0 Noovoleum SSO, 2 LAN-ingest; Setup Health
+  36/10, exact baseline IDs, STAT-04 1, STAT-02 2; incidents and deliveries since the cutover 0; api/alerting/ingest
+  logs clean.
+- Not applied: `twilio-exporter` compose service (profile `twilio`), PATCHES #21 compose/retention files, ingest/collector
+  images. Rollback (images only; migrations not reversed, all additive): restore `compose.override.pre-run16.yaml`
+  from the backup dir, then `docker compose up -d --no-deps --pull never --force-recreate api alerting scraper
+  electric-sync migrate web`.
+- Noovoleum: separate owner gate (infra-deploy-docker #157 staged; Twilio secrets outstanding).
