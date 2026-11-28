@@ -33,9 +33,10 @@ FROM metrics_gauge m
 WHERE $__orgFilter(m) AND $__timeFilter(TimeUnix) AND startsWith(MetricName, 'mongodb_') AND ${NODE} != ''
 GROUP BY host HAVING countIf(MetricName = 'mongodb_up') > 0 ORDER BY host`
 // ponytail: one process per `service.instance.id` (host and port) is assumed, so two processes cannot
-// collide. Atlas deploys one `mongos` for each node of each shard; if router or config-server series
-// ever arrive, each would be listed as a member with no `rs_state` (neither primary nor secondary)
-// and turn its cluster red, so filter them out when that scrape exists. None report today.
+// collide. Atlas deploys one `mongos` for each node of each shard: a router has no `rs_state`, so if its
+// series ever arrive it is listed as a member with badge `Other state` and turns its cluster red; config
+// servers are themselves a replica set (their own `rs_nm`) and would count as one. Filter routers out
+// when that scrape exists. None report today.
 
 const OPS = ["query", "insert", "update", "delete", "getmore", "command"] as const
 const ASSERTS = ["regular", "warning", "msg", "user"] as const

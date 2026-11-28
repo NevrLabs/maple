@@ -210,7 +210,7 @@ describe("atlas route", () => {
 				text("2 projects · 2 clusters · 3 members · Prometheus integration, every 30 s"),
 			).toExist(),
 			expectView(text("5b1d0c73a2f4e67890123456")).toExist(),
-			expectView(text("2 clusters with a primary")).toExist(),
+			expectView(text("2 clusters, every replica set with a primary")).toExist(),
 			inside(
 				selector('[data-atlas-section="members"][data-atlas-cluster="noov-mongodb-qa"]'),
 				expectView(text("qa")).toExist(),
@@ -330,7 +330,40 @@ describe("atlas route", () => {
 		scene(
 			{ update: pageUpdate, view },
 			given(loaded(snapshot({ nodes: [nodeRow(0, "2"), nodeRow(1, "2"), qaRow(0, "1")] }))),
-			expectView(text("1 cluster without a primary")).toExist(),
+			expectView(text("1 cluster with a replica set missing its primary")).toExist(),
+		)
+		// A cluster with several replica sets is counted once, and the sentence says which part of it fails.
+		scene(
+			{ update: pageUpdate, view },
+			given(
+				loaded(
+					snapshot({
+						nodes: [
+							nodeRow(1, "1"),
+							nodeRow(2, "2"),
+							{ ...nodeRow(0, "1"), host: shardOneHost, replicaSet: "atlas-6fng94-shard-1" },
+							qaRow(0, "1"),
+						],
+					}),
+				),
+			),
+			expectView(text("2 clusters, every replica set with a primary")).toExist(),
+		)
+		scene(
+			{ update: pageUpdate, view },
+			given(
+				loaded(
+					snapshot({
+						nodes: [
+							nodeRow(1, "1"),
+							nodeRow(2, "2"),
+							{ ...nodeRow(0, "2"), host: shardOneHost, replicaSet: "atlas-6fng94-shard-1" },
+							qaRow(0, "1"),
+						],
+					}),
+				),
+			),
+			expectView(text("1 cluster with a replica set missing its primary")).toExist(),
 		)
 		scene(
 			{ update: pageUpdate, view },

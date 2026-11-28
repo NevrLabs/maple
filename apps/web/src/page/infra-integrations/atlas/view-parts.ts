@@ -297,11 +297,11 @@ const membersSubline = (
 		return "a member not primary or secondary"
 	}
 	const bad = Arr.filter(health, (one) => !one.ok)
-	if (bad.length === 0) return `${countLabel(clusters.length, "cluster")} with a primary`
+	if (bad.length === 0) return `${countLabel(clusters.length, "cluster")}, every replica set with a primary`
 	if (sumOf(health, (one) => one.primaries) === 0) return "no primary"
 	const empty = Arr.filter(bad, (one) => one.emptySets > 0).length
 	return empty === bad.length
-		? `${countLabel(bad.length, "cluster")} without a primary`
+		? `${countLabel(bad.length, "cluster")} with a replica set missing its primary`
 		: `${countLabel(bad.length, "cluster")} not healthy`
 }
 
@@ -549,8 +549,9 @@ const clustersSection = <M>(h: HtmlBuilder<M>, clusters: ReadonlyArray<AtlasClus
 /** Lanes by the page column's width, not the viewport's (the sidebar opens and closes). The column is the
  * table's box plus a 32 px gutter, and a row needs its lanes plus 16 px per gap plus 32 px padding: member,
  * role, connections and ops/s always show (440 px); the op mix and resident arrive at 744 (688 + 56), the
- * trend and oplog at 1012 (960 + 56), asserts at 1104 (1048 + 56) and zone at 1208 (1152 + 56). That
- * leaves the member's name 152 px at each threshold, 135 px under a 17 px classic scrollbar. The legend
+ * trend and oplog at 1012 (960 + 52, so a 1280 px window with the sidebar open keeps them), asserts at
+ * 1104 (1048 + 56) and zone at 1208 (1152 + 56). That leaves the member's name 152 px at each threshold
+ * (148 px at 1012), 135 px under a 17 px classic scrollbar (131 px at 1012). The legend
  * under the last member table follows the op mix lane. Below `md` the table gives way to cards. */
 const COLS = {
 	name: "w-0 min-w-32 flex-1",
