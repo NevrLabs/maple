@@ -8,7 +8,7 @@ import {
 	CostConnectionValidationError,
 } from "./cost-connections"
 import { SessionAuthorization } from "./current-tenant"
-import { EndpointAccess } from "./endpoint-access"
+import { EndpointAccess, handlerChecks } from "./endpoint-access"
 
 /** Far above an Account SID and an auth token: it only bounds what the request carries. */
 export const TWILIO_COST_CREDENTIAL_MAX_LENGTH = 512
@@ -41,4 +41,4 @@ export class TwilioCostApiGroup extends HttpApiGroup.make("twilioCost")
 	)
 	.prefix("/internal/cost/twilio")
 	.middleware(SessionAuthorization)
-	.annotate(EndpointAccess, "handler") {}
+	.annotate(EndpointAccess, handlerChecks("integrations:manage")) {}

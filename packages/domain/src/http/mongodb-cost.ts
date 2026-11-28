@@ -8,7 +8,7 @@ import {
 	CostConnectionValidationError,
 } from "./cost-connections"
 import { SessionAuthorization } from "./current-tenant"
-import { EndpointAccess } from "./endpoint-access"
+import { EndpointAccess, handlerChecks } from "./endpoint-access"
 
 /** Far above a service account's client ID and secret: it only bounds what the request carries. */
 export const MONGODB_COST_CREDENTIAL_MAX_LENGTH = 512
@@ -41,4 +41,4 @@ export class MongodbCostApiGroup extends HttpApiGroup.make("mongodbCost")
 	)
 	.prefix("/internal/cost/mongodb")
 	.middleware(SessionAuthorization)
-	.annotate(EndpointAccess, "handler") {}
+	.annotate(EndpointAccess, handlerChecks("integrations:manage")) {}
