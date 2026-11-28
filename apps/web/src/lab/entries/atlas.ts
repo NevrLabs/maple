@@ -16,8 +16,9 @@ import type { Resources } from "../../platform/resources"
 import { defineShellLab } from "../shell-lab"
 
 // `/lab/atlas`: the `/infra/atlas` view over a real cluster's raw-SQL rows of 2026-11-27, with the
-// organization and project ids and the project name replaced. `?state=live|multi|offline|empty|loading`:
-// `multi` adds a made-up second project and cluster, `offline` silences the cluster's primary.
+// organization and project ids and the project name replaced.
+// `?state=live|multi|offline|degraded|empty|loading`: `multi` adds a made-up second project and
+// cluster, `offline` silences the cluster's primary, `degraded` puts one member into recovery.
 
 const NOW = 1795720886521
 const ROWS = {
@@ -147,7 +148,7 @@ const ROWS = {
 type Row = (typeof ROWS)["nodes"][number]
 type Rate = (typeof ROWS)["rates"][number]
 
-const STATES = ["live", "multi", "offline", "empty", "loading"] as const
+const STATES = ["live", "multi", "offline", "degraded", "empty", "loading"] as const
 const State = Schema.Literals(STATES)
 const Model = Schema.Struct({ state: State })
 type Model = typeof Model.Type
@@ -215,9 +216,16 @@ const snapshot = (state: Model["state"]): AtlasSnapshot =>
 							row.state === "1" ? { ...row, lastSeenMs: NOW - 5 * 60_000 } : row,
 						),
 					}
-				: state === "empty"
-					? { ...ROWS, nodes: [] }
-					: ROWS,
+				: state === "degraded"
+					? {
+							...ROWS,
+							nodes: Arr.map(ROWS.nodes, (row, index) =>
+								index === 0 ? { ...row, state: "3" } : row,
+							),
+						}
+					: state === "empty"
+						? { ...ROWS, nodes: [] }
+						: ROWS,
 	)
 
 const view = (model: Model, h: HtmlBuilder<Message>): Html => {

@@ -30,10 +30,11 @@ export const isDown = (node: AtlasNode, nowMs: number) =>
 const silentFor = (node: AtlasNode, now: number) =>
 	node.up < 1 ? "down" : `silent ${Math.max(1, Math.round((now - node.lastSeenMs) / 60_000))}m`
 
+/** `other` is every state but the two (recovering, starting up, arbiter); this scrape carries no state name. */
 export type Role = "primary" | "secondary" | "other"
 export const roleOf = (node: AtlasNode): Role =>
 	node.state === 1 ? "primary" : node.state === 2 ? "secondary" : "other"
-const ROLE_LABEL = { primary: "Primary", secondary: "Secondary", other: "Not in set" } as const
+const ROLE_LABEL = { primary: "Primary", secondary: "Secondary", other: "Other state" } as const
 
 /** `noov-mongodb-live-shard-00-01-pri.l2mydt.mongodb.net:27018` → `shard-00-01` (the `-pri` is Atlas's private endpoint, not the role). */
 export const shortName = (node: AtlasNode): string => {
@@ -144,9 +145,9 @@ const regionLabel = (cluster: AtlasCluster): string =>
 		" ",
 	) || "—"
 
-/** Healthy once every member reports and sits in its set as a primary or a secondary (a recovering or
- * starting member does not), and every replica set has exactly one live primary (one for the whole
- * cluster when the scrape sent no set names). */
+/** Healthy once every member reports and is a primary or a secondary (a recovering, syncing or starting
+ * member is neither, though it is still in its set), and every replica set has exactly one live
+ * primary (one for the whole cluster when the scrape sent no set names). */
 type ClusterHealth = Readonly<{
 	live: ReadonlyArray<AtlasNode>
 	/** Live primaries across the cluster. */
@@ -181,6 +182,9 @@ const sumOf = <A>(items: ReadonlyArray<A>, value: (item: A) => number): number =
 	Arr.reduce(items, 0, (sum, item) => sum + value(item))
 
 // ── Pieces ────────────────────────────────────────────────────────────────────
+
+/** A tile subline that keeps its whole text on hover: the kit cuts a long one without a title. */
+const titled = <M>(h: HtmlBuilder<M>, text: string): Html => h.span([h.Title(text)], [text])
 
 /** A status dot for a member (`down`) or a cluster row (`label` says which). */
 const stateDot = <M>(h: HtmlBuilder<M>, down: boolean, label: string = down ? "down" : "up"): Html =>
@@ -286,12 +290,14 @@ const membersSubline = (
 		if (only.ok) return countLabel(only.primaries, "primary", "primaries")
 		if (only.primaries === 0) return "no primary"
 		if (!only.primariesOk) {
-			return only.emptySets > 0 ? "a replica set without a primary" : `${only.primaries} report primary`
+			return only.emptySets > 0
+				? `${countLabel(only.emptySets, "replica set", "replica sets")} without a primary`
+				: `${only.primaries} report primary`
 		}
-		return "a member out of its set"
+		return "a member not primary or secondary"
 	}
 	const bad = Arr.filter(health, (one) => !one.ok)
-	if (bad.length === 0) return "each with a primary"
+	if (bad.length === 0) return `${countLabel(clusters.length, "cluster")} with a primary`
 	if (sumOf(health, (one) => one.primaries) === 0) return "no primary"
 	const empty = Arr.filter(bad, (one) => one.emptySets > 0).length
 	return empty === bad.length
@@ -342,7 +348,7 @@ const rail = <M>(h: HtmlBuilder<M>, clusters: ReadonlyArray<AtlasCluster>, now: 
 			eyebrow: "Members up",
 			value: `${live.length}/${sumOf(clusters, (cluster) => cluster.nodes.length)}`,
 			tone: healthy === clusters.length ? "ok" : "crit",
-			subline: membersSubline(downLabel(clusters, now), clusters, health),
+			subline: titled(h, membersSubline(downLabel(clusters, now), clusters, health)),
 		}),
 		statRailItem(h, {
 			eyebrow: "Connections",
@@ -407,7 +413,8 @@ const figure = <M>(h: HtmlBuilder<M>, value: string, className: string, tone?: "
 		typography(h, tone === undefined ? FIGURE : { ...FIGURE, tone }, [value]),
 	])
 
-/** `members down` when a member is silent, `degraded` when they all report but a replica set lacks its primary. */
+/** `members down` when a member is silent; `degraded` when they all report but a replica set lacks its
+ * primary or a member is neither primary nor secondary. */
 const clusterStateLabel = (health: ClusterHealth, total: number): string =>
 	health.ok ? "healthy" : health.live.length < total ? "members down" : "degraded"
 
@@ -541,21 +548,21 @@ const clustersSection = <M>(h: HtmlBuilder<M>, clusters: ReadonlyArray<AtlasClus
 
 /** Lanes by the page column's width, not the viewport's (the sidebar opens and closes). The column is the
  * table's box plus a 32 px gutter, and a row needs its lanes plus 16 px per gap plus 32 px padding: member,
- * role, connections and ops/s always show (440 px); the op mix and resident arrive at 736 (688 + 48), the
- * trend and oplog at 1008 (960 + 48), asserts at 1096 (1048 + 48) and zone at 1200 (1152 + 48), which
- * leaves the member's name 144 px at each threshold, 129 px under a classic scrollbar. Below `md` the
- * table gives way to cards. */
+ * role, connections and ops/s always show (440 px); the op mix and resident arrive at 744 (688 + 56), the
+ * trend and oplog at 1012 (960 + 56), asserts at 1104 (1048 + 56) and zone at 1208 (1152 + 56). That
+ * leaves the member's name 152 px at each threshold, 135 px under a 17 px classic scrollbar. The legend
+ * under the last member table follows the op mix lane. Below `md` the table gives way to cards. */
 const COLS = {
 	name: "w-0 min-w-32 flex-1",
 	role: "w-22 shrink-0",
-	zone: "w-22 shrink-0 hidden @min-[1200px]/page:flex",
+	zone: "w-22 shrink-0 hidden @min-[1208px]/page:flex",
 	conns: "w-22 shrink-0",
-	spark: "w-30 shrink-0 hidden @min-[1008px]/page:flex",
+	spark: "w-30 shrink-0 hidden @min-[1012px]/page:flex",
 	ops: "w-14 shrink-0",
-	mix: "w-30 shrink-0 hidden @min-[736px]/page:flex",
-	mem: "w-24 shrink-0 hidden @min-[736px]/page:flex",
-	oplog: "w-30 shrink-0 hidden @min-[1008px]/page:flex",
-	asserts: "w-18 shrink-0 hidden @min-[1096px]/page:flex",
+	mix: "w-30 shrink-0 hidden @min-[744px]/page:flex",
+	mem: "w-24 shrink-0 hidden @min-[744px]/page:flex",
+	oplog: "w-30 shrink-0 hidden @min-[1012px]/page:flex",
+	asserts: "w-18 shrink-0 hidden @min-[1104px]/page:flex",
 } as const
 
 const head = <M>(h: HtmlBuilder<M>): ReadonlyArray<Html> => [
@@ -739,7 +746,7 @@ const members = <M>(
 						head(h),
 						Arr.map(cluster.nodes, (node) => row(h, node, now)),
 					),
-					...(isLast ? [legend(h, "px-4 py-2")] : []),
+					...(isLast ? [legend(h, "px-4 py-2 hidden @min-[744px]/page:flex")] : []),
 				],
 			),
 			vstack(h, { gap: "3", className: "md:hidden" }, [
@@ -783,7 +790,9 @@ export const atlasDescription = (data: AtlasSnapshot): string => {
 }
 
 export const atlasLoadingBody = <M>(h: HtmlBuilder<M>): ReadonlyArray<Html> => [
-	statRailLoading(h, 5, 5),
+	// `overflow-hidden`: the kit's fixed-width skeleton bars otherwise push the page column sideways
+	// at 768–872 px viewports (two services-detail pages pass the same class).
+	statRailLoading(h, 5, 5, "overflow-hidden"),
 	dataTable(h, { ariaLabel: "Atlas clusters", isWaiting: true }, clusterHead(h), clusterSkeleton(h)),
 	// A table from `md` up, as when loaded; a bar per lane, so the loading rows keep the head's shape.
 	h.div(

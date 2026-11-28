@@ -210,7 +210,7 @@ describe("atlas route", () => {
 				text("2 projects · 2 clusters · 3 members · Prometheus integration, every 30 s"),
 			).toExist(),
 			expectView(text("5b1d0c73a2f4e67890123456")).toExist(),
-			expectView(text("each with a primary")).toExist(),
+			expectView(text("2 clusters with a primary")).toExist(),
 			inside(
 				selector('[data-atlas-section="members"][data-atlas-cluster="noov-mongodb-qa"]'),
 				expectView(text("qa")).toExist(),
@@ -306,20 +306,23 @@ describe("atlas route", () => {
 					}),
 				),
 			),
-			expectView(text("a replica set without a primary")).toExist(),
+			expectView(text("1 replica set without a primary")).toExist(),
 			expectView(liveRow).toHaveAttr("data-atlas-cluster-state", "crit"),
 		)
 	})
 
-	test("a live member outside its set makes the cluster degraded, not healthy and not members down", () => {
+	test("a live member that is neither primary nor secondary makes the cluster degraded, not healthy, not members down", () => {
 		scene(
 			{ update: pageUpdate, view },
-			given(loaded(snapshot({ nodes: [nodeRow(0, "7"), nodeRow(1, "1"), nodeRow(2, "2")] }))),
+			given(loaded(snapshot({ nodes: [nodeRow(0, "3"), nodeRow(1, "1"), nodeRow(2, "2")] }))),
 			expectView(text("3/3")).toExist(),
-			expectView(text("a member out of its set")).toExist(),
+			expectView(text("a member not primary or secondary")).toHaveAttr(
+				"title",
+				"a member not primary or secondary",
+			),
 			expectView(liveRow).toHaveAttr("data-atlas-cluster-state", "crit"),
 			expectView(selector('[data-atlas-section="clusters"] [aria-label="degraded"]')).toExist(),
-			inside(selector('[data-atlas-node="shard-00-00"]'), expectView(text("Not in set")).toExist()),
+			inside(selector('[data-atlas-node="shard-00-00"]'), expectView(text("Other state")).toExist()),
 		)
 	})
 
@@ -331,8 +334,49 @@ describe("atlas route", () => {
 		)
 		scene(
 			{ update: pageUpdate, view },
-			given(loaded(snapshot({ nodes: [nodeRow(0, "7"), nodeRow(1, "1"), qaRow(0, "1")] }))),
+			given(loaded(snapshot({ nodes: [nodeRow(0, "3"), nodeRow(1, "1"), qaRow(0, "1")] }))),
 			expectView(text("1 cluster not healthy")).toExist(),
+		)
+	})
+
+	test("members that report no replica set name: one primary is healthy, two are not", () => {
+		const unnamed = (states: ReadonlyArray<string>) =>
+			Arr.map(states, (state, index) => ({ ...nodeRow(index, state), replicaSet: "" }))
+		scene(
+			{ update: pageUpdate, view },
+			given(loaded(snapshot({ nodes: unnamed(["2", "1", "2"]) }))),
+			expectView(text("1 primary")).toExist(),
+			expectView(liveRow).toHaveAttr("data-atlas-cluster-state", "ok"),
+		)
+		scene(
+			{ update: pageUpdate, view },
+			given(loaded(snapshot({ nodes: unnamed(["2", "1", "1"]) }))),
+			expectView(text("2 report primary")).toExist(),
+			expectView(liveRow).toHaveAttr("data-atlas-cluster-state", "crit"),
+		)
+	})
+
+	test("three replica sets, a primary in only one: the tile counts the sets without one", () => {
+		scene(
+			{ update: pageUpdate, view },
+			given(
+				loaded(
+					snapshot({
+						nodes: [
+							nodeRow(1, "1"),
+							nodeRow(0, "2"),
+							{ ...nodeRow(0, "2"), host: shardOneHost, replicaSet: "atlas-6fng94-shard-1" },
+							{
+								...nodeRow(0, "2"),
+								host: "noov-mongodb-live-shard-02-00-pri.l2mydt.mongodb.net:27018",
+								replicaSet: "atlas-6fng94-shard-2",
+							},
+						],
+					}),
+				),
+			),
+			expectView(text("2 replica sets without a primary")).toExist(),
+			expectView(liveRow).toHaveAttr("data-atlas-cluster-state", "crit"),
 		)
 	})
 
