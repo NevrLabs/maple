@@ -832,3 +832,28 @@ containers).
   from the backup dir, then `docker compose up -d --no-deps --pull never --force-recreate api alerting scraper
   electric-sync migrate web`.
 - Noovoleum: separate owner gate (infra-deploy-docker #157 staged; Twilio secrets outstanding).
+## Deploy — 2026-11-28 — Atlas review fixes (PATCHES #18 round 3), web only, on CT130 (owner go)
+
+DECISION OF RECORD 2026-11-28T06:37Z: Raisal to the Atlas worker thread ("coordinate with [Reconcile Maple upstream
+#2], go for it all"; "all" = merge the review fixes, gate them, get them deployed), relayed in that worker's handoff and
+verified by reading the thread. Scope: CT130 `web` only, `maple-web:up-662edd9f` built from `662edd9f6f` (the gated
+merge head, https://github.com/NevrLabs/maple/actions/runs/46118166217; the two docs commits above it change no image
+input). The merge touches web only: no migration, no API route, no compose change.
+
+Status: **COMPLETE — deployed and accepted 2026-11-28T07:16Z.**
+
+- Preflight 07:05Z: Setup Health 36/10, exact baseline IDs, STAT-04 1.
+- Image: MacBook `mi-up.sh` at `662edd9f6f` (bun 1.4.5; ledger `~/ci/maple-images/up-662edd9f`), `maple-web:up-662edd9f`
+  sha256:cd8a8683004386f0f7b2209b5db859e4097422b1fe4b2d617bc8ce52e49351b1, webcheck green. Streamed in 25 s; compressed
+  archive sha256 `4d94a936acaa3f989c9c5761f1260bebd739e76222040abf9eba8bb4bb795dc2` equal at sender and CT130; loaded
+  ID equal to the builder's. The same build's `maple-selfhost:up-662edd9f` (sha256:20510d7f…) was loaded but not
+  deployed: the selfhost sources are those of `d60089d8d7`.
+- Rollout 07:09:51–07:10:57Z: the override's web pin only (`override.diff` = one line), `up -d --no-deps --pull never
+  --force-recreate web`; no writer stop, no dump. Backup dir `/opt/maple/backups/atlas-r3-662edd9f-20261128T070611Z/`:
+  `compose.override.pre-atlas-r3.yaml` is the rollback (restore it, recreate `web`), with the manifests, cutover and
+  verify scripts. A first launch was a no-op (a mis-backgrounded `cat` shipped a 0-byte script; the override stayed
+  untouched) and was redone.
+- Acceptance: `maple-web-1` on `up-662edd9f`, ID cd8a8683…, restarts 0; the other 11 containers identical to the
+  pre-rollout manifest (image, ID, StartedAt); the image's assets carry the round-3 strings ("Other state", "a member
+  not primary or secondary") and the Zitadel label; health 200; Setup Health 36/10 then 37/9 on consecutive reads
+  (TRC-01 flickering; no new ID, STAT-04 1); 0 incidents and 0 deliveries since the rollout.
